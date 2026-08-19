@@ -1,0 +1,186 @@
+{
+  "tag": "low-t184",
+  "horizonMin": 43,
+  "patches": [
+    {
+      "label": "sky-fullwidth",
+      "x0": 0,
+      "x1": 1280,
+      "y0": 0,
+      "y1": 37,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 1280,
+          "ny": 37,
+          "sigmaPerPx": 1.03,
+          "colAmp": 0.162,
+          "colExpectedFromNoise": 0.1693,
+          "ratioV": 0.96,
+          "rowAmp": 0.4491,
+          "rowExpectedFromNoise": 0.0307,
+          "ratioH": 14.63
+        },
+        {
+          "ch": "G",
+          "nx": 1280,
+          "ny": 37,
+          "sigmaPerPx": 0.97,
+          "colAmp": 0.1608,
+          "colExpectedFromNoise": 0.1595,
+          "ratioV": 1.01,
+          "rowAmp": 0.3148,
+          "rowExpectedFromNoise": 0.0278,
+          "ratioH": 11.32
+        },
+        {
+          "ch": "B",
+          "nx": 1280,
+          "ny": 37,
+          "sigmaPerPx": 0.927,
+          "colAmp": 0.1659,
+          "colExpectedFromNoise": 0.1523,
+          "ratioV": 1.09,
+          "rowAmp": 0.1044,
+          "rowExpectedFromNoise": 0.0253,
+          "ratioH": 4.12
+        }
+      ]
+    },
+    {
+      "label": "sky-right-side",
+      "x0": 704,
+      "x1": 1254,
+      "y0": 0,
+      "y1": 111,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 550,
+          "ny": 111,
+          "sigmaPerPx": 1.008,
+          "colAmp": 0.0982,
+          "colExpectedFromNoise": 0.0957,
+          "ratioV": 1.03,
+          "rowAmp": 1.2729,
+          "rowExpectedFromNoise": 0.069,
+          "ratioH": 18.44
+        },
+        {
+          "ch": "G",
+          "nx": 550,
+          "ny": 111,
+          "sigmaPerPx": 0.952,
+          "colAmp": 0.0991,
+          "colExpectedFromNoise": 0.0904,
+          "ratioV": 1.1,
+          "rowAmp": 0.8092,
+          "rowExpectedFromNoise": 0.0531,
+          "ratioH": 15.24
+        },
+        {
+          "ch": "B",
+          "nx": 550,
+          "ny": 111,
+          "sigmaPerPx": 0.931,
+          "colAmp": 0.1107,
+          "colExpectedFromNoise": 0.0883,
+          "ratioV": 1.25,
+          "rowAmp": 0.3658,
+          "rowExpectedFromNoise": 0.0424,
+          "ratioH": 8.62
+        }
+      ]
+    },
+    {
+      "x0": 300,
+      "y0": 165,
+      "x1": 1000,
+      "y1": 275,
+      "label": "mainland",
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 700,
+          "ny": 110,
+          "sigmaPerPx": 1.095,
+          "colAmp": 0.556,
+          "colExpectedFromNoise": 0.1044,
+          "ratioV": 5.32,
+          "rowAmp": 0.3052,
+          "rowExpectedFromNoise": 0.0384,
+          "ratioH": 7.95
+        },
+        {
+          "ch": "G",
+          "nx": 700,
+          "ny": 110,
+          "sigmaPerPx": 1.281,
+          "colAmp": 0.8166,
+          "colExpectedFromNoise": 0.1221,
+          "ratioV": 6.69,
+          "rowAmp": 0.2702,
+          "rowExpectedFromNoise": 0.0375,
+          "ratioH": 7.21
+        },
+        {
+          "ch": "B",
+          "nx": 700,
+          "ny": 110,
+          "sigmaPerPx": 1.321,
+          "colAmp": 0.8665,
+          "colExpectedFromNoise": 0.1259,
+          "ratioV": 6.88,
+          "rowAmp": 0.2821,
+          "rowExpectedFromNoise": 0.038,
+          "ratioH": 7.42
+        }
+      ]
+    },
+    {
+      "x0": 100,
+      "y0": 400,
+      "x1": 1200,
+      "y1": 700,
+      "label": "foreground",
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 1100,
+          "ny": 300,
+          "sigmaPerPx": 10.662,
+          "colAmp": 1.2256,
+          "colExpectedFromNoise": 0.6156,
+          "ratioV": 1.99,
+          "rowAmp": 1.4785,
+          "rowExpectedFromNoise": 0.3516,
+          "ratioH": 4.21
+        },
+        {
+          "ch": "G",
+          "nx": 1100,
+          "ny": 300,
+          "sigmaPerPx": 6.795,
+          "colAmp": 0.6745,
+          "colExpectedFromNoise": 0.3923,
+          "ratioV": 1.72,
+          "rowAmp": 0.9706,
+          "rowExpectedFromNoise": 0.2208,
+          "ratioH": 4.4
+        },
+        {
+          "ch": "B",
+          "nx": 1100,
+          "ny": 300,
+          "sigmaPerPx": 6.109,
+          "colAmp": 0.4687,
+          "colExpectedFromNoise": 0.3527,
+          "ratioV": 1.33,
+          "rowAmp": 0.5218,
+          "rowExpectedFromNoise": 0.1922,
+          "ratioH": 2.72
+        }
+      ]
+    }
+  ]
+}

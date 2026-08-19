@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM — Lab Equipment Manager</title>
+<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<style>
+  .pane{overflow:auto}
+  main{flex:1;display:flex;flex-direction:column;justify-content:center;
+       align-items:center;gap:26px;padding:28px 18px 40px}
+  .lede{text-align:center;max-width:520px}
+  .lede h2{font-size:15px;margin-bottom:8px}
+  .lede p{color:var(--ink2);font-size:13px;line-height:1.6}
+
+  /* Two big targets, sized for a gloved thumb on a bench tablet. */
+  .modes{display:grid;grid-template-columns:1fr 1fr;gap:18px;width:100%;
+         max-width:760px}
+  .mode{display:flex;flex-direction:column;align-items:center;
+        justify-content:center;gap:12px;min-height:210px;padding:26px 18px;
+        background:linear-gradient(180deg,#151a22,#101319);
+        border:1px solid var(--edge);border-radius:18px;
+        color:var(--ink);text-decoration:none;text-align:center;
+        transition:border-color .14s,transform .14s}
+  .mode:hover,.mode:focus-visible{border-color:var(--amber);
+        transform:translateY(-2px);outline:none}
+  .mode svg{width:46px;height:46px;stroke:var(--ink2);stroke-width:1.4;
+            fill:none}
+  .mode:hover svg{stroke:var(--amber)}
+  .mode .nm{font-size:17px;font-weight:800;letter-spacing:.16em;
+            text-transform:uppercase}
+  .mode .sub{color:var(--ink2);font-size:12.5px;line-height:1.5;max-width:26ch}
+  .mode .tally{font-family:var(--mono);font-size:11.5px;color:var(--ink3)}
+  .mode .tally b{color:var(--amber)}
+  .side{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  footer{padding:0 14px 18px;text-align:center;color:var(--ink3);font-size:11px}
+
+  @media (max-width:760px){
+    .modes{grid-template-columns:1fr;max-width:none}
+    .mode{min-height:150px}
+    main{justify-content:flex-start;padding-top:18px}
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+  {% include '_nav.html' %}
+  <div class="pane">
+    <header class="bar">
+      <h1 class="sign">LEM <b>·</b> Lab Equipment Manager</h1>
+      <span class="spacer"></span>
+      <span class="who" id="who" hidden></span>
+      <button id="btnAuth" class="tool">Sign in</button>
+    </header>
+
+    <main>
+      <div class="lede">
+        <h2 class="sign">Choose a view</h2>
+        <p>Everything reads from LabCore, so whatever you pick is what the rest
+        of the lab is seeing.</p>
+      </div>
+
+      <div class="modes">
+        <a class="mode" href="/floor">
+          <svg viewBox="0 0 24 24" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/>
+            <path d="M9 4v13.5M15 6.5V20"/></svg>
+          <span class="nm">Map</span>
+          <span class="sub">The floor: every instrument, its QC, PM and
+          calibration.</span>
+          <span class="tally" id="tallyMap">&nbsp;</span>
+        </a>
+        <a class="mode" href="/checklists">
+          <svg viewBox="0 0 24 24" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 6h3M4 12h3M4 18h3"/>
+            <path d="M10.5 6H20M10.5 12H20M10.5 18H20"/></svg>
+          <span class="nm">Checklists</span>
+          <span class="sub">Opening and closing rounds.</span>
+          <span class="tally" id="tallyChk">&nbsp;</span>
+        </a>
+      </div>
+
+      <div class="side">
+        <a class="tool" href="/maintenance">PM &amp; calibration
+          <span id="tallyMaint"></span></a>
+        <a class="tool" href="/logs">Logs</a>
+      </div>
+    </main>
+
+    <footer id="foot">&nbsp;</footer>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let AUTHED = false, WHO = '';
+
+function paintWho() {
+  const who = $('#who');
+  who.hidden = !AUTHED;
+  who.innerHTML = AUTHED ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
+  $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
+  $('#btnAuth').classList.toggle('live', AUTHED);
+}
+
+// Counts on the tiles, so the selector is worth looking at rather than just a
+// doorway. Every fetch fails silently: the buttons must work with LabCore down.
+async function load() {
+  const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
+  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
+  paintWho();
+
+  const b = await LEM.get('/api/machines');
+  if (b && Array.isArray(b.machines)) {
+    const n = b.machines.length;
+    const bad = b.machines.filter(m => m.status === 'RED'
+                                    || m.status === 'DEAD-LINE').length;
+    $('#tallyMap').innerHTML = `${n} instrument${n === 1 ? '' : 's'}`
+      + (bad ? ` · <b>${bad} need attention</b>` : '');
+    if (b.labcore_online === false) {
+      $('#foot').textContent =
+        'LabCore is not reachable — showing what was last known.';
+    }
+  }
+  const cl = await LEM.get('/api/checklists');
+  if (cl && (cl.checklists || []).length) {
+    const t = cl.checklists.reduce((a, c) => ({checked: a.checked + c.checked,
+                                               total: a.total + c.total}),
+                                   {checked: 0, total: 0});
+    $('#tallyChk').innerHTML = t.total
+      ? `${t.checked}/${t.total} done today`
+        + (t.checked < t.total ? '' : ' ✓') : '&nbsp;';
+  }
+  const mt = await LEM.get('/api/maintenance');
+  if (mt && mt.due_count) {
+    $('#tallyMaint').innerHTML =
+      ` · <b style="color:var(--amber)">${mt.due_count} due</b>`;
+  }
+}
+
+$('#btnAuth').addEventListener('click', async () => {
+  if (AUTHED) {
+    await fetch('/api/logout', {method: 'POST'});
+    return load();
+  }
+  location.href = '/floor';        // the sign-in dialog lives there
+});
+
+load();
+</script>
+</body>
+</html>

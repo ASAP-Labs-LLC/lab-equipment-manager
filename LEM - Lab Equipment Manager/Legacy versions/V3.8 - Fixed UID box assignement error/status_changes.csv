@@ -1,0 +1,173 @@
+timestamp,box_uid,box_title,prev_status,new_status,reason
+2025-09-16T15:09:33,box_1679150166896,Flash,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-16T15:09:40,box_1679150166896,Flash,RED,GREEN,All watched tests are within expected ranges.
+2025-09-16T15:10:54,box_1679150166896,Flash,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-16T15:10:59,box_1679150166896,Flash,RED,GREEN,All watched tests are within expected ranges.
+2025-09-16T15:11:20,box_1679150166896,Flash,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-16T15:11:26,box_1679150166896,Flash,RED,GREEN,All watched tests are within expected ranges.
+2025-09-16T15:14:43,box_3081148503168,GC,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-16T15:17:41,box_3081148503168,GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-16T15:17:54,box_3081148503168,GC,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-16T15:18:36,box_3081148503168,GC,RED,GREEN,All watched tests are within expected ranges.
+2025-09-16T17:56:55,box_3081148503168,GC,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-16T17:57:45,box_3081148503168,GC,RED,GREEN,All watched tests are within expected ranges.
+2025-09-16T18:00:36,box_1679150166896,Flash,GREEN,SERVICE,Manual override: SERVICE
+2025-09-16T18:00:52,box_1679150166896,Flash,SERVICE,GREEN,All watched tests are within expected ranges.
+2025-09-16T18:03:52,box_3081148503168,GC,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-16T18:03:52,box_1679150166896,Flash,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-17T10:18:31,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:19:13,box_1870504625920,Multitek S,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:19:13,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:19:13,box_1870504625920,Multitek S,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:19:13,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:19:39,box_1870504625920,Multitek S,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:19:39,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:20:09,box_1870504625920,Multitek S,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:20:09,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:20:09,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:20:13,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:20:13,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:21:09,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:21:09,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:21:13,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:21:13,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:30:46,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:30:46,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:30:46,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:30:46,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:19,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:19,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:20,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:20,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:21,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:21,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:21,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:21,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:45,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:45,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:46,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:46,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:46,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:46,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:46,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:47,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:47,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:47,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:47,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:47,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:31:47,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:31:47,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:32:03,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:32:03,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:32:03,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:32:03,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:40:06,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:40:06,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:40:06,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:40:06,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:40:17,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:40:17,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:41:05,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:41:05,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:41:54,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:41:54,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:42:05,box_1870504625920,Autograbner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:42:05,box_1870504625920,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:42:21,box_2201765855296,PAC Flash 23,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:46:04,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:46:14,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:46:14,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:47:08,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:47:08,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:47:14,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:47:14,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:47:38,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:47:38,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:48:14,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:48:14,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:48:36,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:48:36,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:49:14,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:49:14,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:53:27,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:53:27,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:53:27,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:54:27,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:54:27,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T10:54:45,box_1840572087840,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T10:54:45,box_1840572087840,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:08:33,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:09:33,box_1840573738448,Mini Grabner,GREEN,RED,At least one watched test is out of spec or missing.
+2025-09-17T11:10:33,box_1840573738448,Mini Grabner,RED,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:12:55,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:12:55,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:13:09,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:13:09,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:13:09,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:13:10,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:13:10,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:13:10,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:13:33,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:13:33,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:13:39,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:13:39,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:13:39,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:13:39,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:14:30,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:14:30,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:14:39,box_2301728342368,OptiMPP 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T11:14:39,box_2301728342368,OptiMPP 2,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T11:49:27,box_2301728342368,Handheld API,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-17T12:37:27,box_2301728342368,Handheld API,RED,GREEN,All watched tests are within expected ranges.
+2025-09-17T12:39:06,box_2301728638432,Viscocity,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T13:04:39,box_1917701804464,Handheld Bio,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T13:42:01,box_1870507241056,Multitek NS,RED,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T13:57:01,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-17T16:25:02,box_1840573738448,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T16:25:02,box_2301728342368,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-17T16:25:02,box_1917701804464,Handheld Bio,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-18T09:23:10,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-18T09:32:10,box_1870507241056,Multitek NS,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-18T09:48:10,box_1870507241056,Multitek NS,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-18T13:02:13,box_2301728638432,Viscocity,GREEN,YELLOW,Last in-spec QC is stale.
+2025-09-18T16:01:14,box_1840573737440,Auto Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-09-18T19:18:15,box_1870504657248,Agilent GC,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-19T00:01:18,box_1840573733840,Multitek S,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-19T00:18:18,box_1870504657248,Agilent GC,RED,UNKNOWN,Insufficient data for one or more tests.
+2025-09-19T08:38:21,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-09-19T15:48:26,box_1870504657248,Agilent GC,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-20T11:21:35,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Last in-spec QC is stale.
+2025-09-20T11:23:35,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Last in-spec QC is stale.
+2025-09-20T11:52:36,box_1840573737440,Auto Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-09-22T08:21:57,box_2096856031904,PAC Flash 1,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-09-22T08:22:57,box_2201765855296,PAC Flash 2,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-09-22T08:53:57,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-22T09:32:58,box_2301728342368,Handheld API,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-22T09:37:58,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-22T09:38:58,box_1917701804464,Handheld Bio,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-22T09:47:58,box_1870504657248,Agilent GC,RED,UNKNOWN,Insufficient data for one or more tests.
+2025-09-22T10:17:58,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-22T11:06:58,box_175810797800001,OptiMPP 1,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-22T15:27:01,box_1870507241056,Multitek NS,RED,UNKNOWN,Insufficient data for one or more tests.
+2025-09-22T16:00:32,box_175810797800001,OptiMPP 1,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-22T16:47:02,box_1870507241056,Multitek NS,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-22T17:02:02,box_1840573738448,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-22T17:02:02,box_2301728342368,Handheld API,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-22T17:02:02,box_1917701804464,Handheld Bio,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-22T17:02:02,box_1916872666880,AQUAMAX Karl Fisher,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-23T00:04:05,box_1840573733840,Multitek S,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-23T00:18:05,box_1870504657248,Agilent GC,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-09-23T01:28:06,box_1870507241056,Multitek NS,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-23T01:28:06,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-23T01:28:06,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-09-23T01:28:06,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-23T01:28:06,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-09-23T01:28:06,box_175810797800001,OptiMPP 1,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-23T01:46:06,box_1870507241056,Multitek NS,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-23T01:46:06,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-23T01:46:06,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-09-23T01:46:06,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-09-23T01:46:06,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-09-23T01:46:06,box_175810797800001,OptiMPP 1,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-09-23T08:57:32,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-09-23T08:58:32,box_1870507241056,Multitek NS,RED,SERVICE,Manual override: SERVICE

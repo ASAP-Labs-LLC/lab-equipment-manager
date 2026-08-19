@@ -1,0 +1,29 @@
+{
+    "header": [
+        "Lab ID",
+        "Sulfur"
+    ],
+    "data": [
+        {
+            "action": "reorder",
+            "order": [
+                1,
+                2
+            ]
+        }
+    ],
+    "config_folder": "C:\\Users\\Mike Hunter\\csv_parser_configs\\Multitek S",
+    "machine_name": "Multitek S",
+    "parser_type": "multi",
+    "multi": {
+        "input": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Unparsed",
+        "move": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed",
+        "output": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed data",
+        "output_file": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed data\\Multitek S_parsed.csv",
+        "delimiter": ",",
+        "has_header": false
+    },
+    "update_interval": 10,
+    "lab_id_prompting": false,
+    "lab_id_column": 1
+}

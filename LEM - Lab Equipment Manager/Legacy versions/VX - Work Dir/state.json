@@ -1,0 +1,323 @@
+{
+  "last_updated": "2025-11-21T11:30:17",
+  "map_locked": false,
+  "poll_minutes": 1,
+  "sample_id_column": "Lab ID",
+  "boxes": [
+    {
+      "uid": "box_1870504657248",
+      "title": "Agilent GC",
+      "pos": [
+        320.0,
+        500.0
+      ],
+      "size": [
+        440.0,
+        220.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "IBP - D86: - C   \u00b15.56  [160.13, 171.25]",
+        "10% - D86: - C   \u00b12.24  [186.87, 191.35]",
+        "50% - D86: - C   \u00b12.24  [244.43, 248.91]",
+        "90% - D86: - C   \u00b13.8  [328.04, 335.64]",
+        "+1 more\u2026"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_1870507241056",
+      "title": "Multitek NS",
+      "pos": [
+        600.0,
+        600.0
+      ],
+      "size": [
+        200.0,
+        220.0
+      ],
+      "locked": false,
+      "manual_override": "SERVICE",
+      "status": "SERVICE",
+      "reason": "Manual override: SERVICE",
+      "lines": [
+        "Sulfur - D5453: - mg/kg   \u00b11.7  [7.3, 10.7]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_1870507241920",
+      "title": "Eraspec",
+      "pos": [
+        560.0,
+        340.0
+      ],
+      "size": [
+        220.0,
+        160.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "API Gravity D4052-22: - API   \u00b10.12  [42.67, 42.91]",
+        "IBP - D86: - C   \u00b15.56  [160.13, 171.25]",
+        "10% - D86: - C   \u00b12.24  [186.87, 191.35]",
+        "50% - D86: - C   \u00b12.24  [244.43, 248.91]",
+        "+2 more\u2026"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_2201765855296",
+      "title": "PAC Flash 2",
+      "pos": [
+        120.0,
+        180.0
+      ],
+      "size": [
+        140.0,
+        80.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Flash - D3828: - C   \u00b12.42  [58.3, 63.14]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_1840573737440",
+      "title": "Auto Grabner",
+      "pos": [
+        20.0,
+        340.0
+      ],
+      "size": [
+        180.0,
+        80.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "RED",
+      "reason": "At least one watched test is out of spec or missing.",
+      "lines": [
+        "Flash - D3828: 72 C \u2717  \u00b12.42  [58.3, 63.14]"
+      ],
+      "warnings": []
+    },
+    {
+      "uid": "box_1840573738448",
+      "title": "Mini Grabner",
+      "pos": [
+        280.0,
+        120.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Flash - D3828: - C   \u00b12.42  [58.3, 63.14]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_1840573733840",
+      "title": "Multitek S",
+      "pos": [
+        820.0,
+        600.0
+      ],
+      "size": [
+        200.0,
+        220.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Sulfur - D5453: - mg/kg   \u00b11.7  [7.3, 10.7]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_2096856031904",
+      "title": "PAC Flash 1",
+      "pos": [
+        120.0,
+        80.0
+      ],
+      "size": [
+        140.0,
+        80.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Flash - D3828: - C   \u00b12.42  [58.3, 63.14]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_2301728638432",
+      "title": "Viscocity",
+      "pos": [
+        380.0,
+        440.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Viscosity - D445: - mm2/s   \u00b10.0478  [2.1991, 2.2947]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_2301728342368",
+      "title": "Handheld API",
+      "pos": [
+        800.0,
+        280.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "API Gravity D4052-22: - API   \u00b10.12  [42.67, 42.91]"
+      ],
+      "warnings": []
+    },
+    {
+      "uid": "box_175810797800001",
+      "title": "OptiMPP 1",
+      "pos": [
+        800.0,
+        440.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Pour Point - D7346: - C   \u00b14.6  [-27.6, -18.4]",
+        "Cloud Point - D7689: - C   \u00b11.52  [-13.79, -10.75]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_175810797800002",
+      "title": "OptiMPP 2",
+      "pos": [
+        800.0,
+        360.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Pour Point - D7346: - C   \u00b14.6  [-27.6, -18.4]",
+        "Cloud Point - D7689: - C   \u00b11.52  [-13.79, -10.75]"
+      ],
+      "warnings": [
+        "No rows for sample 'AO24' and ID 'AO24'.",
+        "No rows for sample 'AO24' and ID 'AO24'."
+      ]
+    },
+    {
+      "uid": "box_2440659641856",
+      "title": "Machine",
+      "pos": [
+        280.0,
+        40.0
+      ],
+      "size": [
+        140.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "RED",
+      "reason": "At least one watched test is out of spec or missing.",
+      "lines": [
+        "(missing test)"
+      ],
+      "warnings": [
+        "Sample 'AJ25' not found."
+      ]
+    }
+  ],
+  "maintenance": {
+    "active": [],
+    "tasks": []
+  },
+  "theme_mode": "dark",
+  "ui_scale": 1.68,
+  "reports": {
+    "enabled": true,
+    "report_time": "00:01",
+    "last_report_date": "2025-11-21",
+    "report_dir": "\\\\ASAPServer\\Labsharedrive\\Ryan C\\EQM\\V4.3 - Unified Server Viewer\\reports_out"
+  }
+}

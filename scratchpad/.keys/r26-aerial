@@ -1,0 +1,4 @@
+A=reference
+B=ours
+ours=/tmp/dens.png
+ref=/Users/rynatical/LAB-lem/scratchpad/refs/tf2-08.jpg

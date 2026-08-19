@@ -1,0 +1,14 @@
+import {chromium} from 'playwright';
+const b = await chromium.launch({headless:true, channel:'chromium', args:['--use-angle=metal','--enable-unsafe-swiftshader']});
+const p = await b.newPage({viewport:{width:1280,height:720}});
+const lines=[];
+p.on('console', m => { const t=m.text(); if(/vegetation/.test(t)) lines.push(t.slice(0,400)); });
+p.on('pageerror', e => lines.push('PAGEERROR '+String(e).slice(0,300)));
+await p.goto('http://127.0.0.1:5601/static/world/dev/solo.html?mods=terrain,vegetation&cam=wide&time=16&hud=0&quality=ultra',{waitUntil:'load',timeout:90000});
+await p.waitForFunction(()=>window.__worldReady===true,null,{timeout:90000});
+await p.waitForTimeout(3500);
+const s = await p.evaluate(()=>{const v=window.__lemWorld.subsystems.get('vegetation');
+  let n=0; for(const x of v.sward) n+=x.count; let d=0; for(const x of v.sward) d+=x.mesh.count;
+  return {placed:n, drawn:d, stats:v._swardStats, meshes:v.sward.length, tier:v.tier};});
+await b.close();
+console.log(JSON.stringify(s,null,1)); console.log(lines.join('\n'));

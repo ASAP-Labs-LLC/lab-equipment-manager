@@ -1,0 +1,5 @@
+PyQt5
+fastapi
+uvicorn[standard]
+pydantic
+httpx

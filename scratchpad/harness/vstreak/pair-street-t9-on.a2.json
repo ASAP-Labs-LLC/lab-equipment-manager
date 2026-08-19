@@ -1,0 +1,481 @@
+{
+  "tag": "pair-street-t9-on",
+  "cam": "street",
+  "time": "9",
+  "pitchDeg": -3.438,
+  "fovDeg": 42,
+  "skyTopElevDeg": 24.44,
+  "skyRowsUsed": 225,
+  "skyRowRange": [
+    0,
+    224
+  ],
+  "medianSegmentWidth": 676,
+  "skyPixels": 207009,
+  "horizonRow": {
+    "min": 112,
+    "median": 252,
+    "max": 332
+  },
+  "rowRuns": {
+    "R": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 12,
+      "frac8": 0.00042,
+      "n": 156955
+    },
+    "G": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 10,
+      "frac8": 0.00043,
+      "n": 154800
+    },
+    "B": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 12,
+      "frac8": 0.00046,
+      "n": 148725
+    }
+  },
+  "colRuns": {
+    "R": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 10,
+      "frac8": 0.0002,
+      "n": 213674
+    },
+    "G": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 10,
+      "frac8": 0.00029,
+      "n": 209012
+    },
+    "B": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 11,
+      "frac8": 0.00043,
+      "n": 200457
+    }
+  },
+  "lumRowRuns": {
+    "med": 1,
+    "p90": 1,
+    "p99": 3,
+    "max": 7,
+    "frac8": 0,
+    "n": 188337
+  },
+  "lumColRuns": {
+    "med": 1,
+    "p90": 1,
+    "p99": 3,
+    "max": 7,
+    "frac8": 0,
+    "n": 256529
+  },
+  "budget": {
+    "R": {
+      "horizMedSpan": 18,
+      "horizMaxSpan": 65,
+      "vertMedSpan": 60,
+      "vertMaxSpan": 109
+    },
+    "G": {
+      "horizMedSpan": 16,
+      "horizMaxSpan": 30,
+      "vertMedSpan": 48,
+      "vertMaxSpan": 68
+    },
+    "B": {
+      "horizMedSpan": 12,
+      "horizMaxSpan": 15,
+      "vertMedSpan": 21,
+      "vertMaxSpan": 29
+    }
+  },
+  "qStepPredictionPx": {
+    "R": 71.1,
+    "G": 80,
+    "B": 106.7
+  },
+  "lutTexelPx": {
+    "centre": 23,
+    "edge": 33.7
+  },
+  "stepSizeHistogram": {
+    "R": {
+      "1": 87037,
+      "2": 48370,
+      "3": 18294,
+      "4": 2373,
+      "5": 35,
+      "6": 36,
+      "7": 33,
+      "8": 34,
+      "9": 18,
+      "10": 14,
+      "11": 14,
+      "12": 11,
+      "13": 17,
+      "14": 17,
+      "15": 21,
+      "16": 24,
+      "17": 24,
+      "18": 23,
+      "19": 21,
+      "20": 17,
+      "21": 14,
+      "22": 16,
+      "23": 13,
+      "24": 12,
+      "25": 16,
+      "26": 13,
+      "27": 9,
+      "28": 15,
+      "29": 19,
+      "30": 12,
+      "31": 7,
+      "32": 18,
+      "33": 9,
+      "34": 7,
+      "35": 15,
+      "36": 9,
+      "37": 9,
+      "38": 10,
+      "39": 16,
+      "40": 7,
+      "41": 3,
+      "42": 11,
+      "43": 4,
+      "44": 5,
+      "45": 8,
+      "46": 7,
+      "47": 4,
+      "48": 1,
+      "51": 1,
+      "52": 2,
+      "53": 1,
+      "54": 1,
+      "55": 1,
+      "60": 1,
+      "61": 1
+    },
+    "G": {
+      "1": 88247,
+      "2": 48005,
+      "3": 16242,
+      "4": 1629,
+      "5": 51,
+      "6": 56,
+      "7": 46,
+      "8": 42,
+      "9": 36,
+      "10": 29,
+      "11": 35,
+      "12": 25,
+      "13": 27,
+      "14": 29,
+      "15": 15,
+      "16": 15,
+      "17": 12,
+      "18": 13,
+      "19": 10,
+      "20": 6,
+      "21": 1,
+      "22": 2,
+      "23": 1,
+      "25": 1
+    },
+    "B": {
+      "1": 90826,
+      "2": 46975,
+      "3": 10436,
+      "4": 255,
+      "5": 8
+    }
+  },
+  "spectra": [
+    {
+      "row": 15,
+      "ch": "R",
+      "width": 1280,
+      "rmsCodes": 1.001,
+      "spectralFlatness": 0.5418,
+      "pctPower20to40px": 10.35,
+      "top": [
+        {
+          "period": 11.13,
+          "pctPower": 2.03
+        },
+        {
+          "period": 60.95,
+          "pctPower": 1.74
+        },
+        {
+          "period": 11.03,
+          "pctPower": 1.61
+        },
+        {
+          "period": 4.81,
+          "pctPower": 1.34
+        },
+        {
+          "period": 7.03,
+          "pctPower": 1.26
+        }
+      ]
+    },
+    {
+      "row": 15,
+      "ch": "G",
+      "width": 1280,
+      "rmsCodes": 1.023,
+      "spectralFlatness": 0.5452,
+      "pctPower20to40px": 12.05,
+      "top": [
+        {
+          "period": 11.13,
+          "pctPower": 3.38
+        },
+        {
+          "period": 11.03,
+          "pctPower": 2.88
+        },
+        {
+          "period": 8.71,
+          "pctPower": 1.67
+        },
+        {
+          "period": 5.38,
+          "pctPower": 1.6
+        },
+        {
+          "period": 22.07,
+          "pctPower": 1.6
+        }
+      ]
+    },
+    {
+      "row": 15,
+      "ch": "B",
+      "width": 1280,
+      "rmsCodes": 0.957,
+      "spectralFlatness": 0.536,
+      "pctPower20to40px": 11.52,
+      "top": [
+        {
+          "period": 60.95,
+          "pctPower": 1.63
+        },
+        {
+          "period": 9.48,
+          "pctPower": 1.56
+        },
+        {
+          "period": 8.26,
+          "pctPower": 1.48
+        },
+        {
+          "period": 9.77,
+          "pctPower": 1.24
+        },
+        {
+          "period": 22.07,
+          "pctPower": 1.22
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "ch": "R",
+      "width": 1280,
+      "rmsCodes": 1.011,
+      "spectralFlatness": 0.5602,
+      "pctPower20to40px": 14.19,
+      "top": [
+        {
+          "period": 24.62,
+          "pctPower": 1.59
+        },
+        {
+          "period": 4.04,
+          "pctPower": 1.53
+        },
+        {
+          "period": 5.54,
+          "pctPower": 1.47
+        },
+        {
+          "period": 8,
+          "pctPower": 1.43
+        },
+        {
+          "period": 8.77,
+          "pctPower": 1.42
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "ch": "G",
+      "width": 1280,
+      "rmsCodes": 1.009,
+      "spectralFlatness": 0.5614,
+      "pctPower20to40px": 11.48,
+      "top": [
+        {
+          "period": 11.03,
+          "pctPower": 1.83
+        },
+        {
+          "period": 4.04,
+          "pctPower": 1.45
+        },
+        {
+          "period": 24.62,
+          "pctPower": 1.42
+        },
+        {
+          "period": 5.54,
+          "pctPower": 1.35
+        },
+        {
+          "period": 8.83,
+          "pctPower": 1.34
+        }
+      ]
+    },
+    {
+      "row": 53,
+      "ch": "B",
+      "width": 1280,
+      "rmsCodes": 0.956,
+      "spectralFlatness": 0.5742,
+      "pctPower20to40px": 11.32,
+      "top": [
+        {
+          "period": 24.62,
+          "pctPower": 1.68
+        },
+        {
+          "period": 25.1,
+          "pctPower": 1.67
+        },
+        {
+          "period": 8.77,
+          "pctPower": 1.56
+        },
+        {
+          "period": 7.49,
+          "pctPower": 1.45
+        },
+        {
+          "period": 8.05,
+          "pctPower": 1.45
+        }
+      ]
+    },
+    {
+      "row": 90,
+      "ch": "R",
+      "width": 1280,
+      "rmsCodes": 1.031,
+      "spectralFlatness": 0.6125,
+      "pctPower20to40px": 8.99,
+      "top": [
+        {
+          "period": 11.03,
+          "pctPower": 2.94
+        },
+        {
+          "period": 11.13,
+          "pctPower": 1.78
+        },
+        {
+          "period": 7.8,
+          "pctPower": 1.62
+        },
+        {
+          "period": 4.38,
+          "pctPower": 1.41
+        },
+        {
+          "period": 4.57,
+          "pctPower": 1.28
+        }
+      ]
+    },
+    {
+      "row": 90,
+      "ch": "G",
+      "width": 1280,
+      "rmsCodes": 1.005,
+      "spectralFlatness": 0.6103,
+      "pctPower20to40px": 9.53,
+      "top": [
+        {
+          "period": 11.03,
+          "pctPower": 2.6
+        },
+        {
+          "period": 11.13,
+          "pctPower": 1.42
+        },
+        {
+          "period": 31.22,
+          "pctPower": 1.32
+        },
+        {
+          "period": 4.38,
+          "pctPower": 1.27
+        },
+        {
+          "period": 5.69,
+          "pctPower": 1.21
+        }
+      ]
+    },
+    {
+      "row": 90,
+      "ch": "B",
+      "width": 1280,
+      "rmsCodes": 0.938,
+      "spectralFlatness": 0.6384,
+      "pctPower20to40px": 9.68,
+      "top": [
+        {
+          "period": 4.27,
+          "pctPower": 1.82
+        },
+        {
+          "period": 5.71,
+          "pctPower": 1.61
+        },
+        {
+          "period": 5.69,
+          "pctPower": 1.48
+        },
+        {
+          "period": 11.03,
+          "pctPower": 1.46
+        },
+        {
+          "period": 16.41,
+          "pctPower": 1.4
+        }
+      ]
+    }
+  ]
+}

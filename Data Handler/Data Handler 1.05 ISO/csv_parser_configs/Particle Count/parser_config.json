@@ -1,0 +1,58 @@
+{
+    "data": [
+        {
+            "action": "reorder",
+            "order": [
+                1,
+                2,
+                3,
+                5,
+                6,
+                8,
+                10,
+                11,
+                12
+            ]
+        },
+        {
+            "action": "math_operations",
+            "operations": [
+                "C2 = round(C2 * 0.01, 0)",
+                "C3 = round(C3 * 0.01, 0)",
+                "C4 = round(C4 * 0.01, 0)",
+                "C5 = round(C5 * 0.01, 0)",
+                "C6 = round(C6 * 0.01, 0)",
+                "Particle Count = C1"
+            ]
+        },
+        {
+            "action": "remove",
+            "substring": "?"
+        }
+    ],
+    "machine_name": "Particle Count",
+    "parser_type": "single",
+    "config_folder": "C:\\Users\\Mike Hunter\\csv_parser_configs\\Particle Count",
+    "header": [
+        "Lab ID",
+        "<4",
+        "<6",
+        "<14",
+        "<21",
+        "<38",
+        "(ISO 2/4)",
+        "(ISO 5/6)",
+        "(ISO 15/14)",
+        "Particle Count"
+    ],
+    "update_interval": 10,
+    "single_csv": {
+        "input": "//asapserver/Labsharedrive/ASAP Lab Results/Particle Count/results.csv",
+        "output": "//asapserver/Labsharedrive/ASAP Lab Results/Particle Count/Parsed\\Particle Count_parsed.csv",
+        "delimiter": ",",
+        "last_position": 140283
+    },
+    "lab_id_prompting": false,
+    "lab_id_column": 1,
+    "apply_correction_factors": false
+}

@@ -1,0 +1,114 @@
+/*  ASAP Labs Dark Theme
+    Derived from the ASAP logo’s colors and a dark/black base background.
+    Main accent: Teal (#2dbcb7), secondary accent: Red (#f04d3f),
+    additional accent: Orange (#f9a602).
+*/
+
+/* General application background + text */
+QWidget {
+    background-color: #202020;  /* near black */
+    color: #EAEAEA;             /* soft off-white text */
+    font-family: "Segoe UI", "Arial", sans-serif;
+    selection-background-color: #2dbcb7; /* teal highlight for selected text */
+    selection-color: #202020;            /* dark text color while selected */
+}
+
+/* PushButtons, etc. */
+QPushButton {
+    background-color: #2dbcb7;  /* teal accent for normal button */
+    color: #202020;             /* dark text on teal background */
+    border: 1px solid #2dbcb7;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #37D2CB;  /* slightly brighter teal on hover */
+}
+QPushButton:pressed {
+    background-color: #25ABA5;  /* slightly darker teal when pressed */
+}
+
+/* A "danger" or destructive button (like a remove or critical action) */
+QPushButton#dangerButton {
+    background-color: #f04d3f;  /* red accent */
+    color: #FFFFFF;
+    border: 1px solid #f04d3f;
+}
+QPushButton#dangerButton:hover {
+    background-color: #f3695a;
+}
+QPushButton#dangerButton:pressed {
+    background-color: #c93f33;
+}
+
+/* Another accent (e.g., orange) for optional usage */
+QLabel#orangeAccent,
+QFrame#orangeAccent {
+    color: #f9a602;
+    /* or background, or border, etc. */
+}
+
+/* QLineEdit, QComboBox, QSpinBox, etc. */
+QLineEdit, QComboBox, QSpinBox, QTextEdit {
+    background-color: #2a2a2a;
+    border: 1px solid #3f3f3f;
+    color: #EAEAEA;
+    selection-background-color: #2dbcb7;
+    selection-color: #202020;
+}
+
+/* Scrollbars (optional) */
+QScrollBar:vertical {
+    background: #2a2a2a;
+    width: 12px;
+    margin: 0px;
+}
+QScrollBar::handle:vertical {
+    background: #3f3f3f; 
+}
+QScrollBar::handle:vertical:hover {
+    background: #5e5e5e;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    background: #2a2a2a;
+    border: none;
+}
+
+/* Menubar and menus */
+QMenuBar {
+    background-color: #2a2a2a;
+}
+QMenuBar::item {
+    background: transparent;
+    color: #EAEAEA;
+}
+QMenuBar::item:selected {
+    background: #3f3f3f;
+}
+QMenu {
+    background-color: #2a2a2a;
+    color: #EAEAEA;
+    border: 1px solid #3f3f3f;
+}
+QMenu::item:selected {
+    background-color: #2dbcb7;
+    color: #202020;
+}
+
+/* QTabWidget */
+QTabBar::tab {
+    background: #2a2a2a;
+    color: #EAEAEA;
+    padding: 6px;
+    margin: 2px;
+}
+QTabBar::tab:selected {
+    background-color: #2dbcb7;
+    color: #202020;
+    margin-bottom: -1px;
+}
+QTabBar::tab:hover {
+    background-color: #37D2CB;
+    color: #202020;
+}

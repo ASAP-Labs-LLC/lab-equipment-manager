@@ -1,0 +1,397 @@
+<title>LEM Floor · 3D build board</title>
+<style>
+  /* The lab's own palette, from lem.css — a graphite plant deck under sodium
+     lamps. This board is a dispatcher's panel for the build: every subsystem is
+     a block on the line, and its signal says whether the road is clear. */
+  :root{
+    --void:#08090c; --floor:#0e1116; --deck:#171b23; --edge:#252b36;
+    --ink:#e8eaef; --ink2:#8e97a8; --ink3:#5d6675;
+    --amber:#ff8a3d; --amber-dim:#7a4420; --brass:#d9a441;
+    --green:#21c071; --yellow:#f5c542; --red:#f85b5b;
+    --service:#a855f7; --unknown:#6b7280;
+    --rail:#3a444f;
+    --ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",ui-monospace,monospace;
+  }
+  /* Light: the same panel printed as a track chart on buff drawing paper. The
+     signal colours darken so they still carry on a pale ground. */
+  @media (prefers-color-scheme: light){
+    :root{
+      --void:#e8e2d6; --floor:#f2ede3; --deck:#fbf8f2; --edge:#cdc4b4;
+      --ink:#1c1e22; --ink2:#5b6068; --ink3:#8a8578;
+      --amber:#b8541a; --amber-dim:#e0c9b4; --brass:#8a6a1f;
+      --green:#137a45; --yellow:#9a7300; --red:#b8352f;
+      --service:#6d28b8; --unknown:#6f7480; --rail:#a49a88;
+    }
+  }
+  :root[data-theme="light"]{
+    --void:#e8e2d6; --floor:#f2ede3; --deck:#fbf8f2; --edge:#cdc4b4;
+    --ink:#1c1e22; --ink2:#5b6068; --ink3:#8a8578;
+    --amber:#b8541a; --amber-dim:#e0c9b4; --brass:#8a6a1f;
+    --green:#137a45; --yellow:#9a7300; --red:#b8352f;
+    --service:#6d28b8; --unknown:#6f7480; --rail:#a49a88;
+  }
+  :root[data-theme="dark"]{
+    --void:#08090c; --floor:#0e1116; --deck:#171b23; --edge:#252b36;
+    --ink:#e8eaef; --ink2:#8e97a8; --ink3:#5d6675;
+    --amber:#ff8a3d; --amber-dim:#7a4420; --brass:#d9a441;
+    --green:#21c071; --yellow:#f5c542; --red:#f85b5b;
+    --service:#a855f7; --unknown:#6b7280; --rail:#3a444f;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--void);color:var(--ink);font-family:var(--ui);
+       line-height:1.55;margin:0;padding:0 20px 80px}
+  .wrap{max-width:1060px;margin:0 auto}
+  .sign{font-weight:800;letter-spacing:.18em;text-transform:uppercase;
+        font-stretch:condensed;text-wrap:balance}
+  .cap{font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;
+       color:var(--ink3);font-weight:700}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ── masthead ── */
+  header{padding:44px 0 26px;border-bottom:1px solid var(--edge);
+         display:flex;flex-wrap:wrap;gap:22px;align-items:flex-end}
+  header .lead{flex:1 1 380px;min-width:0}
+  h1{font-size:clamp(24px,4.2vw,38px);margin:6px 0 10px;line-height:1.1}
+  h1 b{color:var(--amber);font-weight:800}
+  .sub{color:var(--ink2);font-size:14.5px;max-width:60ch}
+  .stamp{font-family:var(--mono);font-size:11px;color:var(--ink3);
+         text-align:right;white-space:nowrap}
+  .stamp b{color:var(--brass);display:block;font-size:19px;font-weight:700;
+           letter-spacing:.04em}
+
+  /* ── the bar ── */
+  .bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));
+       gap:1px;background:var(--edge);border:1px solid var(--edge);
+       border-radius:12px;overflow:hidden;margin:26px 0 34px}
+  .bar div{background:var(--deck);padding:15px 17px}
+  .bar .who{font-size:13.5px;font-weight:700;margin:5px 0 3px}
+  .bar .what{color:var(--ink2);font-size:12px;line-height:1.5}
+
+  /* ── the line: blocks hang off a running rail down the left ── */
+  h2{font-size:15px;margin:34px 0 4px}
+  .note{color:var(--ink2);font-size:13px;max-width:64ch;margin-bottom:20px}
+
+  .line{position:relative;padding-left:38px}
+  .line::before{content:"";position:absolute;left:11px;top:10px;bottom:10px;
+                width:2px;background:linear-gradient(180deg,
+                transparent,var(--rail) 6%,var(--rail) 94%,transparent)}
+  .block{position:relative;background:var(--deck);border:1px solid var(--edge);
+         border-radius:11px;padding:14px 17px;margin-bottom:9px;
+         display:grid;grid-template-columns:1fr auto;gap:6px 18px;
+         align-items:baseline}
+  /* The signal head sits on the rail, not on the card — it is the state of the
+     block, and a dispatcher reads the line, not the labels. */
+  .block::before{content:"";position:absolute;left:-32px;top:19px;
+                 width:11px;height:11px;border-radius:50%;
+                 background:var(--sig,var(--unknown));
+                 box-shadow:0 0 0 3px var(--void),0 0 12px var(--sig,transparent)}
+  .block h3{font-size:13.5px;font-weight:700;margin:0;letter-spacing:.01em}
+  .block .file{font-family:var(--mono);font-size:10.5px;color:var(--ink3)}
+  .block p{grid-column:1/-1;margin:2px 0 0;color:var(--ink2);font-size:12.5px}
+  .state{font-family:var(--mono);font-size:10px;letter-spacing:.14em;
+         text-transform:uppercase;font-weight:700;color:var(--sig,var(--ink3));
+         white-space:nowrap}
+  .clear{--sig:var(--green)}
+  .approach{--sig:var(--yellow)}
+  .working{--sig:var(--amber)}
+  .stop{--sig:var(--red)}
+  .dark{--sig:var(--unknown)}
+
+  /* ── budgets ── */
+  .gauges{display:grid;grid-template-columns:repeat(auto-fit,minmax(228px,1fr));
+          gap:12px;margin-top:18px}
+  .g{background:var(--deck);border:1px solid var(--edge);border-radius:11px;
+     padding:14px 16px}
+  .g .k{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .g .v{font-family:var(--mono);font-size:19px;font-weight:700;color:var(--ink)}
+  .g .lim{font-family:var(--mono);font-size:10.5px;color:var(--ink3)}
+  .g .track{height:5px;border-radius:3px;background:var(--edge);margin-top:11px;
+            overflow:hidden}
+  .g .fill{height:100%;border-radius:3px;background:var(--green)}
+  .g .fill.warn{background:var(--yellow)}
+  .g .fill.none{background:var(--ink3);opacity:.5}
+  .g .foot{font-size:11px;color:var(--ink2);margin-top:9px;line-height:1.45}
+
+  .caveat{border-left:2px solid var(--brass);padding:2px 0 2px 15px;
+          margin:26px 0 0;color:var(--ink2);font-size:12.5px;max-width:66ch}
+  .caveat b{color:var(--brass);font-weight:700}
+
+  footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--edge);
+         color:var(--ink3);font-size:11.5px;display:flex;flex-wrap:wrap;
+         gap:6px 20px;justify-content:space-between}
+  a{color:var(--amber)}
+  @media (max-width:560px){
+    .block{grid-template-columns:1fr}
+    header{padding-top:30px}
+    .stamp{text-align:left}
+  }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="lead">
+    <div class="cap">LEM Web Server · the floor</div>
+    <h1 class="sign">The map becomes <b>a working railway</b></h1>
+    <p class="sub">The lab floor was an SVG drawing: isometric boxes for
+    instruments, dots running down pipes when a parser parsed. It is a rendered
+    site now — procedural facilities in forest, real weather and global
+    illumination, and a petroleum working out to the LabCore terminal on every
+    parse. The second gauntlet judges behaviour rather than pictures: trains
+    that never touch, a railway that routes itself through any layout, and
+    ground that runs to the horizon without an edge.</p>
+  </div>
+  <div class="stamp">
+    <span class="cap">round</span>
+    <b>09</b>
+    6 Aug 2026
+  </div>
+</header>
+
+<section>
+  <div class="cap" style="margin-top:26px">The bar it is judged against</div>
+  <div class="bar">
+    <div>
+      <div class="cap">Lighting &amp; render</div>
+      <div class="who">After the Flood</div>
+      <div class="what">PlayCanvas. Same medium, same constraints — WebGL in a
+      browser, no install. Wet surfaces, sky, contact shadows.</div>
+    </div>
+    <div>
+      <div class="cap">Rail infrastructure</div>
+      <div class="who">Transport Fever 2</div>
+      <div class="what">Track, ballast, turnouts, yards, trackside clutter, and
+      trains running between buildings in forest.</div>
+    </div>
+    <div>
+      <div class="cap">Rolling stock</div>
+      <div class="who">Train Simulator</div>
+      <div class="what">Locomotive and petroleum tank-car detail, old and new.
+      It is a diesel lab, so the freight is tankers.</div>
+    </div>
+    <div>
+      <div class="cap">The measurable half</div>
+      <div class="who">60 fps · 1080p · integrated</div>
+      <div class="what">Under 3s to the first interactive frame. Under 8&nbsp;MB
+      transferred. No 2D fallback.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2 class="sign">The line</h2>
+  <p class="note">Each subsystem is one file with one owner, built and judged on
+  its own. A subsystem that fails to load is skipped and the map carries on
+  without it — the floor is a status display before it is a rendering.</p>
+
+  <div class="line">
+    <div class="block clear">
+      <h3>Engine, camera, materials</h3><span class="state">clear</span>
+      <span class="file">world/engine.js · camera.js · textures.js</span>
+      <p>Deferred-ish pipeline: HDR target, half-res horizon-based AO with a
+      depth-aware blur, bloom, ACES composite with grade and grain, FXAA. A
+      five-step quality ladder that walks itself down on a slow GPU. Every
+      texture is generated on the client — nothing is downloaded.</p>
+    </div>
+
+    <div class="block clear">
+      <h3>The page seam</h3><span class="state">clear</span>
+      <span class="file">templates/floor.html · static/world/index.js</span>
+      <p>430 lines of SVG renderer removed. <code class="num">drawFloor()</code>
+      and <code class="num">spawnBlip()</code> kept their names, so all eighteen
+      call sites still mean what they meant. Every rail, dialog, menu and poll on
+      the page is untouched. The 2D toggle is gone, not hidden.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Sky &amp; atmosphere</h3><span class="state">first draft</span>
+      <span class="file">world/sky.js</span>
+      <p>Scattering model, real dawn and dusk, cloud cover that thickens to
+      overcast, and the environment map everything else is lit by.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Global illumination</h3><span class="state">first draft</span>
+      <span class="file">world/gi.js</span>
+      <p>Fitted sun shadows plus an irradiance probe grid with ground bounce,
+      injected into materials so indirect light has a direction.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Terrain &amp; water</h3><span class="state">first draft</span>
+      <span class="file">world/terrain.js</span>
+      <p>A forested valley, level pads cut for each instrument, a graded rail
+      formation, splatted ground materials, and puddles that fill when it rains.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Station buildings</h3><span class="state">first draft</span>
+      <span class="file">world/buildings.js</span>
+      <p>One procedurally generated petroleum facility per instrument, stable
+      from its uid, plus the LabCore terminal every train runs to.</p>
+    </div>
+
+    <div class="block clear">
+      <h3>Railway</h3><span class="state">built</span>
+      <span class="file">world/rail.js</span>
+      <p>2117 lines, rebuilt from scratch against the track close-up reference: rail profile with a polished head, sleepers with per-sleeper variation, ballast shoulder, turnouts, signals, relay cabinets and platform canopies.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Trains</h3><span class="state">first draft</span>
+      <span class="file">world/trains.js</span>
+      <p>One parse, one train. Tank cars with placards and weathering behind a
+      first-generation or a modern diesel, chosen per instrument.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Forest</h3><span class="state">first draft</span>
+      <span class="file">world/vegetation.js</span>
+      <p>Instanced conifers and broadleaf, translucent backlit foliage, gusts
+      that travel across the map, undergrowth where the camera gets close.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Weather</h3><span class="state">first draft</span>
+      <span class="file">world/weather.js</span>
+      <p>A state machine that actually evolves: rain, storm, snow, valley fog,
+      lightning that lights the scene, and surfaces that dry slowly afterwards.</p>
+    </div>
+
+    <div class="block approach">
+      <h3>Status signage</h3><span class="state">first draft</span>
+      <span class="file">world/labels.js</span>
+      <p>The part that keeps this a status board. Name plates, a lit status band
+      readable across a room, QC/PM/CAL kept separate, hazard stripes and smoke
+      on a dead-lined instrument.</p>
+    </div>
+
+    <div class="block clear">
+      <h3>Reference capture</h3><span class="state">clear</span>
+      <span class="file">scratchpad/refs/</span>
+      <p>After the Flood screenshotted live; Transport Fever 2 and Train
+      Simulator stills collected, with a written breakdown of what actually
+      makes each one read as AAA.</p>
+    </div>
+
+    <div class="block working">
+      <h3>Blind critic rounds</h3><span class="state">round one running</span>
+      <span class="file">scratchpad/pairs/</span>
+      <p>Four pairs are out with a separate critic each: terrain, the site from the air, wet weather, and track close up. Both images normalised to one size and format, ordered by a hash of the round id, answer key held back. The critic returns a binary verdict and the one biggest gap.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2 class="sign">Budgets</h2>
+  <p class="note">Measured, not hoped. The harness screenshots the running world
+  and writes fps, draw calls, triangles, transferred bytes and console errors
+  beside every image.</p>
+  <div class="gauges">
+    <div class="g">
+      <div class="k"><span class="cap">Draw calls</span>
+        <span class="v">218<span class="lim"> / 450</span></span></div>
+      <div class="track"><div class="fill" style="width:48%"></div></div>
+      <div class="lim">377 on a shadow-redraw frame</div>
+      <div class="foot">The real floor page, all nine subsystems. The shadow
+      pass costs +158 draws, and only on frames that ask for a redraw.</div>
+    </div>
+    <div class="g">
+      <div class="k"><span class="cap">Triangles</span>
+        <span class="v">1.16<span class="lim">M / 2.5M</span></span></div>
+      <div class="track"><div class="fill" style="width:46%"></div></div>
+      <div class="lim">1.95M worst case, with shadows</div>
+      <div class="foot">Conservative geometry held even after the railway
+      landed with its sleepers, turnouts and signals.</div>
+    </div>
+    <div class="g">
+      <div class="k"><span class="cap">Transferred</span>
+        <span class="v">1.62<span class="lim"> MB</span></span></div>
+      <div class="track"><div class="fill" style="width:20%"></div></div>
+      <div class="lim">ceiling 8 MB</div>
+      <div class="foot">Every texture in the world is still generated on the
+      client. Nothing is downloaded.</div>
+    </div>
+    <div class="g">
+      <div class="k"><span class="cap">To first frame</span>
+        <span class="v">2.23<span class="lim"> s</span></span></div>
+      <div class="track"><div class="fill warn" style="width:74%"></div></div>
+      <div class="lim">ceiling 3 s · the real page, not the harness</div>
+      <div class="foot">The tightest of the four. Texture generation is
+      synchronous and happens once; there is not much room left.</div>
+    </div>
+  </div>
+
+  <h2 class="sign">The soak</h2>
+  <p class="note">The visual gauntlet judged pictures. This one judges
+  behaviour, because the faults Ryan reported are not things a screenshot shows.
+  500 parse events across ten machine layouts — the lab's real one, a rank, a
+  file, sparse scatter, and two instruments deliberately sharing one bay.</p>
+  <div class="line" style="margin-top:14px">
+    <div class="block clear">
+      <h3>Trains running into each other</h3><span class="state">0 / 500</span>
+      <span class="file">world/trains.js · rail.js</span>
+      <p>Block reservation on the OpenTTD model: a working may only enter track
+      it has reserved, and a reservation is refused rather than negotiated, so a
+      collision cannot happen rather than happening rarely. Baseline reproduced
+      the fault — slot 0 ran straight through slot 1 standing at the origin.</p>
+    </div>
+    <div class="block clear">
+      <h3>Trains going back through the railway</h3><span class="state">0 / 500</span>
+      <span class="file">world/trains.js</span>
+      <p>A return working takes the loop or the other road; it never retraces the
+      track it came up.</p>
+    </div>
+    <div class="block clear">
+      <h3>The massive lip at the map edge</h3><span class="state">0 faults</span>
+      <span class="file">world/terrain.js</span>
+      <p>The soak walks outward on eight bearings looking for a step no landscape
+      would have. It found them on every layout — 26 to 72 metres, at 400 to
+      1040 metres out. The height field is continuous to the horizon now.</p>
+    </div>
+    <div class="block clear">
+      <h3>Ground beneath every building</h3><span class="state">0 faults</span>
+      <span class="file">world/terrain.js · buildings.js</span>
+      <p>Every station's dock checked against the terrain height under it, in
+      all ten layouts.</p>
+    </div>
+    <div class="block clear">
+      <h3>A railway that makes sense anywhere</h3><span class="state">0 unreachable</span>
+      <span class="file">world/rail.js</span>
+      <p>Every station routable in every layout, including the sparse scatter and
+      the shared bay. A balloon loop turns the terminal, which is what real
+      petroleum unit trains use.</p>
+    </div>
+    <div class="block clear">
+      <h3>Re-organising the machines</h3><span class="state">shipped</span>
+      <span class="file">templates/floor.html · world/index.js</span>
+      <p>An Arrange mode that handles the shared lock for you, draws the bays on
+      the ground so you can see where a building will land, and lays the whole
+      floor out at once — Grid, Compact or Row. Positions save through the same
+      endpoint a drag uses.</p>
+    </div>
+    <div class="block approach">
+      <h3>Junction fouling</h3><span class="state">unchecked</span>
+      <span class="file">scratchpad/harness/soak.mjs</span>
+      <p>135,887 comparisons the harness could not make: two lines fouling each
+      other at a shared junction. Route objects expose no way to sample a point
+      in world space and the consist group sits at the origin. Counted and
+      reported rather than passed over quietly — a check that silently never
+      runs reads as a pass, which is how three earlier bugs survived.</p>
+    </div>
+  </div>
+
+  <p class="caveat"><b>One honest caveat about the fps number.</b> The machine
+  running this build has an M5 Max, not the Intel Iris Xe the target describes,
+  so raw frames per second here would flatter the result by roughly five to
+  eight times. The budgets above — draw calls, triangles, frame cost as a share
+  of 16.6 ms — are what actually gets held to, and they are the numbers a slower
+  GPU cares about. Real hardware verification needs a bench PC.</p>
+</section>
+
+<footer>
+  <span>Working folder · LAB-lem / LEM Web Server</span>
+  <span class="num">1031 server tests passing · 8 new · 2 red and waiting</span>
+</footer>
+</div>

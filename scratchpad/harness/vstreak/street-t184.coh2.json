@@ -1,0 +1,113 @@
+{
+  "tag": "street-t184",
+  "patches": [
+    {
+      "label": "sky-fullwidth",
+      "x0": 0,
+      "x1": 1280,
+      "y0": 0,
+      "y1": 215,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 1280,
+          "ny": 215,
+          "sigmaPerPx": 1.37,
+          "colD2rms": 0.1597,
+          "expectedV": 0.2289,
+          "ratioV": 0.7,
+          "colCoherentAmpCodes": 20.194,
+          "maxColStepCodes": 0.723,
+          "atX": 670,
+          "rowD2rms": 0.066,
+          "expectedH": 0.0788,
+          "ratioH": 0.84
+        },
+        {
+          "ch": "G",
+          "nx": 1280,
+          "ny": 215,
+          "sigmaPerPx": 1.106,
+          "colD2rms": 0.1598,
+          "expectedV": 0.1847,
+          "ratioV": 0.87,
+          "colCoherentAmpCodes": 13.165,
+          "maxColStepCodes": 0.427,
+          "atX": 670,
+          "rowD2rms": 0.0658,
+          "expectedH": 0.0705,
+          "ratioH": 0.93
+        },
+        {
+          "ch": "B",
+          "nx": 1280,
+          "ny": 215,
+          "sigmaPerPx": 0.988,
+          "colD2rms": 0.157,
+          "expectedV": 0.165,
+          "ratioV": 0.95,
+          "colCoherentAmpCodes": 10.548,
+          "maxColStepCodes": 0.416,
+          "atX": 1126,
+          "rowD2rms": 0.0659,
+          "expectedH": 0.0657,
+          "ratioH": 1
+        }
+      ]
+    },
+    {
+      "label": "sky-right-side",
+      "x0": 704,
+      "x1": 1254,
+      "y0": 0,
+      "y1": 215,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 550,
+          "ny": 215,
+          "sigmaPerPx": 1.053,
+          "colD2rms": 0.1569,
+          "expectedV": 0.1758,
+          "ratioV": 0.89,
+          "colCoherentAmpCodes": 4.973,
+          "maxColStepCodes": 0.491,
+          "atX": 768,
+          "rowD2rms": 0.1008,
+          "expectedH": 0.1052,
+          "ratioH": 0.96
+        },
+        {
+          "ch": "G",
+          "nx": 550,
+          "ny": 215,
+          "sigmaPerPx": 1.07,
+          "colD2rms": 0.1574,
+          "expectedV": 0.1787,
+          "ratioV": 0.88,
+          "colCoherentAmpCodes": 4.465,
+          "maxColStepCodes": 0.424,
+          "atX": 803,
+          "rowD2rms": 0.1009,
+          "expectedH": 0.1053,
+          "ratioH": 0.96
+        },
+        {
+          "ch": "B",
+          "nx": 550,
+          "ny": 215,
+          "sigmaPerPx": 1.031,
+          "colD2rms": 0.1549,
+          "expectedV": 0.1723,
+          "ratioV": 0.9,
+          "colCoherentAmpCodes": 3.58,
+          "maxColStepCodes": 0.416,
+          "atX": 1126,
+          "rowD2rms": 0.0995,
+          "expectedH": 0.1016,
+          "ratioH": 0.98
+        }
+      ]
+    }
+  ]
+}

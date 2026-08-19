@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM Stations — QC</title>
+<style>
+  :root {
+    --bg:#0f1115; --card:#171922; --edge:#262a36; --ink:#e9eaee; --ink2:#9aa0ad;
+    --green:#21c071; --yellow:#f5c542; --red:#f85b5b; --service:#8d99ae;
+    --dead:#0f172a; --unknown:#718096; --accent:#3d84f7;
+    --ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono","Cascadia Code",Consolas,monospace;
+  }
+  *{box-sizing:border-box;margin:0}
+  body{background:var(--bg);color:var(--ink);font-family:var(--ui);padding:24px}
+  .wrap{max-width:1180px;margin:0 auto}
+  header{display:flex;align-items:baseline;gap:14px;margin-bottom:4px;flex-wrap:wrap}
+  h1{font-size:22px;font-weight:800;letter-spacing:.4px}
+  .sub{color:var(--ink2);font-size:13px;margin-bottom:22px;line-height:1.5}
+  .pill{font-size:11px;padding:3px 9px;border-radius:20px;font-weight:700}
+  .on{background:rgba(33,192,113,.16);color:var(--green)}
+  .off{background:rgba(248,91,91,.16);color:var(--red)}
+  a.link{color:var(--accent);text-decoration:none;font-size:13px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--edge);border-radius:14px;padding:16px 16px 12px}
+  .card h2{font-size:17px;font-weight:800;letter-spacing:.6px;margin-bottom:8px}
+  .status{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:700;margin-bottom:8px}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .reason{color:var(--ink2);font-size:12px;line-height:1.5;margin-bottom:10px}
+  .meta{color:#6e7480;font-size:10.5px;font-variant-numeric:tabular-nums}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0 10px}
+  th{text-align:left;color:#6e7480;font-size:9.5px;letter-spacing:1px;
+     text-transform:uppercase;padding:4px 6px;border-bottom:1px solid var(--edge)}
+  td{padding:5px 6px;border-bottom:1px solid #1d2029;font-variant-numeric:tabular-nums}
+  td.mono{font-family:var(--mono);font-size:11.5px}
+  .none{color:#6e7480;font-size:12px;font-style:italic;padding:6px 0 10px}
+  button{background:#232734;color:#d7dae2;border:1px solid #313747;border-radius:8px;
+         font:600 12px var(--ui);padding:6px 12px;cursor:pointer}
+  button:hover{background:#2b3040;color:#fff}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.danger{color:#ffb4b4}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  dialog{background:var(--card);color:var(--ink);border:1px solid var(--edge);
+         border-radius:14px;padding:0;width:min(460px,94vw)}
+  dialog::backdrop{background:rgba(0,0,0,.6)}
+  .dlg-body{padding:16px;display:grid;grid-template-columns:auto 1fr;gap:10px 12px;align-items:center}
+  .dlg-body h3{grid-column:1/-1;font-size:15px;margin-bottom:2px}
+  .dlg-body label{color:var(--ink2);font-size:12px}
+  input,select{background:#0f1218;border:1px solid #313747;border-radius:7px;
+               color:var(--ink);padding:6px 9px;font:13px var(--ui);width:100%}
+  .dlg-foot{display:flex;justify-content:flex-end;gap:8px;padding:0 16px 16px}
+  .err{grid-column:1/-1;color:var(--red);font-size:12px;min-height:16px}
+  .hint{grid-column:1/-1;color:var(--ink2);font-size:11px;line-height:1.5}
+  .events{max-height:210px;overflow:auto;border:1px solid var(--edge);border-radius:8px;padding:4px 8px}
+  .ev{display:flex;gap:8px;font-size:11.5px;padding:3px 0;border-bottom:1px solid #1d2029}
+  .ev .k{font-weight:700;min-width:92px}
+  .ev .t{color:#6e7480;font-family:var(--mono);font-size:10.5px}
+  /* QC sample editor — laid out like the old LEM's Edit Sample modal */
+  dialog.wide{width:min(920px,96vw)}
+  .dlg-head{padding:14px 16px 0}
+  .dlg-head h3{font-size:16px}
+  .dlg-scroll{padding:10px 16px 6px;max-height:66vh;overflow:auto}
+  .two-up{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  label.fl{color:var(--ink2);font-size:11px;display:block;margin-bottom:4px}
+  .tgrid{display:grid;grid-template-columns:2.6fr 1fr 1fr .7fr 1fr 34px;
+         gap:6px;align-items:center}
+  .tgrid.thead{color:#6e7480;font-size:9.5px;letter-spacing:.8px;
+               text-transform:uppercase;margin-bottom:5px}
+  .trow{margin-bottom:6px}
+  .trow .assay{background:#0f1218;border:1px solid #313747;border-radius:7px;
+               padding:6px 9px;font-size:12px;overflow:hidden;
+               text-overflow:ellipsis;white-space:nowrap}
+  .assay-list{max-height:46vh;overflow:auto;border:1px solid var(--edge);
+              border-radius:8px;margin:10px 0 4px;padding:4px 2px}
+  .assay-list label{display:flex;gap:8px;align-items:center;padding:4px 8px;
+                    font-size:12.5px;cursor:pointer;border-radius:5px}
+  .assay-list label:hover{background:#1d2029}
+  .assay-list input{width:auto}
+  .dlg-foot{align-items:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>LEM Stations</h1>
+    <span id="online" class="pill off">LabCore…</span>
+    <a class="link" href="/">← Map dashboard</a>
+    <span style="flex:1"></span>
+    <span id="who" class="meta"></span>
+    <button id="loginBtn">Sign in</button>
+    <button id="refreshBtn">Refresh</button>
+  </header>
+  <p class="sub">Every machine below runs a LEM Station module in LabStation. They publish
+  their status and history here through LabCore, and read their <strong>QC specs</strong> from
+  this page — a machine with no specs stays <em>UNKNOWN</em> until you add one.</p>
+
+  <div class="card" style="margin-bottom:18px">
+    <div class="row" style="justify-content:space-between;align-items:baseline">
+      <h2 style="font-size:15px">QC samples — shared standards</h2>
+      <button id="addSample">Add QC sample</button>
+    </div>
+    <p class="reason" style="margin:6px 0 8px">Define a CRM once here: its Lab ID and
+    the tests it certifies. Stored in LabCore, so every station module pulls it and
+    <strong>detects QC on its own</strong> — run the standard on any machine and that
+    machine checks the tests it parses against these values.</p>
+    <div id="samples"></div>
+  </div>
+
+  <div id="grid" class="grid"></div>
+</div>
+
+<dialog id="sampleDlg" class="wide">
+  <div class="dlg-head"><h3 id="sampleHead">Edit QC Sample</h3></div>
+  <div class="dlg-scroll">
+    <div class="two-up">
+      <div><label class="fl">Name</label><input id="sName" placeholder="Cloud CRM"></div>
+      <div><label class="fl">Sample ID Value</label><input id="sLabId" placeholder="CP"></div>
+    </div>
+    <p class="hint" style="margin:8px 0 4px">The Sample ID is the Lab ID the standard runs
+    under — station modules detect QC by matching it against the print's Lab ID.</p>
+
+    <label class="fl" style="margin-top:12px;display:block">Tests Configuration</label>
+    <div class="tgrid thead">
+      <div>Assay (LabCore method)</div><div>Expected</div><div>StdDev</div>
+      <div>k</div><div>Units</div><div></div>
+    </div>
+    <div id="sampleTests"></div>
+    <button id="addTests" style="margin-top:8px">+ Add assays…</button>
+    <p class="err" id="sampleErr"></p>
+  </div>
+  <div class="dlg-foot">
+    <button class="danger" id="sampleDelete">Delete</button>
+    <span style="flex:1"></span>
+    <button id="sampleCancel">Cancel</button>
+    <button class="primary" id="sampleSave">Save</button>
+  </div>
+</dialog>
+
+<dialog id="assayDlg">
+  <div class="dlg-head"><h3>Select assays</h3></div>
+  <div style="padding:0 16px">
+    <input id="assayFilter" placeholder="Type to filter the 200+ LabCore methods…">
+    <div id="assayList" class="assay-list"></div>
+  </div>
+  <div class="dlg-foot">
+    <button id="assayCancel">Cancel</button>
+    <button class="primary" id="assayAdd">Add checked</button>
+  </div>
+</dialog>
+
+<dialog id="specDlg">
+  <form method="dialog" class="dlg-body" id="specForm">
+    <h3 id="specTitle">QC spec</h3>
+    <label>Test method</label>
+    <select id="fTest"></select>
+    <label>QC sample Lab ID</label>
+    <input id="fSample" placeholder="e.g. QC-CP-1">
+    <label>Expected</label>
+    <input id="fExpected" type="number" step="any" required>
+    <label>Std dev</label>
+    <input id="fStd" type="number" step="any" min="0" required>
+    <label>k</label>
+    <input id="fK" type="number" step="any" min="0.1" value="2">
+    <label>Units</label>
+    <input id="fUnits" placeholder="°C">
+    <p class="hint">Pass band is <code>expected ± k · std dev</code>. The station module
+    self-checks every time that QC sample runs on this machine.</p>
+    <p class="err" id="specErr"></p>
+  </form>
+  <div class="dlg-foot">
+    <button id="specCancel">Cancel</button>
+    <button class="primary" id="specSave">Save spec</button>
+  </div>
+</dialog>
+
+<dialog id="loginDlg">
+  <form method="dialog" class="dlg-body" id="loginForm">
+    <h3>Sign in</h3>
+    <label>Username</label>
+    <input id="fUser" autocomplete="username">
+    <label>Password</label>
+    <input id="fPw" type="password" autocomplete="current-password">
+    <p class="hint">Your LabCore account — the same login as LabStation and
+    the rest of the suite. NFC card: scan into either field and press Enter.</p>
+    <p class="err" id="loginErr"></p>
+  </form>
+  <div class="dlg-foot">
+    <button id="loginCancel">Cancel</button>
+    <button class="primary" id="loginGo">Sign in</button>
+  </div>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+let MACHINES = [], TESTS = [], SAMPLES = [], AUTHED = false, current = null;
+
+async function api(url, opts) {
+  const r = await fetch(url, opts);
+  let body = {};
+  try { body = await r.json(); } catch (e) {}
+  return { ok: r.ok, status: r.status, body };
+}
+
+async function load() {
+  const [m, t, me, s] = await Promise.all([
+    api('/api/machines'), api('/api/test-names'), api('/api/me'),
+    api('/api/qc-samples')
+  ]);
+  MACHINES = m.body.machines || [];
+  TESTS = t.body.tests || [];
+  SAMPLES = (s.body && s.body.samples) || [];
+  AUTHED = !!(me.body && me.body.authenticated);
+  $('#online').textContent = m.body.labcore_online ? 'LabCore online' : 'LabCore offline';
+  $('#online').className = 'pill ' + (m.body.labcore_online ? 'on' : 'off');
+  $('#who').textContent = AUTHED ? ('signed in as ' + (me.body.user || 'admin')) : '';
+  $('#loginBtn').textContent = AUTHED ? 'Sign out' : 'Sign in';
+  render();
+}
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function renderSamples() {
+  const box = $('#samples');
+  if (!SAMPLES.length) {
+    box.innerHTML = '<p class="none">No QC samples yet — machines stay UNKNOWN ' +
+      'until a standard they run is defined here.</p>';
+    return;
+  }
+  box.innerHTML = SAMPLES.map(s => `
+    <table>
+      <thead><tr>
+        <th style="width:26%">${esc(s.name)} <span style="color:var(--accent)">· ${esc(s.sample_id_val)}</span></th>
+        <th>Measures</th><th>Pass band</th>
+        <th style="width:1%"><button data-editsample="${esc(s.name)}">Edit</button></th>
+      </tr></thead>
+      <tbody>${(s.tests || []).map(t => `
+        <tr><td>${esc(t.name)}</td><td class="mono">${esc(t.value_col)}</td>
+        <td class="mono">${Number(t.low).toFixed(2)} … ${Number(t.high).toFixed(2)} ${esc(t.units || '')}</td>
+        <td></td></tr>`).join('') ||
+        '<tr><td colspan="4" class="none">No tests on this sample.</td></tr>'}
+      </tbody>
+    </table>`).join('');
+}
+
+function render() {
+  renderSamples();
+  const grid = $('#grid');
+  if (!MACHINES.length) {
+    grid.innerHTML = '<p class="none">No station modules have reported yet. ' +
+      'Add the LEM module to a machine\'s LabStation and let it poll once.</p>';
+    return;
+  }
+  grid.innerHTML = MACHINES.map(m => `
+    <div class="card">
+      <h2>${esc(m.title)}</h2>
+      <div class="status" style="color:${m.status_color}">
+        <span class="dot" style="background:${m.status_color}"></span>${esc(m.status)}
+      </div>
+      <div class="reason">${esc(m.reason)}</div>
+      <table>
+        <thead><tr><th>QC test</th><th>Sample</th><th>Pass band</th><th></th></tr></thead>
+        <tbody>${(m.qc_specs || []).map(s => `
+          <tr>
+            <td>${esc(s.test_name)}</td>
+            <td class="mono">${esc(s.sample_id) || '—'}</td>
+            <td class="mono">${(s.expected - s.k * s.std_dev).toFixed(2)} … ${(s.expected + s.k * s.std_dev).toFixed(2)} ${esc(s.units)}</td>
+            <td><button class="danger" data-del="${esc(m.machine_uid)}|${esc(s.test_name)}">×</button></td>
+          </tr>`).join('') || '<tr><td colspan="4" class="none">No QC specs — machine stays UNKNOWN.</td></tr>'}
+        </tbody>
+      </table>
+      <div class="row">
+        <button data-add="${esc(m.machine_uid)}">Add QC spec</button>
+        <button data-ev="${esc(m.machine_uid)}">History</button>
+        <button data-ovr="${esc(m.machine_uid)}|SERVICE">Service</button>
+        <button data-ovr="${esc(m.machine_uid)}|DEAD-LINE">Dead-line</button>
+        <button data-ovr="${esc(m.machine_uid)}|">Clear</button>
+        <span style="flex:1"></span>
+        <button class="danger" data-rm="${esc(m.machine_uid)}"
+                title="Retire this machine (clears status &amp; QC specs)">Delete</button>
+      </div>
+      <div class="events" id="ev-${esc(m.machine_uid)}" style="display:none"></div>
+      <div class="meta" style="margin-top:8px">updated ${esc((m.updated_at || '').slice(0, 19).replace('T', ' '))}</div>
+    </div>`).join('');
+}
+
+function requireAuth() {
+  if (!AUTHED) { $('#loginDlg').showModal(); return false; }
+  return true;
+}
+
+document.addEventListener('click', async (e) => {
+  const add = e.target.closest('[data-add]');
+  const del = e.target.closest('[data-del]');
+  const ev = e.target.closest('[data-ev]');
+  const ovr = e.target.closest('[data-ovr]');
+  if (add) {
+    if (!requireAuth()) return;
+    current = add.dataset.add;
+    const m = MACHINES.find(x => x.machine_uid === current);
+    $('#specTitle').textContent = 'QC spec — ' + (m ? m.title : current);
+    $('#fTest').innerHTML = TESTS.map(t => `<option>${esc(t)}</option>`).join('')
+      || '<option value="">(LabCore unreachable)</option>';
+    $('#specErr').textContent = '';
+    $('#specDlg').showModal();
+  }
+  if (del) {
+    if (!requireAuth()) return;
+    const [uid, test] = del.dataset.del.split('|');
+    await api('/api/qc-specs', {method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({machine_uid: uid, test_name: test})});
+    load();
+  }
+  if (ev) {
+    const box = $('#ev-' + ev.dataset.ev);
+    if (box.style.display === 'block') { box.style.display = 'none'; return; }
+    const r = await api('/api/machines/' + encodeURIComponent(ev.dataset.ev) + '/events?limit=40');
+    box.innerHTML = (r.body.events || []).map(x => `
+      <div class="ev"><span class="k">${esc(x.kind)}</span>
+        <span>${esc(x.lab_id || '')} ${esc(x.test_name || '')} ${esc(x.value || '')}</span>
+        <span style="flex:1"></span>
+        <span class="t">${esc((x.ts || '').slice(0, 19).replace('T', ' '))}</span></div>`).join('')
+      || '<p class="none">No events yet.</p>';
+    box.style.display = 'block';
+  }
+  const es = e.target.closest('[data-editsample]');
+  if (es) {
+    openSample(SAMPLES.find(s => s.name === es.dataset.editsample));
+  }
+  const rm = e.target.closest('[data-rm]');
+  if (rm) {
+    if (!requireAuth()) return;
+    const uid = rm.dataset.rm;
+    const m = MACHINES.find(x => x.machine_uid === uid);
+    const name = m ? m.title : uid;
+    if (!confirm(`Delete “${name}”?\n\nIts live status and QC specs are removed. ` +
+                 `If its station module is still running it will re-appear on ` +
+                 `the next poll.`)) return;
+    const purge = confirm('Also erase its history (runs, QC, comments) ' +
+                          'from the machine log?\n\nOK = erase, Cancel = keep.');
+    const r = await api('/api/machines/' + encodeURIComponent(uid),
+      {method: 'DELETE', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({purge_history: purge})});
+    if (!r.ok) alert((r.body && r.body.error) || 'Delete failed');
+    load();
+  }
+  if (ovr) {
+    if (!requireAuth()) return;
+    const [uid, mode] = ovr.dataset.ovr.split('|');
+    const comment = prompt(mode
+      ? `Comment is required to set this machine to ${mode}:`
+      : 'Comment is required to clear the override:');
+    if (comment === null || !comment.trim()) return;
+    const r = await api('/api/machines/' + encodeURIComponent(uid) + '/override',
+      {method: 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({override: mode, comment: comment.trim()})});
+    if (!r.ok) alert(r.body.error || 'Failed');
+    load();
+  }
+});
+
+// ── QC sample editor: many tests under one sample (old LEM's modal) ──
+let editingOriginalName = null;
+
+function addTestRow(t) {
+  const row = document.createElement('div');
+  row.className = 'tgrid trow';
+  const assay = (t && (t.value_col || t.name)) || '';
+  row.innerHTML = `
+    <div class="assay" title="${esc(assay)}" data-assay="${esc(assay)}">${esc(assay)}</div>
+    <input class="c-exp" type="number" step="any" value="${t ? t.expected : 0}">
+    <input class="c-sd"  type="number" step="any" min="0" value="${t ? t.std_dev : 0.5}">
+    <input class="c-k"   type="number" step="any" min="0.1" value="${t ? t.k : 2}">
+    <input class="c-un"  value="${t ? esc(t.units || '') : ''}" placeholder="°C">
+    <button class="danger" data-rmrow>✕</button>`;
+  $('#sampleTests').appendChild(row);
+}
+
+function collectTests() {
+  return [...document.querySelectorAll('#sampleTests .trow')].map(r => {
+    const assay = r.querySelector('.assay').dataset.assay;
+    return {name: assay, value_col: assay,
+            expected: parseFloat(r.querySelector('.c-exp').value || '0'),
+            std_dev: parseFloat(r.querySelector('.c-sd').value || '0'),
+            k: parseFloat(r.querySelector('.c-k').value || '2'),
+            units: r.querySelector('.c-un').value};
+  }).filter(t => t.name);
+}
+
+function openSample(sample) {
+  if (!requireAuth()) return;
+  editingOriginalName = sample ? sample.name : null;
+  $('#sampleHead').textContent = sample ? 'Edit QC Sample' : 'New QC Sample';
+  $('#sName').value = sample ? sample.name : '';
+  $('#sLabId').value = sample ? sample.sample_id_val : '';
+  $('#sampleTests').innerHTML = '';
+  (sample ? sample.tests || [] : []).forEach(addTestRow);
+  $('#sampleDelete').style.display = sample ? '' : 'none';
+  $('#sampleErr').textContent = '';
+  $('#sampleDlg').showModal();
+}
+
+$('#addSample').addEventListener('click', () => openSample(null));
+$('#sampleCancel').addEventListener('click', () => $('#sampleDlg').close());
+
+document.addEventListener('click', (e) => {
+  const rm = e.target.closest('[data-rmrow]');
+  if (rm) { e.preventDefault(); rm.closest('.trow').remove(); }
+});
+
+// Assay picker — checkbox list over LabCore's method library.
+function renderAssays(filter) {
+  const chosen = new Set([...document.querySelectorAll('#sampleTests .assay')]
+    .map(a => a.dataset.assay));
+  const needle = (filter || '').trim().toLowerCase();
+  $('#assayList').innerHTML = TESTS
+    .filter(t => !needle || t.toLowerCase().includes(needle))
+    .map(t => `<label><input type="checkbox" value="${esc(t)}"
+       ${chosen.has(t) ? 'checked disabled' : ''}>${esc(t)}</label>`).join('')
+    || '<p class="none" style="padding:8px">No methods match.</p>';
+}
+
+$('#addTests').addEventListener('click', () => {
+  $('#assayFilter').value = '';
+  renderAssays('');
+  $('#assayDlg').showModal();
+  $('#assayFilter').focus();
+});
+$('#assayFilter').addEventListener('input', e => renderAssays(e.target.value));
+$('#assayCancel').addEventListener('click', () => $('#assayDlg').close());
+$('#assayAdd').addEventListener('click', () => {
+  [...document.querySelectorAll('#assayList input:checked:not([disabled])')]
+    .forEach(cb => addTestRow({name: cb.value, value_col: cb.value,
+                               expected: 0, std_dev: 0.5, k: 2, units: ''}));
+  $('#assayDlg').close();
+});
+
+$('#sampleDelete').addEventListener('click', async () => {
+  if (!editingOriginalName) return;
+  if (!confirm(`Delete QC sample “${editingOriginalName}”? Machines that rely ` +
+               `on it will go UNKNOWN.`)) return;
+  await api('/api/qc-samples', {method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: editingOriginalName})});
+  $('#sampleDlg').close(); load();
+});
+
+$('#sampleSave').addEventListener('click', async () => {
+  const name = $('#sName').value.trim(), labId = $('#sLabId').value.trim();
+  if (!name || !labId) {
+    $('#sampleErr').textContent = 'Name and Sample ID Value are required.';
+    return;
+  }
+  const r = await api('/api/qc-samples', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, sample_id_val: labId, tests: collectTests()})});
+  if (!r.ok) {
+    $('#sampleErr').textContent = (r.body && r.body.error) || 'Could not save.';
+    return;
+  }
+  // Renaming a sample replaces it — drop the row stored under the old name.
+  if (editingOriginalName && editingOriginalName !== name) {
+    await api('/api/qc-samples', {method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: editingOriginalName})});
+  }
+  $('#sampleDlg').close(); load();
+});
+
+$('#specSave').addEventListener('click', async () => {
+  const r = await api('/api/qc-specs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      machine_uid: current,
+      test_name: $('#fTest').value,
+      sample_id: $('#fSample').value,
+      expected: parseFloat($('#fExpected').value),
+      std_dev: parseFloat($('#fStd').value),
+      k: parseFloat($('#fK').value || '2'),
+      units: $('#fUnits').value,
+    })});
+  if (!r.ok) { $('#specErr').textContent = r.body.error || 'Could not save.'; return; }
+  $('#specDlg').close(); load();
+});
+$('#specCancel').addEventListener('click', () => $('#specDlg').close());
+$('#loginCancel').addEventListener('click', () => $('#loginDlg').close());
+
+async function doLogin() {
+  const r = await api('/api/login', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username: $('#fUser').value,
+                          password: $('#fPw').value})});
+  if (!r.ok) {
+    $('#loginErr').textContent = (r.body && r.body.error) || 'Sign-in failed.';
+    return;
+  }
+  $('#fPw').value = ''; $('#loginErr').textContent = '';
+  $('#loginDlg').close(); load();
+}
+$('#loginGo').addEventListener('click', doLogin);
+// NFC readers "type" the card code then press Enter in whichever field has focus.
+$('#loginForm').addEventListener('submit', (e) => { e.preventDefault(); doLogin(); });
+
+$('#loginBtn').addEventListener('click', async () => {
+  if (AUTHED) { await api('/api/logout', {method: 'POST'}); load(); }
+  else $('#loginDlg').showModal();
+});
+$('#refreshBtn').addEventListener('click', load);
+
+load();
+setInterval(load, 30000);
+</script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+Checklist,Item,User,Time,Checked
+Closing,Ensure all overnight and automated tests are running,ryan,16:28,True
+Closing,Check the Master Log for pending or unresolved items,ryan,16:28,True
+Closing,Move all samples tested today into retain,ryan,16:28,True
+Closing,Clean out KF vessels with methanol and set to dry,ryan,16:28,True
+Closing,Move all glassware to the prep station,ryan,16:28,True
+Closing,Rinse used glassware with acetone,ryan,16:28,True
+Closing,Load and run the dishwasher,ryan,16:28,True
+Closing,Clean and reset each station for the next day,ryan,16:28,True
+Closing,Replace and properly dispose of soiled absorbent pads,ryan,16:28,True
+Closing,Restock Kimwipes,ryan,16:28,True
+Closing,Place Eraspec filters in Ultrasonic bath,ryan,16:28,True
+Closing,Refill ASTM QC samples,ryan,16:28,True
+Closing,Clean syringes with methanol,ryan,16:28,True
+Closing,Refill all cleaning solvents,ryan,16:29,True
+Closing,Take out trash,ryan,16:31,True
+Closing,Empty all full waste containers (Check all 4),ryan,16:30,True
+Closing,"Ensure main waste container is sealed, clean, and leak-free",ryan,16:31,True
+Closing,Check gas levels,ryan,16:32,True
+Closing,Vacuum the lab,ryan,16:29,True
+Closing,Turn off all fume hoods,ryan,16:29,True
+Closing,Auto Grabner,ryan,16:29,True
+Closing,Eraspec,ryan,16:29,True
+Closing,Copper Bath,ryan,16:29,True
+Closing,Thermal Bath,ryan,16:30,True
+Closing,Visual camera and lights,ryan,16:30,True
+Closing,Water & Sed camera and lights,ryan,16:30,True
+Closing,Particle Counter,ryan,16:30,True
+Closing,Colorimeter,ryan,16:30,True
+Closing,Color Machine,ryan,16:30,True
+Closing,Scale,ryan,16:30,True
+Closing,Viscosity,ryan,16:30,True
+Closing,FBT,ryan,16:30,True
+Closing,Turn off all lab lights,ryan,16:32,False
+Opening,Power on fans & Ventilation Systems,ryan,14:52,True
+Opening,Check and Record Gas Levels (Replace if under 300 PSI),kejuan,08:24,True
+Opening,Put away dry glassware ,kejuan,08:07,True
+Opening,"Empty Dishwasher, put away, or set to dry",kejuan,08:24,True
+Opening,Empty Ultrasonic Cleaner (if still wet set to dry),kejuan,08:46,True
+Opening,Verify that all parser instances are still running,kejuan,09:15,True
+Opening,Check Equipment Manager (EQM) to see that all nightly testing machines were in spec,kejuan,08:50,True
+Opening,Check Master Spreadsheet to see that all nightly testing was completed.,kejuan,08:52,True
+Opening,Sulfur (Solvent: Toluene),kejuan,09:16,True
+Opening,GC (Solvent: Acetone),kejuan,09:16,True
+Opening,Cloud and Pour,kejuan,08:57,True
+Opening,Create Karl Fisher Vessel and precondition them,kejuan,09:40,True
+Opening,Run QC on the following Machines and verify their resutls on the EQM,ryan,09:39,True
+Opening,Eraspec,ryan,09:39,True
+Opening,Flash Machines,kejuan,09:47,True
+Opening,Sulfur Machines,kejuan,09:47,True
+Opening,GC,kejuan,09:47,True

@@ -1,0 +1,483 @@
+{
+  "version": 1,
+  "boxes": {
+    "box_1870507241056": {
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek NS/Parsed Data/Multitek NS_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T09:00:02",
+      "latest_match_time": "2026-01-08T09:00:02",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-11-25T16:05:57",
+      "watch_signature": [
+        "AJ25::Sulfur - D5453"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Sulfur - D5453",
+          "latest_value": 8.643,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:00:02",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1840573737440": {
+      "box_uid": "box_1840573737440",
+      "box_title": "Auto Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Auto Grabner/Auto Grabner_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T09:05:25",
+      "latest_match_time": "2026-01-08T09:05:25",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-11-26T09:56:53",
+      "watch_signature": [
+        "AJ25::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828",
+          "latest_value": 58.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:05:25",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2096856031904": {
+      "box_uid": "box_2096856031904",
+      "box_title": "PAC Flash 1",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 1/Pac Flash 1_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T08:40:12",
+      "latest_match_time": "2026-01-08T08:40:12",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-01T08:21:52",
+      "watch_signature": [
+        "AJ25::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828",
+          "latest_value": 55.5,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T08:40:12",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1834023730592": {
+      "box_uid": "box_1834023730592",
+      "box_title": "AQUAMAX KF",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/KF Results/KF Results.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T11:14:02",
+      "latest_match_time": "2026-01-08T11:14:02",
+      "used_parsed": false,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-01T10:32:54",
+      "watch_signature": [
+        "AJ25::KF - D6304"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "KF - D6304",
+          "latest_value": 46.92,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T11:14:02",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_2332332582384": {
+      "box_uid": "box_2332332582384",
+      "box_title": "BenchTop Bio",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Bio Results/Bio Results.csv",
+      "status": "UNKNOWN",
+      "reason": "Missing data for: QC, TESTING",
+      "last_good_qc": null,
+      "latest_match_time": "2025-11-12T17:45:34",
+      "used_parsed": false,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-11-12T17:45:34",
+      "watch_signature": [
+        "SetaCheck 5%::Bio - D7371"
+      ],
+      "results": [
+        {
+          "sample": "SetaCheck 5%",
+          "test": "Bio - D7371",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No numeric value in 'Bio'.",
+          "latest_time": "2025-11-12T17:45:34",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_2201765855296": {
+      "box_uid": "box_2201765855296",
+      "box_title": "PAC Flash 2",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 2/Pac Flash 2_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T08:41:24",
+      "latest_match_time": "2026-01-08T08:41:24",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-02T08:42:32",
+      "watch_signature": [
+        "AJ25::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828",
+          "latest_value": 57.5,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T08:41:24",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1840573738448": {
+      "box_uid": "box_1840573738448",
+      "box_title": "Mini Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Flash Results.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T11:12:30",
+      "latest_match_time": "2026-01-08T11:12:30",
+      "used_parsed": false,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-02T08:48:59",
+      "watch_signature": [
+        "AJ25::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828",
+          "latest_value": 57.8,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T11:12:30",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_1840573733840": {
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed data/Multitek S_parsed.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2026-01-07T08:36:03",
+      "latest_match_time": "2026-01-07T08:36:03",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-02T17:32:55",
+      "watch_signature": [
+        "AJ25::Sulfur - D5453"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Sulfur - D5453",
+          "latest_value": 9.912,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T08:36:03",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2301728638432": {
+      "box_uid": "box_2301728638432",
+      "box_title": "Viscocity",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Viscosity - Kin Results/Viscosity - Kin Results.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-01-08T10:57:27",
+      "latest_match_time": "2026-01-08T10:57:27",
+      "used_parsed": false,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-19T10:53:55",
+      "watch_signature": [
+        "AJ25::Viscosity - D445"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "Viscosity - D445",
+          "latest_value": 2.392,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T10:57:27",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_2301728342368": {
+      "box_uid": "box_2301728342368",
+      "box_title": "Handheld API",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/API Results/API Results.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2025-12-23T11:25:55",
+      "latest_match_time": "2025-12-23T11:25:55",
+      "used_parsed": false,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2025-12-19T17:12:07",
+      "watch_signature": [
+        "AJ25::API Gravity D4052-22"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "API Gravity D4052-22",
+          "latest_value": 37.3,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-12-23T11:25:55",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_1765996407293": {
+      "box_uid": "box_1765996407293",
+      "box_title": "Eraspec NIR",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Eraspec NIR/eraspec nir_parsed.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2026-01-06T09:57:58",
+      "latest_match_time": "2026-01-06T09:57:58",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2026-01-06T09:55:58",
+      "watch_signature": [
+        "AJ24::10% - D86",
+        "AJ24::50% - D86",
+        "AJ24::90% - D86",
+        "AJ24::API Gravity D4052-22",
+        "AJ24::FBP - D86",
+        "AJ24::IBP - D86"
+      ],
+      "results": [
+        {
+          "sample": "AJ24",
+          "test": "API Gravity D4052-22",
+          "latest_value": 37.13,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-06T09:57:58",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "IBP - D86",
+          "latest_value": 180.83,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-06T09:57:58",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "10% - D86",
+          "latest_value": 211.93,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-06T09:57:58",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "50% - D86",
+          "latest_value": 262.62,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-06T09:57:58",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "90% - D86",
+          "latest_value": 328.16,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-06T09:57:58",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "FBP - D86",
+          "latest_value": 357.46,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-06T09:57:58",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1870507241920": {
+      "box_uid": "box_1870507241920",
+      "box_title": "Eraspec",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Eraspec/Eraspec_parsed.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2026-01-07T09:35:21",
+      "latest_match_time": "2026-01-07T09:35:21",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2026-01-06T09:56:34",
+      "watch_signature": [
+        "AJ24::10% - D86",
+        "AJ24::50% - D86",
+        "AJ24::90% - D86",
+        "AJ24::API Gravity D4052-22",
+        "AJ24::FBP - D86",
+        "AJ24::IBP - D86"
+      ],
+      "results": [
+        {
+          "sample": "AJ24",
+          "test": "API Gravity D4052-22",
+          "latest_value": 37.25,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T09:35:21",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "IBP - D86",
+          "latest_value": 180.8,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T09:35:21",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "10% - D86",
+          "latest_value": 211.9,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T09:35:21",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "50% - D86",
+          "latest_value": 262.6,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T09:35:21",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "90% - D86",
+          "latest_value": 328.2,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T09:35:21",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ24",
+          "test": "FBP - D86",
+          "latest_value": 357.5,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-07T09:35:21",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1870504657248": {
+      "box_uid": "box_1870504657248",
+      "box_title": "Agilent GC",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/GC Results/Parsed/Gas Chromatograph_parsed.csv",
+      "status": "RED",
+      "reason": "Critical issues in: PM",
+      "last_good_qc": "2026-01-08T09:57:43",
+      "latest_match_time": "2026-01-08T09:57:43",
+      "used_parsed": true,
+      "cached_at": "2026-01-08T11:33:59",
+      "first_seen": "2026-01-07T16:57:38",
+      "watch_signature": [
+        "AJ25::10% - D86",
+        "AJ25::50% - D86",
+        "AJ25::90% - D86",
+        "AJ25::FBP - D86",
+        "AJ25::IBP - D86"
+      ],
+      "results": [
+        {
+          "sample": "AJ25",
+          "test": "IBP - D86",
+          "latest_value": 161.97,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:57:43",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ25",
+          "test": "10% - D86",
+          "latest_value": 197.71,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:57:43",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ25",
+          "test": "50% - D86",
+          "latest_value": 258.7,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:57:43",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ25",
+          "test": "90% - D86",
+          "latest_value": 324.58,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:57:43",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "AJ25",
+          "test": "FBP - D86",
+          "latest_value": 355.36,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-01-08T09:57:43",
+          "timestamp_source": "parsed"
+        }
+      ]
+    }
+  }
+}

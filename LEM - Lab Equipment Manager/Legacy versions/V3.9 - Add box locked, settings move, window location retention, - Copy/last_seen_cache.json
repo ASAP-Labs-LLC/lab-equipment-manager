@@ -1,0 +1,291 @@
+{
+  "version": 1,
+  "boxes": {
+    "box_1870504657248": {
+      "box_uid": "box_1870504657248",
+      "box_title": "Agilent GC",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/GC Results/Parsed/Gas Chromatograph_parsed.csv",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "last_good_qc": "2025-10-16T13:51:48",
+      "latest_match_time": "2025-10-16T13:51:48",
+      "used_parsed": true,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-09T16:13:43",
+      "watch_signature": [
+        "AO24::90% - D86"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "90% - D86",
+          "latest_value": 333.39,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-16T13:51:48",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1870507241056": {
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek NS/Parsed Data/Multitek NS_parsed.csv",
+      "status": "YELLOW",
+      "reason": "Last in-spec QC is stale.",
+      "last_good_qc": "2025-10-14T17:38:12",
+      "latest_match_time": "2025-10-14T17:38:12",
+      "used_parsed": true,
+      "cached_at": "2025-10-16T13:57:10",
+      "first_seen": "2025-10-09T19:52:11",
+      "watch_signature": [
+        "AO24::Sulfur - D5453"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Sulfur - D5453",
+          "latest_value": 9.532,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-14T17:38:12",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2201765855296": {
+      "box_uid": "box_2201765855296",
+      "box_title": "PAC Flash 2",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 2/Pac Flash 2_parsed.csv",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "last_good_qc": "2025-10-16T09:19:57",
+      "latest_match_time": "2025-10-16T09:19:57",
+      "used_parsed": true,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T08:25:49",
+      "watch_signature": [
+        "AO24::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Flash - D3828",
+          "latest_value": 61.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-16T09:19:57",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1840573737440": {
+      "box_uid": "box_1840573737440",
+      "box_title": "Auto Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Auto Grabner/Auto Grabner_parsed.csv",
+      "status": "YELLOW",
+      "reason": "Last in-spec QC is stale.",
+      "last_good_qc": "2025-10-15T10:04:14",
+      "latest_match_time": "2025-10-15T10:04:14",
+      "used_parsed": true,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-09T08:37:57",
+      "watch_signature": [
+        "AO24::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Flash - D3828",
+          "latest_value": 60.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-15T10:04:14",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1840573738448": {
+      "box_uid": "box_1840573738448",
+      "box_title": "Mini Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Flash Results.csv",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "last_good_qc": "2025-10-16T09:00:42",
+      "latest_match_time": "2025-10-16T09:00:42",
+      "used_parsed": false,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T15:35:44",
+      "watch_signature": [
+        "AO24::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Flash - D3828",
+          "latest_value": 59.8,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-16T09:00:42",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_1840573733840": {
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed data/Multitek S_parsed.csv",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "last_good_qc": "2025-10-16T08:49:38",
+      "latest_match_time": "2025-10-16T08:49:38",
+      "used_parsed": true,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-09T16:03:19",
+      "watch_signature": [
+        "AO24::Sulfur - D5453"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Sulfur - D5453",
+          "latest_value": 10.687,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-16T08:49:38",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2096856031904": {
+      "box_uid": "box_2096856031904",
+      "box_title": "PAC Flash 1",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 1/Pac Flash 1_parsed.csv",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "last_good_qc": "2025-10-16T09:19:58",
+      "latest_match_time": "2025-10-16T09:19:58",
+      "used_parsed": true,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T08:24:30",
+      "watch_signature": [
+        "AO24::Flash - D3828"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Flash - D3828",
+          "latest_value": 59.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-16T09:19:58",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2301728638432": {
+      "box_uid": "box_2301728638432",
+      "box_title": "Viscocity",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Viscosity - Kin Results/Viscosity - Kin Results.csv",
+      "status": "YELLOW",
+      "reason": "Last in-spec QC is stale.",
+      "last_good_qc": "2025-10-13T18:31:20",
+      "latest_match_time": "2025-10-13T18:31:20",
+      "used_parsed": false,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T17:01:22",
+      "watch_signature": [
+        "AO24::Viscosity - D445"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "Viscosity - D445",
+          "latest_value": 2.282,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-13T18:31:20",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_2301728342368": {
+      "box_uid": "box_2301728342368",
+      "box_title": "Handheld API",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/API Results/API Results.csv",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "last_good_qc": null,
+      "latest_match_time": "2025-10-16T09:36:59",
+      "used_parsed": false,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T16:14:10",
+      "watch_signature": [
+        "AO24::API Gravity D4052-22"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "API Gravity D4052-22",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No numeric value in 'API'.",
+          "latest_time": "2025-10-16T09:36:59",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_2332332582384": {
+      "box_uid": "box_2332332582384",
+      "box_title": "BenchTop Bio",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Bio Results/Bio Results.csv",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "last_good_qc": null,
+      "latest_match_time": "2025-10-16T09:40:16",
+      "used_parsed": false,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T16:19:53",
+      "watch_signature": [
+        "SetaCheck 5%::Bio - D7371"
+      ],
+      "results": [
+        {
+          "sample": "SetaCheck 5%",
+          "test": "Bio - D7371",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No numeric value in 'Bio'.",
+          "latest_time": "2025-10-16T09:40:16",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_1834023730592": {
+      "box_uid": "box_1834023730592",
+      "box_title": "AQUAMAX KF",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/KF Results/KF Results.csv",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "last_good_qc": "2025-10-16T11:02:21",
+      "latest_match_time": "2025-10-16T11:02:21",
+      "used_parsed": false,
+      "cached_at": "2025-10-16T13:56:41",
+      "first_seen": "2025-10-10T15:55:22",
+      "watch_signature": [
+        "AO24::KF - D6304"
+      ],
+      "results": [
+        {
+          "sample": "AO24",
+          "test": "KF - D6304",
+          "latest_value": 19.09,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2025-10-16T11:02:21",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM Floor · live build board</title>
+<style>
+  /* The lab's own palette, from lem.css — a graphite plant deck under sodium
+     lamps. A dispatcher's panel for the build: work is a block on the line and
+     its signal says whether the road is clear. */
+  :root{
+    --void:#08090c; --floor:#0e1116; --deck:#171b23; --edge:#252b36;
+    --ink:#e8eaef; --ink2:#8e97a8; --ink3:#5d6675;
+    --amber:#ff8a3d; --brass:#d9a441;
+    --green:#21c071; --yellow:#f5c542; --red:#f85b5b; --unknown:#6b7280;
+    --rail:#3a444f;
+    --ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --mono:"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",ui-monospace,monospace;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--void);color:var(--ink);font-family:var(--ui);
+       line-height:1.5;margin:0;padding:0 18px 60px}
+  .wrap{max-width:1180px;margin:0 auto}
+  .sign{font-weight:800;letter-spacing:.16em;text-transform:uppercase;
+        font-stretch:condensed}
+  .cap{font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;
+       color:var(--ink3);font-weight:700}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  header{padding:26px 0 18px;border-bottom:1px solid var(--edge);
+         display:flex;flex-wrap:wrap;gap:18px;align-items:center}
+  h1{font-size:19px;margin:0;flex:1 1 auto}
+  h1 b{color:var(--amber)}
+  .beat{display:flex;align-items:center;gap:8px;font-family:var(--mono);
+        font-size:11px;color:var(--ink3)}
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--green);
+       box-shadow:0 0 10px var(--green)}
+  .dot.stale{background:var(--yellow);box-shadow:0 0 10px var(--yellow)}
+  .dot.dead{background:var(--red);box-shadow:0 0 10px var(--red)}
+  @media (prefers-reduced-motion:no-preference){
+    .dot.live{animation:pulse 1.9s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  }
+
+  h2{font-size:13px;margin:26px 0 10px;color:var(--ink2)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));
+        gap:11px}
+  .card{background:var(--deck);border:1px solid var(--edge);border-radius:11px;
+        padding:13px 15px}
+  .card .k{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+  .card .v{font-family:var(--mono);font-size:21px;font-weight:700}
+  .card .foot{font-size:11px;color:var(--ink2);margin-top:7px;line-height:1.45}
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:var(--yellow)}
+
+  .line{position:relative;padding-left:34px;margin-top:8px}
+  .line::before{content:"";position:absolute;left:10px;top:8px;bottom:8px;
+    width:2px;background:linear-gradient(180deg,transparent,var(--rail) 6%,
+    var(--rail) 94%,transparent)}
+  .block{position:relative;background:var(--deck);border:1px solid var(--edge);
+    border-radius:10px;padding:11px 14px;margin-bottom:8px;
+    display:grid;grid-template-columns:1fr auto;gap:5px 16px;align-items:baseline}
+  .block::before{content:"";position:absolute;left:-29px;top:16px;width:10px;
+    height:10px;border-radius:50%;background:var(--sig,var(--unknown));
+    box-shadow:0 0 0 3px var(--void),0 0 11px var(--sig,transparent)}
+  .block.run{--sig:var(--amber)} .block.done{--sig:var(--green)}
+  .block h3{font-size:13px;margin:0;font-weight:700}
+  .block .st{font-family:var(--mono);font-size:10px;letter-spacing:.12em;
+    text-transform:uppercase;font-weight:700;color:var(--sig,var(--ink3));
+    white-space:nowrap}
+  .block .who{grid-column:1/-1;font-family:var(--mono);font-size:10.5px;
+    color:var(--ink3);word-break:break-word}
+  .chips{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:5px;margin-top:3px}
+  .chip{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:20px;
+        border:1px solid var(--edge);color:var(--ink2)}
+
+  .shots{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));
+         gap:11px}
+  .shot{background:var(--deck);border:1px solid var(--edge);border-radius:11px;
+        overflow:hidden}
+  .shot img{width:100%;display:block;background:#000}
+  .shot .m{padding:8px 11px;font-family:var(--mono);font-size:10.5px;
+           color:var(--ink3);display:flex;justify-content:space-between;gap:10px}
+  .notes li{margin-bottom:7px;color:var(--ink2);font-size:12.5px}
+  .notes b{color:var(--ink)}
+  .faults{font-family:var(--mono);font-size:11px;color:var(--red);
+          margin-top:8px;white-space:pre-wrap}
+  footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--edge);
+         color:var(--ink3);font-size:11px}
+  a{color:var(--amber)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1 class="sign">LEM floor · <b>live build board</b></h1>
+  <div class="beat"><span class="dot live" id="dot"></span>
+    <span id="beat">connecting…</span></div>
+</header>
+
+<h2 class="sign">Now</h2>
+<div class="grid" id="cards"></div>
+
+<h2 class="sign">Agents</h2>
+<div class="line" id="runs"></div>
+
+<h2 class="sign">Latest frames</h2>
+<div class="shots" id="shots"></div>
+
+<h2 class="sign">What has happened</h2>
+<ul class="notes" id="notes"></ul>
+
+<footer>
+  Rebuilt from disk every few seconds — workflow journals, soak results and the
+  screenshot sidecars. Nothing here is typed by hand except the commentary.
+</footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let lastGood = 0;
+
+async function tick() {
+  try {
+    const r = await fetch('status.json?t=' + Date.now(), {cache: 'no-store'});
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    lastGood = Date.now();
+  } catch (e) {
+    /* The board going quiet is itself information — say so rather than
+       leaving the last frame up looking current. */
+  }
+  const age = (Date.now() - lastGood) / 1000;
+  const dot = $('#dot');
+  dot.className = 'dot live' + (lastGood === 0 ? ' dead'
+    : age > 25 ? ' dead' : age > 12 ? ' stale' : '');
+  if (lastGood && age > 12) $('#beat').textContent =
+    `no update for ${Math.round(age)}s`;
+}
+
+function render(s) {
+  $('#beat').textContent = s.at;
+
+  const soak = s.soak, sum = soak && soak.summary || {};
+  const card = (label, value, cls, foot) =>
+    `<div class="card"><div class="k"><span class="cap">${esc(label)}</span>
+      <span class="v ${cls || ''}">${esc(value)}</span></div>
+      ${foot ? `<div class="foot">${foot}</div>` : ''}</div>`;
+
+  const cards = [];
+  cards.push(card('Agents running', s.agentsRunning,
+    s.agentsRunning ? 'warn' : 'ok',
+    s.agentsRunning ? 'builders and critics at work' : 'nothing in flight'));
+  if (soak) {
+    cards.push(card('Soak', soak.pass ? 'PASS' : 'FAIL',
+      soak.pass ? 'ok' : 'bad',
+      `${sum.parses || 0} parses · ${sum.layouts || 0} layouts · ${esc(soak.at)}`));
+    cards.push(card('Collisions', sum.collision ?? '—',
+      sum.collision ? 'bad' : 'ok',
+      'two workings in one place'));
+    cards.push(card('Map edge', sum.edge ?? '—',
+      sum.edge ? 'bad' : 'ok', 'steps in the ground at the boundary'));
+    const st = soak.stats || {};
+    if (st.junctionChecked !== undefined) {
+      cards.push(card('Junction checks', (st.junctionChecked || 0).toLocaleString(),
+        st.junctionUnchecked ? 'warn' : 'ok',
+        st.junctionUnchecked
+          ? `${st.junctionUnchecked.toLocaleString()} could not be made`
+          : 'all comparisons made'));
+    }
+  }
+  $('#cards').innerHTML = cards.join('');
+
+  $('#runs').innerHTML = (s.runs || []).map(r => `
+    <div class="block ${r.running ? 'run' : 'done'}">
+      <h3>${esc(r.title || r.id)}</h3>
+      <span class="st">${r.running ? r.running + ' running' : 'done'}</span>
+      <span class="who">${esc(r.id)} · ${r.done}/${r.started} agents finished</span>
+      ${r.labels && r.labels.length
+        ? `<div class="chips">${r.labels.map(l => `<span class="chip">${esc(l)}</span>`).join('')}</div>`
+        : ''}
+    </div>`).join('') || '<p class="cap">no workflow runs found</p>';
+
+  $('#shots').innerHTML = (s.shots || []).map(sh => `
+    <div class="shot">
+      <img src="shots/${encodeURIComponent(sh.name)}?t=${Date.now()}" alt="${esc(sh.name)}" loading="lazy">
+      <div class="m"><span>${esc(sh.name)}</span><span>${
+        sh.meta && sh.meta.draws !== undefined
+          ? `${sh.meta.draws} draws · ${Math.round((sh.meta.tris || 0) / 1000)}k tris`
+          : ''} ${esc(sh.at)}</span></div>
+    </div>`).join('') || '<p class="cap">no screenshots yet</p>';
+
+  $('#notes').innerHTML = (s.notes || []).map(n =>
+    `<li><b>${esc(n.when || '')}</b> ${esc(n.text || '')}</li>`).join('')
+    || '<li class="cap">nothing recorded yet</li>';
+
+  if (soak && !soak.pass) {
+    const f = [...(soak.faults || []), ...(soak.structure || [])]
+      .map(x => `${x.kind}: ${x.detail}`).slice(0, 6).join('\n');
+    if (f) $('#cards').insertAdjacentHTML('afterend',
+      `<div class="faults">${esc(f)}</div>`);
+  }
+}
+
+tick();
+setInterval(tick, 4000);
+</script>
+</body>
+</html>

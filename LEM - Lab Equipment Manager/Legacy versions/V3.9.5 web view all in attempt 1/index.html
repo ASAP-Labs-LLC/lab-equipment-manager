@@ -1,0 +1,1484 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Lab Manager Web</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #1e293b;
+            --panel-border: rgba(255, 255, 255, 0.08);
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-hover: #0ea5e9;
+            --danger: #ef4444;
+            --success: #10b981;
+            --warn: #f59e0b;
+            --grid-line: rgba(255, 255, 255, 0.03);
+            --card-bg: rgba(255, 255, 255, 0.03);
+            --modal-overlay: rgba(0, 0, 0, 0.7);
+        }
+
+        * {
+            box-sizing: border-box;
+            outline: none;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Space Grotesk", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        /* Layout */
+        header {
+            height: 60px;
+            display: flex;
+            align-items: center;
+            padding: 0 1.5rem;
+            background: rgba(15, 23, 42, 0.9);
+            border-bottom: 1px solid var(--panel-border);
+            backdrop-filter: blur(8px);
+            z-index: 10;
+            gap: 1rem;
+            flex-shrink: 0;
+        }
+
+        .brand {
+            font-weight: 700;
+            font-size: 1.2rem;
+            letter-spacing: -0.02em;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            color: #fff;
+        }
+
+        .spacer {
+            flex: 1;
+        }
+
+        main {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Sidebar */
+        aside {
+            width: 320px;
+            background: var(--panel);
+            border-right: 1px solid var(--panel-border);
+            display: flex;
+            flex-direction: column;
+            z-index: 20;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        aside.collapsed {
+            transform: translateX(-100%);
+            position: absolute;
+            height: 100%;
+        }
+
+        aside.expanded {
+            width: 100%;
+            position: absolute;
+            height: 100%;
+        }
+
+        .tabs {
+            display: flex;
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        .tab {
+            flex: 1;
+            padding: 1rem;
+            text-align: center;
+            cursor: pointer;
+            color: var(--text-muted);
+            font-weight: 500;
+            transition: all 0.2s;
+            border-bottom: 2px solid transparent;
+        }
+
+        .tab:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.02);
+        }
+
+        .tab.active {
+            color: var(--accent);
+            border-bottom-color: var(--accent);
+        }
+
+        .tab-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        /* Expanded Sidebar Styles */
+        aside.expanded .grid-view {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+
+        aside.expanded .card {
+            height: 100%;
+        }
+
+        /* Map Area */
+        .map-container {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            background: #0b1120;
+            cursor: grab;
+        }
+
+        .map-container:active {
+            cursor: grabbing;
+        }
+
+        .map-layer {
+            position: absolute;
+            transform-origin: 0 0;
+            will-change: transform;
+        }
+
+        /* Grid */
+        .grid-bg {
+            position: absolute;
+            top: -5000px;
+            left: -5000px;
+            width: 10000px;
+            height: 10000px;
+            pointer-events: none;
+            background-image: linear-gradient(var(--grid-line) 1px, transparent 1px), linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        /* Components */
+        .btn {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--panel-border);
+            background: var(--card-bg);
+            color: var(--text);
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.9rem;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn.primary {
+            background: var(--accent);
+            color: #0f172a;
+            border-color: transparent;
+            font-weight: 600;
+        }
+
+        .btn.primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn.danger {
+            color: var(--danger);
+            border-color: rgba(239, 68, 68, 0.3);
+        }
+
+        .btn.danger:hover {
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .btn.sm {
+            padding: 0.3rem 0.6rem;
+            font-size: 0.8rem;
+        }
+
+        .btn.icon {
+            padding: 0.5rem;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .card h3 {
+            margin: 0 0 0.5rem 0;
+            font-size: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Machine Node */
+        .machine-node {
+            position: absolute;
+            background: var(--panel);
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: box-shadow 0.2s;
+        }
+
+        .machine-node.selected {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.3);
+        }
+
+        .machine-header {
+            padding: 0.6rem 0.8rem;
+            background: rgba(0, 0, 0, 0.2);
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .machine-body {
+            padding: 0.6rem 0.8rem;
+            font-size: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+            overflow: hidden;
+        }
+
+        .machine-node.small .machine-body .results {
+            display: none;
+        }
+
+        .machine-node.small .machine-body .reason {
+            display: none;
+        }
+
+        .machine-node.tiny .machine-body {
+            display: none;
+        }
+
+        .machine-node.tiny .machine-header {
+            padding: 0.3rem 0.5rem;
+            font-size: 0.8rem;
+        }
+
+        .machine-node.tiny .badge {
+            display: none;
+        }
+
+        .resize-handle {
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            width: 16px;
+            height: 16px;
+            cursor: se-resize;
+            background: linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.3) 50%);
+            display: none;
+            z-index: 10;
+        }
+
+        .machine-node.unlocked .resize-handle {
+            display: block;
+        }
+
+        .machine-node.unlocked {
+            cursor: move;
+        }
+
+        .machine-node.unlocked .machine-header {
+            cursor: move;
+        }
+
+        .result-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.2rem 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+        }
+
+        .result-row:last-child {
+            border-bottom: none;
+        }
+
+        .result-val {
+            font-family: "JetBrains Mono", monospace;
+            font-weight: 600;
+        }
+
+        .badge {
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+
+        th {
+            text-align: left;
+            padding: 0.5rem;
+            color: var(--text-muted);
+            font-weight: 500;
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        td {
+            padding: 0.5rem;
+            border-bottom: 1px solid var(--panel-border);
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        /* Forms */
+        .form-group {
+            margin-bottom: 1rem;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 0.4rem;
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+
+        input,
+        select,
+        textarea {
+            width: 100%;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--panel-border);
+            padding: 0.6rem;
+            border-radius: 6px;
+            color: var(--text);
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+
+        input:focus,
+        select:focus,
+        textarea:focus {
+            border-color: var(--accent);
+        }
+
+        /* Dynamic List Editor */
+        .dynamic-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .dynamic-row {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .dynamic-row input,
+        .dynamic-row select {
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* Modals */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--modal-overlay);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s;
+            backdrop-filter: blur(4px);
+        }
+
+        .modal-backdrop.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .modal {
+            background: var(--panel);
+            width: 90%;
+            max-width: 800px;
+            max-height: 90vh;
+            border-radius: 12px;
+            border: 1px solid var(--panel-border);
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            transform: translateY(20px);
+            transition: transform 0.2s;
+        }
+
+        .modal-backdrop.open .modal {
+            transform: translateY(0);
+        }
+
+        .modal-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--panel-border);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h2 {
+            margin: 0;
+            font-size: 1.2rem;
+        }
+
+        .modal-body {
+            padding: 1.5rem;
+            overflow-y: auto;
+        }
+
+        .modal-footer {
+            padding: 1rem 1.5rem;
+            border-top: 1px solid var(--panel-border);
+            display: flex;
+            justify-content: flex-end;
+            gap: 0.8rem;
+            background: rgba(0, 0, 0, 0.1);
+            border-radius: 0 0 12px 12px;
+        }
+
+        /* Utilities */
+        .flex {
+            display: flex;
+            gap: 0.5rem;
+            align-items: center;
+        }
+
+        .flex-col {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .text-sm {
+            font-size: 0.85rem;
+        }
+
+        .text-mono {
+            font-family: "JetBrains Mono", monospace;
+        }
+
+        .muted {
+            color: var(--text-muted);
+        }
+
+        .scroll {
+            overflow: auto;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+    </style>
+</head>
+
+<body>
+    <header>
+        <div class="brand">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 3v18h18" />
+                <path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3" />
+            </svg>
+            Lab Manager
+        </div>
+        <div class="badge" id="auth-badge" style="background: rgba(255,255,255,0.1);">Viewer</div>
+        <div class="spacer"></div>
+        <div class="flex">
+            <span class="text-sm muted" id="last-updated">--</span>
+            <button class="btn sm" onclick="app.refresh()" title="Refresh Data">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6" />
+                    <path d="M1 20v-6h6" />
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10" />
+                    <path d="M1 14l4.64 4.36A9 9 0 0 1 20.49 15" />
+                </svg>
+            </button>
+            <button class="btn sm" id="login-btn" onclick="app.login()">Login</button>
+            <button class="btn sm hidden" id="logout-btn" onclick="app.logout()">Logout</button>
+            <button class="btn sm" onclick="app.toggleSettings()" title="Settings">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3" />
+                    <path
+                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                </svg>
+            </button>
+        </div>
+    </header>
+
+    <div style="display: flex; flex: 1; overflow: hidden;">
+        <aside id="sidebar">
+            <div class="tabs">
+                <div class="tab active" onclick="app.switchTab('status')">Status</div>
+                <div class="tab" onclick="app.switchTab('machines')">Machines</div>
+                <div class="tab" onclick="app.switchTab('maintenance')">Maint.</div>
+                <div class="tab" style="flex:0; padding: 1rem 0.5rem;" onclick="app.toggleExpand()"
+                    title="Expand/Collapse">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M15 3h6v6" />
+                        <path d="M9 21H3v-6" />
+                        <path d="M21 3l-7 7" />
+                        <path d="M3 21l7-7" />
+                    </svg>
+                </div>
+            </div>
+
+            <div id="tab-status" class="tab-content active">
+                <div class="flex-col" id="status-list"></div>
+            </div>
+
+            <div id="tab-machines" class="tab-content">
+                <div class="flex" style="margin-bottom: 1rem; justify-content: space-between;">
+                    <h3 style="margin:0">Configured</h3>
+                    <button class="btn sm primary" onclick="app.editMachine()">+ Add</button>
+                </div>
+                <div class="flex-col" id="machine-list"></div>
+                <hr style="border:0; border-top:1px solid var(--panel-border); margin: 1.5rem 0;">
+                <div class="flex" style="margin-bottom: 1rem; justify-content: space-between;">
+                    <h3 style="margin:0">Samples</h3>
+                    <button class="btn sm primary" onclick="app.editSample()">+ Add</button>
+                </div>
+                <div class="flex-col" id="sample-list"></div>
+            </div>
+
+            <div id="tab-maintenance" class="tab-content">
+                <div class="flex" style="margin-bottom: 1rem; justify-content: space-between;">
+                    <h3 style="margin:0">Tasks</h3>
+                    <button class="btn sm primary" onclick="app.editTask()">+ New</button>
+                </div>
+                <div class="flex-col" id="maintenance-list"></div>
+            </div>
+        </aside>
+
+        <main>
+            <div class="map-container" id="map-container">
+                <div class="map-layer" id="map-layer">
+                    <div class="grid-bg"></div>
+                    <div id="map-nodes"></div>
+                </div>
+
+                <!-- Map Controls -->
+                <div
+                    style="position: absolute; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 0.5rem;">
+                    <button class="btn icon" onclick="map.zoomIn()">+</button>
+                    <button class="btn icon" onclick="map.zoomOut()">-</button>
+                    <button class="btn icon" onclick="map.fit()">Fit</button>
+                    <button class="btn icon" onclick="app.toggleSidebar()" title="Toggle Sidebar">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                            <line x1="9" y1="3" x2="9" y2="21" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modals -->
+    <div class="modal-backdrop" id="modal-machine">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Edit Machine</h2><button class="btn icon" onclick="app.closeModals()">✕</button>
+            </div>
+            <form class="modal-body" onsubmit="app.saveMachine(event)">
+                <input type="hidden" name="uid">
+                <div class="flex gap-4">
+                    <div class="form-group flex-1"><label>Title</label><input name="title" required></div>
+                    <div class="form-group flex-1"><label>QC Expire (Hours)</label><input name="qc_expire_hours"
+                            type="number" step="0.1" value="24"></div>
+                </div>
+                <div class="form-group"><label>CSV Path</label><input name="csv_path"></div>
+                <div class="form-group"><label>Timestamp Column</label><input name="timestamp_col"></div>
+
+                <div class="form-group">
+                    <label>Watched Targets</label>
+                    <div id="machine-targets-list" class="dynamic-list"></div>
+                    <button type="button" class="btn sm" onclick="app.addMachineTargetRow()" style="margin-top:0.5rem">+
+                        Add Pair</button>
+                </div>
+
+                <div class="flex gap-4">
+                    <div class="form-group flex-1"><label>Pos X</label><input name="pos_x" type="number"></div>
+                    <div class="form-group flex-1"><label>Pos Y</label><input name="pos_y" type="number"></div>
+                </div>
+                <div class="flex gap-4">
+                    <div class="form-group flex-1"><label>Width</label><input name="size_w" type="number"></div>
+                    <div class="form-group flex-1"><label>Height</label><input name="size_h" type="number"></div>
+                </div>
+                <div class="form-group"><label><input type="checkbox" name="locked" style="width:auto"> Locked
+                        Position</label></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn danger" id="btn-delete-machine"
+                        onclick="app.deleteMachine()">Delete</button>
+                    <div class="spacer"></div>
+                    <button type="button" class="btn" onclick="app.closeModals()">Cancel</button>
+                    <button type="submit" class="btn primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-sample">
+        <div class="modal" style="max-width:900px">
+            <div class="modal-header">
+                <h2>Edit Sample</h2><button class="btn icon" onclick="app.closeModals()">✕</button>
+            </div>
+            <form class="modal-body" onsubmit="app.saveSample(event)">
+                <input type="hidden" name="original_name">
+                <div class="flex gap-4">
+                    <div class="form-group flex-1"><label>Name</label><input name="name" required></div>
+                    <div class="form-group flex-1"><label>Sample ID Value</label><input name="sample_id_val"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Tests Configuration</label>
+                    <div
+                        style="display:grid; grid-template-columns: 2fr 2fr 1fr 1fr 1fr 1fr 40px; gap:0.5rem; margin-bottom:0.5rem; font-size:0.85rem; color:var(--text-muted);">
+                        <div>Test Name</div>
+                        <div>Value Col</div>
+                        <div>Expected</div>
+                        <div>StdDev</div>
+                        <div>k</div>
+                        <div>Units</div>
+                        <div></div>
+                    </div>
+                    <div id="sample-tests-list" class="dynamic-list"></div>
+                    <button type="button" class="btn sm" onclick="app.addSampleTestRow()" style="margin-top:0.5rem">+
+                        Add Test</button>
+                </div>
+
+                <div class="modal-footer">
+                    <button type="button" class="btn danger" id="btn-delete-sample"
+                        onclick="app.deleteSample()">Delete</button>
+                    <button type="button" class="btn" onclick="app.openChangeover()" id="btn-changeover-sample"
+                        style="background: var(--warn); color: #000; font-weight: 600;">Changeover QC</button>
+                    <div class="spacer"></div>
+                    <button type="button" class="btn" onclick="app.closeModals()">Cancel</button>
+                    <button type="submit" class="btn primary">Save</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-changeover">
+        <div class="modal" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2>Changeover QC</h2><button class="btn icon" onclick="app.closeModals()">✕</button>
+            </div>
+            <form class="modal-body" onsubmit="app.saveChangeover(event)">
+                <input type="hidden" name="old_name">
+                <div class="form-group"><label>Old Sample Name</label><input name="display_old_name" disabled></div>
+                <div class="form-group"><label>New Sample Name</label><input name="new_name" required></div>
+                <div class="form-group"><label>New Sample ID Value</label><input name="new_id_val"></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn" onclick="app.closeModals()">Cancel</button>
+                    <button type="submit" class="btn primary">Create Changeover</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+
+    <div class="modal-backdrop" id="modal-settings">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>Settings</h2><button class="btn icon" onclick="app.closeModals()">✕</button>
+            </div>
+            <form class="modal-body" onsubmit="app.saveSettings(event)">
+                <div class="form-group"><label>Poll Interval (minutes)</label><input name="poll_minutes" type="number"
+                        min="1" required></div>
+                <div class="form-group"><label>Global Map Lock</label><select name="map_locked">
+                        <option value="false">Unlocked</option>
+                        <option value="true">Locked</option>
+                    </select></div>
+                <div class="form-group"><label>Report Enabled</label><select name="report_enabled">
+                        <option value="false">No</option>
+                        <option value="true">Yes</option>
+                    </select></div>
+                <div class="form-group"><label>Report Time (HH:MM)</label><input name="report_time"></div>
+                <div class="form-group"><label>Report Directory</label><input name="report_dir"></div>
+                <div class="form-group"><label>Status Log Directory</label><input name="status_log_dir"></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn" onclick="app.closeModals()">Cancel</button>
+                    <button type="submit" class="btn primary">Save Settings</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-override">
+        <div class="modal" style="max-width: 400px;">
+            <div class="modal-header">
+                <h2>Manual Override</h2><button class="btn icon" onclick="app.closeModals()">✕</button>
+            </div>
+            <form class="modal-body" onsubmit="app.saveOverride(event)">
+                <input type="hidden" name="uid">
+                <div class="form-group"><label>Mode</label>
+                    <select name="mode">
+                        <option value="">CLEAR (Auto)</option>
+                        <option value="SERVICE">Service</option>
+                        <option value="DEAD-LINE">Dead Line</option>
+                    </select>
+                </div>
+                <div class="form-group"><label>Your Name</label><input name="user" required></div>
+                <div class="form-group"><label>Comment</label><textarea name="note" rows="2" required></textarea></div>
+                <div class="modal-footer">
+                    <button type="button" class="btn" onclick="app.closeModals()">Cancel</button>
+                    <button type="submit" class="btn primary">Apply</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="modal-task">
+        <div class="modal">
+            <div class="modal-header">
+                <h2>New Task</h2><button class="btn icon" onclick="app.closeModals()">✕</button>
+            </div>
+            <form class="modal-body" onsubmit="app.saveTask(event)">
+                <div class="form-group"><label>Machine UID</label><input name="box_uid" required list="machine-uids">
+                    <datalist id="machine-uids"></datalist>
+                </div>
+                <div class="form-group"><label>Task Name</label><input name="name" required></div>
+                <div class="form-group"><label>Kind</label><select name="kind">
+                        <option value="pm">PM</option>
+                        <option value="calibration">Calibration</option>
+                    </select></div>
+                <div class="form-group"><label>Start Date</label><input name="start_date" type="date" required>
+                </div>
+                <div class="flex gap-4">
+                    <div class="form-group flex-1"><label>Repeat Every</label><input name="repeat_value" type="number"
+                            value="1"></div>
+                    <div class="form-group flex-1"><label>Unit</label><select name="repeat_unit">
+                            <option value="months">Months</option>
+                            <option value="weeks">Weeks</option>
+                            <option value="days">Days</option>
+                        </select></div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn" onclick="app.closeModals()">Cancel</button>
+                    <button type="submit" class="btn primary">Create</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        // --- State & Utils ---
+        const state = {
+            status: null, config: null, authed: false,
+            zoom: 1, pan: { x: 0, y: 0 },
+            draggingMap: false, lastPos: { x: 0, y: 0 },
+            draggingNode: null, resizingNode: null,
+            dragOffset: { x: 0, y: 0 }, originalSize: { w: 0, h: 0 }
+        };
+        const qs = (s) => document.querySelector(s);
+        const qsa = (s) => document.querySelectorAll(s);
+        const api = async (url, opts = {}) => {
+            const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+            if (!res.ok) throw new Error((await res.json()).error || 'Request failed');
+            return res.json();
+        };
+
+        // --- Map Logic ---
+        const map = {
+            el: qs('#map-layer'),
+            nodesEl: qs('#map-nodes'),
+            container: qs('#map-container'),
+
+            init() {
+                this.container.addEventListener('wheel', e => {
+                    e.preventDefault();
+                    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+                    this.zoom(delta);
+                });
+
+                this.container.addEventListener('mousedown', e => {
+                    if (e.target.closest('.machine-node') || e.target.closest('.resize-handle')) return;
+                    state.draggingMap = true;
+                    state.lastPos = { x: e.clientX, y: e.clientY };
+                    this.container.style.cursor = 'grabbing';
+                });
+
+                window.addEventListener('mousemove', e => {
+                    this.handleMove(e);
+                });
+
+                window.addEventListener('mouseup', async () => {
+                    if (state.draggingNode) {
+                        const uid = state.draggingNode.dataset.uid;
+                        const box = state.config.boxes.find(b => b.uid === uid);
+                        if (box) {
+                            const x = parseFloat(state.draggingNode.style.left);
+                            const y = parseFloat(state.draggingNode.style.top);
+                            await api(`/api/boxes/${uid}`, { method: 'PATCH', body: JSON.stringify({ pos: [x, y] }) });
+                        }
+                    }
+                    if (state.resizingNode) {
+                        const uid = state.resizingNode.dataset.uid;
+                        const box = state.config.boxes.find(b => b.uid === uid);
+                        if (box) {
+                            const w = parseFloat(state.resizingNode.style.width);
+                            const h = parseFloat(state.resizingNode.style.height);
+                            await api(`/api/boxes/${uid}`, { method: 'PATCH', body: JSON.stringify({ size: [w, h] }) });
+                        }
+                    }
+
+                    state.draggingMap = false;
+                    state.draggingNode = null;
+                    state.resizingNode = null;
+                    this.container.style.cursor = 'grab';
+                });
+            },
+
+            handleMove(e) {
+                if (state.draggingMap) {
+                    const dx = e.clientX - state.lastPos.x;
+                    const dy = e.clientY - state.lastPos.y;
+                    state.pan.x += dx;
+                    state.pan.y += dy;
+                    state.lastPos = { x: e.clientX, y: e.clientY };
+                    this.updateTransform();
+                } else if (state.draggingNode) {
+                    const zoom = state.zoom;
+                    const dx = (e.clientX - state.lastPos.x) / zoom;
+                    const dy = (e.clientY - state.lastPos.y) / zoom;
+
+                    const el = state.draggingNode;
+                    const newX = parseFloat(el.style.left) + dx;
+                    const newY = parseFloat(el.style.top) + dy;
+
+                    el.style.left = newX + 'px';
+                    el.style.top = newY + 'px';
+                    state.lastPos = { x: e.clientX, y: e.clientY };
+                } else if (state.resizingNode) {
+                    const zoom = state.zoom;
+                    const dx = (e.clientX - state.lastPos.x) / zoom;
+                    const dy = (e.clientY - state.lastPos.y) / zoom;
+
+                    const el = state.resizingNode;
+                    const newW = Math.max(100, parseFloat(el.style.width) + dx);
+                    const newH = Math.max(60, parseFloat(el.style.height) + dy);
+
+                    el.style.width = newW + 'px';
+                    el.style.height = newH + 'px';
+                    state.lastPos = { x: e.clientX, y: e.clientY };
+                    this.updateSizeClasses(el, newW, newH);
+                }
+            },
+
+            zoom(factor) {
+                state.zoom = Math.max(0.1, Math.min(5, state.zoom * factor));
+                this.updateTransform();
+            },
+
+            zoomIn() { this.zoom(1.2); },
+            zoomOut() { this.zoom(0.8); },
+
+            fit() {
+                state.zoom = 1;
+                state.pan = { x: 20, y: 20 };
+                this.updateTransform();
+            },
+
+            updateTransform() {
+                this.el.style.transform = `translate(${state.pan.x}px, ${state.pan.y}px) scale(${state.zoom})`;
+            },
+
+            updateSizeClasses(node, w, h) {
+                node.classList.remove('small', 'tiny');
+                if (w < 140 || h < 80) node.classList.add('tiny');
+                else if (w < 200 || h < 120) node.classList.add('small');
+            },
+
+            render(boxes) {
+                this.nodesEl.innerHTML = '';
+                const unlocked = state.config && !state.config.map_locked && state.authed;
+
+                boxes.forEach(box => {
+                    const node = document.createElement('div');
+                    node.className = `machine-node ${box.status === 'RED' ? 'danger' : ''} ${unlocked ? 'unlocked' : ''}`;
+                    node.dataset.uid = box.uid;
+
+                    const x = box.pos?.[0] || 0;
+                    const y = box.pos?.[1] || 0;
+                    const w = box.size?.[0] || 240;
+                    const h = box.size?.[1] || 140;
+
+                    node.style.left = x + 'px';
+                    node.style.top = y + 'px';
+                    node.style.width = w + 'px';
+                    node.style.height = h + 'px';
+
+                    this.updateSizeClasses(node, w, h);
+
+                    const color = box.status_color || '#1e293b';
+                    node.style.borderColor = color;
+
+                    node.innerHTML = `
+                    <div class="machine-header" style="border-bottom: 2px solid ${color}">
+                        <span>${box.title}</span>
+                        <span class="badge" style="background:${color}">${box.status}</span>
+                    </div>
+                    <div class="machine-body">
+                        ${box.manual_override ? `<div class="badge" style="background:#f59e0b; align-self:start">${box.manual_override}</div>` : ''}
+                        <div class="reason ${box.reason ? '' : 'hidden'}"><div class="text-sm muted">${box.reason || ''}</div></div>
+                        <div class="results">
+                            ${(box.results || []).map(r => `
+                                <div class="result-row">
+                                    <span class="text-sm muted">${r.label}</span>
+                                    <span class="result-val" style="color:${r.in_spec === false ? 'var(--danger)' : 'inherit'}">${r.value_display}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="resize-handle"></div>
+                `;
+
+                    if (unlocked) {
+                        node.addEventListener('mousedown', e => {
+                            if (e.target.classList.contains('resize-handle')) return;
+                            state.draggingNode = node;
+                            state.lastPos = { x: e.clientX, y: e.clientY };
+                            e.stopPropagation();
+                        });
+                        const handle = node.querySelector('.resize-handle');
+                        handle.addEventListener('mousedown', e => {
+                            state.resizingNode = node;
+                            state.lastPos = { x: e.clientX, y: e.clientY };
+                            e.stopPropagation();
+                        });
+                    }
+
+                    node.onclick = (e) => {
+                        if (state.draggingNode || state.resizingNode) return;
+                        if (state.authed) {
+                            if (e.shiftKey) app.openOverride(box);
+                            else app.editMachine(box);
+                        }
+                    };
+
+                    this.nodesEl.appendChild(node);
+                });
+            }
+        };
+
+        // --- App Logic ---
+        const app = {
+            async init() {
+                map.init();
+                await this.checkAuth();
+                await this.refresh();
+
+                const es = new EventSource("/api/events");
+                es.onmessage = (ev) => {
+                    if (!ev.data) return;
+                    const msg = JSON.parse(ev.data);
+                    if (msg.type === "status") { state.status = msg.data; this.render(); }
+                    if (msg.type === "config") { state.config = msg.data; this.renderConfig(); }
+                };
+            },
+
+            async checkAuth() {
+                try {
+                    const me = await api("/api/me");
+                    state.authed = me.authed;
+                    qs('#auth-badge').textContent = state.authed ? "Admin" : "Viewer";
+                    qs('#auth-badge').style.background = state.authed ? "var(--accent)" : "rgba(255,255,255,0.1)";
+                    qs('#auth-badge').style.color = state.authed ? "#000" : "#fff";
+                    qs('#login-btn').classList.toggle('hidden', state.authed);
+                    qs('#logout-btn').classList.toggle('hidden', !state.authed);
+                    this.render();
+                    this.renderConfig();
+                } catch (e) { console.error(e); }
+            },
+
+            async login() {
+                const pwd = prompt("Admin Password:");
+                if (!pwd) return;
+                try {
+                    await api("/api/login", { method: "POST", body: JSON.stringify({ password: pwd }) });
+                    await this.checkAuth();
+                    await this.refresh();
+                } catch (e) { alert("Login failed"); }
+            },
+
+            async logout() {
+                await api("/api/logout", { method: "POST" });
+                await this.checkAuth();
+                window.location.reload();
+            },
+
+            async refresh() {
+                state.config = await api("/api/config");
+                state.status = await api("/api/status");
+                try { state.logs = await api("/api/logs"); } catch (e) { }
+                try { state.maintenance = await api("/api/maintenance"); } catch (e) { }
+                this.render();
+                this.renderConfig();
+            },
+
+            render() {
+                if (!state.status) return;
+                qs('#last-updated').textContent = state.status.generated_at || '--';
+                map.render(state.status.boxes);
+
+                // Status List
+                const list = qs('#status-list');
+                list.classList.toggle('grid-view', qs('#sidebar').classList.contains('expanded'));
+                list.innerHTML = state.status.boxes.map(b => `
+                <div class="card" style="border-left: 3px solid ${b.status_color}">
+                    <div class="flex" style="justify-content:space-between">
+                        <strong>${b.title}</strong>
+                        <span class="badge" style="background:${b.status_color}">${b.status}</span>
+                    </div>
+                    <div class="text-sm muted">${b.reason || 'OK'}</div>
+                    ${qs('#sidebar').classList.contains('expanded') ? `
+                        <div style="margin-top:0.5rem; border-top:1px solid var(--panel-border); padding-top:0.5rem">
+                            ${(b.results || []).map(r => `
+                                <div class="result-row">
+                                    <span class="text-sm muted">${r.label}</span>
+                                    <span class="result-val" style="color:${r.in_spec === false ? 'var(--danger)' : 'inherit'}">${r.value_display}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    ` : ''}
+                </div>
+            `).join('');
+            },
+
+            renderConfig() {
+                if (!state.config) return;
+
+                qs('#machine-list').classList.toggle('grid-view', qs('#sidebar').classList.contains('expanded'));
+                qs('#machine-list').innerHTML = state.config.boxes.map(b => `
+                <div class="card flex" style="justify-content:space-between; cursor:pointer" onclick="app.editMachine('${b.uid}')">
+                    <div>
+                        <div style="font-weight:600">${b.title}</div>
+                        <div class="text-sm muted">${b.uid}</div>
+                    </div>
+                    <button class="btn sm icon">✎</button>
+                </div>
+            `).join('');
+
+                qs('#sample-list').classList.toggle('grid-view', qs('#sidebar').classList.contains('expanded'));
+                qs('#sample-list').innerHTML = state.config.samples.map(s => `
+                <div class="card flex" style="justify-content:space-between; cursor:pointer" onclick="app.editSample('${s.name}')">
+                    <div>
+                        <div style="font-weight:600">${s.name}</div>
+                        <div class="text-sm muted">${s.tests.length} tests</div>
+                    </div>
+                    <button class="btn sm icon">✎</button>
+                </div>
+            `).join('');
+
+                if (state.maintenance) {
+                    qs('#maintenance-list').classList.toggle('grid-view', qs('#sidebar').classList.contains('expanded'));
+                    qs('#maintenance-list').innerHTML = state.maintenance.tasks.map(t => `
+                    <div class="card">
+                        <div class="flex" style="justify-content:space-between">
+                            <strong>${t.name}</strong>
+                            <span class="badge">${t.status}</span>
+                        </div>
+                        <div class="text-sm muted">Due: ${t.next_due}</div>
+                        ${state.authed && t.status === 'IN_PROGRESS' ?
+                            `<button class="btn sm primary" style="margin-top:0.5rem; width:100%" onclick="app.completeTask('${t.id}')">Complete</button>`
+                            : ''}
+                    </div>
+                `).join('');
+                }
+
+                qs('#machine-uids').innerHTML = state.config.boxes.map(b => `<option value="${b.uid}">${b.title}</option>`).join('');
+            },
+            toggleSidebar() {
+                qs('#sidebar').classList.toggle('collapsed');
+            },
+
+            toggleExpand() {
+                qs('#sidebar').classList.toggle('expanded');
+                this.render(); // Re-render to apply grid view
+                this.renderConfig();
+            },
+
+            switchTab(id) {
+                qsa('.tab').forEach(t => t.classList.remove('active'));
+                qsa('.tab-content').forEach(c => c.classList.remove('active'));
+                event.target.closest('.tab').classList.add('active');
+                qs('#tab-' + id).classList.add('active');
+            },
+
+            closeModals() {
+                qsa('.modal-backdrop').forEach(m => m.classList.remove('open'));
+            },
+
+            openModal(id) {
+                this.closeModals();
+                qs('#' + id).classList.add('open');
+            },
+
+            // --- Dynamic Editors ---
+            addMachineTargetRow(sample = '', test = '') {
+                const container = qs('#machine-targets-list');
+                const div = document.createElement('div');
+                div.className = 'dynamic-row';
+
+                const samples = state.config.samples.map(s => s.name);
+
+                div.innerHTML = `
+                <select onchange="app.updateTestOptions(this)" class="sample-select">
+                    <option value="">Select Sample...</option>
+                    ${samples.map(s => `<option value="${s}" ${s === sample ? 'selected' : ''}>${s}</option>`).join('')}
+                </select>
+                <select class="test-select">
+                    <option value="">Select Test...</option>
+                </select>
+                <button type="button" class="btn sm danger" onclick="this.parentElement.remove()">✕</button>
+            `;
+                container.appendChild(div);
+
+                // Populate tests for initial selection
+                const sampleSelect = div.querySelector('.sample-select');
+                this.updateTestOptions(sampleSelect, test);
+            },
+
+            updateTestOptions(sampleSelect, selectedTest = '') {
+                const row = sampleSelect.parentElement;
+                const testSelect = row.querySelector('.test-select');
+                const sampleName = sampleSelect.value;
+                const sample = state.config.samples.find(s => s.name === sampleName);
+
+                testSelect.innerHTML = '<option value="">Select Test...</option>';
+                if (sample) {
+                    sample.tests.forEach(t => {
+                        const opt = document.createElement('option');
+                        opt.value = t.name;
+                        opt.textContent = t.name;
+                        if (t.name === selectedTest) opt.selected = true;
+                        testSelect.appendChild(opt);
+                    });
+                }
+            },
+
+            addSampleTestRow(t = null) {
+                const container = qs('#sample-tests-list');
+                const div = document.createElement('div');
+                div.className = 'dynamic-row';
+                div.style.display = 'grid';
+                div.style.gridTemplateColumns = '2fr 2fr 1fr 1fr 1fr 1fr 40px';
+                div.style.gap = '0.5rem';
+
+                div.innerHTML = `
+                <input placeholder="Name" value="${t ? t.name : ''}">
+                <input placeholder="Val Col" value="${t ? t.value_col : ''}">
+                <input type="number" step="any" placeholder="Exp" value="${t ? t.expected : 0}">
+                <input type="number" step="any" placeholder="SD" value="${t ? t.std_dev : 0.5}">
+                <input type="number" step="any" placeholder="k" value="${t ? t.k : 2.0}">
+                <input placeholder="Units" value="${t ? t.units : ''}">
+                <button type="button" class="btn sm danger" onclick="this.parentElement.remove()">✕</button>
+            `;
+                container.appendChild(div);
+            },
+
+            editMachine(boxOrUid) {
+                if (!state.authed) return;
+                let box = boxOrUid;
+                if (typeof boxOrUid === 'string') {
+                    box = state.config.boxes.find(b => b.uid === boxOrUid);
+                }
+                if (!box) box = { uid: '', title: 'New Machine', qc_expire_hours: 24, pos: [20, 20], size: [240, 140] };
+
+                const f = qs('#modal-machine form');
+                f.uid.value = box.uid || '';
+                f.title.value = box.title;
+                f.csv_path.value = box.csv_path || '';
+                f.timestamp_col.value = box.timestamp_col || '';
+                f.qc_expire_hours.value = box.qc_expire_hours;
+                f.pos_x.value = box.pos?.[0] || 0;
+                f.pos_y.value = box.pos?.[1] || 0;
+                f.size_w.value = box.size?.[0] || 240;
+                f.size_h.value = box.size?.[1] || 140;
+                f.locked.checked = !!box.locked;
+
+                // Populate dynamic targets
+                qs('#machine-targets-list').innerHTML = '';
+                (box.watched_targets || []).forEach(wt => this.addMachineTargetRow(wt.sample, wt.test));
+
+                qs('#btn-delete-machine').style.display = box.uid ? 'block' : 'none';
+                this.openModal('modal-machine');
+            },
+
+            async saveMachine(e) {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = Object.fromEntries(fd.entries());
+
+                // Collect targets
+                const targets = [];
+                qs('#machine-targets-list').querySelectorAll('.dynamic-row').forEach(row => {
+                    const sample = row.querySelector('.sample-select').value;
+                    const test = row.querySelector('.test-select').value;
+                    if (sample && test) targets.push({ sample, test });
+                });
+                data.watched_targets = targets;
+
+                data.pos = [parseFloat(data.pos_x), parseFloat(data.pos_y)];
+                data.size = [parseFloat(data.size_w), parseFloat(data.size_h)];
+                data.locked = !!data.locked;
+
+                const method = data.uid ? 'PATCH' : 'POST';
+                const url = data.uid ? `/api/boxes/${data.uid}` : '/api/boxes';
+
+                try {
+                    await api(url, { method, body: JSON.stringify(data) });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            async deleteMachine() {
+                const uid = qs('#modal-machine [name=uid]').value;
+                if (!confirm(`Delete machine ${uid}?`)) return;
+                try {
+                    await api(`/api/boxes/${uid}`, { method: 'DELETE' });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            editSample(name) {
+                if (!state.authed) return;
+                const s = state.config.samples.find(s => s.name === name) || { name: '', tests: [] };
+
+                const f = qs('#modal-sample form');
+                f.original_name.value = s.name || '';
+                f.name.value = s.name || '';
+                f.sample_id_val.value = s.sample_id_val || '';
+
+                qs('#sample-tests-list').innerHTML = '';
+                (s.tests || []).forEach(t => this.addSampleTestRow(t));
+
+                qs('#btn-delete-sample').style.display = s.name ? 'block' : 'none';
+                this.openModal('modal-sample');
+            },
+
+            async saveSample(e) {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = Object.fromEntries(fd.entries());
+                const orig = data.original_name;
+
+                // Collect tests
+                const tests = [];
+                qs('#sample-tests-list').querySelectorAll('.dynamic-row').forEach(row => {
+                    const inputs = row.querySelectorAll('input');
+                    tests.push({
+                        name: inputs[0].value,
+                        value_col: inputs[1].value,
+                        expected: parseFloat(inputs[2].value) || 0,
+                        std_dev: parseFloat(inputs[3].value) || 0,
+                        k: parseFloat(inputs[4].value) || 2,
+                        units: inputs[5].value
+                    });
+                });
+                data.tests = tests;
+
+                const method = orig ? 'PATCH' : 'POST';
+                const url = orig ? `/api/samples/${orig}` : '/api/samples';
+
+                try {
+                    await api(url, { method, body: JSON.stringify(data) });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            async deleteSample() {
+                const name = qs('#modal-sample [name=original_name]').value;
+                if (!confirm(`Delete sample ${name}?`)) return;
+                try {
+                    await api(`/api/samples/${name}`, { method: 'DELETE' });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            toggleSettings() {
+                if (!state.authed) return;
+                const f = qs('#modal-settings form');
+                const c = state.config;
+                f.poll_minutes.value = c.poll_minutes;
+                f.map_locked.value = String(c.map_locked);
+                f.report_enabled.value = String(c.report_enabled);
+                f.report_time.value = c.report_time || '';
+                f.report_dir.value = c.report_dir || '';
+                f.status_log_dir.value = c.status_log_dir || '';
+                this.openModal('modal-settings');
+            },
+
+            async saveSettings(e) {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = Object.fromEntries(fd.entries());
+                data.poll_minutes = parseInt(data.poll_minutes);
+                data.map_locked = data.map_locked === 'true';
+                data.report_enabled = data.report_enabled === 'true';
+
+                try {
+                    await api('/api/settings', { method: 'POST', body: JSON.stringify(data) });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            openOverride(box) {
+                const f = qs('#modal-override form');
+                f.uid.value = box.uid;
+                f.mode.value = box.manual_override === 'DEAD-LINE' ? 'DEAD-LINE' : (box.manual_override === 'SERVICE' ? 'SERVICE' : '');
+                f.user.value = '';
+                f.note.value = '';
+                this.openModal('modal-override');
+            },
+
+            async saveOverride(e) {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = Object.fromEntries(fd.entries());
+                try {
+                    await api(`/api/boxes/${data.uid}/override`, { method: 'POST', body: JSON.stringify(data) });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            openChangeover() {
+                const name = qs('#modal-sample [name=original_name]').value;
+                if (!name) return;
+                const f = qs('#modal-changeover form');
+                f.old_name.value = name;
+                f.display_old_name.value = name;
+                f.new_name.value = name + " (New)";
+                f.new_id_val.value = "";
+                this.openModal('modal-changeover');
+            },
+
+            async saveChangeover(e) {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = Object.fromEntries(fd.entries());
+                try {
+                    await api('/api/samples/changeover', { method: 'POST', body: JSON.stringify(data) });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+            editTask() {
+                if (!state.authed) return;
+                this.openModal('modal-task');
+            },
+
+            async saveTask(e) {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                const data = Object.fromEntries(fd.entries());
+                try {
+                    await api('/api/maintenance', { method: 'POST', body: JSON.stringify(data) });
+                    this.closeModals();
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            },
+
+            async completeTask(id) {
+                const comment = prompt("Completion Comment:");
+                if (!comment) return;
+                try {
+                    await api(`/api/maintenance/${id}/complete`, { method: 'POST', body: JSON.stringify({ comment, user: 'web' }) });
+                    this.refresh();
+                } catch (err) { alert(err.message); }
+            }
+        };
+
+        app.init();
+    </script>
+</body>
+
+</html>

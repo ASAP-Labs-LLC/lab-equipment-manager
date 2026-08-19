@@ -1,0 +1,167 @@
+{
+  "tag": "low-t184",
+  "patches": [
+    {
+      "label": "sky-fullwidth",
+      "x0": 0,
+      "x1": 1280,
+      "y0": 0,
+      "y1": 37,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 1280,
+          "ny": 37,
+          "sigmaPerPx": 1.111,
+          "colD2rms": 0.385,
+          "expectedV": 0.4473,
+          "ratioV": 0.86,
+          "colCoherentAmpCodes": 5.99,
+          "maxColStepCodes": 0.432,
+          "atX": 84,
+          "rowD2rms": 0.0492,
+          "expectedH": 0.0765,
+          "ratioH": 0.64
+        },
+        {
+          "ch": "G",
+          "nx": 1280,
+          "ny": 37,
+          "sigmaPerPx": 1.014,
+          "colD2rms": 0.3748,
+          "expectedV": 0.4082,
+          "ratioV": 0.92,
+          "colCoherentAmpCodes": 5.091,
+          "maxColStepCodes": 0.412,
+          "atX": 161,
+          "rowD2rms": 0.0514,
+          "expectedH": 0.0695,
+          "ratioH": 0.74
+        },
+        {
+          "ch": "B",
+          "nx": 1280,
+          "ny": 37,
+          "sigmaPerPx": 0.936,
+          "colD2rms": 0.3657,
+          "expectedV": 0.3769,
+          "ratioV": 0.97,
+          "colCoherentAmpCodes": 6.171,
+          "maxColStepCodes": 0.426,
+          "atX": 291,
+          "rowD2rms": 0.0373,
+          "expectedH": 0.0641,
+          "ratioH": 0.58
+        }
+      ]
+    },
+    {
+      "label": "sky-right-side",
+      "x0": 704,
+      "x1": 1254,
+      "y0": 0,
+      "y1": 111,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 550,
+          "ny": 111,
+          "sigmaPerPx": 1.069,
+          "colD2rms": 0.2186,
+          "expectedV": 0.2486,
+          "ratioV": 0.88,
+          "colCoherentAmpCodes": 1.087,
+          "maxColStepCodes": 0.214,
+          "atX": 993,
+          "rowD2rms": 0.1003,
+          "expectedH": 0.1128,
+          "ratioH": 0.89
+        },
+        {
+          "ch": "G",
+          "nx": 550,
+          "ny": 111,
+          "sigmaPerPx": 0.974,
+          "colD2rms": 0.2192,
+          "expectedV": 0.2264,
+          "ratioV": 0.97,
+          "colCoherentAmpCodes": 0.707,
+          "maxColStepCodes": 0.212,
+          "atX": 753,
+          "rowD2rms": 0.0953,
+          "expectedH": 0.1027,
+          "ratioH": 0.93
+        },
+        {
+          "ch": "B",
+          "nx": 550,
+          "ny": 111,
+          "sigmaPerPx": 0.932,
+          "colD2rms": 0.2213,
+          "expectedV": 0.2166,
+          "ratioV": 1.02,
+          "colCoherentAmpCodes": 1.571,
+          "maxColStepCodes": 0.259,
+          "atX": 1072,
+          "rowD2rms": 0.0935,
+          "expectedH": 0.0985,
+          "ratioH": 0.95
+        }
+      ]
+    },
+    {
+      "x0": 300,
+      "y0": 165,
+      "x1": 1000,
+      "y1": 275,
+      "label": "mainland",
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 700,
+          "ny": 110,
+          "sigmaPerPx": 0.925,
+          "colD2rms": 0.2122,
+          "expectedV": 0.216,
+          "ratioV": 0.98,
+          "colCoherentAmpCodes": 1.423,
+          "maxColStepCodes": 0.811,
+          "atX": 327,
+          "rowD2rms": 0.0934,
+          "expectedH": 0.0855,
+          "ratioH": 1.09
+        },
+        {
+          "ch": "G",
+          "nx": 700,
+          "ny": 110,
+          "sigmaPerPx": 0.924,
+          "colD2rms": 0.2203,
+          "expectedV": 0.2158,
+          "ratioV": 1.02,
+          "colCoherentAmpCodes": 2.166,
+          "maxColStepCodes": 1.227,
+          "atX": 325,
+          "rowD2rms": 0.0794,
+          "expectedH": 0.0861,
+          "ratioH": 0.92
+        },
+        {
+          "ch": "B",
+          "nx": 700,
+          "ny": 110,
+          "sigmaPerPx": 0.925,
+          "colD2rms": 0.2144,
+          "expectedV": 0.216,
+          "ratioV": 0.99,
+          "colCoherentAmpCodes": 2.29,
+          "maxColStepCodes": 1.286,
+          "atX": 327,
+          "rowD2rms": 0.1019,
+          "expectedH": 0.0857,
+          "ratioH": 1.19
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{# The one navigation rail, on every page.
+   Icons are inline SVG stroked in currentColor — not emoji. Emoji arrive
+   full-colour and OS-specific, which fought the graphite/amber palette; these
+   inherit the nav item's own colour, so they go ink-grey → amber with it. #}
+{% set nav_items = [
+  ('/floor',       'Map',        'map'),
+  ('/checklists',  'Checklists', 'check'),
+  ('/maintenance', 'PM & CAL',   'wrench'),
+  ('/logs',        'Logs',       'log'),
+] %}
+{% macro nav_icon(kind) -%}
+<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+     stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"
+     aria-hidden="true">
+  {%- if kind == 'map' -%}
+    {# a bay plan seen from above: the floor, with one instrument standing on it #}
+    <path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/>
+    <path d="M9 4v13.5M15 6.5V20"/>
+  {%- elif kind == 'check' -%}
+    <path d="M4 6h3M4 12h3M4 18h3"/>
+    <path d="M10.5 6H20M10.5 12H20M10.5 18H20"/>
+  {%- elif kind == 'wrench' -%}
+    <path d="M14.5 6.5a3.5 3.5 0 1 0 4.6 4.6l-8.9 8.9a2.3 2.3 0 0 1-3.3-3.3z"/>
+    <path d="M14.5 6.5 18 3l3 3-3.5 3.5"/>
+  {%- elif kind == 'log' -%}
+    <path d="M5 3.5h9l5 5v12H5z"/>
+    <path d="M14 3.5v5h5"/>
+    <path d="M8.5 13h7M8.5 16.5h4.5"/>
+  {%- endif -%}
+</svg>
+{%- endmacro %}
+
+<nav class="navrail" aria-label="LEM sections">
+  <a class="brand" href="/" title="LEM — choose a view">
+    <b>LEM</b><span>LAB</span>
+  </a>
+  {% for href, label, icon in nav_items %}
+    <a class="navitem{% if active == href %} on{% endif %}" href="{{ href }}"
+       {% if active == href %}aria-current="page"{% endif %}>
+      {{ nav_icon(icon) }}{{ label }}
+    </a>
+  {% endfor %}
+  <span class="grow"></span>
+</nav>

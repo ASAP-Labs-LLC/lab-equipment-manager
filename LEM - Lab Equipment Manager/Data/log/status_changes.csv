@@ -1,0 +1,1508 @@
+timestamp,box_uid,box_title,prev_status,new_status,reason
+2025-12-17T15:59:38,box_1870507241056,Multitek NS,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-17T21:00:10,box_1840573733840,Multitek S,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-18T08:44:55,box_1840573738448,Mini Grabner,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-12-18T08:44:55,box_1834023730592,AQUAMAX KF,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-12-18T09:08:08,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-18T09:19:13,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-18T09:38:23,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-18T09:38:23,box_1870507241920,Eraspec,GREEN,RED,At least one watched test is out of spec or missing.
+2025-12-18T09:51:29,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-18T10:12:37,box_1840573737440,Auto Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-18T10:40:49,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-18T14:04:05,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-18T15:58:47,box_1840573733840,Multitek S,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-18T16:31:59,box_1870507241056,Multitek NS,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-19T08:39:06,box_2201765855296,PAC Flash 2,GREEN,RED,At least one watched test is out of spec or missing.
+2025-12-19T08:41:08,box_1834023730592,AQUAMAX KF,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-12-19T08:52:12,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-19T09:51:34,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-19T10:53:58,box_2301728638432,Viscocity,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-19T11:56:23,box_1870507241920,Eraspec,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-19T11:59:24,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-19T12:08:28,box_1765996407293,Eraspec NIR,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-19T12:18:33,box_2301728638432,Viscocity,RED,UNKNOWN,Insufficient data for one or more tests.
+2025-12-19T12:27:37,box_2301728638432,Viscocity,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-19T14:04:18,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-19T16:32:18,box_1870507241056,Multitek NS,GREEN,YELLOW,Last in-spec QC is stale (cached).
+2025-12-19T16:38:20,box_2201765855296,PAC Flash 2,RED,GREEN,All watched tests are within expected ranges.
+2025-12-19T17:13:25,box_2301728342368,Handheld API,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-19T17:27:41,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-20T08:37:44,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T08:52:50,box_1840573737440,Auto Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T11:59:24,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T12:08:28,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T16:39:14,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T16:54:21,box_1840573738448,Mini Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T17:08:26,box_2301728638432,Viscocity,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T17:16:29,box_2301728342368,Handheld API,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-20T17:52:45,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-22T09:06:06,box_1840573738448,Mini Grabner,YELLOW,UNKNOWN,Insufficient data for one or more tests.
+2025-12-22T09:10:08,box_2096856031904,PAC Flash 1,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-22T09:12:09,box_2201765855296,PAC Flash 2,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-22T09:14:09,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-22T09:24:14,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-22T10:53:52,box_1870507241920,Eraspec,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-22T11:04:57,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-22T11:09:59,box_1765996407293,Eraspec NIR,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-22T12:23:32,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-22T16:16:08,box_1870507241056,Multitek NS,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-23T09:10:05,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-23T09:12:06,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-23T09:31:14,box_1840573733840,Multitek S,RED,GREEN,All watched tests are within expected ranges.
+2025-12-23T10:08:32,box_2201765855296,PAC Flash 2,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-23T10:08:32,box_2096856031904,PAC Flash 1,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-23T10:10:33,box_1834023730592,AQUAMAX KF,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-12-23T10:18:36,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:04:59,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-23T11:07:30,box_2301728638432,Viscocity,YELLOW,UNKNOWN,Insufficient data for one or more tests.
+2025-12-23T11:11:02,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-23T11:17:55,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-23T11:17:55,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-23T11:17:55,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-23T11:17:55,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:17:55,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-23T11:25:59,box_2301728342368,Handheld API,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-23T11:58:12,box_1765996407293,Eraspec NIR,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-23T12:10:17,box_1870507241920,Eraspec,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-23T13:01:39,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-23T15:07:32,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-23T15:29:41,box_1870507241920,Eraspec,GREEN,RED,At least one watched test is out of spec or missing.
+2025-12-23T15:36:44,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-24T09:25:49,box_1870507241056,Multitek NS,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-24T09:31:53,box_1840573733840,Multitek S,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-24T10:08:08,box_1870507241056,Multitek NS,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-24T10:08:08,box_1840573733840,Multitek S,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-24T10:42:24,box_1870507241056,Multitek NS,RED,GREEN,All watched tests are within expected ranges.
+2025-12-24T11:26:43,box_2301728342368,Handheld API,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T08:47:53,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T08:49:54,box_1840573737440,Auto Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T08:53:56,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T09:27:08,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T09:28:09,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T09:53:18,box_1840573733840,Multitek S,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T10:19:28,box_1840573738448,Mini Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T10:42:37,box_1870507241056,Multitek NS,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T10:46:38,box_1834023730592,AQUAMAX KF,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-25T12:37:23,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-29T08:49:17,box_2096856031904,PAC Flash 1,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T08:53:18,box_2201765855296,PAC Flash 2,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-29T08:56:20,box_1840573738448,Mini Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:19:32,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:28:35,box_2201765855296,PAC Flash 2,RED,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:28:36,box_1834023730592,AQUAMAX KF,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:40:41,box_1765996407293,Eraspec NIR,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:49:45,box_1870507241056,Multitek NS,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:49:45,box_1870507241920,Eraspec,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T09:49:45,box_1840573733840,Multitek S,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T10:06:52,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:18:15,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:18:15,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:49,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:49,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:21:50,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:21:50,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:22:46,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:22:46,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:00,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:00,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:00,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:25:01,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:25:01,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:03,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:04,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:27:04,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:27:04,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:29:15,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:47:45,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:45,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:45,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:45,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:45,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:45,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:45,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:46,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:46,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:47:46,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T12:47:46,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T12:47:46,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T13:22:00,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T13:22:00,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:22:00,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T13:34:06,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T13:34:06,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:34:06,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:36,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:36,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:36,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T13:42:37,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T13:42:37,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T13:42:37,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T14:46:07,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T14:46:07,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T14:46:07,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:29:37,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:29:37,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:29:37,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:10,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:10,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:10,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:10,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:11,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:11,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:11,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:11,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:11,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:32:11,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:32:11,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:32:11,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:03,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:03,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:03,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:03,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:03,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:04,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:04,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:04,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:04,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:38:04,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:38:04,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:38:04,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:55,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:55,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:55,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:55,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:55,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:56,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:56,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:56,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:56,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:45:56,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:45:56,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:45:56,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:55,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:46:55,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T15:46:56,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T15:46:56,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T16:29:19,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T16:29:19,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:29:19,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T16:35:07,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T16:35:07,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:35:07,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T16:42:15,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-29T16:42:15,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-29T16:42:15,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T08:38:01,box_1834023730592,AQUAMAX KF,GREEN,UNKNOWN,Insufficient data for one or more tests.
+2025-12-30T09:23:21,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:21,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:21,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:21,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:22,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:22,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:22,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:22,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:22,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T09:23:22,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T09:23:22,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:23:22,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T09:41:28,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T09:49:21,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T09:50:19,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T09:50:31,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T10:44:40,box_1870507241920,Eraspec,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-30T10:44:51,box_1870507241920,Eraspec,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-30T10:46:51,box_1765996407293,Eraspec NIR,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-30T10:47:42,box_1765996407293,Eraspec NIR,YELLOW,RED,At least one watched test is out of spec or missing.
+2025-12-30T11:05:48,box_1765996407293,Eraspec NIR,RED,GREEN,All watched tests are within expected ranges.
+2025-12-30T11:05:59,box_1765996407293,Eraspec NIR,RED,GREEN,All watched tests are within expected ranges.
+2025-12-30T11:10:00,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-30T11:10:50,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:17,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:17,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:17,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:27:18,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:27:18,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:27:18,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:44,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:44,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:44,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:29:45,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:29:45,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:29:45,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:36:22,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:36:22,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:36:48,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:36:30,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:39:14,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:39:14,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:14,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:39:15,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T12:39:15,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T12:39:15,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:36:35,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:36:36,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:36:37,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:37:12,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:36:51,box_1870504657248,Agilent GC,YELLOW,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T13:49:05,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-30T13:49:05,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-30T13:49:05,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T08:35:45,box_1840573737440,Auto Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-31T08:49:50,box_1870507241056,Multitek NS,GREEN,YELLOW,Last in-spec QC is stale.
+2025-12-31T09:12:58,box_1765996407293,Eraspec NIR,GREEN,RED,At least one watched test is out of spec or missing.
+2025-12-31T09:14:58,box_1870507241920,Eraspec,GREEN,RED,At least one watched test is out of spec or missing.
+2025-12-31T09:15:59,box_1765996407293,Eraspec NIR,RED,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T10:54:49,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-31T10:54:49,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T10:54:49,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T10:54:49,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T10:54:49,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T10:54:49,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:03,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:03,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:14:04,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-31T11:14:04,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:04,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:14:04,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:04,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:04,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:04,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:14:04,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:14:04,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:14:04,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:21,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:21,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:24:21,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-31T11:24:21,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:21,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:24:21,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:21,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:22,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:22,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:24:22,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:24:22,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:24:22,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:24,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:24,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:37:24,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-31T11:37:24,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:24,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:37:24,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:24,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:24,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:25,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:37:25,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:37:25,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:37:25,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:47:45,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-31T11:47:45,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:47:45,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:47:45,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T11:47:45,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T11:47:45,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:30,box_1870504657248,Agilent GC,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:30,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T12:06:31,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2025-12-31T12:06:31,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:31,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T12:06:31,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:31,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:31,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:31,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T12:06:31,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2025-12-31T12:06:31,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T12:06:31,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2025-12-31T15:58:33,box_1870504657248,Agilent GC,GREEN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-01T08:22:34,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-01T08:24:35,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-01T09:15:51,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-01T11:30:32,box_1840573733840,Multitek S,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-01T11:33:33,box_1834023730592,AQUAMAX KF,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-01T12:00:42,box_1840573738448,Mini Grabner,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-05T08:41:12,box_1834023730592,AQUAMAX KF,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-05T08:42:13,box_2096856031904,PAC Flash 1,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-05T08:43:13,box_2201765855296,PAC Flash 2,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-05T08:48:15,box_1840573738448,Mini Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-05T08:57:18,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:30:09,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-05T15:30:09,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:30:09,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-05T15:30:09,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:30:09,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:30:09,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:30:09,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:30:09,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:30:09,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:30:09,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:30:09,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:30:09,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:50:59,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-05T15:50:59,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:50:59,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-05T15:50:59,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:50:59,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:50:59,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:50:59,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:50:59,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:50:59,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:50:59,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T15:50:59,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T15:50:59,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T16:01:06,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-05T16:01:07,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T16:01:07,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-05T16:01:07,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T16:01:07,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T16:01:07,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T16:01:07,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T16:01:07,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T16:01:07,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T16:01:07,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T16:01:07,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T16:01:07,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T17:14:24,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-05T17:14:24,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T17:14:24,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-05T17:14:24,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T17:14:24,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T17:14:24,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T17:14:25,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T17:14:25,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T17:14:25,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T17:14:25,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-05T17:14:25,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-05T17:14:25,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T08:41:16,box_1834023730592,AQUAMAX KF,GREEN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T08:46:18,box_1840573733840,Multitek S,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-06T08:49:19,box_1870507241056,Multitek NS,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-06T09:31:34,box_1834023730592,AQUAMAX KF,YELLOW,UNKNOWN,Insufficient data for one or more tests.
+2026-01-06T09:34:35,box_1765996407293,Eraspec NIR,YELLOW,RED,At least one watched test is out of spec or missing.
+2026-01-06T09:52:11,box_1765996407293,Eraspec NIR,RED,UNKNOWN,Insufficient data for one or more tests.
+2026-01-06T09:52:53,box_1870507241920,Eraspec,RED,UNKNOWN,Insufficient data for one or more tests.
+2026-01-06T09:55:43,box_1765996407293,Eraspec NIR,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-06T09:56:43,box_1870507241920,Eraspec,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-06T09:57:44,box_1765996407293,Eraspec NIR,RED,GREEN,All watched tests are within expected ranges.
+2026-01-06T09:59:45,box_1870507241920,Eraspec,RED,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:05,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T13:06:06,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:06:06,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T13:06:06,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T13:06:06,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T13:54:27,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T13:54:27,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T13:54:27,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T13:54:27,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T14:40:09,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T14:40:09,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T14:40:09,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T14:40:09,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:55,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T15:06:55,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:55,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:55,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:56,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:56,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:56,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:56,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:06:56,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T15:06:56,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T15:06:56,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T15:18:44,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T15:18:44,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T15:18:44,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T15:18:44,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:56,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T16:13:56,box_1870507241056,Multitek NS,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:56,box_1870507241920,Eraspec,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:57,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:57,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:57,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:57,box_1840573733840,Multitek S,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:57,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:13:57,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T16:13:57,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Last in-spec QC is stale.
+2026-01-06T16:13:57,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-06T16:24:06,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-06T16:24:06,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-06T16:24:06,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-06T16:24:06,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-06T16:24:07,box_1765996407293,Eraspec NIR,UNKNOWN,GREEN,System nominal
+2026-01-07T00:00:30,box_1870507241920,Eraspec,GREEN,YELLOW,Warnings in: PM
+2026-01-07T08:21:07,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Warnings in: QC
+2026-01-07T08:23:08,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Warnings in: QC
+2026-01-07T08:31:10,box_1840573737440,Auto Grabner,GREEN,YELLOW,Warnings in: QC
+2026-01-07T08:34:12,box_2096856031904,PAC Flash 1,YELLOW,GREEN,System nominal
+2026-01-07T08:36:12,box_2201765855296,PAC Flash 2,YELLOW,GREEN,System nominal
+2026-01-07T08:50:17,box_1870507241056,Multitek NS,GREEN,YELLOW,Warnings in: QC
+2026-01-07T09:17:17,box_2201765855296,PAC Flash 2,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-07T09:17:17,box_1840573733840,Multitek S,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-07T09:17:17,box_2096856031904,PAC Flash 1,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-07T09:46:29,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-07T09:46:36,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T09:58:35,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-07T09:58:41,box_1765996407293,Eraspec NIR,GREEN,YELLOW,Warnings in: QC
+2026-01-07T10:09:45,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:09:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:09:45,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: PM
+2026-01-07T10:09:45,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:09:45,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:09:45,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:09:45,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:09:45,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:09:46,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:09:46,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:09:46,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:09:46,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:14:36,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:14:36,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:14:36,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: PM
+2026-01-07T10:14:36,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:14:36,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:14:36,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:14:36,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:14:36,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:14:36,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:14:36,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:14:36,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:14:36,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:37:45,box_1870507241920,Eraspec,YELLOW,GREEN,System nominal
+2026-01-07T10:38:59,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:38:59,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:38:59,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:38:59,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:38:59,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:38:59,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:38:59,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:38:59,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:38:59,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:38:59,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:38:59,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:38:59,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:41:18,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:41:19,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:41:19,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:41:19,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:41:19,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:41:19,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:41:19,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:41:19,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:41:19,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:41:19,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:41:19,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:41:19,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:43:12,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:43:12,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:43:12,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:43:12,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:43:12,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:43:12,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:43:12,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:43:12,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:43:12,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:43:12,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:43:12,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:43:12,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:52,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:48:52,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:52,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:52,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:52,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:52,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:52,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:52,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:52,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:52,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:53,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:53,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:56,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:48:56,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:56,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:56,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:56,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:56,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:56,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:56,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:56,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:56,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:48:56,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:48:56,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:11,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:53:11,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:11,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:11,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:11,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:12,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:12,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:12,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:12,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:12,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:12,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:12,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:15,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:53:15,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:15,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:15,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:15,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:15,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:15,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:15,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:15,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:15,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:15,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:15,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:36,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:53:36,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:36,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:36,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:36,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:36,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:36,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:36,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:36,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:36,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:53:36,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:53:37,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:52,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:55:52,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:52,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:52,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:52,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:52,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:52,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:52,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:52,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:52,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:52,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:52,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:55,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:55:55,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:55,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:55,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:55,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:55,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:55,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:55,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:55,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:55,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:55:55,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:55:55,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:56:53,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:56:53,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:56:53,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:56:53,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:56:53,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:56:53,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:56:53,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:56:54,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:56:54,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:56:54,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:56:54,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:56:54,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:45,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:57:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:45,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:45,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:46,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:46,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:46,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:46,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:46,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:46,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:46,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:46,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:49,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T10:57:49,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:49,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:49,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:49,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:49,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:49,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:49,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:49,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:49,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T10:57:49,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T10:57:49,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:01:31,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:01:31,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:01:31,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T11:01:31,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T11:01:32,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:01:32,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T11:01:32,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T11:01:32,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T11:01:32,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:01:32,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:01:32,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T11:01:32,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:07,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:02:07,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:07,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:07,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:07,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:07,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:08,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:08,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:08,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:08,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:08,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:08,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:11,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:02:11,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:11,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:11,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:11,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:11,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:11,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:11,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:11,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:11,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:02:11,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T11:02:11,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:03:29,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:03:29,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:03:29,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T11:03:29,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T11:03:29,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:03:29,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T11:03:29,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T11:03:29,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T11:03:29,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:03:29,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:03:29,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T11:03:30,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:21,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:07:21,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:21,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:21,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:21,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:21,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:21,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:21,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:21,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:21,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:21,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:21,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:24,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:07:24,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:24,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:24,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:24,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:24,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:25,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:25,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:25,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:25,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:07:25,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T11:07:25,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:14:14,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:14:14,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:14:14,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:14:14,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:14:14,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:14:14,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:16:30,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:16:30,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:16:30,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:16:30,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:16:30,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:16:30,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:48,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:20:48,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:48,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:49,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:49,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:49,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:51,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:20:51,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:52,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:52,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:52,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:20:52,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:11,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:25:11,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:11,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:11,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:11,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:11,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:14,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:25:14,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:14,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:14,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:14,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:25:15,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:55,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:29:55,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:55,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:55,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:55,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:55,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:58,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:29:58,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:58,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:58,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:58,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:29:58,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:55,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:33:55,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:55,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:55,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:56,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:56,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:58,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:33:58,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:58,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:58,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:59,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:33:59,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:28,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:34:28,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:28,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:28,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:28,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:28,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:31,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Last in-spec QC is stale (cached).
+2026-01-07T11:34:31,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:31,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:31,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:31,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:34:31,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:49:13,box_1870504657248,Agilent GC,YELLOW,UNKNOWN,Insufficient data for one or more tests.
+2026-01-07T11:49:34,box_1870504657248,Agilent GC,YELLOW,RED,Critical issues in: PM
+2026-01-07T11:49:35,box_1870504657248,Agilent GC,YELLOW,RED,Critical issues in: PM
+2026-01-07T11:49:35,box_1870504657248,Agilent GC,YELLOW,RED,Critical issues in: PM
+2026-01-07T11:49:38,box_1870504657248,Agilent GC,YELLOW,RED,Critical issues in: PM
+2026-01-07T11:49:38,box_1870504657248,Agilent GC,YELLOW,RED,Critical issues in: PM
+2026-01-07T11:50:21,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:50:21,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:21,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:21,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:21,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:21,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:24,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:50:24,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:24,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:24,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:24,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:50:25,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:45,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:53:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:45,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:45,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:45,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:45,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:48,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:53:48,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:48,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:48,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:49,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:53:49,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:20,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:57:20,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:20,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:20,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:20,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:20,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:23,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:57:23,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:23,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:24,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:24,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:57:24,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:59:58,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T11:59:58,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T11:59:58,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:24,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T12:00:24,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:24,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:24,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:24,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:24,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:27,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T12:00:27,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:27,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:27,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:27,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T12:00:27,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:44,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:18:44,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:18:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:18:45,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:51,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:22:51,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:51,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:51,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:51,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:51,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:54,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:22:54,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:54,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:54,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:54,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:22:54,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:29,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:24:29,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:30,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:30,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:30,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:30,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:33,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:24:33,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:33,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:33,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:33,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:24:33,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T14:50:25,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:25,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:25,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:26,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:26,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T14:50:26,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T14:50:26,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:57:42,box_1870504657248,Agilent GC,RED,YELLOW,Warnings in: PM
+2026-01-07T15:58:32,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Warnings in: PM
+2026-01-07T15:58:32,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Warnings in: PM
+2026-01-07T15:58:32,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T15:58:32,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T15:58:32,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:16,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Warnings in: PM
+2026-01-07T16:02:16,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:16,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:16,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:16,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:16,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:16,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:16,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:16,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:16,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:16,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:16,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:19,box_1870504657248,Agilent GC,UNKNOWN,YELLOW,Warnings in: PM
+2026-01-07T16:02:19,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:19,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:19,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:19,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:19,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:20,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:20,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:20,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:20,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:20,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:02:20,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:02:32,box_1870504657248,Agilent GC,YELLOW,RED,Critical issues in: PM
+2026-01-07T16:08:43,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:08:43,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:43,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:43,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:43,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:43,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:43,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:43,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:43,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:43,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:43,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:43,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:46,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:08:46,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:46,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:46,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:46,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:46,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:46,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:46,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:46,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:47,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:08:47,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:08:47,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:54,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:15:54,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:54,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:54,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:54,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:54,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:54,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:54,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:54,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:54,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:54,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:54,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:57,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:15:57,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:57,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:57,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:58,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:58,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:58,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:58,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:58,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:58,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:15:58,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:15:58,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:13,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:18:13,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:13,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:13,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:14,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:14,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:14,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:14,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:14,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:14,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:14,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:14,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:17,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:18:17,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:17,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:17,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:17,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:17,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:17,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:17,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:17,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:17,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:18:17,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:18:17,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:00,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:19:00,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:00,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:00,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:00,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:00,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:00,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:00,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:01,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:01,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:01,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:01,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:04,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:19:04,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:04,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:05,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:05,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:05,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:05,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:05,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:05,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:05,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:05,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:05,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:26,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:19:26,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:26,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:26,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:26,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:26,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:26,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:26,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:26,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:26,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:26,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:26,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:30,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:19:30,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:30,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:30,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:30,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:30,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:30,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:30,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:30,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:30,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:19:30,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:19:30,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:45,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:20:45,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:45,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:45,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:45,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:45,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:45,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:45,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:45,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:45,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:45,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:45,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:49,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:20:49,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:49,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:49,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:49,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:49,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:49,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:49,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:49,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:49,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:20:49,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:20:49,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:02,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:22:02,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:02,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:02,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:02,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:02,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:02,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:02,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:02,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:02,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:02,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:02,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:05,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:22:05,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:05,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:05,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:06,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:06,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:06,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:06,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:06,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:06,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:22:06,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:22:06,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:07,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:23:07,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:07,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:07,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:07,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:07,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:07,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:07,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:07,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:07,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:08,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:08,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:11,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-07T16:23:11,box_1870507241056,Multitek NS,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:11,box_1870507241920,Eraspec,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:11,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:11,box_1840573737440,Auto Grabner,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:11,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:11,box_1840573733840,Multitek S,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:11,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:11,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:11,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-07T16:23:11,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-07T16:23:11,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T08:34:58,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Warnings in: QC
+2026-01-08T08:34:58,box_2096856031904,PAC Flash 1,GREEN,YELLOW,Warnings in: QC
+2026-01-08T08:35:59,box_2201765855296,PAC Flash 2,GREEN,YELLOW,Warnings in: QC
+2026-01-08T08:36:59,box_1840573733840,Multitek S,GREEN,YELLOW,Warnings in: QC
+2026-01-08T08:40:00,box_2096856031904,PAC Flash 1,YELLOW,GREEN,System nominal
+2026-01-08T08:40:00,box_2096856031904,PAC Flash 1,YELLOW,GREEN,System nominal
+2026-01-08T08:41:01,box_2201765855296,PAC Flash 2,YELLOW,GREEN,System nominal
+2026-01-08T08:41:01,box_2201765855296,PAC Flash 2,YELLOW,GREEN,System nominal
+2026-01-08T09:00:07,box_1870507241056,Multitek NS,YELLOW,GREEN,System nominal
+2026-01-08T09:00:07,box_1870507241056,Multitek NS,YELLOW,GREEN,System nominal
+2026-01-08T09:05:09,box_1840573737440,Auto Grabner,YELLOW,GREEN,System nominal
+2026-01-08T09:27:53,box_1870504657248,Agilent GC,UNKNOWN,RED,At least one watched test is out of spec or missing.
+2026-01-08T09:27:53,box_1870507241056,Multitek NS,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:27:53,box_1840573737440,Auto Grabner,YELLOW,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:27:53,box_1840573733840,Multitek S,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-08T09:35:32,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:35:32,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:32,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:32,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:32,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:32,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:32,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:32,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:32,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:32,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:33,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:35:33,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:36,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:35:36,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:36,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:36,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:36,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:36,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:36,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:36,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:35:36,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:36,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:36,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:35:36,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:35:55,box_1870507241920,Eraspec,GREEN,YELLOW,Last in-spec QC is stale.
+2026-01-08T09:36:18,box_1870507241920,Eraspec,GREEN,YELLOW,Warnings in: QC
+2026-01-08T09:38:32,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:38:32,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:32,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:33,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:33,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:33,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:33,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:33,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:33,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:33,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:33,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:38:33,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:36,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:38:36,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:36,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:36,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:36,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:36,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:36,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:36,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:38:36,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:36,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:38:36,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:38:36,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:49,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:47:49,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:49,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:49,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:49,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:49,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:49,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:49,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:50,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:50,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:50,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:47:50,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:53,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:47:53,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:53,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:53,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:53,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:53,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:53,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:53,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:47:53,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:53,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:47:53,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,All watched tests are within expected ranges.
+2026-01-08T09:47:53,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:14,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:56:14,box_1870504657248,Agilent GC,UNKNOWN,RED,"Critical issues in: QC, PM, TESTING"
+2026-01-08T09:56:14,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:14,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:14,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:14,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:14,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:14,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:15,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:15,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:15,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:15,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:15,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-08T09:56:15,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:56:15,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T09:58:03,box_1870504657248,Agilent GC,RED,GREEN,All watched tests are within expected ranges.
+2026-01-08T10:12:47,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-08T10:12:47,box_1870504657248,Agilent GC,UNKNOWN,RED,Critical issues in: PM
+2026-01-08T10:12:47,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:47,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:47,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:47,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:47,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:47,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-08T10:12:48,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:12:48,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:13:52,box_1870504657248,Agilent GC,RED,GREEN,System nominal
+2026-01-08T10:14:34,box_1870504657248,Agilent GC,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:34,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:35,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:35,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:35,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:35,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:35,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:35,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:35,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:35,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:35,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:35,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:38,box_1870504657248,Agilent GC,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:38,box_1870507241056,Multitek NS,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:38,box_1870507241920,Eraspec,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:39,box_2201765855296,PAC Flash 2,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:39,box_1840573737440,Auto Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:39,box_1840573738448,Mini Grabner,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:39,box_1840573733840,Multitek S,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:39,box_2096856031904,PAC Flash 1,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:39,box_2301728638432,Viscocity,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:39,box_2301728342368,Handheld API,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:14:39,box_1834023730592,AQUAMAX KF,UNKNOWN,GREEN,System nominal
+2026-01-08T10:14:39,box_1765996407293,Eraspec NIR,UNKNOWN,YELLOW,Warnings in: QC
+2026-01-08T10:57:02,box_2301728638432,Viscocity,YELLOW,RED,"Critical issues in: QC, TESTING"
+2026-01-08T10:56:46,box_2301728638432,Viscocity,YELLOW,RED,"Critical issues in: QC, TESTING"
+2026-01-08T10:57:24,box_2301728638432,Viscocity,YELLOW,RED,At least one watched test is out of spec or missing.
+2026-01-08T10:57:51,box_2301728638432,Viscocity,YELLOW,GREEN,System nominal
+2026-01-08T10:58:02,box_2301728638432,Viscocity,RED,GREEN,System nominal
+2026-01-08T10:57:47,box_2301728638432,Viscocity,RED,GREEN,System nominal
+2026-01-08T10:58:24,box_2301728638432,Viscocity,RED,GREEN,All watched tests are within expected ranges.
+2026-01-08T12:43:40,box_1870507241920,Eraspec,YELLOW,GREEN,System nominal
+2026-01-08T14:19:15,box_2301728342368,Handheld API,YELLOW,GREEN,System nominal
+2026-01-08T14:45:24,box_1840573733840,Multitek S,YELLOW,GREEN,System nominal
+2026-01-09T09:12:56,box_1870507241056,Multitek NS,GREEN,YELLOW,Warnings in: QC
+2026-01-09T09:12:56,box_1840573737440,Auto Grabner,GREEN,YELLOW,Warnings in: QC
+2026-01-09T10:00:15,box_1840573737440,Auto Grabner,YELLOW,GREEN,System nominal
+2026-01-09T10:57:40,box_2301728638432,Viscocity,GREEN,YELLOW,Warnings in: QC
+2026-01-09T11:29:53,box_1765996407293,Eraspec NIR,YELLOW,GREEN,System nominal
+2026-01-09T15:15:06,box_2301728342368,Handheld API,GREEN,YELLOW,Warnings in: QC

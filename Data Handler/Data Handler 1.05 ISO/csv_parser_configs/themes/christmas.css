@@ -1,0 +1,32 @@
+/* christmas.css */
+QWidget {
+    background-color: #013220; /* Dark Green */
+    color: #FFFFFF; /* White text */
+}
+QTabWidget::pane {  
+    background-color: #013220; 
+    border-radius: 10px; 
+}
+QTabBar::tab { 
+    background-color: #B22222; /* Firebrick Red */
+    color: #FFFFFF;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    min-width: 80px;
+    padding: 5px;
+    margin-left: 1px;
+}
+QTabBar::tab:selected { 
+    background-color: #FFD700; /* Gold */
+    color: #000000; /* Black text for contrast */
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    margin-top: 3px;
+}
+QTabBar::tab:hover:!selected { 
+    background-color: #32CD32; /* Lime Green */
+    color: #000000;
+}
+QTabBar::tab:!selected {
+    margin-top: 10px;
+}

@@ -1,0 +1,128 @@
+{
+  "parses": 198,
+  "layouts": 6,
+  "faults": [
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 24.4m apart across branch1/null (needs 24.4m)",
+      "at": 66738
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 24.3m apart across branch1/null (needs 24.4m)",
+      "at": 66746
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 24.2m apart across branch1/null (needs 24.4m)",
+      "at": 66754
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 24.1m apart across branch1/null (needs 24.4m)",
+      "at": 66764
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 24.0m apart across branch1/null (needs 24.4m)",
+      "at": 66779
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.9m apart across branch1/null (needs 24.4m)",
+      "at": 66788
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.8m apart across branch1/null (needs 24.4m)",
+      "at": 66796
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.7m apart across branch1/null (needs 24.4m)",
+      "at": 66804
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.6m apart across branch1/null (needs 24.4m)",
+      "at": 66821
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.5m apart across branch1/null (needs 24.4m)",
+      "at": 66837
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.4m apart across branch1/null (needs 24.4m)",
+      "at": 66846
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.3m apart across branch1/null (needs 24.4m)",
+      "at": 66863
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.2m apart across branch1/null (needs 24.4m)",
+      "at": 66877
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.1m apart across branch1/null (needs 24.4m)",
+      "at": 66893
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 23.0m apart across branch1/null (needs 24.4m)",
+      "at": 66909
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 22.9m apart across branch1/null (needs 24.4m)",
+      "at": 66934
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 22.8m apart across branch1/null (needs 24.4m)",
+      "at": 66950
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 22.7m apart across branch1/null (needs 24.4m)",
+      "at": 66967
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 22.6m apart across branch1/null (needs 24.4m)",
+      "at": 66989
+    },
+    {
+      "kind": "collision",
+      "detail": "slots 4/8 22.5m apart across branch1/null (needs 24.4m)",
+      "at": 67030
+    }
+  ],
+  "structure": [],
+  "consoleErrors": [],
+  "started": "2026-08-07T14:57:12.459Z",
+  "stats": {
+    "maxConcurrent": 5,
+    "everOut": 0,
+    "backwardsFrames": 5,
+    "junctionUnchecked": 0,
+    "junctionChecked": 58526
+  },
+  "summary": {
+    "parses": 198,
+    "layouts": 6,
+    "collision": 20,
+    "reversal": 0,
+    "floating": 0,
+    "unreachable": 0,
+    "edge": 0,
+    "relayout": 0,
+    "consoleErrors": 0
+  },
+  "pass": false
+}

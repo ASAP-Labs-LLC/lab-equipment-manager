@@ -1,0 +1,43 @@
+Equipment Name,Overall Status,Manual Override,Last Good QC,Latest Data Time,QC Expiry (h),Status Reason,Sample,Test,Expected Value,Tolerance (±),Low Limit,High Limit,Latest Value,Units,In Spec,Data Source
+Agilent GC,GREEN,None,2026-04-15 15:20,2026-04-15 15:20,24,System nominal,Diesel - AF25,IBP - D86,167.3,8.14,159.2,175.4,169.6,C,✓ PASS,parsed
+Agilent GC,GREEN,None,2026-04-15 15:20,2026-04-15 15:20,24,System nominal,Diesel - AF25,10% - D86,219.1,4,215.1,223.1,220.6,C,✓ PASS,parsed
+Agilent GC,GREEN,None,2026-04-15 15:20,2026-04-15 15:20,24,System nominal,Diesel - AF25,50% - D86,283.7,1.92,281.8,285.6,284,C,✓ PASS,parsed
+Agilent GC,GREEN,None,2026-04-15 15:20,2026-04-15 15:20,24,System nominal,Diesel - AF25,90% - D86,336.4,2.32,334.1,338.8,336.7,C,✓ PASS,parsed
+Agilent GC,GREEN,None,2026-04-15 15:20,2026-04-15 15:20,24,System nominal,Diesel - AF25,FBP - D86,357.4,3.92,353.5,361.3,358.1,C,✓ PASS,parsed
+Multitek NS,GREEN,None,2026-04-15 15:52,2026-04-15 15:52,24,System nominal,Diesel - AF25,Sulfur - D5453,7.79,1.34,6.45,9.13,8.052,mg/kg,✓ PASS,parsed
+PAC Flash 2,GREEN,None,2026-04-16 08:36,2026-04-16 08:36,24,System nominal,Diesel - AF25,Flash - D3828,65.78,2.84,62.94,68.62,66.5,C,✓ PASS,parsed
+Auto Grabner,GREEN,None,2026-04-16 08:44,2026-04-16 08:44,24,System nominal,Diesel - AF25,Flash - D3828,65.78,2.84,62.94,68.62,66,C,✓ PASS,parsed
+Mini Grabner,GREEN,None,2026-04-16 10:25,2026-04-16 10:25,24,System nominal,Diesel - AF25,Flash - D3828,65.78,2.84,62.94,68.62,66.8,C,✓ PASS,file_mtime
+Multitek S,YELLOW,None,2026-04-15 09:04,2026-04-15 09:04,24,Warnings in: QC,Diesel - AF25,Sulfur - D5453,7.79,1.34,6.45,9.13,7.578,mg/kg,✓ PASS,parsed
+PAC Flash 1,GREEN,None,2026-04-16 08:33,2026-04-16 08:33,24,System nominal,Diesel - AF25,Flash - D3828,65.78,2.84,62.94,68.62,64.5,C,✓ PASS,parsed
+Viscosity,GREEN,None,2026-04-16 11:14,2026-04-16 11:14,24,System nominal,Diesel - AF25,Viscosity - D445,3.179,0.0518,3.127,3.231,3.159,mm2/s,✓ PASS,file_mtime
+Handheld API,YELLOW,None,2026-04-02 14:10,2026-04-02 14:10,24,Warnings in: QC,Diesel - AF25,API Gravity D4052-22,38.37,0.1,38.27,38.47,38.4,API,✓ PASS,file_mtime
+OptiMPP 1,UNKNOWN,None,—,—,168,"Missing data for: QC, TESTING",Cloud CRM,Cloud - D7689,-7.4,2.8,-10.2,-4.6,—,C,—,
+OptiMPP 1,UNKNOWN,None,—,—,168,"Missing data for: QC, TESTING",Pour CRM,Pour Point - D7346,-18.3,6.4,-24.7,-11.9,—,C,—,
+OptiMPP 2,YELLOW,None,2026-04-07 09:53,2026-04-07 10:22,168,Last in-spec QC is stale (cached).,Cloud CRM,Cloud - D7689,-7.4,2.8,-10.2,-4.6,-6.5,C,✓ PASS,parsed
+OptiMPP 2,YELLOW,None,2026-04-07 09:53,2026-04-07 10:22,168,Last in-spec QC is stale (cached).,Pour CRM,Pour Point - D7346,-18.3,6.4,-24.7,-11.9,-18.3,C,✓ PASS,parsed
+BenchTop Bio,UNKNOWN,None,—,2026-01-29 15:36,24,"Missing data for: QC, TESTING",SetaCheck 5%,Bio - D7371,5,0.5,4.5,5.5,—,%,—,file_mtime
+AQUAMAX KF,GREEN,None,2026-04-16 10:53,2026-04-16 10:53,24,System nominal,Diesel - AF25,KF - D6304,32.5,15,17.5,47.5,21.34,mg/kg,✓ PASS,file_mtime
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,API Gravity D4052-22,37.23,0.12,37.11,37.35,—,API,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,IBP - D86,180.8,6.24,174.6,187.1,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,10% - D86,211.9,2.6,209.3,214.5,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,50% - D86,262.6,1.8,260.8,264.4,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,90% - D86,328.2,3.2,325,331.4,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,FBP - D86,357.5,5.52,351.9,363,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,API Grav,63.4,0.3,63.1,63.7,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,IBP - D86,31.86,3.22,28.64,35.08,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,10% - D86,51.68,1.98,49.7,53.66,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,50% - D86,91.06,1.74,89.32,92.8,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,90% - D86,154.2,2.14,152.1,156.3,—,C,—,
+Eraspec NIR,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,FBP - D86,198.1,3.7,194.4,201.8,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,API Gravity D4052-22,37.23,0.12,37.11,37.35,—,API,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,IBP - D86,180.8,6.24,174.6,187.1,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,10% - D86,211.9,2.6,209.3,214.5,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,50% - D86,262.6,1.8,260.8,264.4,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,90% - D86,328.2,3.2,325,331.4,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Diesel - AJ24,FBP - D86,357.5,5.52,351.9,363,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,API Grav,63.4,0.3,63.1,63.7,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,IBP - D86,31.86,3.22,28.64,35.08,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,50% - D86,91.06,1.74,89.32,92.8,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,90% - D86,154.2,2.14,152.1,156.3,—,C,—,
+Eraspec,UNKNOWN,None,—,—,24,"Missing data for: QC, TESTING",Gas - AA25,FBP - D86,198.1,3.7,194.4,201.8,—,C,—,

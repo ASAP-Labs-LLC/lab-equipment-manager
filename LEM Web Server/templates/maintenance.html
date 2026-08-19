@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM — PM &amp; Calibration</title>
+<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<style>
+
+  main{flex:1;display:grid;grid-template-columns:1fr 380px;gap:18px;
+       padding:18px;align-items:start;overflow:auto}
+  .panel{background:#101319;border:1px solid var(--edge);border-radius:14px;
+         padding:14px 16px}
+  .panel h2{font-size:13px;margin-bottom:2px}
+  .panel .sub{color:var(--ink2);font-size:12px;line-height:1.55;
+              margin-bottom:12px}
+
+  .tally{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .chip{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;
+        border:1px solid var(--edge);border-radius:999px;font-size:11.5px;
+        color:var(--ink2)}
+  .chip b{font-family:var(--mono)}
+  .chip.red{border-color:var(--red);color:var(--red)}
+  .chip.yellow{border-color:var(--yellow);color:var(--yellow)}
+  .chip.green{border-color:var(--green);color:var(--green)}
+
+  .row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;
+       align-items:center;padding:10px 0;border-bottom:1px solid var(--edge)}
+  .row:last-child{border-bottom:none}
+  .dot{width:9px;height:9px;border-radius:50%}
+  .nm{font-size:13px;font-weight:600}
+  .meta{color:var(--ink3);font-size:11.5px;margin-top:2px}
+  .meta a{color:var(--ink2)}
+  .kind{display:inline-block;padding:1px 6px;border-radius:5px;font-size:9.5px;
+        font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+        margin-right:6px}
+  .kind.pm{background:#1d2436;color:#8fb2ff}
+  .kind.calibration{background:#2a2136;color:#c79bff}
+
+  .ev{display:grid;grid-template-columns:auto 1fr auto;gap:8px;
+      align-items:baseline;padding:7px 0;border-bottom:1px solid var(--edge);
+      font-size:12px}
+  .ev:last-child{border-bottom:none}
+  .ev .t{color:var(--ink3);font-family:var(--mono);font-size:11px}
+  .scroller{max-height:64vh;overflow-y:auto}
+
+  @media (max-width:900px){
+    main{grid-template-columns:1fr}
+    .scroller{max-height:none}
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+{% include '_nav.html' %}
+<div class="pane">
+  <header class="bar">
+    <h1 class="sign">LEM <b>·</b> PM &amp; Calibration</h1>
+    <span class="spacer"></span>
+    <button class="tool on" id="fKind" data-kind="">All</button>
+    <a class="tool" href="/floor">Map</a>
+    <span class="who" id="who" hidden></span>
+    <button id="btnAuth" class="tool">Sign in</button>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2 class="sign">Scheduled</h2>
+      <p class="sub">Overdue first. Marking one done here records who did it and
+      moves its next due date on from today.</p>
+      <div class="tally" id="tally"></div>
+      <p class="err" id="err"></p>
+      <div id="taskList"><p class="empty">Loading…</p></div>
+    </section>
+
+    <div>
+      <section class="panel" style="margin-bottom:18px">
+        <h2 class="sign">Import history</h2>
+        <p class="sub">Bring past PMs and calibrations in from a spreadsheet.
+        Rows match on the <b>exact</b> equipment name, so start from the
+        template — a typo is the one error this can't recover from. Re-importing
+        the same file changes nothing.</p>
+        <div class="tally">
+          <a class="tool" href="/api/maintenance-import/template.csv">
+            Download template</a>
+          <label class="tool" for="impFile" style="cursor:pointer">
+            Choose CSV…</label>
+          <input id="impFile" type="file" accept=".csv,text/csv" hidden>
+        </div>
+        <div id="impName" class="meta"></div>
+        <div class="tally" id="impActions" hidden>
+          <button class="tool" id="impPreview">Preview</button>
+          <button class="tool" id="impApply">Import</button>
+        </div>
+        <div id="impResult"></div>
+      </section>
+
+      <section class="panel">
+        <h2 class="sign">Recently completed</h2>
+        <p class="sub">Across every instrument.</p>
+        <div class="scroller" id="doneList"><p class="empty">Loading…</p></div>
+      </section>
+    </div>
+  </main>
+
+<script>
+const $ = s => document.querySelector(s);
+// First paint from cache so arriving from another page is instant; every refresh
+// after that goes to the network, because the server serves these from its own
+// in-memory snapshot in well under a millisecond. Calling the cached form on a
+// timer painted a stale answer and only showed the fresh one a tick later.
+let FIRST_PAINT = true;
+
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// Read the status colours from the shared stylesheet rather than keeping a
+// private copy — the private copy is exactly how SERVICE ended up purple on the
+// floor and grey here.
+const cssVar = n => getComputedStyle(document.documentElement)
+  .getPropertyValue(n).trim();
+const COLOR = {GREEN: cssVar('--green'), YELLOW: cssVar('--yellow'),
+               RED: cssVar('--red'), SERVICE: cssVar('--service'),
+               'DEAD-LINE': cssVar('--dead'), UNKNOWN: cssVar('--unknown')};
+const col = s => COLOR[s] || COLOR.UNKNOWN;
+const KINDS = ['', 'pm', 'calibration'];
+const KIND_LABEL = {'': 'All', pm: 'PM only', calibration: 'Calibration only'};
+
+let AUTHED = false, WHO = '', KIND = '';
+
+function paintWho() {
+  const who = $('#who');
+  who.hidden = !AUTHED;
+  who.innerHTML = AUTHED ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
+  $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
+}
+
+function requireAuth() {
+  if (AUTHED) return true;
+  $('#err').textContent = 'Sign in to record a completion.';
+  return false;
+}
+
+async function load() {
+  const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
+  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
+  paintWho();
+
+  const q = KIND ? `?kind=${KIND}` : '';
+  const [now, done] = await Promise.all([
+    (FIRST_PAINT ? LEM.get : LEM.fresh)('/api/maintenance'),
+    (FIRST_PAINT ? LEM.get : LEM.fresh)(`/api/maintenance-history${q}`),
+  ]);
+  FIRST_PAINT = false;
+
+  if (!now) {
+    $('#taskList').innerHTML =
+      '<p class="empty">Can\'t reach LabCore, so there is nothing to show. '
+      + 'This page fills back in when it returns.</p>';
+    $('#doneList').innerHTML = '<p class="empty">&nbsp;</p>';
+    $('#tally').innerHTML = '';
+    return;
+  }
+
+  let tasks = now.tasks || [];
+  if (KIND) tasks = tasks.filter(t => t.kind === KIND);
+  const n = s => tasks.filter(t => t.status === s).length;
+  $('#tally').innerHTML =
+    `<span class="chip red">overdue <b>${n('RED')}</b></span>
+     <span class="chip yellow">due / never done <b>${n('YELLOW')}</b></span>
+     <span class="chip green">scheduled <b>${n('GREEN')}</b></span>`;
+
+  $('#taskList').innerHTML = tasks.length ? tasks.map(t => `
+    <div class="row">
+      <span class="dot" style="background:${col(t.status)};
+            box-shadow:0 0 8px ${col(t.status)}"></span>
+      <div>
+        <div class="nm"><span class="kind ${esc(t.kind)}">${
+          t.kind === 'calibration' ? 'cal' : 'pm'}</span>${esc(t.name)}</div>
+        <div class="meta">
+          <a href="/floor">${esc(t.machine_title)}</a>
+          · every ${t.interval_days} d · ${esc(t.reason)}</div>
+      </div>
+      <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
+    </div>`).join('')
+    : `<p class="empty">Nothing ${KIND ? 'of this kind ' : ''}scheduled
+       anywhere. Add PMs and calibrations from an instrument's record on the
+       <a href="/floor">map</a>.</p>`;
+
+  const hist = (done && done.history) || [];
+  $('#doneList').innerHTML = hist.length ? hist.map(h => `
+    <div class="ev">
+      <span class="kind ${esc(h.kind)}">${
+        h.kind === 'calibration' ? 'cal' : 'pm'}</span>
+      <span>${esc(h.task || '—')}
+        <div class="meta">${esc(h.machine_title)}
+          ${h.by ? `· <b>${esc(h.by)}</b>` : ''}
+          ${h.note ? `· ${esc(h.note)}` : ''}</div></span>
+      <span class="t">${esc(h.completed)}</span>
+    </div>`).join('')
+    : '<p class="empty">Nothing completed yet anywhere.</p>';
+}
+
+// One button cycling All → PM → Calibration: a filter nobody has to discover.
+$('#fKind').addEventListener('click', () => {
+  KIND = KINDS[(KINDS.indexOf(KIND) + 1) % KINDS.length];
+  const b = $('#fKind');
+  b.dataset.kind = KIND;
+  b.textContent = KIND_LABEL[KIND];
+  b.classList.toggle('on', !KIND);
+  load();
+});
+
+$('#btnAuth').addEventListener('click', async () => {
+  if (AUTHED) { await fetch('/api/logout', {method: 'POST'}); return load(); }
+  location.href = '/floor';        // the sign-in dialog lives there
+});
+
+document.addEventListener('click', async e => {
+  const done = e.target.closest('[data-done]');
+  if (!done) return;
+  if (!requireAuth()) return;
+  const note = prompt('Note for this completion (optional):') ?? '';
+  const r = await fetch(
+    `/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
+    {method: 'POST', headers: {'Content-Type': 'application/json'},
+     body: JSON.stringify({note})});
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    $('#err').textContent = b.error || 'Could not record that.';
+    return;
+  }
+  $('#err').textContent = '';
+  LEM.bust('/api/maintenance');
+  load();
+});
+
+// ── importing historic maintenance ──────────────────────────────────────
+// Preview first by default: an import can move schedules, so it can change
+// which machines look overdue. Nobody should find that out afterwards.
+let IMPORT_TEXT = '';
+
+$('#impFile').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  IMPORT_TEXT = await f.text();
+  $('#impName').textContent = `${f.name} — ${IMPORT_TEXT.split(/\r?\n/)
+    .filter(l => l.trim()).length - 1} row(s)`;
+  $('#impActions').hidden = false;
+  $('#impResult').innerHTML = '';
+});
+
+function renderImport(b) {
+  const bits = [];
+  if (b.dry_run) {
+    bits.push(`<p class="sub"><b>Preview only — nothing has been written.</b>
+      ${b.create_count} to add, ${b.skipped} already present.</p>`);
+  } else {
+    bits.push(`<p class="sub"><b style="color:var(--green)">Imported
+      ${b.created}</b> · ${b.skipped} already present.</p>`);
+  }
+  if ((b.reschedule || []).length) {
+    bits.push(`<div class="cap">Schedules moved</div>` + b.reschedule.map(r =>
+      `<div class="ev"><span></span><span>${esc(r.task)}</span>
+       <span class="t">${esc(r.last_done)}</span></div>`).join(''));
+  }
+  if ((b.unmatched || []).length) {
+    bits.push(`<div class="cap" style="color:var(--yellow)">Unmatched
+      equipment — not imported</div>` + b.unmatched.map(u =>
+      `<div class="ev"><span></span><span>line ${u.line}:
+        <b>${esc(u.equipment)}</b></span><span class="t">no such machine</span>
+       </div>`).join(''));
+  }
+  if ((b.errors || []).length) {
+    bits.push(`<div class="cap" style="color:var(--red)">Rows with problems —
+      skipped</div>` + b.errors.map(e =>
+      `<div class="ev"><span></span><span>${e.line ? 'line ' + e.line + ': ' : ''}
+        ${esc(e.error)}</span><span></span></div>`).join(''));
+  }
+  $('#impResult').innerHTML = bits.join('');
+}
+
+async function runImport(dry) {
+  if (!IMPORT_TEXT) return;
+  if (!requireAuth()) return;
+  const r = await fetch(`/api/maintenance-import${dry ? '?dry_run=1' : ''}`,
+    {method: 'POST', headers: {'Content-Type': 'application/json'},
+     body: JSON.stringify({csv: IMPORT_TEXT})});
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#err').textContent = b.error || 'Import failed.'; return; }
+  $('#err').textContent = '';
+  renderImport(b);
+  if (!dry) load();
+}
+
+$('#impPreview').addEventListener('click', () => runImport(true));
+$('#impApply').addEventListener('click', () => runImport(false));
+
+load();
+setInterval(load, 60000);
+LEM.prefetch(['/api/machines', '/api/checklists']);
+</script>
+</div>
+</div>
+</body>
+</html>

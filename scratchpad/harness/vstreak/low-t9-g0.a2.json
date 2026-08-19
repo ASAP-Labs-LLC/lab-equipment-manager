@@ -1,0 +1,456 @@
+{
+  "tag": "low-t9-g0",
+  "cam": "low",
+  "time": "9",
+  "pitchDeg": -7.448,
+  "fovDeg": 42,
+  "skyTopElevDeg": 28.45,
+  "skyRowsUsed": 117,
+  "skyRowRange": [
+    0,
+    116
+  ],
+  "medianSegmentWidth": 969,
+  "skyPixels": 123661,
+  "horizonRow": {
+    "min": 39,
+    "median": 138,
+    "max": 185
+  },
+  "rowRuns": {
+    "R": {
+      "med": 1,
+      "p90": 2,
+      "p99": 6,
+      "max": 8,
+      "frac8": 0,
+      "n": 91756
+    },
+    "G": {
+      "med": 1,
+      "p90": 4,
+      "p99": 8,
+      "max": 96,
+      "frac8": 0.0678,
+      "n": 72101
+    },
+    "B": {
+      "med": 1,
+      "p90": 17,
+      "p99": 57,
+      "max": 230,
+      "frac8": 0.76377,
+      "n": 23229
+    }
+  },
+  "colRuns": {
+    "R": {
+      "med": 1,
+      "p90": 2,
+      "p99": 4,
+      "max": 6,
+      "frac8": 0,
+      "n": 107516
+    },
+    "G": {
+      "med": 1,
+      "p90": 4,
+      "p99": 6,
+      "max": 10,
+      "frac8": 0.00014,
+      "n": 86109
+    },
+    "B": {
+      "med": 1,
+      "p90": 11,
+      "p99": 19,
+      "max": 29,
+      "frac8": 0.59596,
+      "n": 28914
+    }
+  },
+  "lumRowRuns": {
+    "med": 1,
+    "p90": 1,
+    "p99": 6,
+    "max": 8,
+    "frac8": 0,
+    "n": 103829
+  },
+  "lumColRuns": {
+    "med": 1,
+    "p90": 2,
+    "p99": 4,
+    "max": 4,
+    "frac8": 0,
+    "n": 120090
+  },
+  "budget": {
+    "R": {
+      "horizMedSpan": 60,
+      "horizMaxSpan": 69,
+      "vertMedSpan": 31,
+      "vertMaxSpan": 70
+    },
+    "G": {
+      "horizMedSpan": 31,
+      "horizMaxSpan": 45,
+      "vertMedSpan": 24,
+      "vertMaxSpan": 37
+    },
+    "B": {
+      "horizMedSpan": 16,
+      "horizMaxSpan": 31,
+      "vertMedSpan": 10,
+      "vertMaxSpan": 13
+    }
+  },
+  "qStepPredictionPx": {
+    "R": 21.3,
+    "G": 41.3,
+    "B": 80
+  },
+  "lutTexelPx": {
+    "centre": 23,
+    "edge": 33.7
+  },
+  "stepSizeHistogram": {
+    "R": {
+      "1": 81622,
+      "2": 9824,
+      "3": 5,
+      "4": 9,
+      "5": 8,
+      "6": 6,
+      "7": 10,
+      "8": 5,
+      "9": 4,
+      "10": 10,
+      "11": 5,
+      "12": 7,
+      "13": 7,
+      "14": 2,
+      "15": 7,
+      "16": 2,
+      "17": 8,
+      "18": 8,
+      "19": 9,
+      "20": 8,
+      "21": 4,
+      "22": 3,
+      "23": 3,
+      "24": 2,
+      "25": 3,
+      "26": 8,
+      "27": 4,
+      "28": 5,
+      "29": 2,
+      "30": 5,
+      "31": 7,
+      "32": 5,
+      "33": 6,
+      "34": 3,
+      "35": 2,
+      "36": 4,
+      "38": 2,
+      "40": 1,
+      "41": 3,
+      "42": 1
+    },
+    "G": {
+      "1": 71804,
+      "2": 17,
+      "3": 24,
+      "4": 23,
+      "5": 10,
+      "6": 15,
+      "7": 19,
+      "8": 11,
+      "9": 5,
+      "10": 14,
+      "11": 12,
+      "12": 12,
+      "13": 7,
+      "14": 6,
+      "16": 4,
+      "17": 1
+    },
+    "B": {
+      "1": 23058,
+      "2": 48,
+      "3": 6
+    }
+  },
+  "spectra": [
+    {
+      "row": 16,
+      "ch": "R",
+      "width": 1280,
+      "rmsCodes": 0.575,
+      "spectralFlatness": 0.4144,
+      "pctPower20to40px": 10.01,
+      "top": [
+        {
+          "period": 11.13,
+          "pctPower": 9.87
+        },
+        {
+          "period": 11.03,
+          "pctPower": 9.13
+        },
+        {
+          "period": 8.83,
+          "pctPower": 3.12
+        },
+        {
+          "period": 8.77,
+          "pctPower": 2.61
+        },
+        {
+          "period": 6.34,
+          "pctPower": 1.79
+        }
+      ]
+    },
+    {
+      "row": 16,
+      "ch": "G",
+      "width": 1280,
+      "rmsCodes": 0.482,
+      "spectralFlatness": 0.3504,
+      "pctPower20to40px": 19.83,
+      "top": [
+        {
+          "period": 11.13,
+          "pctPower": 8.96
+        },
+        {
+          "period": 11.03,
+          "pctPower": 6.98
+        },
+        {
+          "period": 35.56,
+          "pctPower": 5.19
+        },
+        {
+          "period": 6.34,
+          "pctPower": 3.59
+        },
+        {
+          "period": 34.59,
+          "pctPower": 3.56
+        }
+      ]
+    },
+    {
+      "row": 16,
+      "ch": "B",
+      "width": 1280,
+      "rmsCodes": 0.34,
+      "spectralFlatness": 0.4451,
+      "pctPower20to40px": 25.6,
+      "top": [
+        {
+          "period": 11.13,
+          "pctPower": 2.7
+        },
+        {
+          "period": 41.29,
+          "pctPower": 2.69
+        },
+        {
+          "period": 42.67,
+          "pctPower": 2.51
+        },
+        {
+          "period": 75.29,
+          "pctPower": 2.41
+        },
+        {
+          "period": 11.03,
+          "pctPower": 2.16
+        }
+      ]
+    },
+    {
+      "row": 56,
+      "ch": "R",
+      "width": 969,
+      "rmsCodes": 0.621,
+      "spectralFlatness": 0.3852,
+      "pctPower20to40px": 5.56,
+      "top": [
+        {
+          "period": 11.14,
+          "pctPower": 11.26
+        },
+        {
+          "period": 11.01,
+          "pctPower": 11.09
+        },
+        {
+          "period": 8.81,
+          "pctPower": 4.5
+        },
+        {
+          "period": 6.38,
+          "pctPower": 2.51
+        },
+        {
+          "period": 4.04,
+          "pctPower": 2.41
+        }
+      ]
+    },
+    {
+      "row": 56,
+      "ch": "G",
+      "width": 969,
+      "rmsCodes": 0.463,
+      "spectralFlatness": 0.313,
+      "pctPower20to40px": 16.73,
+      "top": [
+        {
+          "period": 11.14,
+          "pctPower": 11.09
+        },
+        {
+          "period": 11.01,
+          "pctPower": 9.89
+        },
+        {
+          "period": 35.89,
+          "pctPower": 4
+        },
+        {
+          "period": 34.61,
+          "pctPower": 3.19
+        },
+        {
+          "period": 6.38,
+          "pctPower": 3.04
+        }
+      ]
+    },
+    {
+      "row": 56,
+      "ch": "B",
+      "width": 969,
+      "rmsCodes": 0.311,
+      "spectralFlatness": 0.3196,
+      "pctPower20to40px": 14.12,
+      "top": [
+        {
+          "period": 44.05,
+          "pctPower": 5.49
+        },
+        {
+          "period": 69.21,
+          "pctPower": 4.3
+        },
+        {
+          "period": 42.13,
+          "pctPower": 4.24
+        },
+        {
+          "period": 46.14,
+          "pctPower": 3.7
+        },
+        {
+          "period": 57,
+          "pctPower": 3.61
+        }
+      ]
+    },
+    {
+      "row": 96,
+      "ch": "R",
+      "width": 969,
+      "rmsCodes": 0.625,
+      "spectralFlatness": 0.3706,
+      "pctPower20to40px": 4.05,
+      "top": [
+        {
+          "period": 11.14,
+          "pctPower": 13.61
+        },
+        {
+          "period": 11.01,
+          "pctPower": 10.1
+        },
+        {
+          "period": 8.81,
+          "pctPower": 3.53
+        },
+        {
+          "period": 6.33,
+          "pctPower": 2.44
+        },
+        {
+          "period": 6.17,
+          "pctPower": 2.11
+        }
+      ]
+    },
+    {
+      "row": 96,
+      "ch": "G",
+      "width": 969,
+      "rmsCodes": 0.45,
+      "spectralFlatness": 0.3765,
+      "pctPower20to40px": 17.4,
+      "top": [
+        {
+          "period": 11.14,
+          "pctPower": 11.11
+        },
+        {
+          "period": 11.01,
+          "pctPower": 10.19
+        },
+        {
+          "period": 37.27,
+          "pctPower": 6.01
+        },
+        {
+          "period": 35.89,
+          "pctPower": 4.32
+        },
+        {
+          "period": 8.81,
+          "pctPower": 2.77
+        }
+      ]
+    },
+    {
+      "row": 96,
+      "ch": "B",
+      "width": 969,
+      "rmsCodes": 0.287,
+      "spectralFlatness": 0.294,
+      "pctPower20to40px": 10.82,
+      "top": [
+        {
+          "period": 44.05,
+          "pctPower": 7.57
+        },
+        {
+          "period": 42.13,
+          "pctPower": 5.62
+        },
+        {
+          "period": 46.14,
+          "pctPower": 5.38
+        },
+        {
+          "period": 69.21,
+          "pctPower": 4.79
+        },
+        {
+          "period": 74.54,
+          "pctPower": 4.6
+        }
+      ]
+    }
+  ]
+}

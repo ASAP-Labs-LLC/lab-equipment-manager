@@ -1,0 +1,25 @@
+{
+  "machine_green": "#27ae60",
+  "machine_red": "#c0392b",
+  "machine_yellow": "#d4ac0d",
+  "machine_service_bg": "#303030",
+  "machine_service_text": "#c0c0c0",
+  "machine_black": "#000000",
+  "machine_black_text": "#ff6b6b",
+  "machine_default_bg": "#505050",
+  "machine_text_white": "#ffffff",
+  "machine_text_default": "#e0e0e0",
+  "border_color": "#666666",
+  "handle_color": "#808080",
+
+  "maint_overdue_bg": "#aa3333",
+  "maint_due_bg": "#cc6a33",
+  "maint_soon_bg": "#ccaa55",
+  "maint_in_progress_bg": "#4a6a9a",
+  "maint_flash_bg": "#cc6666",
+
+  "status_flash_bg": "#806b00",
+  "status_flash_alt_bg": "#303030"
+  ,"grid_bg": "#1f1f1f"
+  ,"grid_line": "#333333"
+}

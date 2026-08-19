@@ -1,0 +1,147 @@
+/* lem.css — the one shell every LEM page wears.
+ *
+ * Five pages used to hand-roll their own header and their own copy of the
+ * palette, and it drifted: SERVICE went purple and DEAD-LINE got hazard stripes
+ * on the floor while the maintenance page still painted both grey. Anything
+ * shared — colours, the nav rail, buttons, the signed-in pill — lives here and
+ * nowhere else. Page-specific rules stay in the page.
+ */
+
+:root{
+  /* graphite plant deck lit by sodium lamps — a fuels lab at night */
+  --void:#08090c; --floor:#0e1116; --deck:#171b23; --edge:#252b36;
+  --ink:#e8eaef; --ink2:#8e97a8; --ink3:#5d6675;
+  --amber:#ff8a3d; --amber-dim:#7a4420; --brass:#d9a441;
+
+  /* Status. SERVICE is purple so a deliberate human decision never reads as
+     "no data" — grey belongs to UNKNOWN alone. DEAD-LINE's flat red is the
+     fallback for places a stripe pattern can't go (legend swatch, text). */
+  --green:#21c071; --yellow:#f5c542; --red:#f85b5b;
+  --service:#a855f7; --dead:#e2483d; --unknown:#6b7280;
+
+  --ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",monospace;
+  --navw:76px;
+}
+
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--void);color:var(--ink);font-family:var(--ui)}
+
+/* A modal <dialog> is centred by the UA's own margin:auto, which the
+   `*{margin:0}` above wipes — put it back, or every popup sits in a corner. */
+dialog{margin:auto;max-height:min(90vh,900px);overflow:auto}
+
+.sign{font-weight:800;letter-spacing:.18em;text-transform:uppercase;
+      font-stretch:condensed}
+.cap{font-size:9.5px;letter-spacing:.22em;text-transform:uppercase;
+     color:var(--ink3);font-weight:700}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+/* ── the page frame: nav rail on the left, everything else to its right ── */
+.frame{display:grid;grid-template-columns:var(--navw) 1fr;height:100vh}
+.pane{display:flex;flex-direction:column;min-width:0;overflow:hidden}
+
+.navrail{display:flex;flex-direction:column;align-items:stretch;gap:2px;
+         padding:8px 6px;background:linear-gradient(180deg,#12151c,#0b0d12);
+         border-right:1px solid var(--edge);overflow-y:auto}
+.navrail .brand{display:flex;flex-direction:column;align-items:center;gap:2px;
+                padding:6px 0 12px;color:var(--ink);text-decoration:none}
+.navrail .brand b{font-size:13px;font-weight:800;letter-spacing:.14em}
+.navrail .brand span{font-size:8px;letter-spacing:.16em;color:var(--ink3)}
+.navitem{display:flex;flex-direction:column;align-items:center;gap:3px;
+         padding:9px 2px;border:1px solid transparent;border-radius:11px;
+         color:var(--ink3);text-decoration:none;font:700 9px var(--ui);
+         letter-spacing:.1em;text-transform:uppercase;text-align:center}
+/* Monochrome line icons, stroked in currentColor so they take the item's own
+   colour instead of arriving as full-colour OS emoji. */
+.navitem .ic{width:21px;height:21px;display:block}
+.navitem:hover{color:var(--ink2);background:#151a22}
+.navitem.on{color:var(--amber);border-color:var(--amber-dim);background:#1a1410}
+.navitem .badge{font-family:var(--mono);font-size:9px;color:var(--amber)}
+.navrail .grow{flex:1}
+
+/* ── the two rows every page can use ── */
+/* NEVER overflow:hidden on either: this bar carries Sign in and the
+   LabCore-offline warning, and clipping them is how they went missing. */
+.bar{display:flex;align-items:center;gap:10px;padding:0 14px;height:52px;
+     background:linear-gradient(180deg,#12151c,#0c0e13);
+     border-bottom:1px solid var(--edge);flex:none;overflow-x:auto;
+     white-space:nowrap}
+.bar h1{font-size:12.5px}
+.bar .sep{width:1px;height:20px;background:var(--edge);flex:none}
+.spacer{flex:1}
+.tools{display:flex;align-items:center;gap:8px;padding:8px 14px;
+       background:#0c0e13;border-bottom:1px solid var(--edge);flex:none;
+       overflow-x:auto;white-space:nowrap}
+
+.tool{background:#171b23;border:1px solid var(--edge);color:var(--ink2);
+      border-radius:9px;padding:6px 11px;font:600 11.5px var(--ui);
+      letter-spacing:.06em;text-transform:uppercase;cursor:pointer;
+      text-decoration:none;display:inline-flex;align-items:center;gap:6px;
+      white-space:nowrap;flex:none}
+.tool:hover{border-color:var(--amber);color:var(--amber)}
+.tool.on,.tool.live{border-color:var(--amber);color:var(--amber);
+      background:#1a1410}
+.tool.warn{color:#ffb4b4}
+.tool.warn:hover{border-color:var(--red);color:var(--red)}
+
+/* Who is at the bench. A shared screen that doesn't name its operator invites
+   changes nobody will own. */
+.who{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;
+     border:1px solid var(--edge);border-radius:999px;font-size:11px;
+     letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);
+     white-space:nowrap;flex:none}
+.who b{color:var(--green);font-weight:800;letter-spacing:.04em;
+       text-transform:none;font-size:12px}
+.who[hidden]{display:none}
+
+.err{color:var(--red);font-size:12px;min-height:1em}
+.empty{color:var(--ink3);font-size:12.5px;line-height:1.6}
+.link{color:var(--amber)}
+
+input:not([type=checkbox]):not([type=radio]),select,textarea{
+      background:#0f1218;border:1px solid #313747;border-radius:8px;
+      color:var(--ink);padding:6px 9px;font:13px var(--ui);width:100%;
+      /* Without this, macOS and Windows keep drawing their own capsule and most
+         of the palette above is simply ignored — which is what made the checklist
+         editor look like it belonged to a different application. */
+      -webkit-appearance:none;appearance:none}
+/* appearance:none also removes the caret, and a select with no caret reads as a
+   text box. Inline SVG so it needs no extra request and follows the palette. */
+select{padding-right:26px;background-repeat:no-repeat;
+      background-position:right 8px center;background-size:9px 6px;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6'%3E%3Cpath d='M1 1l3.5 3.5L8 1' fill='none' stroke='%238a8f99' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")}
+select:hover{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='9' height='6'%3E%3Cpath d='M1 1l3.5 3.5L8 1' fill='none' stroke='%23ff8a3d' stroke-width='1.5' stroke-linecap='round'/%3E%3C/svg%3E")}
+/* Ticks must NOT take width:100% — a checkbox given it covers its own label,
+   which is what made the assay picker unreadable. */
+input[type=checkbox],input[type=radio]{width:15px;height:15px;flex:0 0 auto;
+      margin:0;padding:0;background:none;border:none;
+      accent-color:var(--amber)}
+
+/* ── phone: the rail becomes a bottom bar, thumb-height ── */
+@media (max-width:760px){
+  .frame{grid-template-columns:1fr;grid-template-rows:1fr auto}
+  .navrail{grid-row:2;flex-direction:row;justify-content:space-around;
+           border-right:none;border-top:1px solid var(--edge);
+           padding:4px 6px;overflow-x:auto}
+  .navrail .brand,.navrail .grow{display:none}
+  .navitem{flex:1;min-width:64px;padding:8px 2px}
+  .pane{grid-row:1}
+}
+
+
+/* ── maximal map view ────────────────────────────────────────────────────
+   A wall display wants the floor and nothing else. One class on <html> hides the
+   nav rail here; the floor page hides its own rails and tool row (its grid, its
+   rules). Kept in CSS rather than JS so no layout maths is duplicated, and so
+   toggling it cannot leave the page half-collapsed. */
+:root.maxmap .navrail{display:none}
+:root.maxmap .frame{grid-template-columns:1fr}
+/* The way back out. Fixed, small, always on top — a view with no visible exit is
+   a trap, and Escape alone is not discoverable.
+   Position and layering ONLY: it carries `.tool` for its appearance, so it looks
+   like every other button and follows the theme instead of a private copy of the
+   palette that drifts from it. Visibility is the `hidden` attribute, not this
+   rule — a cached stylesheet once left it unstyled and therefore on screen. */
+.maxexit{position:fixed;top:10px;right:12px;z-index:200}

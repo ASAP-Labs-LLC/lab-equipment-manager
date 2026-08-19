@@ -1,0 +1,29 @@
+{
+    "header": [
+        "Lab ID",
+        "Flash"
+    ],
+    "data": [
+        {
+            "action": "reorder",
+            "order": [
+                2,
+                11
+            ]
+        }
+    ],
+    "config_folder": "C:\\Users\\Mike Hunter\\csv_parser_configs\\Auto Grabner",
+    "machine_name": "Auto Grabner",
+    "parser_type": "multi",
+    "multi": {
+        "input": "D:/GMF LIMS",
+        "move": "D:/GMF LIMS/Parsed",
+        "output": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Auto Grabner",
+        "output_file": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Auto Grabner\\Auto Grabner_parsed.csv",
+        "delimiter": ";",
+        "has_header": true
+    },
+    "update_interval": 60,
+    "lab_id_prompting": false,
+    "lab_id_column": 1
+}

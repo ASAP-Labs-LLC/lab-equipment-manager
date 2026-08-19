@@ -1,0 +1,252 @@
+{
+  "last_updated": "2025-09-23T09:11:43",
+  "map_locked": true,
+  "poll_minutes": 1,
+  "sample_id_column": "Lab ID",
+  "boxes": [
+    {
+      "uid": "box_1870504657248",
+      "title": "Agilent GC",
+      "pos": [
+        1040.0,
+        600.0
+      ],
+      "size": [
+        440.0,
+        220.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "IBP - D86: - C   \u00b15.56  [160.13, 171.25]",
+        "10% - D86: - C   \u00b12.24  [186.87, 191.35]",
+        "50% - D86: - C   \u00b12.24  [244.43, 248.91]",
+        "90% - D86: - C   \u00b13.8  [328.04, 335.64]",
+        "+1 more\u2026"
+      ]
+    },
+    {
+      "uid": "box_1870507241056",
+      "title": "Multitek NS",
+      "pos": [
+        600.0,
+        600.0
+      ],
+      "size": [
+        200.0,
+        220.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "RED",
+      "reason": "At least one watched test is out of spec or missing.",
+      "lines": [
+        "Sulfur - D5453: 6.943 mg/kg \u2717  \u00b11.7  [7.3, 10.7]"
+      ]
+    },
+    {
+      "uid": "box_1870507241920",
+      "title": "Eraspec",
+      "pos": [
+        560.0,
+        340.0
+      ],
+      "size": [
+        220.0,
+        160.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "API Gravity D4052-22: - API   \u00b10.12  [42.67, 42.91]",
+        "IBP - D86: - C   \u00b15.56  [160.13, 171.25]",
+        "10% - D86: - C   \u00b12.24  [186.87, 191.35]",
+        "50% - D86: - C   \u00b12.24  [244.43, 248.91]",
+        "+2 more\u2026"
+      ]
+    },
+    {
+      "uid": "box_2201765855296",
+      "title": "PAC Flash 2",
+      "pos": [
+        20.0,
+        240.0
+      ],
+      "size": [
+        140.0,
+        80.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "lines": [
+        "Flash - D3828: 61 C \u2713  \u00b12.42  [58.3, 63.14]"
+      ]
+    },
+    {
+      "uid": "box_1840573737440",
+      "title": "Auto Grabner",
+      "pos": [
+        20.0,
+        340.0
+      ],
+      "size": [
+        180.0,
+        80.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "lines": [
+        "Flash - D3828: 60 C \u2713  \u00b12.42  [58.3, 63.14]"
+      ]
+    },
+    {
+      "uid": "box_1840573738448",
+      "title": "Mini Grabner",
+      "pos": [
+        20.0,
+        60.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Flash - D3828: - C   \u00b12.42  [58.3, 63.14]"
+      ]
+    },
+    {
+      "uid": "box_1840573733840",
+      "title": "Multitek S",
+      "pos": [
+        820.0,
+        600.0
+      ],
+      "size": [
+        200.0,
+        220.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Sulfur - D5453: - mg/kg   \u00b11.7  [7.3, 10.7]"
+      ]
+    },
+    {
+      "uid": "box_2096856031904",
+      "title": "PAC Flash 1",
+      "pos": [
+        20.0,
+        140.0
+      ],
+      "size": [
+        140.0,
+        80.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "GREEN",
+      "reason": "All watched tests are within expected ranges.",
+      "lines": [
+        "Flash - D3828: 59 C \u2713  \u00b12.42  [58.3, 63.14]"
+      ]
+    },
+    {
+      "uid": "box_2301728638432",
+      "title": "Viscocity",
+      "pos": [
+        380.0,
+        440.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Viscosity - D445: - mm2/s   \u00b10.0478  [2.1991, 2.2947]"
+      ]
+    },
+    {
+      "uid": "box_2301728342368",
+      "title": "Handheld API",
+      "pos": [
+        800.0,
+        280.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "API Gravity D4052-22: - API   \u00b10.12  [42.67, 42.91]"
+      ]
+    },
+    {
+      "uid": "box_175810797800001",
+      "title": "OptiMPP 1",
+      "pos": [
+        800.0,
+        440.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "RED",
+      "reason": "At least one watched test is out of spec or missing.",
+      "lines": [
+        "Pour Point - D7346: -90.3 C \u2717  \u00b14.6  [-27.6, -18.4]",
+        "Cloud Point - D7689: - C   \u00b11.52  [-13.79, -10.75]"
+      ]
+    },
+    {
+      "uid": "box_175810797800002",
+      "title": "OptiMPP 2",
+      "pos": [
+        800.0,
+        360.0
+      ],
+      "size": [
+        160.0,
+        60.0
+      ],
+      "locked": false,
+      "manual_override": "",
+      "status": "UNKNOWN",
+      "reason": "Insufficient data for one or more tests.",
+      "lines": [
+        "Pour Point - D7346: - C   \u00b14.6  [-27.6, -18.4]",
+        "Cloud Point - D7689: - C   \u00b11.52  [-13.79, -10.75]"
+      ]
+    }
+  ],
+  "maintenance": {
+    "active": [],
+    "tasks": []
+  },
+  "theme_mode": "dark",
+  "ui_scale": 1.68
+}

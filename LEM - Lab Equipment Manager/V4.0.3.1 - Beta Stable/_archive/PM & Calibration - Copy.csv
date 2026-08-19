@@ -1,0 +1,3 @@
+id,box_uid,box_title,name,kind,start_date,repeat_value,repeat_unit,next_due,status,notes
+mt_1767048448609,Agilent GC,,TestTask,pm,2025-12-29,1,months,2026-01-29,UPCOMING,
+mt_1767049152801,Agilent GC,,TestFlow,pm,2025-12-29,1,months,2025-12-29,IN_PROGRESS,

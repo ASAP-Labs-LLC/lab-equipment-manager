@@ -1,0 +1,22 @@
+import {chromium} from 'playwright';
+import fs from 'node:fs';
+const [url, out] = process.argv.slice(2);
+const b = await chromium.launch({headless:true, channel:'chromium', args:['--use-angle=metal','--enable-unsafe-swiftshader']});
+const p = await b.newPage({viewport:{width:800,height:600}});
+await p.goto(url,{waitUntil:'load',timeout:60000});
+await p.waitForFunction(()=>window.__worldReady===true,null,{timeout:45000});
+await p.waitForTimeout(2000);
+const src = await p.evaluate(async ()=>{
+  const THREE = await import('three');
+  const v = window.__lemWorld.subsystems.get('vegetation');
+  let got = null;
+  const m = v.matFar;
+  const prev = m.onBeforeCompile;
+  m.onBeforeCompile = (s, r) => { prev.call(m, s, r); got = s.fragmentShader; };
+  m.needsUpdate = true;
+  window.__lemWorld.engine.renderer.compile(window.__lemWorld.engine.scene, window.__lemWorld.engine.camera);
+  return got;
+});
+fs.writeFileSync(out, src || 'NOTHING');
+console.log(src ? src.length : 'none');
+await b.close();

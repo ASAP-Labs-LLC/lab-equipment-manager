@@ -1,0 +1,16 @@
+import {chromium} from 'playwright';
+const b=await chromium.launch({headless:true,channel:'chromium',args:['--use-angle=metal','--ignore-gpu-blocklist']});
+const p=await (await b.newContext({viewport:{width:1600,height:950}})).newPage();
+const errs=[]; p.on('pageerror',e=>errs.push(String(e).slice(0,160)));
+await p.goto('http://127.0.0.1:5612/floor',{waitUntil:'load',timeout:60000});
+await p.waitForFunction(()=>!!window.__lemWorld,null,{timeout:45000});
+await p.waitForTimeout(13000);
+await p.click('#btnView'); await p.waitForTimeout(1500);
+await p.screenshot({path:'/tmp/plan-view.png'});
+await p.click('#floorSimple .simple-machine');
+await p.waitForTimeout(1000);
+console.log('rail L html length:', await p.evaluate(()=>document.getElementById('railL').innerHTML.length));
+console.log('rail L starts:', await p.evaluate(()=>document.getElementById('railL').textContent.trim().slice(0,60)));
+await p.screenshot({path:'/tmp/plan-picked.png'});
+console.log(errs.length? 'ERRORS: '+errs.slice(0,2).join(' | ') : 'no page errors');
+await b.close();

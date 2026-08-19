@@ -1,0 +1,714 @@
+[16/10/2025 11:59:46] 
+1 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:47] 
+3 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:47] 
+5 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:54] 
+7 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:54] 
+9 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:54] 
+11 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:54] 
+13 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:55] 
+15 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:55] 
+17 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:59] 
+19 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 11:59:59] 
+21 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:07] 
+23 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:07] 
+25 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:08] 
+27 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:08] 
+29 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:10] 
+31 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:10] 
+33 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:11] 
+35 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:11] 
+37 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:11] 
+39 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:11] 
+41 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:13] 
+43 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:13] 
+45 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:19] 
+47 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:19] 
+49 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:21] 
+51 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:21] 
+53 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:29] 
+55 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:29] 
+57 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:30] 
+59 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:30] 
+61 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:30] 
+63 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:30] 
+65 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:31] 
+67 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:31] 
+69 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:32] 
+71 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:32] 
+73 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:33] 
+75 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:33] 
+77 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:34] 
+79 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:34] 
+81 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:34] 
+83 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:34] 
+85 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:36] 
+87 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:36] 
+89 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:37] 
+91 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:37] 
+93 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:40] 
+95 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:40] 
+97 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:41] 
+99 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:41] 
+101 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:47] 
+103 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:47] 
+105 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:47] 
+107 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:47] 
+109 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:47] 
+111 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:47] 
+113 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:48] 
+115 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:48] 
+117 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:49] 
+119 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:49] 
+121 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:51] 
+123 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:51] 
+125 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:56] 
+127 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:56] 
+129 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:56] 
+131 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:56] 
+133 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:59] 
+135 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:00:59] 
+137 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:03] 
+139 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:03] 
+141 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:09] 
+143 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:09] 
+145 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:12] 
+147 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:12] 
+149 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:13] 
+151 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:13] 
+153 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:15] 
+155 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:15] 
+157 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:15] 
+159 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:15] 
+161 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:15] 
+163 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:15] 
+165 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:16] 
+167 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:16] 
+169 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:18] 
+171 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:18] 
+173 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:19] 
+175 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:19] 
+177 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:21] 
+179 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:21] 
+181 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:26] 
+183 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:26] 
+185 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:27] 
+187 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:27] 
+189 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+191 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+193 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+195 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+197 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+199 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+201 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+203 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:29] 
+205 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:30] 
+207 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:30] 
+209 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:31] 
+211 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:31] 
+213 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:50] 
+215 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:50] 
+217 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:52] 
+219 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:52] 
+221 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:55] 
+223 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:55] 
+225 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:57] 
+227 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:57] 
+229 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:58] 
+231 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:58] 
+233 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:59] 
+235 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_WAIT_ON_MASK - Request is used to wait for the occurrence of any wait event specified by using an IOCTL_SERIAL_SET_WAIT_MASK request 
+            Mask - 0x00000100 (EV_RING) 
+---------------------------------------------------------------------------------- 
+[16/10/2025 12:01:59] 
+237 IRP_MJ_DEVICE_CONTROL - Request operates a serial port (COM13) 
+    STATUS_SUCCESS 
+        IOCTL_SERIAL_GET_WAIT_MASK - Request returns the event wait mask that is currently set on a COM port 
+            Mask - 0x00000119 (EV_CTS | EV_DSR | EV_RING | EV_RXCHAR) 
+---------------------------------------------------------------------------------- 

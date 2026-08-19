@@ -1,0 +1,2951 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM — Lab Floor</title>
+<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+{# The floor is a rendered 3D world now. A static `import` cannot carry a
+   version of its own, so the import map is the only place a fingerprint can
+   go — without it a screen holding last week's terrain runs it against this
+   week's renderer. See worldmap() in web_app.py. #}
+<script type="importmap">{{ worldmap()|safe }}</script>
+<style>
+
+  /* ── plant signage: condensed, wide-tracked, stencil-adjacent ── */
+
+  /* ── shell ──
+     The rails used to cost 612px of a 1366px laptop, leaving the map — the
+     point of the page — less than half the width. Slimmer now, and the nav
+     rail lives outside this grid. */
+  .shell{display:grid;grid-template-columns:248px 1fr 252px;flex:1;
+         min-height:0}
+  .bar h1{font-size:12.5px;flex:none}
+  .vt,.simbanner,.offline{white-space:nowrap;flex:none}
+  .bar h1 b{color:var(--amber)}
+  .link{color:var(--ink3);text-decoration:none;font-size:11px;letter-spacing:.08em}
+  .link:hover{color:var(--amber)}
+  /* The bar uses an explicit .spacer now, so the tally neither pushes itself
+     right nor clips what follows it. */
+  .tally{display:flex;gap:9px;align-items:center;white-space:nowrap;flex:none}
+  .tally .t{display:flex;align-items:center;gap:5px;font-size:11px;
+            color:var(--ink2);white-space:nowrap}
+  .tally .d{width:8px;height:8px;border-radius:50%;flex:none}
+  .clock{font-family:var(--mono);font-size:12px;color:var(--ink2);
+         letter-spacing:.06em}
+
+  /* ── rails ── */
+  /* min-height:0 is what makes overflow-y:auto actually work. A grid item's
+     automatic minimum size is its CONTENT height, so without this the rail grows
+     past the viewport, .pane's overflow:hidden clips it, and no scrollbar ever
+     appears — the "3 need attention" list simply could not be scrolled to in a
+     narrow window. Same reason .shell already carries min-height:0. */
+  .rail{background:linear-gradient(180deg,#10131a,#0b0d12);overflow-y:auto;
+        min-height:0;padding:14px 14px 22px}
+  .rail.l{border-right:1px solid var(--edge)}
+  .rail.r{border-left:1px solid var(--edge)}
+  .rail h2{font-size:15px;letter-spacing:.1em;margin-bottom:2px}
+  .railhead{border-bottom:1px solid var(--edge);padding-bottom:10px;margin-bottom:12px}
+  .sect{margin:16px 0 8px}
+  .empty{color:var(--ink3);font-size:12px;line-height:1.6;font-style:italic}
+
+  .statechip{display:inline-flex;align-items:center;gap:8px;padding:5px 11px;
+             border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.12em;
+             text-transform:uppercase;margin-top:8px}
+  .reason{color:var(--ink2);font-size:12px;line-height:1.55;margin-top:9px}
+  .meta{color:var(--ink3);font-size:10.5px;margin-top:8px}
+
+  .qc{border:1px solid var(--edge);border-radius:9px;padding:9px 10px;margin-bottom:8px;
+      background:#0d1015}
+  .qc .n{font-size:11.5px;font-weight:700;margin-bottom:6px}
+  .qc .band{position:relative;height:6px;border-radius:3px;background:#1b2029;
+            margin:8px 0 5px;overflow:hidden}
+  .qc .fill{position:absolute;inset:0;background:linear-gradient(90deg,
+            transparent,rgba(33,192,113,.55),transparent)}
+  .qc .mark{position:absolute;top:-3px;width:2px;height:12px;background:var(--amber);
+            box-shadow:0 0 6px var(--amber)}
+  .qc .lim{display:flex;justify-content:space-between;font-size:9.5px;
+           color:var(--ink3);font-family:var(--mono)}
+  .qc .val{float:right;font-family:var(--mono);font-size:12px}
+
+  .ev{display:grid;grid-template-columns:64px 1fr auto;gap:8px;padding:6px 0;
+      border-bottom:1px solid #161a21;font-size:11.5px;align-items:baseline}
+  .ev .k{font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:800}
+  .ev .t{color:var(--ink3);font-family:var(--mono);font-size:9.5px}
+  .k-run{color:var(--brass)} .k-qc{color:var(--green)}
+  .k-status_change{color:var(--amber)} .k-override{color:var(--red)}
+  .k-comment{color:var(--ink2)} .k-pm,.k-calibration{color:var(--service)}
+
+  /* ── the floor ── */
+  .stage{position:relative;min-height:0;overflow:hidden;background:
+      radial-gradient(120% 90% at 50% 18%,#151a22 0%,var(--floor) 45%,var(--void) 100%)}
+  /* The canvas fills the stage and is sized in CSS only — the engine picks
+     its own backing-store resolution from the quality tier, so a fixed
+     width/height attribute here would fight it every frame. */
+  .stage canvas{position:absolute;inset:0;width:100%;height:100%;display:block;
+                touch-action:none;cursor:grab}
+  .stage canvas:active{cursor:grabbing}
+  /* An author `display` rule beats the `hidden` attribute's UA style, so the
+     canvas has to be told explicitly — without this, `canvas.hidden = true`
+     leaves the 3D view drawn and sitting over the plan, swallowing its clicks. */
+  .stage canvas[hidden]{display:none}
+
+  /* The plain floor plan occupies the same box as the canvas. `hidden` is not
+     enough on an SVG that is also `position:absolute`, so it is turned off
+     explicitly — otherwise it would sit over the 3D view catching every click. */
+  .stage #floorSimple{position:absolute;inset:0;width:100%;height:100%;
+                      display:block;touch-action:none}
+  .stage #floorSimple[hidden]{display:none}
+  /* One instrument in the plan. `.hit` is an invisible polygon over the whole
+     bay, so the pick target is the bay and not whichever polygon of the prism
+     happens to be under the pointer. */
+  .stage #floorSimple .unit{cursor:pointer}
+  .stage #floorSimple .unit .hit{fill:transparent}
+  .stage #floorSimple .unit:focus{outline:none}
+  .stage #floorSimple .unit:focus-visible .plinth{stroke:var(--amber);stroke-width:2.5}
+
+  .tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-118%);
+       transition:opacity .12s ease;z-index:5;min-width:172px}
+  .tip.on{opacity:1}
+  .tip .hd{background:var(--amber);color:#140a03;font-size:10.5px;font-weight:800;
+           letter-spacing:.14em;text-transform:uppercase;padding:4px 10px;
+           border-radius:4px 4px 0 0;white-space:nowrap}
+  .tip .bd{background:rgba(13,16,21,.96);border:1px solid var(--edge);border-top:none;
+           border-radius:0 0 4px 4px;padding:7px 10px}
+  .tip .row{display:flex;justify-content:space-between;gap:14px;font-size:11px;
+            padding:2px 0;color:var(--ink2)}
+  .tip .row b{color:var(--ink);font-family:var(--mono);font-weight:500}
+
+  .legend{position:absolute;left:16px;bottom:14px;display:flex;gap:12px;
+          align-items:center;font-size:10px;color:var(--ink3);
+          background:rgba(8,9,12,.72);padding:7px 12px;border-radius:20px;
+          border:1px solid var(--edge)}
+  .legend i{width:7px;height:7px;border-radius:50%;display:inline-block;
+            margin-right:5px;vertical-align:middle}
+  .hint{position:absolute;right:16px;bottom:14px;font-size:10px;color:var(--ink3);
+        letter-spacing:.1em;text-transform:uppercase}
+
+
+  /* arrange mode */
+  .arrangebar{position:absolute;left:50%;transform:translateX(-50%);bottom:16px;
+              display:none;align-items:center;gap:10px;z-index:12;
+              background:rgba(14,17,23,.96);border:1px solid var(--edge);
+              border-radius:11px;padding:8px 12px;
+              box-shadow:0 18px 50px rgba(0,0,0,.6)}
+  .arrangebar[hidden]{display:none}
+  .arrangebar.on{display:flex}
+  .arrhint{font-size:11px;color:var(--ink2)}
+  :root.arranging .stage canvas{cursor:move}
+
+  /* right-click actions */
+  .menu{position:absolute;display:none;z-index:20;min-width:206px;
+        background:rgba(14,17,23,.98);border:1px solid var(--edge);
+        border-radius:9px;padding:5px;box-shadow:0 18px 50px rgba(0,0,0,.6)}
+  .menu.on{display:block}
+  .menu .mt{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+            color:var(--ink3);padding:6px 10px 7px;border-bottom:1px solid var(--edge);
+            margin-bottom:4px;font-weight:800}
+  .menu button{display:block;width:100%;text-align:left;background:none;border:none;
+               color:var(--ink);font:12px var(--ui);padding:7px 10px;border-radius:6px;
+               cursor:pointer}
+  .menu button:hover{background:#1e2431;color:var(--amber)}
+  .menu button.warn:hover{color:var(--red)}
+  .menu button[disabled]{color:var(--ink3);cursor:default}
+  .menu button[disabled]:hover{background:none;color:var(--ink3)}
+  .menu hr{border:none;border-top:1px solid var(--edge);margin:4px 0}
+
+  /* simulation: unmistakable, so a faked RED is never read as a real one */
+  .simbanner{display:none;align-items:center;gap:8px;font-size:10px;font-weight:800;
+             letter-spacing:.16em;padding:4px 10px;border-radius:20px;
+             background:repeating-linear-gradient(45deg,#3b2a08,#3b2a08 6px,
+                        #2c1f06 6px,#2c1f06 12px);
+             color:var(--brass);border:1px solid #6b4f14}
+  .simbanner.on{display:inline-flex}
+  .offline{display:none;align-items:center;font-size:10px;font-weight:800;
+           letter-spacing:.16em;padding:4px 11px;border-radius:20px;
+           background:rgba(248,91,91,.14);color:var(--red);
+           border:1px solid rgba(248,91,91,.45)}
+  .offline.on{display:inline-flex}
+  /* Age, not alarm: the data is good, just a moment behind. */
+  .stale{display:inline-flex;align-items:center;gap:5px;font-size:10px;
+         font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+         color:var(--ink3);white-space:nowrap;flex:none}
+  .stale b{color:var(--brass);font-family:var(--mono);font-weight:700}
+  .simbanner b{color:#ffce6a;font-weight:800}
+  .debug{position:absolute;right:16px;top:16px;width:246px;display:none;
+         background:rgba(14,17,23,.97);border:1px solid var(--edge);
+         border-radius:12px;padding:12px;box-shadow:0 20px 50px rgba(0,0,0,.6);
+         z-index:15}
+  .debug.on{display:block}
+  .dbghead{display:flex;justify-content:space-between;align-items:center;
+           margin-bottom:8px}
+  .dbghead .x{background:none;border:none;color:var(--ink3);cursor:pointer;
+              font-size:13px}
+  .dbghead .x:hover{color:var(--ink)}
+  .debug button:not(.x){display:block;width:100%;text-align:left;margin-bottom:6px;
+    background:#1a1f28;border:1px solid var(--edge);color:var(--ink);
+    font:12px var(--ui);padding:7px 10px;border-radius:7px;cursor:pointer}
+  .debug button:not(.x):hover{border-color:var(--brass);color:var(--brass)}
+  .debug button.warn:hover{border-color:var(--red);color:var(--red)}
+  .dbgnote{color:var(--ink3);font-size:10.5px;line-height:1.5;margin:6px 0 9px}
+  #simList label{display:flex;gap:9px;align-items:center;padding:6px 9px;
+                 font-size:12.5px;border-radius:6px;cursor:pointer;font-weight:700;
+                 letter-spacing:.06em}
+  #simList label:hover{background:#1b212c}
+  #simList .d{width:9px;height:9px;border-radius:50%}
+
+  /* QC assignment sheet */
+  /* A modal <dialog> is centred by the UA's own `margin:auto` — which the
+     `*{margin:0}` reset above wipes out, pinning every popup to a corner.
+     Put it back explicitly, and cap the height so a long sheet scrolls
+     instead of running off the screen. */
+  dialog{background:#12151c;color:var(--ink);border:1px solid var(--edge);
+         border-radius:14px;padding:0;width:min(520px,94vw);
+         margin:auto;max-height:min(90vh,900px);overflow:auto}
+  dialog::backdrop{background:rgba(0,0,0,.66)}
+  .sheet{padding:16px}
+  .sheet h3{font-size:15px;letter-spacing:.08em;margin-bottom:3px}
+  .sheet p.sub{color:var(--ink2);font-size:12px;line-height:1.55;margin-bottom:12px}
+  .tgt{max-height:46vh;overflow:auto;border:1px solid var(--edge);border-radius:9px;
+       padding:6px}
+  .tgt .grp{font-size:9.5px;letter-spacing:.16em;text-transform:uppercase;
+            color:var(--brass);padding:8px 8px 4px;font-weight:800}
+  .tgt label{display:flex;gap:9px;align-items:center;padding:6px 9px;
+             font-size:12.5px;line-height:1.35;color:var(--ink);
+             border-radius:6px;cursor:pointer}
+  .tgt label span{min-width:0;overflow-wrap:anywhere}
+  .tgt label:hover{background:#1b212c}
+  .tgt label.taken{color:var(--ink3);cursor:default}
+  .sheetfoot{display:flex;justify-content:flex-end;gap:8px;padding:0 16px 16px}
+
+  /* Who is at the bench. A shared screen that doesn't name its operator
+     invites changes nobody will own. */
+  /* ── the instrument record: close button, tabs, scrollable history ── */
+  .railhead{position:relative}
+  .railx{position:absolute;top:0;right:0;width:26px;height:26px;
+         background:#171b23;border:1px solid var(--edge);border-radius:8px;
+         color:var(--ink2);font:700 12px var(--ui);cursor:pointer;
+         display:flex;align-items:center;justify-content:center}
+  .railx:hover{border-color:var(--amber);color:var(--amber)}
+  .tabs{display:flex;gap:6px;margin:12px 0 4px}
+  .tab{flex:1;background:#12151c;border:1px solid var(--edge);
+       color:var(--ink3);border-radius:9px;padding:7px 4px;
+       font:800 9.5px var(--ui);letter-spacing:.14em;text-transform:uppercase;
+       cursor:pointer}
+  .tab:hover{color:var(--ink2)}
+  .tab.on{border-color:var(--amber);color:var(--amber);background:#1a1410}
+  .railact{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .railact .tool{flex:1 1 auto;font-size:10.5px;padding:6px 8px}
+  /* Completions accumulate for years; give them their own scroll rather than
+     letting one machine's history push everything else off the panel. */
+  .scroller{max-height:34vh;overflow-y:auto;
+            border:1px solid var(--edge);border-radius:10px;padding:4px 6px}
+  .k-pm{background:#1d2436;color:#8fb2ff}
+  .k-calibration{background:#2a2136;color:#c79bff}
+  .authgrid{display:grid;gap:10px}
+  .days{display:flex;gap:6px;flex-wrap:wrap}
+  .days label{display:flex;align-items:center;gap:6px;padding:5px 9px;
+        border:1px solid var(--edge);border-radius:999px;font-size:11.5px;
+        cursor:pointer;color:var(--ink2)}
+  .days label.on{border-color:var(--amber);color:var(--amber)}
+  .hol{display:flex;justify-content:space-between;align-items:center;gap:8px;
+       padding:5px 0;font-size:12.5px;border-bottom:1px solid var(--edge)}
+  .hol .d{color:var(--ink3);font-variant-numeric:tabular-nums}
+  .author{display:flex;align-items:center;gap:10px;color:var(--ink3);
+          font-size:10px;letter-spacing:.16em;text-transform:uppercase}
+  .author::before,.author::after{content:"";flex:1;height:1px;
+          background:var(--edge)}
+
+  @media (prefers-reduced-motion:no-preference){
+    .flow{stroke-dasharray:5 9;animation:flow 1.4s linear infinite}
+    @keyframes flow{to{stroke-dashoffset:-14}}
+    .beacon.alert{animation:pulse 1.5s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.34}}
+  }
+  /* QC editor bits shared by the standards dialogs */
+  dialog.wide{width:min(880px,96vw)}
+  .sheet .row{display:flex;gap:10px}
+  .two-up{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  label.fl{color:var(--ink2);font-size:11px;display:block;margin-bottom:4px}
+  /* Text fields fill their cell. Ticks must NOT: a checkbox given
+     width:100% plus padding covers the label it belongs to, which is what
+     made the assay picker unreadable. */
+  .tgrid{display:grid;grid-template-columns:2.4fr 1fr 1fr .7fr 1fr 40px;
+         gap:6px;align-items:center}
+  .tgrid.thead{color:#6e7480;font-size:9.5px;letter-spacing:.8px;
+               text-transform:uppercase;margin-bottom:5px}
+  .trow{margin-bottom:6px}
+  .trow .assay{background:#0f1218;border:1px solid #313747;border-radius:7px;
+               padding:6px 9px;font-size:12px;overflow:hidden;
+               text-overflow:ellipsis;white-space:nowrap;width:100%;
+               text-align:left;color:var(--ink);font-family:var(--ui);
+               cursor:pointer}
+  .trow .assay:hover{border-color:var(--amber);color:var(--amber)}
+  .trow .assay:empty::before{content:"choose an assay…";color:var(--ink3)}
+  .sheet .sub{color:var(--ink2);font-size:12px;line-height:1.55;margin:6px 0 12px}
+
+  /* ── maximal map: the floor, and only the floor ──
+     The tally stays: hiding how many instruments need attention would make this
+     a screensaver rather than a view. The stage keeps min-height:0 so it still
+     shrinks to its grid cell. */
+  :root.maxmap .rail{display:none}
+  :root.maxmap .tools{display:none}
+  :root.maxmap .shell{grid-template-columns:1fr}
+  :root.maxmap .bar{padding:6px 12px}
+  :root.maxmap .bar h1{font-size:11px}
+  :root.maxmap .hint{display:none}
+
+  /* ── phone / tablet: the floor on top, its data underneath ── */
+  @media (max-width:900px){
+    body{overflow:auto}
+    .shell{display:flex;flex-direction:column;height:auto;min-height:100vh}
+    .bar{position:sticky;top:0;z-index:30;flex-wrap:wrap;gap:8px;
+         padding:8px 10px;height:auto}
+    .bar h1{font-size:12px;width:100%}
+    .clock{display:none}
+    .tally{margin-left:0;width:100%;gap:10px;flex-wrap:wrap}
+    .stage{order:1;height:46vh;min-height:280px;flex:none}
+    /* The page scrolls here (body{overflow:auto} above), so the rails must NOT
+       trap it in a nested scroller — but they still need min-height:0 to keep
+       the desktop rule from clipping them mid-transition. */
+    .rail{order:2;border:none;border-top:1px solid var(--edge);
+          max-height:none;min-height:0;overflow:visible;padding:12px 14px}
+    .rail.l{order:2} .rail.r{order:3}
+    .legend{left:8px;bottom:8px;gap:8px;padding:5px 9px;font-size:9px}
+    .hint{display:none}
+    .debug{right:8px;top:8px;width:calc(100% - 16px);max-width:280px}
+    dialog,dialog.wide{width:96vw}
+    .two-up{grid-template-columns:1fr}
+    .tgrid{grid-template-columns:1fr 1fr 1fr;gap:5px}
+    .tgrid.thead{display:none}
+    .trow .assay{grid-column:1/-1}
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+{% include '_nav.html' %}
+<div class="pane">
+  {# Two rows on purpose. Nineteen controls in one 52px bar with
+     overflow:hidden silently ate Sign in and the LabCore-offline warning on any
+     narrow window; global chrome and page tools were fighting for one row. #}
+  <header class="bar">
+    <h1 class="sign">LEM <b>·</b> Floor</h1>
+    <span id="offline" class="offline">⚠ LABCORE OFFLINE</span>
+    <span id="stale" class="stale" hidden></span>
+    <span id="simBanner" class="simbanner">SIMULATION · display only
+      <b id="simCount"></b></span>
+    <span class="spacer"></span>
+    <div class="tally" id="tally"></div>
+    <span class="sep"></span>
+    <span class="who" id="who" hidden></span>
+    <button id="btnAuth" class="tool">Sign in</button>
+    <div class="clock num" id="clock"></div>
+  </header>
+
+  <button class="tool maxexit" id="btnMaxExit" hidden
+          title="Leave the maximal map view (Esc)">✕ Exit max map</button>
+
+  <div class="tools">
+    <button id="btnQc" class="tool">QC samples</button>
+    <button id="btnHours" class="tool"
+            title="Working days and holidays — when silence is expected">Lab hours</button>
+    <a class="tool" id="btnExport" href="/api/export/qc.csv"
+       title="Every QC check across the lab, as CSV">Export</a>
+    <span class="sep"></span>
+    <button id="btnMax" class="tool"
+            title="Maximal map — hide the side panels (Esc to leave)"
+            aria-label="Maximal map view">⤢ Max map</button>
+    <button id="btnLock" class="tool" title="Lock or unlock the floor layout">🔒 Locked</button>
+    <button id="btnArrange" class="tool"
+            title="Move instruments around the site, or lay the whole floor out at once">⇄ Arrange</button>
+    <button id="btnView" class="tool"
+            title="Switch between the 3D site and the plain floor plan. The plain
+view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦ View</button>
+    <button id="btnQuality" class="tool"
+            title="Rendering quality — remembered on this screen">◐ Quality</button>
+    <span class="spacer"></span>
+    <button id="btnDebug" class="tool" title="Simulate states and traffic">Debug</button>
+  </div>
+
+  <div class="shell">
+
+  <aside class="rail l" id="railL">
+    <div class="empty">Pick an instrument on the floor to open its record.</div>
+  </aside>
+
+  <main class="stage" id="stage">
+    <canvas id="world" aria-label="Lab floor — a 3D view of the site"></canvas>
+    <!-- The plain floor plan. Same instruments, same statuses, same clicks —
+         drawn as flat blocks instead of a rendered site, for a machine that
+         cannot afford the 3D view or an operator who simply wants the boxes
+         back. Hidden until asked for, and the 3D renderer is STOPPED while it
+         is showing, which is the point of it. -->
+    <svg id="floorSimple" preserveAspectRatio="xMidYMid meet"
+         aria-label="Lab floor — plain floor plan" hidden></svg>
+    <noscript><p class="empty" style="padding:20px">The floor needs
+      JavaScript and WebGL. Every instrument is still listed on the
+      <a class="link" href="/stations">Stations</a> page.</p></noscript>
+    <div class="tip" id="tip"></div>
+    <div class="legend" id="legend"></div>
+    <div class="hint" id="hint">click an instrument · right-click for actions</div>
+    <div class="menu" id="menu"></div>
+
+    <!-- Arrange mode. Dragging an instrument always worked, but only if you
+         knew the map had a shared lock and that a building could be dragged at
+         all. This says so, shows the bays, and offers to lay the whole floor
+         out at once — which is what someone rearranging sixteen instruments
+         actually wants. -->
+    <div class="arrangebar" id="arrangeBar" hidden>
+      <span class="cap">Arranging</span>
+      <span class="arrhint">drag an instrument to move it · it snaps to a bay</span>
+      <span class="sep"></span>
+      <button class="tool" id="arrGrid" title="Roomy grid with an aisle between ranks">Grid</button>
+      <button class="tool" id="arrCompact" title="As square as the fleet allows — shortest rail runs">Compact</button>
+      <button class="tool" id="arrRow" title="A single rank">Row</button>
+      <span class="sep"></span>
+      <button class="tool live" id="arrDone">Done</button>
+    </div>
+
+    <div class="debug" id="debug">
+      <div class="dbghead">
+        <span class="cap" style="color:var(--brass)">Debug · simulate</span>
+        <button id="dbgClose" class="x">✕</button>
+      </div>
+      <p class="dbgnote">Nothing here is written to LabCore. Simulated states
+      live in this tab only and clear on reload.</p>
+      <button id="dbgTraffic">Send one result from every instrument</button>
+      <button id="dbgStorm">Flood the pipes (4 each)</button>
+      <button id="dbgRandom">Randomise every status</button>
+      <button id="dbgAllGreen">Set everything GREEN</button>
+      <button id="dbgClear" class="warn">Clear all simulation</button>
+      <p class="dbgnote">Per-instrument: right-click it on the floor.</p>
+    </div>
+  </main>
+
+  <!-- Rendering quality. Remembered per screen in localStorage: a wall display
+       is set up once and left, and making someone walk the tier down by hand on
+       every reload is not a setting. Picking one also switches the adaptive
+       ladder off — the operator has told us what the machine can take. -->
+  <dialog id="qualDlg">
+    <div class="sheet">
+      <h3 class="sign">Rendering quality</h3>
+      <p class="sub">Remembered on this screen only. <b>Automatic</b> measures
+      the frame and steps itself down when it has to; pick a level to stop it
+      moving. Lower levels drop roughness maps and texture resolution first —
+      the forest keeps its extent at every level, because a thinner world is a
+      worse answer than a slightly softer one.</p>
+      <div class="tgt" id="qualList"></div>
+
+      <h3 class="sign" style="margin-top:18px">Render resolution</h3>
+      <p class="sub">Separate from quality, and your choice. Quality decides how
+      much <b>work</b> a frame is — shadows, lighting, vegetation. Resolution
+      decides how <b>sharp</b> it is. They used to be bundled, so asking for a
+      cheaper level also quietly dropped the resolution: <b>Floor</b> was
+      rendering 36% of the pixels on your screen and stretching them back up.
+      <b>Full</b> now means your screen's real resolution, not a scaled one —
+      on a Retina display that is twice the pixels in each direction.</p>
+      <p class="sub"><b>One thing this cannot sharpen:</b> each quality level
+      also loads its textures at a different size, and that is decided when the
+      world is built — Ultra 100%, High 75%, Medium 50%, Low 35%,
+      <b>Floor 25%</b>. So Floor at Full resolution draws crisp geometry with
+      quarter-size surfaces on it. Changing quality here re-applies the
+      lighting immediately; the textures follow on the next reload.</p>
+      <div class="tgt" id="resList"></div>
+      <p class="sub" id="resNow" style="margin-top:6px"></p>
+
+      <h3 class="sign" style="margin-top:18px">Frame cadence</h3>
+      <p class="sub">If the site looks like it is hitching even though the frame
+      rate seems fine, this is usually why. When a frame costs slightly more
+      than one refresh of your monitor, the browser alternates between showing
+      it after one refresh and after two — measured here, 55% of frames arrived
+      after one and 41% after two. The average looks healthy and the motion
+      stutters. Chrome shows this more readily than Safari does.
+      Holding a slower but <b>steady</b> cadence fixes it: capping to 60 took
+      the frame-to-frame jitter down by three and a half times.</p>
+      <div class="tgt" id="capList"></div>
+      <p class="err" id="qualErr"></p>
+    </div>
+    <div class="sheetfoot"><button class="tool" id="qualClose">Done</button></div>
+  </dialog>
+
+  <dialog id="qcLib" class="wide">
+    <div class="sheet">
+      <div class="row" style="justify-content:space-between;align-items:baseline">
+        <h3 class="sign">QC samples</h3>
+        <button class="tool" id="qcNew">New standard</button>
+      </div>
+      <p class="sub">A standard is defined once and shared by every instrument.
+      When a lot runs out, use <b>Changeover</b> — the new lot inherits these
+      specs and every machine checked against the old lot moves with it.</p>
+      <div id="qcLibList"></div>
+    </div>
+    <div class="sheetfoot"><button class="tool" id="qcLibClose">Close</button></div>
+  </dialog>
+
+  <dialog id="sampleDlg" class="wide">
+    <div class="sheet">
+      <h3 class="sign" id="sampleHead">Edit standard</h3>
+      <div class="two-up">
+        <div><label class="fl">Name</label><input id="sName" placeholder="Cloud CRM"></div>
+        <div><label class="fl">Sample ID (Lab ID)</label><input id="sLabId" placeholder="CP"></div>
+      </div>
+      <p class="sub" style="margin:8px 0 4px">Instruments detect QC by matching
+      this Lab ID against the print.</p>
+      <label class="fl" style="margin-top:10px;display:block">Tests</label>
+      <div class="tgrid thead"><div>Assay</div><div>Expected</div><div>Std dev</div>
+        <div>k</div><div>Units</div><div></div></div>
+      <div id="sampleTests"></div>
+      <button class="tool" id="addTests" style="margin-top:8px">+ Add assays…</button>
+      <p class="err" id="sampleErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool warn" id="sampleDelete">Delete</button>
+      <span style="flex:1"></span>
+      <button class="tool" id="sampleCancel">Cancel</button>
+      <button class="tool live" id="sampleSave">Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="assayDlg">
+    <div class="sheet">
+      <h3 class="sign" id="assayTitle">Select assays</h3>
+      <p class="sub" id="assayHint">Tick every method this standard covers.</p>
+      <input id="assayFilter" placeholder="Filter LabCore methods…">
+      <div class="tgt" id="assayList" style="margin-top:10px"></div>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="assayCancel">Cancel</button>
+      <button class="tool live" id="assayAdd">Add checked</button>
+    </div>
+  </dialog>
+
+  <dialog id="schedDlg">
+    <div class="sheet">
+      <h3 class="sign">Lab hours</h3>
+      <p class="sub">When the lab is shut, a module that stops checking in is
+      <b>idle</b>, not stopped. Without this every Monday opened on a wall of
+      red for instruments that behaved perfectly all weekend.</p>
+      <label class="fl">Working days</label>
+      <div class="days" id="schedDays"></div>
+      <div class="two-up" style="margin-top:12px">
+        <div><label class="fl" for="schedOpens">Opens</label>
+          <input id="schedOpens" placeholder="07:00 — blank for all day"></div>
+        <div><label class="fl" for="schedCloses">Closes</label>
+          <input id="schedCloses" placeholder="18:00 — blank for all day"></div>
+      </div>
+      <label class="fl" style="margin-top:14px;display:block">Holidays</label>
+      <div id="schedHols"></div>
+      <div class="tgrid" style="grid-template-columns:1fr 1.6fr auto;
+           margin-top:8px">
+        <input id="holDay" type="date">
+        <input id="holName" placeholder="e.g. Thanksgiving">
+        <button class="tool live" id="holAdd">Add</button>
+      </div>
+      <p class="err" id="schedErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="schedClose">Close</button>
+      <button class="tool live" id="schedSave">Save hours</button>
+    </div>
+  </dialog>
+
+  <dialog id="authDlg">
+    <form class="sheet" id="authForm" method="dialog">
+      <h3 class="sign">Sign in</h3>
+      <p class="sub">Your LabCore account — the same one as LabStation and
+      LabEntry.</p>
+      <div class="authgrid">
+        <div><label class="fl" for="auUser">Username</label>
+          <input id="auUser" name="username" autocomplete="username"></div>
+        <div><label class="fl" for="auPass">Password</label>
+          <input id="auPass" name="password" type="password"
+                 autocomplete="current-password"></div>
+      </div>
+      <p class="author">or swipe your card</p>
+      <div><label class="fl" for="auCard">Card</label>
+        <input id="auCard" placeholder="Scan your card — it signs you straight in"
+               autocomplete="off"></div>
+      <p class="err" id="auErr"></p>
+    </form>
+    <div class="sheetfoot">
+      <button class="tool" id="auCancel">Cancel</button>
+      <button class="tool live" id="auGo">Sign in</button>
+    </div>
+  </dialog>
+
+  <dialog id="coDlg">
+    <div class="sheet">
+      <h3 class="sign">Changeover — <span id="coOld"></span></h3>
+      <p class="sub">The new lot inherits every test spec, and machines
+      checked against the old lot move to it.</p>
+      <label class="fl">New lot name</label><input id="coName">
+      <label class="fl" style="margin-top:8px">New Sample ID (Lab ID)</label>
+      <input id="coId">
+      <label style="display:flex;gap:8px;align-items:center;margin-top:12px;
+                    font-size:12.5px;color:var(--ink2)">
+        <input type="checkbox" id="coRetire"> Retire the old lot
+      </label>
+      <p class="err" id="coErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="coCancel">Cancel</button>
+      <button class="tool live" id="coGo">Change over</button>
+    </div>
+  </dialog>
+
+  <!-- Correction factors. An offset added to the RAW reading before it is judged,
+       so it decides pass/fail — which is why the dialog states the arithmetic and
+       every change is audited with who/from/to. -->
+  <dialog id="corrDlg" class="wide">
+    <div class="sheet">
+      <h3 class="sign">Correction factors — <span id="corrTitle"></span></h3>
+      <p class="sub">Added to the raw reading of <b>every measurement</b> this
+      instrument reports — customer samples as well as QC:
+      <b>corrected = raw + correction</b>. The corrected value is what gets
+      reported; the raw reading is kept in the record. Leave at 0 for no
+      correction. The bench picks the change up on its next poll.</p>
+      <div id="corrBody"></div>
+      <p class="err" id="corrErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="corrClose">Done</button>
+    </div>
+  </dialog>
+
+  <dialog id="maintDlg" class="wide">
+    <div class="sheet">
+      <h3 class="sign">PM &amp; calibration — <span id="maintTitle"></span></h3>
+      <p class="sub">Scheduled here, evaluated on the instrument. An overdue
+      task turns its pill red and pulls the machine down with it.</p>
+      <div id="maintList"></div>
+      <div class="tgrid" style="grid-template-columns:2.2fr 1fr 1fr auto;
+           margin-top:12px">
+        <input id="mName" placeholder="e.g. Annual calibration">
+        <select id="mKind"><option value="pm">PM</option>
+          <option value="calibration">Calibration</option></select>
+        <input id="mDays" type="number" min="1" value="30" title="Repeat every N days">
+        <button class="tool live" id="mAdd">Add</button>
+      </div>
+      <p class="err" id="maintErr"></p>
+    </div>
+    <div class="sheetfoot"><button class="tool" id="maintClose">Close</button></div>
+  </dialog>
+
+  <dialog id="simSheet">
+    <div class="sheet">
+      <h3 class="sign">Simulate status — <span id="simTitle"></span></h3>
+      <p class="sub">Changes how this instrument looks on the floor. LabCore
+      keeps reporting its real state underneath.</p>
+      <div class="tgt" id="simList"></div>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="simCancel">Cancel</button>
+      <button class="tool live" id="simApply">Apply</button>
+    </div>
+  </dialog>
+
+  <dialog id="qcSheet">
+    <div class="sheet">
+      <h3 class="sign">QC for <span id="qcTitle"></span></h3>
+      <p class="sub">Tick the standards this instrument is checked against. With
+      nothing ticked it falls back to detecting any standard it happens to run.</p>
+      <div class="tgt" id="qcList"></div>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="qcCancel">Cancel</button>
+      <button class="tool live" id="qcSave">Save assignment</button>
+    </div>
+  </dialog>
+
+  <aside class="rail r" id="railR">
+    <div class="empty">Loading lab activity…</div>
+  </aside>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+// SERVICE is purple so it reads as a deliberate human decision rather than
+// "no data" — grey belongs to UNKNOWN alone. DEAD-LINE wears hazard stripes on
+// the site itself (world/labels.js); this is its flat fallback, for the places
+// a pattern cannot go — a 1px legend swatch, a chip, a text colour.
+const COLOR = {GREEN:'#21c071', YELLOW:'#f5c542', RED:'#f85b5b',
+               SERVICE:'#a855f7', 'DEAD-LINE':'#e2483d', UNKNOWN:'#6b7280'};
+// Every string this page writes into innerHTML goes through esc() — instrument
+// titles and QC reasons come from LabCore, and a stray angle bracket in one of
+// them must not be able to write markup into the floor.
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const col = s => COLOR[s] || COLOR.UNKNOWN;
+let MACHINES = [], SAMPLES = [], selected = null;
+// What the two rails were last drawn from — see panelSignature/feedSignature.
+let PANEL_SIG = '', FEED_SIG = '';
+let seenRuns = null;
+let LABCORE_UP = true;
+
+// ── simulation ──────────────────────────────────────────────────────────
+// Display-only. Nothing here touches LabCore: overrides live in this tab,
+// vanish on reload, and the floor wears a banner while any are set, so a
+// simulated RED can never be mistaken for a real one.
+const SIM = {status: {}, on: false};
+const applySim = list => list.map(m => SIM.status[m.machine_uid]
+  ? {...m, status: SIM.status[m.machine_uid], reason: 'Simulated state — not from LabCore.'}
+  : m);
+function simOn() { return Object.keys(SIM.status).length > 0 || SIM.on; }
+let AUTHED = false, WHO = '', LOCKED = true, dragging = null, moved = false;
+
+// ── the world ───────────────────────────────────────────────────────────
+// The floor used to be an SVG drawing built here: a projection, a prism
+// routine, and a `drawFloor()` that rebuilt every instrument as polygons on
+// every change. It is a rendered 3D site now — see /static/world/ — and this
+// is the whole seam between that world and this page.
+//
+// `drawFloor()` and `spawnBlip()` deliberately keep their names. Eighteen call
+// sites in this file already mean "the floor changed, show it" and "a print was
+// parsed, show it leaving" — which is still exactly what they mean. Only what
+// happens on the other side changed.
+let WORLD = null;
+// Which of the two views is showing — see setView, far below. Declared up here
+// with the rest of the state rather than beside its button, because drawFloor()
+// has to ask, and a `let` read before its declaration is evaluated is a
+// ReferenceError rather than an undefined.
+let VIEW = 'site';
+
+function drawFloor() {
+  // The plan is a drawing, not a renderer: it holds whatever it was last built
+  // from, so a status that changed while it is showing has to rebuild it. Cheap
+  // — about two hundred nodes for the whole floor — and it only runs while the
+  // plan is the visible view.
+  if (VIEW === 'plan') drawSimpleFloor();
+  // The world module is deferred, so the first `load()` can easily land before
+  // it exists. Nothing is lost: `attach()` pushes the current state the moment
+  // it does, and every later change comes back through here anyway.
+  if (!WORLD) return;
+  WORLD.setLocked(LOCKED || !AUTHED);
+  WORLD.setMachines(MACHINES);
+  WORLD.setSelected(selected ? selected.machine_uid : null);
+}
+
+// One print parsed, one train out of that instrument's station and down the
+// line to the LabCore terminal.
+function spawnBlip(uid, labId) {
+  if (WORLD) WORLD.parse(uid, labId || '');
+}
+
+// Everything the world needs from this page, and everything this page needs
+// from the world. It lives on `window` because the world loads as a module and
+// this file is a classic script — a module cannot see a `let` declared here.
+window.__floorBridge = {
+  attach(world) {
+    WORLD = world;
+    drawFloor();
+    /* Apply the remembered view once the world exists, so a bench PC that
+     * chose the plan keeps it — and so `engine.stop()` has something to
+     * stop. `remember:false` because reading a preference is not setting one. */
+    setView(storedView(), {remember: false});
+    // A wall display left on the maximal view starts with the rails hidden, so
+    // the canvas is a different size than it was when the engine measured it.
+    setTimeout(() => world.engine.resize(), 0);
+  },
+
+  onSelect(uid) {
+    if (!uid) return deselect();
+    const m = MACHINES.find(x => x.machine_uid === uid);
+    if (m) select(m);
+  },
+
+  onContext(uid, evt) {
+    const m = MACHINES.find(x => x.machine_uid === uid);
+    if (m) openMenu(m, evt);
+  },
+
+  onHover(uid, at) {
+    if (!uid || !at || dragging) return hideTip();
+    const m = MACHINES.find(x => x.machine_uid === uid);
+    if (m) showTip(m, at);
+  },
+
+  // Dragging an instrument to a new bay. The rule is unchanged: signed in, map
+  // unlocked, snapped to a whole bay, written straight back to the server.
+  async onMove(uid, gx, gy) {
+    const m = MACHINES.find(x => x.machine_uid === uid);
+    if (!m) return;
+    m.pos = [gx, gy];
+    drawFloor();
+    const r = await fetch(
+      `/api/machines/${encodeURIComponent(uid)}/position`,
+      {method: 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({x: gx, y: gy})});
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      alert(b.error || 'Could not save the new position.');
+    }
+    dragging = null;
+    setTimeout(() => { moved = false; }, 80);
+    load();
+  },
+
+  setDragging(uid) { dragging = uid ? {uid} : null; moved = true; hideTip(); },
+
+  canDrag: () => !LOCKED && AUTHED,
+};
+
+// When this instrument last ran a control. `effective_specs` is the only list
+// that carries it: qc_specs is a human's per-machine override and is usually
+// empty, and qc_targets is an assignment with no result attached. The newest
+// across its checks is what "last QC" means to someone looking at the map.
+function lastQcAt(m) {
+  let newest = '';
+  for (const spec of (m && m.effective_specs) || []) {
+    const at = (spec && spec.last_qc_at) || '';
+    if (at && at > newest) newest = at;
+  }
+  return newest;
+}
+
+// What the open instrument panel is showing. load() repaints it only when this
+// changes: `select()` rebuilds the whole rail, so repainting on every 2s poll
+// snapped the open tab back to QC, lost the scroll position, and reflashed
+// "Loading…" in the trend. Timestamps that only move because a bench checked in
+// are deliberately absent — a push saying the same thing is not a change.
+function panelSignature(m) {
+  if (!m) return '';
+  return JSON.stringify([
+    m.machine_uid, m.status, m.reason, m.state, m.live, m.watching,
+    m.last_activity, m.sub_statuses,
+    (m.effective_specs || []).map(s =>
+      [s.test_name, s.low, s.high, s.last_qc_at, s.last_qc_value,
+       s.last_qc_in_spec]),
+    (m.qc_specs || []).map(s => [s.test_name, s.expected, s.std_dev, s.k]),
+    (m.qc_targets || []).map(t => [t.sample, t.test]),
+  ]);
+}
+
+// `at` is a viewport point — the pointer, or the world's own projection of the
+// instrument. The tip is positioned inside .stage, so it has to come back to
+// stage-relative coordinates.
+function showTip(m, at) {
+  const stage = $('#stage').getBoundingClientRect();
+  const px = at.x - stage.left, py = at.y - stage.top;
+  const spec = (m.qc_specs || [])[0];
+  $('#tip').innerHTML = `
+    <div class="hd">${esc(m.title)}</div>
+    <div class="bd">
+      <div class="row"><span>Status</span><b style="color:${col(m.status)}">${esc(m.status)}</b></div>
+      <div class="row"><span>QC checks</span><b>${
+        ((m.effective_specs || []).length || (m.qc_specs || []).length
+         || (m.qc_targets || []).length) || '—'}</b></div>
+      <div class="row"><span>Module</span><b style="color:${
+        m.module_state === 'running' ? 'var(--green)'
+        : m.module_state === 'closed' ? 'var(--ink2)' : 'var(--red)'}">${
+        m.module_state === 'running' ? 'running'
+        : m.module_state === 'closed' ? 'idle · lab closed' : 'not running'}</b></div>
+      <div class="row"><span>Last data</span><b>${esc(ago(m.last_activity))}</b></div>
+      <div class="row"><span>Last QC</span><b>${
+        lastQcAt(m) ? esc(ago(lastQcAt(m))) : '—'}</b></div>
+      ${spec ? `<div class="row"><span>${esc(spec.test_name.slice(0, 16))}</span>
+        <b>${Number(spec.low).toFixed(1)}…${Number(spec.high).toFixed(1)}</b></div>` : ''}
+    </div>`;
+  const tip = $('#tip');
+  tip.style.left = px + 'px'; tip.style.top = py + 'px';
+  tip.classList.add('on');
+}
+const hideTip = () => $('#tip').classList.remove('on');
+
+// ── QC control chart ────────────────────────────────────────────────────
+// A pill says "green now"; this says "green, and drifting toward the limit
+// for a week" — which is the thing that actually catches an instrument
+// before it fails.
+async function drawTrend(m) {
+  const box = $('#trend');
+  const b = await fetch(`/api/machines/${encodeURIComponent(m.machine_uid)}/qc-trend`)
+    .then(r => r.json()).catch(() => null);
+  if (!b || !b.series.length) {
+    box.innerHTML = '<p class="empty">No QC results recorded yet.</p>';
+    return;
+  }
+  // A control chart's X axis is TIME. Spacing points evenly by index hid
+  // exactly what the chart exists to show: a month-old result sat as far from
+  // its neighbour as one an hour later, so drift and gaps were invisible.
+  // The limits are labelled on the Y edge where they belong — printed at the
+  // bottom corners they read as an X range, which is what they looked like.
+  const dayLabel = iso => {
+    const d = new Date(iso);
+    return isNaN(d) ? '' : `${d.getDate()}/${d.getMonth() + 1}`;
+  };
+  box.innerHTML = b.series.map(s => {
+    const W = 250, H = 62, padL = 30, padR = 6, padT = 5, padB = 12;
+    const lo = Number(s.low), hi = Number(s.high);
+    const pts = s.points;
+    const vals = pts.map(p => p.value);
+    // Scale to the band, widened to hold any excursion outside it.
+    const min = Math.min(lo, ...vals), max = Math.max(hi, ...vals);
+    const span = (max - min) || 1;
+    const times = pts.map(p => {
+      const t = Date.parse(p.ts);
+      return isNaN(t) ? null : t;
+    });
+    const known = times.filter(t => t !== null);
+    const t0 = known.length ? Math.min(...known) : 0;
+    const t1 = known.length ? Math.max(...known) : 0;
+    const usable = t1 > t0;
+    const plotW = W - padL - padR;
+    // Fall back to even spacing only when the timestamps can't separate the
+    // points (one result, or several inside the same instant).
+    const x = i => padL + (pts.length < 2 ? plotW
+      : usable && times[i] !== null
+        ? ((times[i] - t0) / (t1 - t0)) * plotW
+        : (i * plotW) / (pts.length - 1));
+    const y = v => H - padB - ((v - min) / span) * (H - padB - padT);
+    const inBand = `M ${padL} ${y(hi)} L ${W - padR} ${y(hi)} `
+                 + `L ${W - padR} ${y(lo)} L ${padL} ${y(lo)} Z`;
+    const line = pts.map((p, i) =>
+      `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(' ');
+    const last = pts[pts.length - 1];
+    const axis = usable
+      ? `${dayLabel(pts[0].ts)} → ${dayLabel(last.ts)}`
+      : (dayLabel(last.ts) || 'single result');
+    return `
+      <div class="qc" style="margin-bottom:9px">
+        <div class="n">${esc(s.test_name)}
+          <span class="val" style="color:${last.in_spec ? 'var(--green)' : 'var(--red)'}">
+            ${last.value}</span></div>
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:62px;display:block">
+          <path d="${inBand}" fill="rgba(33,192,113,.10)"/>
+          <line x1="${padL}" y1="${y(s.expected)}" x2="${W - padR}" y2="${y(s.expected)}"
+                stroke="#5b6675" stroke-width=".8" stroke-dasharray="3 4"/>
+          <!-- Y axis: the spec band, labelled at the edge it belongs to -->
+          <text x="${padL - 3}" y="${y(hi) + 2.6}" text-anchor="end"
+                font-size="6.5" fill="#6e7480">${hi.toFixed(1)}</text>
+          <text x="${padL - 3}" y="${y(s.expected) + 2.6}" text-anchor="end"
+                font-size="6.5" fill="#8e97a8">${Number(s.expected).toFixed(1)}</text>
+          <text x="${padL - 3}" y="${y(lo) + 2.6}" text-anchor="end"
+                font-size="6.5" fill="#6e7480">${lo.toFixed(1)}</text>
+          <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H - padB}"
+                stroke="#252b36" stroke-width=".8"/>
+          <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}"
+                stroke="#252b36" stroke-width=".8"/>
+          <path d="${line}" fill="none" stroke="var(--amber)" stroke-width="1.4"
+                stroke-linejoin="round"/>
+          ${pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}"
+             r="${i === pts.length - 1 ? 3 : 2}"
+             fill="${p.in_spec ? 'var(--green)' : 'var(--red)'}"><title>${
+             esc(p.ts || '')} — ${p.value}</title></circle>`).join('')}
+        </svg>
+        <div class="lim"><span class="num">${esc(axis)}</span>
+          <span>${s.runs} run${s.runs === 1 ? '' : 's'}${s.failures
+            ? ` · <b style="color:var(--red)">${s.failures} out of spec</b>` : ''}</span>
+          <span>${s.sample_id ? 'std ' + esc(s.sample_id) : ''}</span></div>
+      </div>`;
+  }).join('');
+}
+
+function moduleStateText(m) {
+  if (m.module_state === 'running') {
+    return '<span style="color:var(--green)">running</span>'
+      + (m.last_poll ? ' · checked in ' + esc(ago(m.last_poll)) : '');
+  }
+  if (m.module_state === 'stopped') {
+    return '<span style="color:var(--red)">stopped</span> · last checked in '
+      + esc(ago(m.last_poll));
+  }
+  if (m.module_state === 'closed') {
+    return '<span style="color:var(--ink2)">idle</span> · '
+      + esc(m.closed_reason || 'lab closed').replace(/^Lab closed — /, '')
+      + ' · last checked in ' + esc(ago(m.last_poll));
+  }
+  return '<span style="color:var(--ink3)">not checking in</span>';
+}
+
+// Say plainly what is wrong, in the order an operator would check it.
+// "No data" has three very different causes and they need different actions.
+function diagnosis(m) {
+  const warn = (colour, text) =>
+    `<div class="reason" style="color:var(--${colour})">${text}</div>`;
+  const parsed = m.last_activity && silentFor(m) < 1e6;
+  // A shut lab is not a fault. Say so and stop, or every Monday opens on a
+  // wall of red for instruments that behaved perfectly all weekend.
+  if (m.module_state === 'closed') {
+    return warn('ink2', `${esc(m.closed_reason || 'Lab closed')} — this ` +
+      `module is expected to be quiet. Nothing to do.`);
+  }
+  if (m.module_state === 'stopped') {
+    return warn('red',
+      `Its LabStation module stopped checking in ${esc(ago(m.last_poll))}. ` +
+      `Nothing will be recorded until it is running again.`);
+  }
+  if (m.module_state === 'unknown') {
+    const never = !parsed || silentFor(m) > 48;
+    return warn(never ? 'red' : 'yellow',
+      `No data for ${Math.floor(silentFor(m))} h and this module has never ` +
+      `checked in. Either it is an older build, it was replaced by another ` +
+      `module instance, or it is not running on its LabStation.` +
+      (never ? ` Nothing has ever been parsed here — likely a leftover ` +
+               `registration you can delete.` : ''));
+  }
+  if (!parsed || silentFor(m) > 6) {
+    return warn('yellow',
+      `Module is running but has parsed nothing for ${Math.floor(silentFor(m))} h. ` +
+      `Check its source${m.watching ? ` (${esc(m.watching)})` : ''} — the ` +
+      `instrument may simply be idle.`);
+  }
+  if (!(m.qc_targets || []).length) {
+    return warn('ink2', `Parsing fine, but no QC standard is assigned — ` +
+      `that is why it reads UNKNOWN. Right-click → Assign QC samples.`);
+  }
+  return '';
+}
+
+// Hours since this instrument last logged anything at all.
+function silentFor(m) {
+  const t = m.last_activity || m.updated_at;
+  if (!t) return Infinity;
+  return (Date.now() - new Date(t).getTime()) / 3600000;
+}
+
+function ago(iso) {
+  if (!iso) return '—';
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s / 60) + 'm ago';
+  if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+  return Math.floor(s / 86400) + 'd ago';
+}
+
+// QC reaches an instrument THREE ways, and the panel has to read all three or
+// it tells you nothing is assigned while the bench is being actively judged:
+//   effective_specs — lem_machine_specs, what the module actually resolved and
+//                     is applying, with the band it judges against. Preferred,
+//                     because it is the only one that reflects reality: most QC
+//                     here is matched from the shared standards at runtime, so
+//                     neither table below has a row for it. (Live, 2026-08-03:
+//                     qc_specs had 0 rows while both Flash units were checking
+//                     Flash Point against 63.72 ± 2·1.05.)
+//   qc_specs        — lem_qc_specs, a human's per-machine override. Usually empty.
+//   qc_targets      — lem_machine_targets, what was assigned from the floor.
+function qcChecksHtml(m) {
+  const eff = m.effective_specs || [];
+  const specs = m.qc_specs || [], targets = m.qc_targets || [];
+  if (eff.length) {
+    return eff.map(s => {
+      const lo = Number(s.low), hi = Number(s.high), v = s.last_qc_value;
+      // Where the last reading sits in the band, so the mark means something.
+      const at = (v == null || !(hi > lo)) ? null
+        : Math.max(0, Math.min(100, ((Number(v) - lo) / (hi - lo)) * 100));
+      const ok = s.last_qc_in_spec;
+      const col = ok === true ? 'var(--green)'
+                : ok === false ? 'var(--red)' : 'var(--ink3)';
+      return `
+      <div class="qc">
+        <div class="n">${esc(s.test_name)}<span class="val">${
+          v == null ? '—' : Number(v).toFixed(2)} ${esc(s.units || '')}</span></div>
+        <div class="band"><div class="fill"></div>${
+          at == null ? '' :
+          `<div class="mark" style="left:${at}%;background:${col};
+                box-shadow:0 0 6px ${col}"></div>`}</div>
+        <div class="lim"><span>min ${lo.toFixed(2)}</span>
+          <span>target ${Number(s.expected).toFixed(2)}</span>
+          <span>max ${hi.toFixed(2)}</span></div>
+        <div class="lim" style="margin-top:3px">
+          <span>${esc(s.sample_id) ? 'sample ' + esc(s.sample_id) : ''}${
+            s.correction ? ` · <b style="color:var(--brass)">correction ${
+              Number(s.correction) > 0 ? '+' : ''}${
+              Number(s.correction).toFixed(2)}</b>` : ''}</span>
+          <span style="color:${col}">${
+            ok === true ? 'in spec' : ok === false ? 'OUT OF SPEC'
+            : 'not yet measured'}${
+            s.last_qc_at ? ' · ' + esc(s.last_qc_at.slice(0, 16).replace('T', ' '))
+                         : ''}</span></div>
+      </div>`;
+    }).join('');
+  }
+  if (specs.length) {
+    return specs.map(s => `
+      <div class="qc">
+        <div class="n">${esc(s.test_name)}<span class="val">${
+          Number(s.expected).toFixed(2)} ${esc(s.units || '')}</span></div>
+        <div class="band"><div class="fill"></div>
+          <div class="mark" style="left:50%"></div></div>
+        <div class="lim"><span>${Number(s.low).toFixed(2)}</span>
+          <span>sample ${esc(s.sample_id) || '—'}</span>
+          <span>${Number(s.high).toFixed(2)}</span></div>
+      </div>`).join('');
+  }
+  if (targets.length) {
+    return targets.map(t => `
+      <div class="qc">
+        <div class="n">${esc(t.test)}
+          <span class="val" style="color:var(--ink2)">${esc(t.sample)}</span></div>
+        <div class="lim"><span>limits come from the standard</span></div>
+      </div>`).join('')
+      + `<p class="empty" style="padding-top:6px">Checked whenever that
+         standard's Lab ID runs on this instrument.</p>`;
+  }
+  return `<p class="empty">No QC assigned. Right-click the instrument, or use
+          <b>Assign QC samples</b>, to check it against a standard.</p>`;
+}
+
+// Getting OUT of an instrument has to be as easy as getting in: click the
+// empty deck, or the ✕ on the record.
+function deselect() {
+  if (!selected) return;
+  selected = null;
+  drawFloor();
+  renderOverview();
+  renderFeed();
+}
+
+async function select(m) {
+  selected = m;
+  // Record what this drawing was made from, so the next refresh does not
+  // immediately rebuild the rail the operator just opened.
+  PANEL_SIG = panelSignature(m);
+  drawFloor();
+  const c = col(m.status);
+  $('#railL').innerHTML = `
+    <div class="railhead">
+      <button class="railx" id="railClose" title="Back to the whole floor"
+              aria-label="Close this instrument">✕</button>
+      <div class="cap">Instrument</div>
+      <h2 class="sign">${esc(m.title)}</h2>
+      <div class="statechip" style="background:${c}22;color:${c}">
+        <span style="width:8px;height:8px;border-radius:50%;background:${c};
+              box-shadow:0 0 8px ${c}"></span>${esc(m.status)}
+      </div>
+      <div class="reason">${esc(m.reason)}</div>
+      <div class="meta num">last data ${esc(ago(m.last_activity))}</div>
+      <div class="meta num">module ${moduleStateText(m)}</div>
+      ${m.watching ? `<div class="meta num" style="opacity:.75">watching ${esc(m.watching)}</div>` : ''}
+      <div class="meta num" style="opacity:.5">${esc(m.machine_uid)}</div>
+      ${diagnosis(m)}
+    </div>
+    <div class="tabs" role="tablist">
+      <button class="tab on" data-tab="qc" role="tab">QC</button>
+      <button class="tab" data-tab="maint" role="tab">PM &amp; CAL</button>
+      <button class="tab" data-tab="sop" role="tab">SOPs</button>
+    </div>
+
+    <div class="tabpane" id="tab-qc">
+      <div class="cap sect">QC control chart</div>
+      <div id="trend"><p class="empty">Loading…</p></div>
+      <div class="cap sect">QC checks on this instrument</div>
+      ${qcChecksHtml(m)}
+      <div class="railact">
+        <button class="tool" id="actQc">Assign QC samples…</button>
+        <button class="tool" id="actQcLib">QC standards library…</button>
+      </div>
+    </div>
+
+    <div class="tabpane" id="tab-maint" hidden>
+      <div class="cap sect">Scheduled</div>
+      <div id="maintNow"><p class="empty">Loading…</p></div>
+      <div class="railact">
+        <button class="tool" id="actAddPm">Add PM…</button>
+        <button class="tool" id="actAddCal">Add calibration…</button>
+      </div>
+      <div class="cap sect">Completed</div>
+      <div class="scroller" id="maintDone"><p class="empty">Loading…</p></div>
+    </div>
+
+    <div class="tabpane" id="tab-sop" hidden>
+      <div class="cap sect">Standard operating procedures</div>
+      <p class="empty">No SOPs attached to this instrument yet. This tab is a
+      placeholder — nothing is stored or uploaded here.</p>
+    </div>`;
+
+  $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
+    <h2 class="sign">Recent activity</h2></div>
+    <p class="empty">Loading…</p>`;
+  $('#railClose').addEventListener('click', deselect);
+  // The actions that used to be right-click only. Right-click still works.
+  $('#actQc').addEventListener('click', () => openQcSheet(m));
+  $('#actQcLib').addEventListener('click', () => $('#btnQc').click());
+  $('#actAddPm').addEventListener('click', () => openMaint(m, 'pm'));
+  $('#actAddCal').addEventListener('click', () => openMaint(m, 'calibration'));
+  $$('#railL .tab').forEach(t => t.addEventListener('click', () => {
+    $$('#railL .tab').forEach(x => x.classList.toggle('on', x === t));
+    ['qc', 'maint', 'sop'].forEach(name => {
+      $(`#tab-${name}`).hidden = name !== t.dataset.tab;
+    });
+    if (t.dataset.tab === 'maint') loadMaintPanel(m);
+  }));
+
+  drawTrend(m);
+  const r = await fetch(`/api/machines/${encodeURIComponent(m.machine_uid)}/events?limit=60`);
+  const body = await r.json().catch(() => ({}));
+  const evs = body.events || [];
+  $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
+    <h2 class="sign">Recent activity</h2></div>` + (evs.length ? evs.map(e => `
+    <div class="ev">
+      <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
+      <span>${esc(e.lab_id || '')} ${esc((e.test_name || '').slice(0, 22))}
+        ${e.value ? `<b class="num">${esc(e.value)}</b>` : ''}</span>
+      <span class="t">${esc((e.ts || '').slice(11, 16))}</span>
+    </div>`).join('')
+    : '<p class="empty">Nothing logged yet for this instrument.</p>');
+}
+
+function renderTally() {
+  const counts = {};
+  MACHINES.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
+  const order = ['RED', 'YELLOW', 'GREEN', 'SERVICE', 'DEAD-LINE', 'UNKNOWN'];
+  $('#tally').innerHTML = order.filter(s => counts[s]).map(s =>
+    `<span class="t"><i class="d" style="background:${col(s)}"></i>${counts[s]} ${s.toLowerCase()}</span>`
+  ).join('');
+  $('#legend').innerHTML = order.map(s =>
+    `<span><i style="background:${col(s)}"></i>${s.toLowerCase()}</span>`).join('');
+}
+
+let FIRST_LOAD = true;
+
+async function load() {
+  // A slow first call (LabCore waking up) must not blank the floor — keep the
+  // last good picture and try again.
+  //
+  // The FIRST paint comes from the client cache, so arriving from another page is
+  // instant instead of staring at "Connecting…". Every refresh after that goes
+  // straight to the network: the server already holds the floor in memory and
+  // answers in well under a millisecond, so a client cache on a 30s timer just
+  // painted a stale answer and showed the fresh one a cycle later.
+  const via = FIRST_LOAD ? LEM.get : LEM.fresh;
+  FIRST_LOAD = false;
+  const [m, s] = await Promise.all([
+    via('/api/machines'),
+    via('/api/qc-samples'),
+  ]);
+  if (!m) {
+    if (!MACHINES.length) {
+      $('#railL').innerHTML = `<div class="railhead"><div class="cap">Floor</div>
+        <h2 class="sign">Connecting…</h2></div>
+        <p class="empty">Waiting on LabCore.</p>`;
+      setTimeout(load, 2500);
+    }
+    return;
+  }
+  // An empty list right after a floor that had instruments means LabCore
+  // hiccupped, not that the lab emptied out — keep the picture and retry.
+  const fresh = m.machines || [];
+  if (!fresh.length && MACHINES.length) { setTimeout(load, 2500); return; }
+  // ?sim=RED | DEAD-LINE | random — preset the simulation for a demo or a
+  // screenshot without clicking through the menus. Display only, as ever.
+  const simParam = new URLSearchParams(location.search).get('sim');
+  if (simParam && !Object.keys(SIM.status).length && fresh.length) {
+    fresh.forEach((m, i) => {
+      SIM.status[m.machine_uid] = simParam === 'random'
+        ? STATUSES[i % STATUSES.length] : simParam.toUpperCase();
+    });
+  }
+  // Two different facts, shown differently. "OFFLINE" means LabCore could not be
+  // reached at all. A snapshot that is merely old — because the read queued behind
+  // the lab's writes — says so with its age instead. Conflating them had the floor
+  // flashing OFFLINE while it was visibly still updating, which just teaches
+  // everyone to ignore the banner.
+  LABCORE_UP = m.labcore_online !== false;
+  $('#offline').classList.toggle('on', !LABCORE_UP);
+  showStaleness(m);
+  MACHINES = applySim(fresh);
+  SAMPLES = (s && s.samples) || SAMPLES;
+  const [me, mp] = await Promise.all([
+    fetch('/api/me').then(r => r.json()).catch(() => null),
+    fetch('/api/map').then(r => r.json()).catch(() => null),
+  ]);
+  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
+  if (mp) LOCKED = !!mp.locked;
+  paintTools();
+  paintDebug();
+  if (selected) selected = MACHINES.find(x => x.machine_uid === selected.machine_uid) || null;
+  renderTally();
+  drawFloor();
+  // Repaint the open instrument only when what it shows has actually changed.
+  // `select()` replaces the whole rail, so calling it on every refresh snapped
+  // the tab back to QC, threw away the scroll position and reflashed the trend
+  // — a blink on the old 30s timer, a flicker at 2s. Same idea as the
+  // signature guard in lem.js: decide what "changed" means, then honour it.
+  if (selected) {
+    const sig = panelSignature(selected);
+    if (sig !== PANEL_SIG) { PANEL_SIG = sig; select(selected); }
+  } else {
+    PANEL_SIG = '';
+    renderOverview();
+    renderFeed();
+  }
+}
+
+// The right rail earns its space when nothing is selected: everything the
+// lab has done lately, newest first, so the floor is worth watching.
+// The activity rail's content. Same reason as panelSignature: renderFeed()
+// replaces #railR outright, so repainting it on an unchanged list flickers the
+// lab's activity every couple of seconds for no new information.
+function feedSignature(events) {
+  return JSON.stringify((events || []).map(
+    e => [e.machine_uid, e.ts, e.kind, e.lab_id]));
+}
+
+async function renderFeed() {
+  const b = await fetch('/api/events?limit=60').then(r => r.json())
+    .catch(() => null);
+  const titles = Object.fromEntries(MACHINES.map(m => [m.machine_uid, m.title]));
+  const evs = (b && b.events) || [];
+  const sig = feedSignature(evs);
+  if (sig === FEED_SIG) return;     // nothing new happened in the lab
+  FEED_SIG = sig;
+  $('#railR').innerHTML = `<div class="railhead"><div class="cap">Lab activity</div>
+    <h2 class="sign">Latest</h2></div>` + (evs.length ? evs.map(e => {
+      let extra = '';
+      try {
+        const d = JSON.parse(e.detail || '{}');
+        if (e.kind === 'run' && d.values) {
+          extra = Object.entries(d.values).slice(0, 1)
+            .map(([k, v]) => `${esc(k.slice(0, 18))} ${esc(v)}`).join('');
+        } else if (e.kind === 'qc') {
+          extra = `<b style="color:${d.in_spec ? 'var(--green)' : 'var(--red)'}">
+            ${d.in_spec ? 'pass' : 'fail'}</b>`;
+        } else if (d.to) { extra = esc(d.to); }
+        else if (d.comment || d.note) { extra = esc((d.comment || d.note).slice(0, 26)); }
+      } catch (_) {}
+      return `<div class="ev">
+        <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
+        <span>${esc(titles[e.machine_uid] || e.machine_uid.slice(0, 8))}
+          <span style="color:var(--ink3)">${esc(e.lab_id || '')}</span> ${extra}</span>
+        <span class="t">${esc(ago(e.ts))}</span></div>`;
+    }).join('')
+    : '<p class="empty">Nothing has happened yet today.</p>');
+}
+
+function renderOverview() {
+  if (!MACHINES.length) {
+    $('#railL').innerHTML = LABCORE_UP
+      ? `<div class="railhead"><div class="cap">Floor</div>
+         <h2 class="sign">No instruments</h2></div>
+         <p class="empty">Nothing has reported yet. Add the LEM module to a
+         machine's LabStation and let it poll once.</p>`
+      : `<div class="railhead"><div class="cap">Floor</div>
+         <h2 class="sign" style="color:var(--red)">LabCore offline</h2></div>
+         <p class="empty">Can't reach LabCore, so there is nothing to show.
+         Instruments keep parsing and queue their results locally — this
+         view fills back in when LabCore is up.</p>`;
+    return;
+  }
+  const attention = MACHINES.filter(m => ['RED', 'YELLOW'].includes(m.status));
+  const unset = MACHINES.filter(m => !(m.qc_specs || []).length
+    && !(m.effective_specs || []).length
+    && !(m.qc_targets || []).length);
+  $('#railL').innerHTML = `
+    <div class="railhead">
+      <div class="cap">Floor</div>
+      <h2 class="sign">${MACHINES.length} instruments</h2>
+      <div class="reason">${attention.length
+        ? `<b style="color:var(--amber)">${attention.length}</b> need attention.`
+        : 'None flagged. Pick an instrument for its record.'}</div>
+    </div>
+    ${attention.length ? `<div class="cap sect">Needs attention</div>` +
+      attention.map(m => `
+      <div class="qc" style="cursor:pointer" data-pick="${esc(m.machine_uid)}">
+        <div class="n">${esc(m.title)}
+          <span class="val" style="color:${col(m.status)}">${esc(m.status)}</span></div>
+        <div class="lim"><span>${esc(m.reason.slice(0, 44))}</span></div>
+      </div>`).join('') : ''}
+    ${(() => {
+      const dead = MACHINES.filter(m => m.module_state === 'stopped');
+      const quiet = MACHINES.filter(m => m.module_state === 'unknown');
+      const idle = MACHINES.filter(m => m.module_running && silentFor(m) > 6);
+      return (dead.length ? `<div class="cap sect">Module stopped</div>
+        <p class="empty">${dead.map(m => esc(m.title)).join(' · ')} —
+        was checking in, now silent.</p>` : '')
+        + (quiet.length ? `<div class="cap sect">Not checking in</div>
+        <p class="empty">${quiet.map(m => esc(m.title)).join(' · ')} —
+        no heartbeat and no recent data. Older module build, replaced, or
+        not running.</p>` : '')
+        + (idle.length ? `<div class="cap sect">Running but idle</div>
+        <p class="empty">${idle.map(m =>
+          `${esc(m.title)} (${Math.floor(silentFor(m))} h)`).join(' · ')} —
+        module alive, no prints parsed.</p>` : '');
+    })()}
+    ${unset.length ? `<div class="cap sect">Awaiting QC setup</div>
+      <p class="empty">${unset.map(m => esc(m.title)).join(' · ')} — no QC checks
+      configured, so they read UNKNOWN.</p>` : ''}`;
+  document.querySelectorAll('[data-pick]').forEach(n => n.addEventListener('click',
+    () => select(MACHINES.find(m => m.machine_uid === n.dataset.pick))));
+}
+
+// ── QC standards library (was the Stations page) ────────────────────────
+let TESTS = [], editingSample = null;
+
+function requireAuth() {
+  if (AUTHED) return true;
+  openAuth('Sign in to make changes.');
+  return false;
+}
+
+async function loadTests() {
+  const b = await fetch('/api/test-names').then(r => r.json()).catch(() => null);
+  TESTS = (b && b.tests) || [];
+}
+
+function renderQcLib() {
+  $('#qcLibList').innerHTML = SAMPLES.length ? SAMPLES.map(s => `
+    <div class="qc" style="margin-bottom:10px">
+      <div class="n">${esc(s.name)}
+        <span style="color:var(--accent)">· ${esc(s.sample_id_val)}</span>
+        <span class="val">
+          <button class="tool" data-editsample="${esc(s.name)}">Edit</button>
+          <button class="tool" data-changeover="${esc(s.name)}">Changeover</button>
+        </span></div>
+      ${(s.tests || []).map(t => `<div class="lim" style="padding:3px 0">
+        <span>${esc(t.name)}</span>
+        <span>${Number(t.low).toFixed(2)} … ${Number(t.high).toFixed(2)} ${esc(t.units || '')}</span>
+      </div>`).join('') || '<div class="lim"><span>No tests yet.</span></div>'}
+    </div>`).join('')
+    : '<p class="empty">No standards yet. Add one, then assign it to instruments.</p>';
+}
+
+$('#btnQc').addEventListener('click', async () => {
+  if (!TESTS.length) await loadTests();
+  renderQcLib();
+  $('#qcLib').showModal();
+});
+$('#qcLibClose').addEventListener('click', () => $('#qcLib').close());
+
+function addTestRow(t) {
+  const row = document.createElement('div');
+  row.className = 'tgrid trow';
+  const assay = (t && (t.value_col || t.name)) || '';
+  // The assay is a control, not a caption: repointing a row at a different
+  // LabCore method used to mean deleting it and adding another.
+  row.innerHTML = `<button type="button" class="assay" data-pickassay
+      data-assay="${esc(assay)}"
+      title="${esc(assay)} — click to change assay">${esc(assay)}</button>
+    <input class="c-exp" type="number" step="any" value="${t ? t.expected : 0}">
+    <input class="c-sd" type="number" step="any" min="0" value="${t ? t.std_dev : 0.5}">
+    <input class="c-k" type="number" step="any" min="0.1" value="${t ? t.k : 2}">
+    <input class="c-un" value="${t ? esc(t.units || '') : ''}">
+    <button class="tool warn" data-rmrow>✕</button>`;
+  $('#sampleTests').appendChild(row);
+}
+
+function openSample(sample) {
+  editingSample = sample ? sample.name : null;
+  $('#sampleHead').textContent = sample ? 'Edit standard' : 'New standard';
+  $('#sName').value = sample ? sample.name : '';
+  $('#sLabId').value = sample ? sample.sample_id_val : '';
+  $('#sampleTests').innerHTML = '';
+  (sample ? sample.tests || [] : []).forEach(addTestRow);
+  $('#sampleDelete').style.display = sample ? '' : 'none';
+  $('#sampleErr').textContent = '';
+  $('#sampleDlg').showModal();
+}
+$('#qcNew').addEventListener('click', () => openSample(null));
+$('#sampleCancel').addEventListener('click', () => $('#sampleDlg').close());
+
+document.addEventListener('click', async e => {
+  const rm = e.target.closest('[data-rmrow]');
+  if (rm) { e.preventDefault(); rm.closest('.trow').remove(); }
+  const pick = e.target.closest('[data-pickassay]');
+  if (pick) { e.preventDefault(); openAssayPicker(pick); }
+  const one = e.target.closest('[data-oneassay]');
+  if (one && assayTarget) {
+    const name = one.dataset.oneassay;
+    assayTarget.dataset.assay = name;
+    assayTarget.textContent = name;
+    assayTarget.title = name + ' — click to change assay';
+    assayTarget = null;
+    $('#assayDlg').close();
+  }
+  const es = e.target.closest('[data-editsample]');
+  if (es) openSample(SAMPLES.find(s => s.name === es.dataset.editsample));
+  const co = e.target.closest('[data-changeover]');
+  if (co) {
+    if (!requireAuth()) return;
+    $('#coOld').textContent = co.dataset.changeover;
+    $('#coDlg').dataset.old = co.dataset.changeover;
+    $('#coName').value = ''; $('#coId').value = '';
+    $('#coRetire').checked = false; $('#coErr').textContent = '';
+    $('#coDlg').showModal();
+  }
+});
+
+// The picker does double duty: tick several assays to add rows, or repoint
+// one existing row. In repoint mode a single click is the whole gesture.
+let assayTarget = null;
+
+function renderAssays(filter) {
+  const chosen = new Set([...document.querySelectorAll('#sampleTests .assay')]
+    .map(a => a.dataset.assay));
+  const needle = (filter || '').trim().toLowerCase();
+  const matches = TESTS.filter(t => !needle || t.toLowerCase().includes(needle));
+  if (!matches.length) {
+    $('#assayList').innerHTML =
+      '<p class="empty" style="padding:8px">No methods match.</p>';
+    return;
+  }
+  $('#assayList').innerHTML = assayTarget
+    ? matches.map(t => `<label data-oneassay="${esc(t)}"
+        ${t === assayTarget.dataset.assay ? 'class="taken"' : ''}>
+        <span>${esc(t)}</span></label>`).join('')
+    : matches.map(t => `<label${chosen.has(t) ? ' class="taken"' : ''}>
+        <input type="checkbox" value="${esc(t)}"
+        ${chosen.has(t) ? 'checked disabled' : ''}><span>${esc(t)}</span>
+        </label>`).join('');
+}
+
+async function openAssayPicker(row) {
+  assayTarget = row || null;
+  if (!TESTS.length) await loadTests();
+  $('#assayTitle').textContent = row ? 'Change assay' : 'Select assays';
+  $('#assayAdd').hidden = !!row;
+  $('#assayHint').textContent = row
+    ? 'Click a method to repoint this row. Its limits stay as they are.'
+    : 'Tick every method this standard covers.';
+  $('#assayFilter').value = ''; renderAssays('');
+  if (!$('#assayDlg').open) $('#assayDlg').showModal();
+  $('#assayFilter').focus();
+}
+
+$('#addTests').addEventListener('click', () => openAssayPicker(null));
+$('#assayFilter').addEventListener('input', e => renderAssays(e.target.value));
+$('#assayCancel').addEventListener('click', () => $('#assayDlg').close());
+$('#assayAdd').addEventListener('click', () => {
+  [...document.querySelectorAll('#assayList input:checked:not([disabled])')]
+    .forEach(cb => addTestRow({name: cb.value, value_col: cb.value,
+                               expected: 0, std_dev: 0.5, k: 2, units: ''}));
+  $('#assayDlg').close();
+});
+
+$('#sampleSave').addEventListener('click', async () => {
+  if (!requireAuth()) return;
+  const name = $('#sName').value.trim(), labId = $('#sLabId').value.trim();
+  if (!name || !labId) {
+    $('#sampleErr').textContent = 'Name and Sample ID are required.'; return;
+  }
+  const tests = [...document.querySelectorAll('#sampleTests .trow')].map(r => {
+    const a = r.querySelector('.assay').dataset.assay;
+    return {name: a, value_col: a,
+            expected: parseFloat(r.querySelector('.c-exp').value || '0'),
+            std_dev: parseFloat(r.querySelector('.c-sd').value || '0'),
+            k: parseFloat(r.querySelector('.c-k').value || '2'),
+            units: r.querySelector('.c-un').value};
+  }).filter(t => t.name);
+  const r = await fetch('/api/qc-samples', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, sample_id_val: labId, tests})});
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    $('#sampleErr').textContent = b.error || 'Could not save.'; return;
+  }
+  if (editingSample && editingSample !== name) {
+    await fetch('/api/qc-samples', {method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: editingSample})});
+  }
+  $('#sampleDlg').close(); await load(); renderQcLib();
+});
+
+$('#sampleDelete').addEventListener('click', async () => {
+  if (!editingSample) return;
+  if (!requireAuth()) return;
+  if (!confirm(`Delete “${editingSample}”? Instruments relying on it go UNKNOWN.`)) return;
+  await fetch('/api/qc-samples', {method: 'DELETE',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: editingSample})});
+  $('#sampleDlg').close(); await load(); renderQcLib();
+});
+
+$('#coCancel').addEventListener('click', () => $('#coDlg').close());
+$('#corrClose').addEventListener('click', () => $('#corrDlg').close());
+$('#coGo').addEventListener('click', async () => {
+  const r = await fetch('/api/qc-samples/changeover', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({old_name: $('#coDlg').dataset.old,
+                          new_name: $('#coName').value,
+                          new_id_val: $('#coId').value,
+                          retire_old: $('#coRetire').checked})});
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#coErr').textContent = b.error || 'Changeover failed.'; return; }
+  $('#coDlg').close();
+  await load(); renderQcLib();
+  alert(`Changed over. ${b.moved} instrument${b.moved === 1 ? '' : 's'} moved to the new lot.`);
+});
+
+// ── PM & calibration ────────────────────────────────────────────────────
+let maintFor = null;
+
+async function openMaint(m, kind) {
+  maintFor = m;
+  $('#maintTitle').textContent = m.title;
+  $('#maintErr').textContent = '';
+  if (kind) $('#mKind').value = kind;    // arrived via "Add PM" / "Add cal"
+  $('#maintDlg').showModal();
+  await refreshMaint();
+}
+
+// ── PM & CAL in the instrument's record: what's due, and what was done ──
+// V4 kept completions in a per-machine CSV nobody read; showing only
+// "last done" threw away who did it and what they found.
+async function loadMaintPanel(m) {
+  const uid = encodeURIComponent(m.machine_uid);
+  const [now, done] = await Promise.all([
+    fetch(`/api/machines/${uid}/maintenance`).then(r => r.json())
+      .catch(() => ({tasks: []})),
+    fetch(`/api/machines/${uid}/maintenance-history`).then(r => r.json())
+      .catch(() => ({history: []})),
+  ]);
+  const tasks = now.tasks || [];
+  $('#maintNow').innerHTML = tasks.length ? tasks.map(t => `
+    <div class="qc" style="margin-bottom:8px">
+      <div class="n"><span style="color:${col(t.status)}">●</span> ${esc(t.name)}
+        <span class="val">
+          <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
+        </span></div>
+      <div class="lim"><span>${t.kind === 'calibration' ? 'CAL' : 'PM'}
+        · every ${t.interval_days} d</span>
+        <span>${esc(t.reason)}</span></div>
+    </div>`).join('')
+    : '<p class="empty">Nothing scheduled on this instrument.</p>';
+
+  const hist = done.history || [];
+  $('#maintDone').innerHTML = hist.length ? hist.map(h => `
+    <div class="ev">
+      <span class="k k-${esc(h.kind)}">${h.kind === 'calibration' ? 'cal' : 'pm'}</span>
+      <span>${esc(h.task || '—')}
+        ${h.note ? `<span style="color:var(--ink3)">· ${esc(h.note)}</span>` : ''}
+        ${h.by ? `<b>${esc(h.by)}</b>` : ''}</span>
+      <span class="t num">${esc(h.completed)}</span>
+    </div>`).join('')
+    : '<p class="empty">Nothing completed yet on this instrument.</p>';
+}
+$('#maintClose').addEventListener('click', () => $('#maintDlg').close());
+
+async function refreshMaint() {
+  const uid = encodeURIComponent(maintFor.machine_uid);
+  const b = await fetch(`/api/machines/${uid}/maintenance`)
+    .then(r => r.json()).catch(() => ({tasks: []}));
+  const tasks = b.tasks || [];
+  $('#maintList').innerHTML = tasks.length ? tasks.map(t => `
+    <div class="qc" style="margin-bottom:8px">
+      <div class="n">
+        <span style="color:${col(t.status)}">●</span> ${esc(t.name)}
+        <span style="color:var(--ink3)">· ${t.kind === 'calibration' ? 'CAL' : 'PM'}
+          · every ${t.interval_days} d</span>
+        <span class="val">
+          <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
+          <button class="tool warn" data-delmaint="${esc(t.uid)}">✕</button>
+        </span></div>
+      <div class="lim"><span>${esc(t.reason)}</span>
+        <span>${t.last_done ? 'last ' + esc(t.last_done) : 'never done'}</span></div>
+    </div>`).join('')
+    : '<p class="empty">Nothing scheduled. Add a PM or calibration below.</p>';
+}
+
+$('#mAdd').addEventListener('click', async () => {
+  if (!requireAuth()) return;
+  const uid = encodeURIComponent(maintFor.machine_uid);
+  const r = await fetch(`/api/machines/${uid}/maintenance`, {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: $('#mName').value, kind: $('#mKind').value,
+                          interval_days: parseInt($('#mDays').value || '30', 10)})});
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#maintErr').textContent = b.error || 'Could not add.'; return; }
+  $('#mName').value = ''; $('#maintErr').textContent = '';
+  await refreshMaint(); load();
+});
+
+document.addEventListener('click', async e => {
+  const done = e.target.closest('[data-done]');
+  if (done) {
+    if (!requireAuth()) return;
+    const note = prompt('Note for this completion (optional):') ?? '';
+    await fetch(`/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
+      {method: 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({note})});
+    // Completable from either place: the dialog or the instrument's PM tab.
+    if ($('#maintDlg').open && maintFor) await refreshMaint();
+    if (selected) await loadMaintPanel(selected);
+    load();
+  }
+  const dm = e.target.closest('[data-delmaint]');
+  if (dm) {
+    if (!requireAuth()) return;
+    if (!confirm('Remove this scheduled task?')) return;
+    await fetch(`/api/maintenance/${encodeURIComponent(dm.dataset.delmaint)}`,
+      {method: 'DELETE'});
+    await refreshMaint(); load();
+  }
+});
+
+// ── debug panel: exercise the floor without touching the lab ────────────
+const STATUSES = ['GREEN', 'YELLOW', 'RED', 'SERVICE', 'DEAD-LINE', 'UNKNOWN'];
+
+function openSimSheet(m) {
+  const cur = SIM.status[m.machine_uid] || m.status;
+  $('#simTitle').textContent = m.title;
+  $('#simList').innerHTML = STATUSES.map(s => `
+    <label><input type="radio" name="simst" value="${s}" ${s === cur ? 'checked' : ''}>
+      <span class="d" style="background:${col(s)}"></span>${s}</label>`).join('');
+  $('#simSheet').dataset.uid = m.machine_uid;
+  $('#simSheet').showModal();
+}
+$('#simApply').addEventListener('click', () => {
+  const uid = $('#simSheet').dataset.uid;
+  const pick = document.querySelector('#simList input:checked');
+  if (pick) SIM.status[uid] = pick.value;
+  $('#simSheet').close();
+  MACHINES = applySim(MACHINES);
+  paintDebug(); renderTally(); drawFloor();
+  if (selected) select(MACHINES.find(x => x.machine_uid === selected.machine_uid));
+});
+$('#simCancel').addEventListener('click', () => $('#simSheet').close());
+
+function paintDebug() {
+  const on = simOn();
+  $('#simBanner').classList.toggle('on', on);
+  const n = Object.keys(SIM.status).length;
+  $('#simCount').textContent = n ? `${n} instrument${n > 1 ? 's' : ''} faked` : '';
+  $('#btnDebug').classList.toggle('live', $('#debug').classList.contains('on'));
+}
+
+$('#btnDebug').addEventListener('click', () => {
+  $('#debug').classList.toggle('on');
+  paintDebug();
+});
+$('#dbgClose').addEventListener('click', () => {
+  $('#debug').classList.remove('on'); paintDebug();
+});
+
+$('#dbgRandom').addEventListener('click', () => {
+  MACHINES.forEach(m => {
+    SIM.status[m.machine_uid] = STATUSES[Math.floor(Math.random() * 5)];
+  });
+  MACHINES = applySim(MACHINES);
+  paintDebug(); renderTally(); drawFloor();
+});
+$('#dbgTraffic').addEventListener('click', () => {
+  MACHINES.forEach((m, i) => setTimeout(() => spawnBlip(m.machine_uid), i * 220));
+});
+$('#dbgStorm').addEventListener('click', () => {
+  MACHINES.forEach(m => { for (let i = 0; i < 4; i++) spawnBlip(m.machine_uid); });
+});
+$('#dbgAllGreen').addEventListener('click', () => {
+  MACHINES.forEach(m => SIM.status[m.machine_uid] = 'GREEN');
+  MACHINES = applySim(MACHINES); paintDebug(); renderTally(); drawFloor();
+});
+$('#dbgClear').addEventListener('click', () => {
+  SIM.status = {}; SIM.on = false; paintDebug(); load();
+});
+
+// ── sign in / out (LabCore accounts, same as everywhere else) ───────────
+// A card reader is a keyboard: it types the code and presses Enter. Giving it
+// its own field means nobody has to guess which box a swipe belongs in, and
+// LabCore accepts the code in either field anyway.
+function openAuth(why) {
+  $('#auErr').textContent = why || '';
+  $('#auUser').value = ''; $('#auPass').value = ''; $('#auCard').value = '';
+  if (!$('#authDlg').open) $('#authDlg').showModal();
+  $('#auCard').focus();
+}
+
+async function submitAuth() {
+  const card = $('#auCard').value.trim();
+  const username = card || $('#auUser').value.trim();
+  const password = card || $('#auPass').value;
+  if (!username && !password) {
+    $('#auErr').textContent = 'Enter your account, or swipe your card.';
+    return;
+  }
+  const r = await fetch('/api/login', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({username, password})});
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    $('#auErr').textContent = body.error || 'Sign-in failed.';
+    $('#auCard').value = ''; $('#auPass').value = '';
+    return;
+  }
+  $('#authDlg').close();
+  await load();
+}
+
+$('#btnAuth').addEventListener('click', async () => {
+  if (AUTHED) {
+    await fetch('/api/logout', {method: 'POST'});
+    return load();
+  }
+  openAuth('');
+});
+$('#auGo').addEventListener('click', e => { e.preventDefault(); submitAuth(); });
+$('#auCancel').addEventListener('click', e => {
+  e.preventDefault(); $('#authDlg').close();
+});
+// Enter anywhere in the form submits — that's what the swipe sends.
+$('#authForm').addEventListener('submit', e => {
+  e.preventDefault(); submitAuth();
+});
+
+// ── lab hours: which silences are expected ──────────────────────────────
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+let SCHED = null;
+
+function renderSchedule() {
+  const on = new Set((SCHED.working_days || []).map(Number));
+  $('#schedDays').innerHTML = DAY_NAMES.map((d, i) =>
+    `<label class="${on.has(i) ? 'on' : ''}"><input type="checkbox"
+      value="${i}" ${on.has(i) ? 'checked' : ''}>${d}</label>`).join('');
+  $('#schedOpens').value = SCHED.opens || '';
+  $('#schedCloses').value = SCHED.closes || '';
+  const hols = Object.entries(SCHED.holidays || {}).sort();
+  $('#schedHols').innerHTML = hols.length ? hols.map(([day, name]) =>
+    `<div class="hol"><span>${esc(name)}</span>
+      <span><span class="d">${esc(day)}</span>
+      <button class="tool warn" data-delhol="${esc(day)}">✕</button></span>
+    </div>`).join('')
+    : '<p class="empty">No holidays set. Add the days the lab is shut.</p>';
+}
+
+async function openHours() {
+  SCHED = await fetch('/api/schedule').then(r => r.json()).catch(() => null);
+  if (!SCHED) return;
+  $('#schedErr').textContent = '';
+  renderSchedule();
+  if (!$('#schedDlg').open) $('#schedDlg').showModal();
+}
+$('#btnHours').addEventListener('click', openHours);
+$('#schedClose').addEventListener('click', () => $('#schedDlg').close());
+// The pill lights as you tick, so the working week reads at a glance.
+$('#schedDays').addEventListener('change', e => {
+  const label = e.target.closest('label');
+  if (label) label.classList.toggle('on', e.target.checked);
+});
+
+$('#schedSave').addEventListener('click', async () => {
+  if (!requireAuth()) return;
+  const days = [...document.querySelectorAll('#schedDays input:checked')]
+    .map(cb => parseInt(cb.value, 10));
+  const r = await fetch('/api/schedule', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({working_days: days, opens: $('#schedOpens').value,
+                          closes: $('#schedCloses').value})});
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#schedErr').textContent = b.error || 'Could not save.'; return; }
+  $('#schedErr').textContent = '';
+  $('#schedDlg').close();
+  load();
+});
+
+$('#holAdd').addEventListener('click', async () => {
+  if (!requireAuth()) return;
+  const day = $('#holDay').value, name = $('#holName').value.trim();
+  if (!day) { $('#schedErr').textContent = 'Pick a date.'; return; }
+  const r = await fetch('/api/holidays', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({day, name})});
+  const b = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#schedErr').textContent = b.error || 'Could not add.'; return; }
+  $('#holDay').value = ''; $('#holName').value = '';
+  await openHours(); load();
+});
+
+document.addEventListener('click', async e => {
+  const dh = e.target.closest('[data-delhol]');
+  if (!dh) return;
+  if (!requireAuth()) return;
+  await fetch(`/api/holidays/${encodeURIComponent(dh.dataset.delhol)}`,
+              {method: 'DELETE'});
+  await openHours(); load();
+});
+
+// Clicking bare ground drops the selection and returns to the whole floor.
+// The world reports that as a pick of nothing — see __floorBridge.onSelect.
+// How old the served snapshot is. The server refreshes on its own clock and holds
+// the last good answer in between, so "13s ago" is normal and healthy — it only
+// deserves attention when it stops climbing back down.
+function showStaleness(payload) {
+  const el = $('#stale');
+  if (!el) return;
+  const age = Number(payload && payload.age_seconds);
+  if (!isFinite(age) || !LABCORE_UP) { el.hidden = true; return; }
+  // Soak-measured: a normal queue burst pushes the age to ~90s, so 90 would have
+  // flickered on and off for healthy behaviour. 150s is ~12 intervals — past that
+  // something is actually wrong rather than merely busy.
+  const SETTLED = 150;
+  if (age < SETTLED) { el.hidden = true; return; }
+  el.hidden = false;
+  const mins = Math.floor(age / 60);
+  el.innerHTML = 'data <b>' + (mins ? mins + 'm' : Math.round(age) + 's') +
+                 '</b> old';
+  el.title = 'LabCore is reachable, but the last successful read was ' +
+             Math.round(age) + 's ago — its write queue is probably busy.';
+}
+
+// ── maximal map view ────────────────────────────────────────────────────
+// Remembered in localStorage: a wall display is set once and left, and a reload
+// undoing it would mean walking back to the machine.
+const MAXKEY = 'lem.maxmap';
+
+function setMaxMap(on) {
+  document.documentElement.classList.toggle('maxmap', !!on);
+  try { localStorage.setItem(MAXKEY, on ? '1' : '0'); } catch (_) {}
+  const btn = $('#btnMax');
+  if (btn) btn.classList.toggle('on', !!on);
+  // The `hidden` attribute, not a CSS class: a stale cached stylesheet once left
+  // the exit button unstyled and therefore permanently on screen.
+  $('#btnMaxExit').hidden = !on;
+  // The SVG is sized from its container, so it has to be redrawn once the rails
+  // are gone or the map keeps the old, narrower viewBox.
+  drawFloor();
+}
+
+$('#btnMax').addEventListener('click', () =>
+  setMaxMap(!document.documentElement.classList.contains('maxmap')));
+$('#btnMaxExit').addEventListener('click', () => setMaxMap(false));
+try {
+  if (localStorage.getItem(MAXKEY) === '1') setMaxMap(true);
+} catch (_) {}
+// NB: the resize -> drawFloor() listener is registered once, at the bottom of this
+// file. A second one here meant every resize redrew the whole SVG floor twice.
+
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+  // Escape means "back out one step": drop the selected instrument first, then
+  // leave the maximal view. Doing both at once would feel like a glitch.
+  if (ARRANGING) return setArrange(false);
+  if (selected) return deselect();
+  if (document.documentElement.classList.contains('maxmap')) setMaxMap(false);
+});
+
+// ── rendering quality ───────────────────────────────────────────────────
+// The ladder can still drive itself, but an operator who knows their screen
+// should not have to watch it rediscover the answer every morning.
+const QUALITY_LEVELS = [
+  ['auto',   'Automatic', 'measures the frame and steps down when it must'],
+  ['ultra',  'Ultra',     'full texture resolution, roughness maps, longest tree range'],
+  ['high',   'High',      'three-quarter textures, roughness maps kept'],
+  ['medium', 'Medium',    'half textures, roughness maps off, reflections off'],
+  ['low',    'Low',       'no ambient occlusion or bloom, quarter-ish textures'],
+  ['floor',  'Floor',     'the least a bench PC can get away with — forest intact'],
+];
+
+function paintQuality() {
+  const world = WORLD;
+  const now = world ? world.engine.qualityMode : 'auto';
+  $('#qualList').innerHTML = QUALITY_LEVELS.map(([id, name, note]) => `
+    <label>
+      <input type="radio" name="qual" value="${id}" ${id === now ? 'checked' : ''}>
+      <span><b>${esc(name)}</b> — ${esc(note)}</span>
+    </label>`).join('');
+  $$('#qualList input[name=qual]').forEach(r => r.addEventListener('change', () => {
+    if (!WORLD) return;
+    const ok = WORLD.engine.setQualityMode(r.value);
+    $('#qualErr').textContent = ok ? '' : 'That level is not available.';
+    paintTools();
+  }));
+}
+
+/* Resolution is its own control. It used to be a hidden multiplier on the
+ * quality tier — measured at 1920x1080: ultra and high 100% of CSS pixels,
+ * medium 72%, low 52%, floor 36%. Nothing said so, which is why the floor
+ * looked soft and nobody could find the reason. */
+const RES_LEVELS = [
+  ['auto',  'Match quality', 'follow the tier, as it used to'],
+  ['full',  'Full',          'the real resolution of your screen — 1:1'],
+  ['sharp', 'Sharp',         '1.25x native, supersampled and downfiltered'],
+  ['max',   'Maximum',       '1.5x native, supersampled'],
+  ['x2',    '2x native',     'stress test — more work than a bench PC will ever do'],
+  ['x3',    '3x native',     'heavy stress test'],
+  ['x4',    '4x native',     'extreme — expect a slideshow, it is for finding faults'],
+  ['half',  'Half',          '0.7x, about half the pixels'],
+  ['quart', 'Quarter',       '0.5x, a quarter of the pixels — for a very weak machine'],
+];
+
+function paintResolution() {
+  const eng = WORLD && WORLD.engine;
+  const now = eng ? eng.resolutionMode : 'auto';
+  $('#resList').innerHTML = RES_LEVELS.map(([id, name, note]) => `
+    <label>
+      <input type="radio" name="res" value="${id}" ${id === now ? 'checked' : ''}>
+      <span><b>${esc(name)}</b> — ${esc(note)}</span>
+    </label>`).join('');
+  $$('#resList input[name=res]').forEach(r => r.addEventListener('change', () => {
+    if (!WORLD) return;
+    const ok = WORLD.engine.setResolutionMode(r.value);
+    $('#qualErr').textContent = ok ? '' : 'That resolution is not available.';
+    showResNow();
+  }));
+  showResNow();
+}
+
+/* Say what is actually being drawn, rather than what was asked for — the whole
+ * complaint was that the number was invisible. */
+function showResNow() {
+  const eng = WORLD && WORLD.engine;
+  if (!eng || !eng.resolutionInfo) { $('#resNow').textContent = ''; return; }
+  const i = eng.resolutionInfo();
+  $('#resNow').textContent =
+    `Currently drawing ${i.w}x${i.h}. Your display gives this canvas ` +
+    `${i.devW}x${i.devH} real pixels` +
+    (i.panel !== 1 ? ` (${i.cssW}x${i.cssH} at ${i.panel}x)` : '') +
+    ` — so this is ${i.pct}% of them.`;
+}
+
+// ── view: the rendered site, or the plain floor plan ────────────────────
+// Ryan: "get the old files, of the simple buildings, and make it a toggleable
+// thing... you switch from train view to the simple easy to run view."
+//
+// The point is EASY TO RUN, so this is not a CSS class that hides a canvas
+// still burning a GPU. Switching to the plan calls `engine.stop()`, which ends
+// the render loop; switching back calls `start()`. The world keeps its state
+// either way, so coming back is instant and the instruments have not moved.
+//
+// Remembered per screen, like quality: a bench PC that cannot afford the site
+// should not have to be told again every morning.
+const VIEW_KEY = 'lem.floor.view';
+
+/* ── the plain floor plan ────────────────────────────────────────────────
+ *
+ * Ported from the pre-3D floor (the Aug 5 copy Ryan kept): one isometric prism
+ * per instrument, top face lightest, right wall mid, left wall darkest, from a
+ * single lamp in the upper left. Status is a lit bar across the head of the
+ * bay; DEAD-LINE wears hazard stripes rather than a colour, because a
+ * dead-lined instrument is a barrier and should read as one instead of as one
+ * more coloured lamp among six.
+ *
+ * It is a DRAWING, not a renderer. It is built when the view opens and again
+ * when the data changes, and between those it costs nothing: no
+ * requestAnimationFrame, no camera to fly, no blips in flight. That is the
+ * whole point of this view, and nothing in here may take a frame.
+ */
+const PLAN_TILE = 128;                    // one bay, in drawing units
+const PLAN_NS = 'http://www.w3.org/2000/svg';
+// The old floor's 3/4 view, frozen. The original could tilt to a true overhead
+// plan; there is no camera here to move, so it keeps the angle the instruments
+// were drawn to look best at.
+const PLAN_CAM = {tilt: 30, yaw: 45}, PLAN_RAD = Math.PI / 180;
+
+function planIso(gx, gy, h = 0) {
+  const a = PLAN_CAM.yaw * PLAN_RAD, t = PLAN_CAM.tilt * PLAN_RAD;
+  const wx = gx * PLAN_TILE, wy = gy * PLAN_TILE;
+  const rx = wx * Math.cos(a) - wy * Math.sin(a);
+  const ry = wx * Math.sin(a) + wy * Math.cos(a);
+  return [rx, ry * Math.sin(t) - h * Math.cos(t)];
+}
+
+function planEl(tag, attrs, parent) {
+  const n = document.createElementNS(PLAN_NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+const planPts = pts => pts.map(p => p.join(',')).join(' ');
+
+function planGrad(defs, id, stops) {
+  const g = planEl('linearGradient', {id, x1: 0, y1: 0, x2: 0, y2: 1}, defs);
+  stops.forEach(([o, c]) => planEl('stop', {offset: o, 'stop-color': c}, g));
+}
+
+// Stable per-instrument silhouette: the same machine always builds the same
+// shape, so operators learn the floor by shape as well as by label.
+function planSeeded(uid) {
+  let h = 2166136261;
+  for (const ch of String(uid)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return () => { h = Math.imul(h ^ (h >>> 15), 2246822507);
+                 h ^= h >>> 13; return ((h >>> 0) % 1000) / 1000; };
+}
+
+// What to paint a machine's status with: DEAD-LINE is striped, everything else
+// is its flat status colour.
+const planFill = s => s === 'DEAD-LINE' ? 'url(#planHazard)' : col(s);
+
+// One prism: top face lightest, right mid, left darkest — single lamp, upper
+// left. Returns the roof, so the caller can hang things off it.
+function planPrism(g, gx, gy, w, d, h, z, shades) {
+  const corners = [[gx, gy], [gx + w, gy], [gx + w, gy + d], [gx, gy + d]];
+  const B = corners.map(([x, y]) => planIso(x, y, z));
+  const T = corners.map(([x, y]) => planIso(x, y, z + h));
+  const poly = (pts, fill) => planEl('polygon', {points: planPts(pts), fill}, g);
+  poly([T[3], T[2], B[2], B[3]], shades[2]);   // left wall
+  poly([T[1], T[2], B[2], B[1]], shades[1]);   // right wall
+  poly([T[0], T[1], T[2], T[3]], shades[0]);   // roof
+  return T;
+}
+
+/* Where the instruments stand.
+ *
+ * `m.pos` is null until somebody drags one — the layout is assigned
+ * procedurally by `claimBays()`, and the 3D world holds the result in its plan.
+ * So ask the world first: that way both views agree about where things are, and
+ * the plan is a different DRAWING of the same floor rather than a second
+ * opinion about it. The plan's `gx`/`gy` are the bay coordinates claimBays
+ * assigned, which is the same grid this renderer was originally written
+ * against; `x`/`z` are those same bays in metres, for the terrain.
+ *
+ * `m.pos` is the fallback for a dragged instrument, and a bay of our own the
+ * last resort — a fleet piled on the origin would read as one instrument. */
+function planStations() {
+  const list = Array.isArray(MACHINES) ? MACHINES : [];
+  const byUid = WORLD && WORLD.plan && WORLD.plan.byUid ? WORLD.plan.byUid : null;
+  // The world's own canonical order, so a fallback bay is at least stable:
+  // title first so it reads sensibly, uid as the tiebreak because titles are
+  // not unique.
+  const seq = [...list].sort((a, b) =>
+    String(a.title || '').toLowerCase().localeCompare(
+      String(b.title || '').toLowerCase()) ||
+    String(a.machine_uid).localeCompare(String(b.machine_uid)));
+  const BAY = 2.05, cols = Math.max(2, Math.ceil(Math.sqrt(seq.length * 1.25)));
+
+  const placed = seq.map((m, i) => {
+    const st = byUid ? byUid.get(m.machine_uid) : null;
+    if (st && Number.isFinite(st.gx) && Number.isFinite(st.gy)) {
+      return {m, gx: st.gx, gy: st.gy};
+    }
+    if (Array.isArray(m.pos) && Number.isFinite(m.pos[0]) && Number.isFinite(m.pos[1])) {
+      return {m, gx: m.pos[0], gy: m.pos[1]};
+    }
+    return {m, gx: (i % cols) * BAY, gy: Math.floor(i / cols) * BAY};
+  });
+
+  // Painter's order: things further back drawn first. The uid breaks the tie —
+  // (gx+gy) is equal for anything on the same diagonal, and leaving that to
+  // Array.sort's stability meant payload order decided who drew on top.
+  return placed.sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy)
+    || String(a.m.machine_uid).localeCompare(String(b.m.machine_uid)));
+}
+
+/* Everything that makes a group an instrument you can pick.
+ *
+ * Picks route through the SAME bridge the 3D view uses, so the rails, the
+ * right-click menu and the selection highlight cannot drift apart between the
+ * two views. `window.__floorBridge`, not a bare `bridge` — that name only
+ * exists inside the module script at the bottom of this file. */
+function planWire(g, m) {
+  const br = window.__floorBridge, uid = m.machine_uid;
+  g.addEventListener('click', () => br.onSelect(uid));
+  g.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); br.onSelect(uid); }
+  });
+  g.addEventListener('contextmenu', e => { e.preventDefault(); br.onContext(uid, e); });
+  g.addEventListener('mouseenter', e => showTip(m, {x: e.clientX, y: e.clientY}));
+  g.addEventListener('mouseleave', hideTip);
+}
+
+// One instrument: its bay, its three sub-status pills, its prisms, its status
+// bar and its name plate. The plate goes in `plates`, a layer drawn after every
+// machine — see the call site.
+function planMachine(root, plates, m, gx, gy) {
+  const rnd = planSeeded(m.machine_uid);
+  const c = col(m.status);
+  const sel = selected && selected.machine_uid === m.machine_uid;
+  const label = `${m.title || m.machine_uid}, ${m.status || 'UNKNOWN'}`;
+  // `unit` is what the old floor called an instrument and what the CSS above
+  // styles; `simple-machine` is what the plan's probes pick by, and it costs
+  // nine characters to leave them working.
+  const g = planEl('g', {class: 'unit simple-machine', tabindex: '0', role: 'button',
+                         'aria-label': label}, root);
+
+  // plinth — the bay this instrument stands in
+  const P = [planIso(gx - .18, gy - .18), planIso(gx + 1.18, gy - .18),
+             planIso(gx + 1.18, gy + 1.18), planIso(gx - .18, gy + 1.18)];
+  planEl('polygon', {class: 'plinth', points: planPts(P), fill: '#12161d',
+                     stroke: sel ? 'var(--amber)' : '#222834',
+                     'stroke-width': sel ? 2.5 : 1.2}, g);
+
+  // ── the three pills the lab actually reads: QC · PM · CAL ──
+  // Kept apart rather than blended, so "calibration is overdue" never hides
+  // behind "QC passed".
+  //
+  // Inset from the full width of the bay, which is what the original used: at
+  // this size the outer two ended up under the neighbouring name plate, and a
+  // "CAL" floating beside somebody else's sign is worse than no pill at all.
+  const sub = m.sub_statuses || {};
+  const pills = [['QC', sub.qc], ['PM', sub.pm], ['CAL', sub.calibration]];
+  const pRow = [planIso(gx + .04, gy + .96), planIso(gx + .96, gy + .96),
+                planIso(gx + .96, gy + 1.2), planIso(gx + .04, gy + 1.2)];
+  planEl('polygon', {points: planPts(pRow), fill: '#0a0d12', opacity: .9}, g);
+  const pw = .9 / 3;                         // three across the bay front
+  pills.forEach(([label, state], i) => {
+    const x0 = gx + .05 + i * pw, x1 = x0 + pw - .025;
+    const known = state && state !== 'UNKNOWN';
+    const quad = [planIso(x0, gy + .98), planIso(x1, gy + .98),
+                  planIso(x1, gy + 1.18), planIso(x0, gy + 1.18)];
+    planEl('polygon', {points: planPts(quad), fill: col(state || 'UNKNOWN'),
+                       opacity: known ? .92 : .3}, g);
+    const mid = planIso((x0 + x1) / 2, gy + 1.08);
+    const t = planEl('text', {x: mid[0], y: mid[1] + 3.2, 'text-anchor': 'middle',
+                              'font-size': 8, 'font-weight': 800,
+                              'letter-spacing': .9,
+                              fill: known ? '#0d1014' : '#9aa3b2'}, g);
+    t.textContent = label;
+  });
+
+  const A = ['url(#pmTop)', 'url(#pmRight)', 'url(#pmLeft)'];
+  const B = ['url(#pmTop2)', 'url(#pmRight2)', 'url(#pmLeft2)'];
+  const arch = Math.floor(rnd() * 4);
+  let top;
+  if (arch === 0) {            // column — a tall fractionating stack
+    top = planPrism(g, gx + .14, gy + .14, .72, .72, 40 + rnd() * 16, 0, A);
+    top = planPrism(g, gx + .28, gy + .28, .44, .44, 34 + rnd() * 24, 56, B);
+  } else if (arch === 1) {     // analyser cabinet with a service hatch
+    const h = 40 + rnd() * 14;
+    top = planPrism(g, gx + .05, gy + .05, .9, .9, h, 0, A);
+    planPrism(g, gx + .22, gy + .22, .34, .34, 12, h, B);
+  } else if (arch === 2) {     // bench unit with a chimney stack
+    top = planPrism(g, gx + .06, gy + .22, .86, .6, 34 + rnd() * 14, 0, A);
+    planPrism(g, gx + .6, gy + .04, .3, .28, 58 + rnd() * 18, 0, B);
+  } else {                     // twin-vessel bath
+    top = planPrism(g, gx + .05, gy + .1, .41, .8, 36 + rnd() * 14, 0, A);
+    planPrism(g, gx + .55, gy + .1, .41, .8, 28 + rnd() * 14, 0, B);
+  }
+
+  // lamp-side rim light along the top edge — sells the single light source
+  planEl('polyline', {points: planPts([top[0], top[1]]), stroke: '#5b6675',
+                      'stroke-width': 1.2, fill: 'none', opacity: .8}, g);
+
+  // instrument face — a lit readout panel on the operator side
+  const f = planIso(gx + .5, gy + 1.0);
+  planEl('rect', {x: f[0] - 19, y: f[1] - 34, width: 38, height: 14, rx: 2.5,
+                  fill: '#080b0f', stroke: '#3d4653', 'stroke-width': .9}, g);
+  planEl('rect', {x: f[0] - 15, y: f[1] - 30.5, width: 24 * (.35 + rnd() * .65),
+                  height: 2.4, rx: 1.2, fill: c, opacity: .9}, g);
+  planEl('rect', {x: f[0] - 15, y: f[1] - 26, width: 15 * (.3 + rnd() * .7),
+                  height: 2.4, rx: 1.2, fill: '#3f4a59'}, g);
+
+  // ── status bar: the machine's overall state as one wide lit strip across
+  // the head of its bay, sitting above the three pills. Readable from across
+  // the room in a way a pinhead lamp never was.
+  //
+  // The blurred spill and the pulse are on SEPARATE polygons, unlike the
+  // original, which pulsed the filtered one. Animating the opacity of a
+  // filtered element re-runs the blur every frame, and this is the view chosen
+  // by the machines that cannot afford that.
+  const bar = [planIso(gx - .18, gy + .8), planIso(gx + 1.18, gy + .8),
+               planIso(gx + 1.18, gy + .95), planIso(gx - .18, gy + .95)];
+  const barPts = planPts(bar);
+  planEl('polygon', {points: barPts, fill: c, opacity: .2,
+                     filter: 'url(#planSoft)'}, g);          // spill on the deck
+  planEl('polygon', {class: m.status === 'RED' ? 'beacon alert' : '',
+                     points: barPts, fill: planFill(m.status)}, g);
+  planEl('polygon', {points: barPts, fill: 'none', stroke: '#0a0d12',
+                     'stroke-width': .8}, g);
+
+  // An instrument nobody is watching: dimmed, with an unplugged marker. The
+  // floor should never let a dead module pass for a quiet one — but a lab that
+  // is simply shut earns the dimming without the alarm. Read exactly as the
+  // 3D site reads it (world/labels.js `_read`), so the two cannot disagree.
+  const state = String(m.module_state || '').toLowerCase();
+  const closed = state === 'closed';
+  const running = m.module_running !== false && state !== 'stopped' && !closed;
+  if (closed) {
+    g.setAttribute('opacity', .62);
+  } else if (!running) {
+    g.setAttribute('opacity', .55);
+    const u = planIso(gx + 1.05, gy - .05);
+    planEl('circle', {cx: u[0], cy: u[1] - 10, r: 8.5, fill: '#14171e',
+                      stroke: 'var(--red)', 'stroke-width': 1.4}, g);
+    const t = planEl('text', {x: u[0], y: u[1] - 6.4, 'text-anchor': 'middle',
+                              'font-size': 10, 'font-weight': 800,
+                              fill: 'var(--red)', 'aria-label': 'module not running'}, g);
+    t.textContent = '!';
+  }
+
+  // The whole bay is the pick target, so a click between two prisms of the same
+  // instrument still selects it.
+  planEl('polygon', {class: 'hit', points: planPts(P)}, g);
+  planWire(g, m);
+
+  /* Name plate — a raised sign, not floor paint. An operator has to be able to
+   * say WHICH instrument is red from across the room; a coloured block with no
+   * name on it only says that one of them is.
+   *
+   * It goes in its own layer, above every machine, which the original did not
+   * do — and on this floor the original loses one: the instrument standing in
+   * front and to the left is drawn later and its prisms cover the plate of the
+   * one behind. A name that is only readable for some of the fleet is worse
+   * than none, because it is not obvious which ones are missing. */
+  // Anchored left of the bay's centre line on purpose: the pill row runs down
+  // and to the RIGHT in this projection, so a sign centred under the bay ends
+  // up with CAL sitting on its shoulder.
+  const lp = planIso(gx + .34, gy + 1.52);
+  const name = String(m.title || m.machine_uid).toUpperCase().slice(0, 16);
+  const size = 13;
+  const wide = name.length * size * .82 + 20;
+  // `unit`, but deliberately NOT `simple-machine`: that class means "one
+  // instrument on the plan", and counting it is how the probes know all seven
+  // are drawn. Two elements per instrument wearing it would report fourteen.
+  const plate = planEl('g', {class: 'unit', tabindex: '0',
+                             role: 'button', 'aria-label': label,
+                             opacity: closed || !running ? .72 : 1}, plates);
+  planEl('rect', {x: lp[0] - wide / 2, y: lp[1] - size * .95, width: wide,
+                  height: size * 1.62, rx: size * .34,
+                  fill: sel ? 'rgba(255,138,61,.18)' : 'rgba(9,11,16,.86)',
+                  stroke: sel ? 'var(--amber)' : '#3d4756',
+                  'stroke-width': sel ? 1.6 : 1}, plate);
+  const txt = planEl('text', {x: lp[0], y: lp[1] + size * .34,
+                              'text-anchor': 'middle',
+                              fill: sel ? '#ffb37a' : '#d3dae6',
+                              'font-size': size, 'font-weight': 800,
+                              'letter-spacing': 1.9}, plate);
+  txt.textContent = name;
+  planWire(plate, m);
+}
+
+/* Everything the drawing depends on, as one string — the same trick the two
+ * rails use. drawFloor() runs on every two-second refresh whether anything
+ * changed or not, and rebuilding the SVG under the pointer takes the tooltip
+ * with it and leaves a hover that can never be left. Redraw when there is
+ * something to redraw. */
+let PLAN_SIG = '';
+function planSignature(placed) {
+  return placed.map(({m, gx, gy}) => {
+    const s = m.sub_statuses || {};
+    return [m.machine_uid, gx, gy, m.title, m.status, s.qc, s.pm, s.calibration,
+            m.module_state, m.module_running].join('~');
+  }).join('|') + '#' + (selected ? selected.machine_uid : '');
+}
+
+/* Draw the plain floor plan into #floorSimple. */
+function drawSimpleFloor() {
+  const svg = $('#floorSimple');
+  if (!svg) return;
+  const placed = planStations();
+  const sig = planSignature(placed);
+  if (sig === PLAN_SIG && svg.firstChild) return;
+  PLAN_SIG = sig;
+  svg.innerHTML = '';
+  hideTip();
+  const defs = planEl('defs', {}, svg);
+
+  const soft = planEl('filter', {id: 'planSoft', x: '-120%', y: '-120%',
+                                 width: '340%', height: '340%'}, defs);
+  planEl('feGaussianBlur', {stdDeviation: 9}, soft);
+
+  // DEAD-LINE wears hazard stripes rather than a colour.
+  const hazard = planEl('pattern', {id: 'planHazard', width: 9, height: 9,
+                                    patternUnits: 'userSpaceOnUse',
+                                    patternTransform: 'rotate(45)'}, defs);
+  planEl('rect', {width: 9, height: 9, fill: '#0a0c10'}, hazard);
+  planEl('rect', {width: 4.5, height: 9, fill: '#e2483d'}, hazard);
+
+  // Materials: brushed graphite catching a warm lamp from the upper left.
+  planGrad(defs, 'pmTop',   [[0, '#3c4552'], [1, '#2a313c']]);
+  planGrad(defs, 'pmRight', [[0, '#252c36'], [1, '#171c24']]);
+  planGrad(defs, 'pmLeft',  [[0, '#1a1f27'], [1, '#0f131a']]);
+  planGrad(defs, 'pmTop2',  [[0, '#48525f'], [1, '#333b47']]);
+  planGrad(defs, 'pmRight2',[[0, '#2c333e'], [1, '#1c222a']]);
+  planGrad(defs, 'pmLeft2', [[0, '#1f242d'], [1, '#12161d']]);
+  planGrad(defs, 'planDeck',[[0, '#1a1f28'], [1, '#0d1015']]);
+
+  const dots = planEl('pattern', {id: 'planDots', width: 15, height: 15,
+                                  patternUnits: 'userSpaceOnUse'}, defs);
+  planEl('circle', {cx: 2, cy: 2, r: 1, fill: '#2b3340'}, dots);
+
+  // lamp pool: the floor is brightest under the light, falling off to the edges
+  const pool = planEl('radialGradient',
+                      {id: 'planPool', cx: '46%', cy: '34%', r: '68%'}, defs);
+  planEl('stop', {offset: 0, 'stop-color': '#5a6272', 'stop-opacity': .28}, pool);
+  planEl('stop', {offset: .55, 'stop-color': '#2b323e', 'stop-opacity': .1}, pool);
+  planEl('stop', {offset: 1, 'stop-color': '#000', 'stop-opacity': .35}, pool);
+
+  const root = planEl('g', {}, svg);
+  /* Getting OUT of an instrument has to be as easy as getting in, and it is a
+   * click on bare floor in the 3D view. On the whole SVG rather than the deck,
+   * so the dark margin around the drawing counts as bare floor too — and once,
+   * because this function runs again on every change and #floorSimple itself
+   * survives it, which would otherwise stack up a listener per redraw. */
+  if (!svg.dataset.deselects) {
+    svg.dataset.deselects = '1';
+    svg.addEventListener('click', e => {
+      if (!e.target.closest('.unit')) window.__floorBridge.onSelect(null);
+    });
+  }
+
+  // Deck sized to the instruments it holds — no dead concrete.
+  const minX = Math.min(0, ...placed.map(p => p.gx));
+  const minY = Math.min(0, ...placed.map(p => p.gy));
+  const maxX = Math.max(1, ...placed.map(p => p.gx)) + 1;
+  const maxY = Math.max(1, ...placed.map(p => p.gy)) + 1;
+  // Tighter than the original's .85 all round: the stage here is a box the
+  // rails have already taken their share of, and empty concrete is what pushes
+  // the instruments down to the size of buttons.
+  const m0 = minX - .55, n0 = minY - .6, mx = maxX + .55, my = maxY + 1.05;
+  const D = [planIso(m0, n0), planIso(mx, n0), planIso(mx, my), planIso(m0, my)];
+  const deck = planPts(D);
+  const drop = 16;                     // the deck reads as a raised plate
+  planEl('polygon', {points: planPts([D[3], D[2], [D[2][0], D[2][1] + drop],
+                                      [D[3][0], D[3][1] + drop]]),
+                     fill: '#0a0d12'}, root);
+  planEl('polygon', {points: planPts([D[2], D[1], [D[1][0], D[1][1] + drop],
+                                      [D[2][0], D[2][1] + drop]]),
+                     fill: '#070a0e'}, root);
+  planEl('polygon', {points: deck, fill: 'url(#planDeck)'}, root);
+  planEl('polygon', {points: deck, fill: 'url(#planDots)', opacity: .5}, root);
+  planEl('polygon', {points: deck, fill: 'url(#planPool)', opacity: .9}, root);
+  planEl('polygon', {points: deck, fill: 'none', stroke: '#394352',
+                     'stroke-width': 1.6}, root);
+  // painted aisle lane down the middle of the floor
+  const laneY = (n0 + my) / 2;
+  const l0 = planIso(m0 + .2, laneY), l1 = planIso(mx - .2, laneY);
+  planEl('line', {x1: l0[0], y1: l0[1], x2: l1[0], y2: l1[1], stroke: '#2b3340',
+                  'stroke-width': 1, 'stroke-dasharray': '10 12', opacity: .5}, root);
+
+  // Trunk main to LabCore, run along the service aisle at the back. The site
+  // sends its data down a railway; the plan draws the same journey as one pipe,
+  // which is what it was before there were trains.
+  const aisle = n0 + .4;
+  const tA = planIso(m0, aisle), tB = planIso(mx, aisle);
+  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1], stroke: '#0c0f14',
+                  'stroke-width': 11, 'stroke-linecap': 'round'}, root);
+  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1], stroke: '#333c4a',
+                  'stroke-width': 7, 'stroke-linecap': 'round'}, root);
+  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1],
+                  stroke: 'var(--amber-dim)', 'stroke-width': 1.6, opacity: .5}, root);
+  planEl('circle', {cx: tB[0], cy: tB[1], r: 5, fill: '#12161d',
+                    stroke: 'var(--amber)', 'stroke-width': 1.6}, root);
+  const lbl = planEl('text', {x: tB[0] + 14, y: tB[1] + 4, fill: '#ff8a3d',
+                              'font-size': 11, 'font-weight': 800,
+                              'letter-spacing': 2.4}, root);
+  lbl.textContent = 'LABCORE';
+
+  // Pipework: each instrument takes its feed out of its RIGHT side, into the
+  // service aisle beside it, then up the aisle to the LabCore main — so no pipe
+  // ever crosses a machine.
+  const BAY = 2.05;
+  placed.forEach(({gx, gy, m}) => {
+    const lane = gx + 1 + (BAY - 1) / 2;          // centre of the aisle beside it
+    const p0 = planIso(gx + 1, gy + .5);          // side outlet
+    const p1 = planIso(lane, gy + .5);            // into the aisle
+    const p2 = planIso(lane, aisle);              // up the aisle
+    const p3 = planIso(mx, aisle);                // along the main to LabCore
+    const d = `M ${p0[0]} ${p0[1]} L ${p1[0]} ${p1[1]} ` +
+              `L ${p2[0]} ${p2[1]} L ${p3[0]} ${p3[1]}`;
+    planEl('path', {d, stroke: '#0b0e13', 'stroke-width': 6.5, fill: 'none',
+                    'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, root);
+    planEl('path', {d, stroke: '#2a3240', 'stroke-width': 4, fill: 'none',
+                    'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, root);
+    // a short coloured stub at the outlet: this machine's state, at its own pipe
+    planEl('path', {d: `M ${p0[0]} ${p0[1]} L ${p1[0]} ${p1[1]}`,
+                    stroke: col(m.status), 'stroke-width': 2, fill: 'none',
+                    opacity: .75}, root);
+  });
+
+  // Machines in painter's order, then every name plate above all of them.
+  const plates = planEl('g', {}, root);
+  placed.forEach(({m, gx, gy}) => planMachine(root, plates, m, gx, gy));
+  root.appendChild(plates);
+
+  /* Fit the drawing to the stage. getBBox is the honest measure — it includes
+   * the name plates, which stick out past the deck — but it is zero on an
+   * element that is not being rendered, so the deck it was drawn around is the
+   * fallback rather than a viewBox of nothing. */
+  const pad = 18;
+  let bb = null;
+  try { bb = root.getBBox(); } catch (_) {}
+  if (bb && bb.width > 1 && bb.height > 1) {
+    svg.setAttribute('viewBox',
+      `${bb.x - pad} ${bb.y - pad} ${bb.width + pad * 2} ${bb.height + pad * 2}`);
+  } else {
+    const xs = D.map(p => p[0]), ys = D.map(p => p[1]);
+    const x0 = Math.min(...xs) - 40, y0 = Math.min(...ys) - 70;
+    svg.setAttribute('viewBox', `${x0} ${y0} ${Math.max(...xs) - x0 + 60} ` +
+                                `${Math.max(...ys) - y0 + 70}`);
+  }
+}
+
+function storedView() {
+  try { return localStorage.getItem(VIEW_KEY) === 'plan' ? 'plan' : 'site'; }
+  catch (_) { return 'site'; }
+}
+
+// `VIEW` itself is declared up with the rest of the page's state, because
+// drawFloor() has to ask which view is showing before this line is reached.
+
+function setView(mode, {remember = true} = {}) {
+  VIEW = mode === 'plan' ? 'plan' : 'site';
+  const plan = VIEW === 'plan';
+  const canvas = $('#world'), svg = $('#floorSimple');
+  if (canvas) canvas.hidden = plan;
+  /* `hidden` is an HTMLElement property; SVGElement does not have it. Assigning
+   * `svg.hidden = false` sets a JS expando and leaves the HTML attribute — and
+   * therefore the `[hidden]{display:none}` rule — in place, so the plan stayed
+   * invisible while every probe reported it as shown. Set the attribute. */
+  if (svg) {
+    if (plan) svg.removeAttribute('hidden');
+    else svg.setAttribute('hidden', '');
+  }
+
+  if (WORLD && WORLD.engine) {
+    // Stopping the loop is the whole saving. Guarded because the world may
+    // still be booting when a stored preference is applied.
+    try { plan ? WORLD.engine.stop() : WORLD.engine.start(); } catch (_) {}
+    if (!plan) { try { WORLD.engine.resize(); } catch (_) {} }
+  }
+  if (plan) drawSimpleFloor();
+
+  if (remember) { try { localStorage.setItem(VIEW_KEY, VIEW); } catch (_) {} }
+  const b = $('#btnView');
+  if (b) {
+    b.textContent = plan ? '▦ Plan view' : '▦ Site view';
+    b.title = plan
+      ? 'Showing the plain floor plan — the 3D renderer is stopped. Click for the 3D site.'
+      : 'Showing the 3D site. Click for the plain floor plan, which stops the renderer.';
+  }
+  paintTools();
+}
+
+$('#btnView').addEventListener('click', () => {
+  setView(VIEW === 'plan' ? 'site' : 'plan');
+});
+
+const CAP_LEVELS = [
+  ['off', 'Uncapped',  'draw as fast as the machine allows — best if it has headroom'],
+  ['60',  '60 fps',    'steady cadence; the fix for hitching on a busy machine'],
+  ['30',  '30 fps',    'for a weak bench PC — slow but even'],
+];
+
+function paintCap() {
+  const eng = WORLD && WORLD.engine;
+  const now = eng ? (eng.frameCapMode || 'off') : 'off';
+  $('#capList').innerHTML = CAP_LEVELS.map(([id, name, note]) => `
+    <label>
+      <input type="radio" name="cap" value="${id}" ${id === now ? 'checked' : ''}>
+      <span><b>${esc(name)}</b> — ${esc(note)}</span>
+    </label>`).join('');
+  $$('#capList input[name=cap]').forEach(r => r.addEventListener('change', () => {
+    if (!WORLD) return;
+    const ok = WORLD.engine.setFrameCap(r.value);
+    $('#qualErr').textContent = ok ? '' : 'That cadence is not available.';
+  }));
+}
+
+$('#btnQuality').addEventListener('click', () => {
+  if (!WORLD) return alert('The floor is still starting up.');
+  paintQuality();
+  paintResolution();
+  paintCap();
+  $('#qualDlg').showModal();
+});
+$('#qualClose').addEventListener('click', () => $('#qualDlg').close());
+
+// ── arrange mode ────────────────────────────────────────────────────────
+// Rearranging the floor needs three things to be true at once: you are signed
+// in, the shared lock is off, and you know an instrument can be dragged. Only
+// the first two were enforced and none of them were said out loud, so the
+// feature existed and nobody could find it. Entering the mode takes care of the
+// lock for you and puts the bays on the ground; leaving it puts the lock back,
+// because an unlocked floor is a floor anyone can rearrange by accident.
+let ARRANGING = false;
+
+async function setArrange(on) {
+  if (on && !requireAuth()) return;
+  if (on && LOCKED) {
+    const r = await fetch('/api/map', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({locked: false})});
+    if (!r.ok) return alert('Could not unlock the floor.');
+    LOCKED = false;
+  }
+  if (!on && !LOCKED) {
+    await fetch('/api/map', {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({locked: true})}).catch(() => {});
+    LOCKED = true;
+  }
+  ARRANGING = on;
+  document.documentElement.classList.toggle('arranging', on);
+  $('#arrangeBar').hidden = !on;
+  $('#btnArrange').classList.toggle('live', on);
+  if (WORLD) WORLD.setArranging(on);
+  paintTools();
+  drawFloor();
+}
+
+$('#btnArrange').addEventListener('click', () => setArrange(!ARRANGING));
+$('#arrDone').addEventListener('click', () => setArrange(false));
+
+// Laying out the whole floor at once. Each position is written through the same
+// endpoint a drag uses, so there is one way a position is ever saved.
+async function applyArrangement(kind) {
+  if (!requireAuth()) return;
+  if (!WORLD) return;
+  const wanted = WORLD.arrange(kind);
+  const btns = $$('#arrangeBar .tool');
+  btns.forEach(b => b.disabled = true);
+  try {
+    for (const [uid, pos] of Object.entries(wanted)) {
+      const m = MACHINES.find(x => x.machine_uid === uid);
+      if (m) m.pos = pos;
+      const r = await fetch(`/api/machines/${encodeURIComponent(uid)}/position`,
+        {method: 'POST', headers: {'Content-Type': 'application/json'},
+         body: JSON.stringify({x: pos[0], y: pos[1]})});
+      if (!r.ok) {
+        const b = await r.json().catch(() => ({}));
+        alert(b.error || 'Could not save the new layout.');
+        break;
+      }
+    }
+    drawFloor();
+  } finally {
+    btns.forEach(b => b.disabled = false);
+  }
+  load();
+}
+
+$('#arrGrid').addEventListener('click', () => applyArrangement('grid'));
+$('#arrCompact').addEventListener('click', () => applyArrangement('compact'));
+$('#arrRow').addEventListener('click', () => applyArrangement('row'));
+
+// ── the map lock: one switch, shared by everyone ────────────────────────
+$('#btnLock').addEventListener('click', async () => {
+  if (!AUTHED) return alert('Sign in to lock or unlock the floor.');
+  const r = await fetch('/api/map', {method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({locked: !LOCKED})});
+  if (!r.ok) alert('Could not change the lock.');
+  load();
+});
+
+function paintTools() {
+  const who = $('#who');
+  who.hidden = !AUTHED;
+  who.innerHTML = AUTHED
+    ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
+  $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
+  $('#btnAuth').classList.toggle('live', AUTHED);
+  const q = $('#btnQuality');
+  if (q && WORLD) {
+    const mode = WORLD.engine.qualityMode;
+    q.textContent = mode === 'auto'
+      ? `◐ Auto · ${WORLD.engine.tier.name}` : `◐ ${mode}`;
+    q.classList.toggle('live', mode !== 'auto');
+  }
+  $('#btnLock').textContent = LOCKED ? '🔒 Locked' : '🔓 Unlocked';
+  $('#btnLock').classList.toggle('live', !LOCKED);
+  $('#hint').textContent = ARRANGING
+    ? 'drag an instrument onto a bay'
+    : (!LOCKED && AUTHED)
+      ? 'drag to rearrange · right-click for actions'
+      : 'click an instrument · right-click for actions';
+}
+
+// ── correction factors ──────────────────────────────────────────────────
+// One row per test the instrument is actually checked on, which is why this reads
+// effective_specs: those are the specs the module resolved, and the only list that
+// matches what a correction would apply to.
+let corrMachine = null;
+
+async function openCorrections(m) {
+  corrMachine = m;
+  $('#corrTitle').textContent = m.title;
+  $('#corrErr').textContent = '';
+  $('#corrDlg').showModal();
+  await renderCorrections();
+}
+
+async function renderCorrections() {
+  const m = corrMachine, uid = encodeURIComponent(m.machine_uid);
+  const body = $('#corrBody');
+  body.innerHTML = '<p class="empty">Loading…</p>';
+  const saved = await fetch(`/api/machines/${uid}/corrections`)
+    .then(r => r.json()).catch(() => ({corrections: [], methods: []}));
+  const by = Object.fromEntries((saved.corrections || [])
+    .map(c => [c.test_name, c]));
+  // EVERY method this bench reports, not just the QC-assigned ones. A correction
+  // applies to every measurement, so it has to be settable on every measurement —
+  // and QC is assignment-only, so most reported methods have no spec at all.
+  //   methods         — from the config the module publishes: what it reports
+  //   effective_specs — the QC-assigned ones, which also carry the band to show
+  //   qc_targets      — just assigned; the module publishes specs on its NEXT poll
+  //   saved           — a correction whose method is gone, which must stay visible
+  //                     or it becomes impossible to find and remove
+  const specs = m.effective_specs || [];
+  const assigned = (m.qc_targets || []).map(t => t.test).filter(Boolean);
+  const names = [...new Set([...(saved.methods || []),
+                             ...specs.map(s => s.test_name), ...assigned,
+                             ...Object.keys(by)])].sort();
+  if (!names.length) {
+    body.innerHTML = `<p class="empty">This instrument reports no methods yet —
+      configure its parser in the LabStation module, and every method it reports
+      can be corrected here.</p>`;
+    return;
+  }
+  body.innerHTML = names.map(name => {
+    const spec = specs.find(s => s.test_name === name);
+    const cur = by[name] ? by[name].correction : 0;
+    const units = (spec && spec.units) || (by[name] && by[name].units) || '';
+    return `
+      <div class="qc" data-test="${esc(name)}">
+        <div class="n">${esc(name)}${
+          spec ? ''
+          : assigned.includes(name)
+            ? ' <span class="val" style="color:var(--ink3)">assigned · limits arrive on the next poll</span>'
+            : (saved.methods || []).includes(name)
+              ? ' <span class="val" style="color:var(--ink3)">reported · no QC assigned</span>'
+              : ' <span class="val" style="color:var(--amber)">no longer reported</span>'}</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:6px">
+          <!-- inputmode="text", not "decimal": the decimal keypad on iOS and
+               Android has no minus key, and half these corrections are negative. -->
+          <input class="corrval" style="max-width:130px" value="${cur}"
+                 inputmode="text" placeholder="0  ·  e.g. -3.0"
+                 aria-label="Correction for ${esc(name)}, may be negative">
+          <span style="color:var(--ink3);font-size:11.5px">${esc(units)}</span>
+          <button class="tool corrsave">Save</button>
+          ${by[name] ? '<button class="tool corrdel">Remove</button>' : ''}
+          ${spec ? `<span style="color:var(--ink3);font-size:11px;
+             margin-left:auto">band ${Number(spec.low).toFixed(2)} –
+             ${Number(spec.high).toFixed(2)}</span>` : ''}
+        </div>
+      </div>`;
+  }).join('');
+
+  body.querySelectorAll('.corrsave').forEach(btn =>
+    btn.addEventListener('click', () => saveCorrection(btn)));
+  body.querySelectorAll('.corrdel').forEach(btn =>
+    btn.addEventListener('click', () => deleteCorrection(btn)));
+}
+
+async function saveCorrection(btn) {
+  const wrap = btn.closest('[data-test]');
+  const test = wrap.dataset.test;
+  const value = wrap.querySelector('.corrval').value.trim();
+  if (!requireAuth()) return;
+  const uid = encodeURIComponent(corrMachine.machine_uid);
+  const r = await fetch(`/api/machines/${uid}/corrections`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({test_name: test, correction: value})});
+  const out = await r.json().catch(() => ({}));
+  if (!r.ok) { $('#corrErr').textContent = out.error || 'Could not save.'; return; }
+  $('#corrErr').textContent = '';
+  LEM.bust('/api/machines');
+  await renderCorrections();
+  load();
+}
+
+async function deleteCorrection(btn) {
+  const test = btn.closest('[data-test]').dataset.test;
+  if (!requireAuth()) return;
+  const uid = encodeURIComponent(corrMachine.machine_uid);
+  const r = await fetch(
+    `/api/machines/${uid}/corrections/${encodeURIComponent(test)}`,
+    {method: 'DELETE'});
+  if (!r.ok) {
+    const out = await r.json().catch(() => ({}));
+    $('#corrErr').textContent = out.error || 'Could not remove.';
+    return;
+  }
+  LEM.bust('/api/machines');
+  await renderCorrections();
+  load();
+}
+
+// ── right-click actions ─────────────────────────────────────────────────
+function openMenu(m, evt) {
+  const menu = $('#menu');
+  const rect = $('#stage').getBoundingClientRect();
+  menu.innerHTML = `
+    <div class="mt">${esc(m.title)}</div>
+    <button data-act="open">Open record</button>
+    <button data-act="qc" ${AUTHED ? '' : 'disabled'}>Assign QC samples…</button>
+    <button data-act="corr" ${AUTHED ? '' : 'disabled'}>Correction factors…</button>
+    <button data-act="maint">PM &amp; calibration…</button>
+    <button data-act="export">Export history (CSV)</button>
+    <button data-act="export-qc">Export QC only (CSV)</button>
+    <hr>
+    <button data-act="service" ${AUTHED ? '' : 'disabled'}>Flag for service</button>
+    <button data-act="dead" ${AUTHED ? '' : 'disabled'}>Dead-line this instrument</button>
+    <button data-act="clear" ${AUTHED ? '' : 'disabled'}>Clear override</button>
+    <hr>
+    <button data-act="reset" ${(AUTHED && !LOCKED) ? '' : 'disabled'}>Reset position</button>
+    <button class="warn" data-act="delete" ${AUTHED ? '' : 'disabled'}>Delete instrument…</button>
+    <hr>
+    <div class="mt" style="border:none;margin:0;color:var(--brass)">Debug · test the UI</div>
+    <button data-act="sim-parse">Simulate a parsed result</button>
+    <button data-act="sim-burst">Simulate 6 results</button>
+    <button data-act="sim-status">Simulate status…</button>
+    <button data-act="sim-clear">Clear this machine's simulation</button>
+    ${AUTHED ? '' : '<div class="mt" style="border:none;margin:0;padding-top:6px">sign in to make real changes</div>'}`;
+  menu.style.left = Math.min(evt.clientX - rect.left, rect.width - 220) + 'px';
+  menu.style.top = Math.min(evt.clientY - rect.top, rect.height - 260) + 'px';
+  menu.classList.add('on');
+  menu.querySelectorAll('button:not([disabled])').forEach(b =>
+    b.addEventListener('click', () => { menu.classList.remove('on'); act(b.dataset.act, m); }));
+}
+document.addEventListener('click', e => {
+  if (!e.target.closest('#menu')) $('#menu').classList.remove('on');
+});
+
+async function act(what, m) {
+  const uid = encodeURIComponent(m.machine_uid);
+  const post = (url, body) => fetch(url, {method: 'POST',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+
+  if (what === 'open') return select(m);
+  if (what === 'qc') return openQcSheet(m);
+  if (what === 'corr') return openCorrections(m);
+  if (what === 'maint') return openMaint(m);
+  if (what === 'export') return (location.href = `/api/machines/${uid}/export.csv`);
+  if (what === 'export-qc')
+    return (location.href = `/api/machines/${uid}/export.csv?kind=qc`);
+
+  // ── debug: display-only, never written anywhere ──
+  if (what === 'sim-parse') return spawnBlip(m.machine_uid);
+  if (what === 'sim-burst') {
+    for (let i = 0; i < 6; i++) spawnBlip(m.machine_uid);
+    return;
+  }
+  if (what === 'sim-status') return openSimSheet(m);
+  if (what === 'sim-clear') {
+    delete SIM.status[m.machine_uid];
+    MACHINES = applySim(MACHINES.map(x => ({...x, status: x.machine_uid ===
+      m.machine_uid ? (x._real || x.status) : x.status})));
+    return load();
+  }
+  if (what === 'reset') {
+    await post(`/api/machines/${uid}/position`, {x: null, y: null})
+      .catch(() => {});
+    // no stored position → falls back into the default grid
+    await fetch(`/api/machines/${uid}/position`, {method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({x: 0, y: 0})});
+    return load();
+  }
+  if (['service', 'dead', 'clear'].includes(what)) {
+    const mode = what === 'service' ? 'SERVICE' : what === 'dead' ? 'DEAD-LINE' : '';
+    const comment = prompt(mode
+      ? `A comment is required to set ${m.title} to ${mode}:`
+      : `A comment is required to clear ${m.title}'s override:`);
+    if (comment === null || !comment.trim()) return;
+    const r = await post(`/api/machines/${uid}/override`,
+                         {override: mode, comment: comment.trim()});
+    if (!r.ok) alert('Could not apply the override.');
+    return load();
+  }
+  if (what === 'delete') {
+    if (!confirm(`Delete “${m.title}”?\n\nIts status and QC assignments are ` +
+                 `removed. If its station module is still running it will ` +
+                 `re-appear on the next poll.`)) return;
+    const purge = confirm('Also erase its history from the machine log?\n\n' +
+                          'OK = erase, Cancel = keep.');
+    await fetch(`/api/machines/${uid}`, {method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({purge_history: purge})});
+    if (selected && selected.machine_uid === m.machine_uid) selected = null;
+    return load();
+  }
+}
+
+// ── assign QC samples to this instrument (V4's watched targets) ─────────
+function openQcSheet(m) {
+  const chosen = new Set((m.qc_targets || []).map(t => `${t.sample}||${t.test}`));
+  $('#qcTitle').textContent = m.title;
+  $('#qcList').innerHTML = SAMPLES.length ? SAMPLES.map(s => `
+    <div class="grp">${esc(s.name)} · lab id ${esc(s.sample_id_val)}</div>
+    ${(s.tests || []).map(t => `
+      <label><input type="checkbox" value="${esc(s.name)}||${esc(t.name)}"
+        ${chosen.has(`${s.name}||${t.name}`) ? 'checked' : ''}>
+        ${esc(t.name)}
+        <span style="margin-left:auto;color:var(--ink3);font-family:var(--mono);font-size:10.5px">
+        ${Number(t.low).toFixed(2)}…${Number(t.high).toFixed(2)}</span></label>`).join('')}
+  `).join('') : '<p class="empty" style="padding:10px">No QC samples defined yet. ' +
+      'Add one under Stations &amp; QC first.</p>';
+  $('#qcSheet').dataset.uid = m.machine_uid;
+  $('#qcSheet').showModal();
+}
+
+$('#qcSave').addEventListener('click', async () => {
+  const uid = $('#qcSheet').dataset.uid;
+  const targets = [...document.querySelectorAll('#qcList input:checked')]
+    .map(cb => { const [sample, test] = cb.value.split('||'); return {sample, test}; });
+  const r = await fetch(`/api/machines/${encodeURIComponent(uid)}/qc-targets`,
+    {method: 'POST', headers: {'Content-Type': 'application/json'},
+     body: JSON.stringify({targets})});
+  if (!r.ok) alert('Could not save the assignment.');
+  $('#qcSheet').close();
+  load();
+});
+$('#qcCancel').addEventListener('click', () => $('#qcSheet').close());
+
+// Dragging instruments around the floor is handled by the world — it raycasts
+// the pointer onto the ground, snaps to a bay, and calls __floorBridge.onMove.
+
+// ── parsed data, in flight ──────────────────────────────────────────────
+// Every print a station module parses used to be one packet of light running
+// down a pipe into LabCore. It is a train now: loaded at that instrument's
+// station and run out along the line to the LabCore terminal. One parse, one
+// train — see spawnBlip above and /static/world/trains.js.
+async function pollRuns() {
+  const body = await fetch('/api/events?limit=60').then(r => r.json())
+    .catch(() => null);
+  if (!body) return;
+  const runs = (body.events || []).filter(e => e.kind === 'run');
+  const keys = runs.map(e => `${e.machine_uid}|${e.ts}|${e.lab_id}`);
+  if (seenRuns === null) { seenRuns = new Set(keys); return; }  // don't replay
+  keys.forEach((k, i) => {
+    if (seenRuns.has(k)) return;
+    seenRuns.add(k);
+    spawnBlip(runs[i].machine_uid);
+  });
+  if (seenRuns.size > 400) seenRuns = new Set(keys);
+}
+// Both endpoints below are served from the server's in-memory snapshot in under
+// 2ms at ZERO LabCore operations, so polling this often costs the lab nothing —
+// it is Flask reading a dict. Benches now push their own status straight to the
+// server, and this is how quickly the floor notices.
+const FLOOR_REFRESH_MS = 2000;   // /api/machines — the dots
+const BLIP_POLL_MS = 2000;       // /api/events   — the run blips
+
+pollRuns();
+setInterval(pollRuns, BLIP_POLL_MS);
+
+setInterval(() => {
+  const d = new Date();
+  $('#clock').textContent = d.toLocaleDateString('en-CA') + '  ' +
+    d.toLocaleTimeString('en-GB', {hour12: false});
+}, 1000);
+window.addEventListener('resize', () => drawFloor());
+load();
+setInterval(() => { if (!dragging) load(); }, FLOOR_REFRESH_MS);
+// Warm what the operator is most likely to open next.
+LEM.prefetch(['/api/checklists', '/api/maintenance', '/api/checklists/history']);
+</script>
+
+<script type="module">
+// Boot the world. This is the only module script on the page; everything above
+// is the same classic script the floor has always had, and the two meet at
+// `window.__floorBridge`.
+import {LEMWorld} from 'world/index.js';
+
+const bridge = window.__floorBridge;
+const canvas = document.getElementById('world');
+
+try {
+  const world = new LEMWorld(canvas, {
+    onSelect: uid => bridge.onSelect(uid),
+    onContext: (uid, evt) => bridge.onContext(uid, evt),
+    onHover: (uid, at) => bridge.onHover(uid, at),
+    onMove: (uid, gx, gy) => bridge.onMove(uid, gx, gy),
+    canDrag: () => bridge.canDrag(),
+  });
+  world.on('dragging', ({uid}) => bridge.setDragging(uid));
+  // Named for the console and for the screenshot harness. NOT `window.world` —
+  // <canvas id="world"> already owns that name.
+  window.__lemWorld = world;
+  await world.ready();
+  bridge.attach(world);
+} catch (err) {
+  // WebGL2 missing, a driver refusing a context, a subsystem breaking badly
+  // enough to escape its own guard: say so plainly rather than leaving a black
+  // rectangle where the lab floor should be. The rails, the tally and every
+  // dialog on this page still work — they never depended on the map.
+  console.error('[floor] the 3D world could not start', err);
+  canvas.hidden = true;
+  const note = document.createElement('div');
+  note.className = 'empty';
+  note.style.cssText = 'padding:28px;max-width:46ch;margin:auto;text-align:center';
+  note.innerHTML = 'The floor view needs WebGL2, and this browser did not ' +
+    'give it. Every instrument and its status is still on the ' +
+    '<a class="link" href="/stations">Stations</a> page.';
+  document.getElementById('stage').appendChild(note);
+}
+</script>
+</div>
+</div>
+</body>
+</html>

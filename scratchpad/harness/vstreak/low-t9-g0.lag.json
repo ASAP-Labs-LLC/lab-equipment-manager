@@ -1,0 +1,368 @@
+{
+  "tag": "low-t9-g0",
+  "lags": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64
+  ],
+  "patches": [
+    {
+      "label": "sky-fullwidth",
+      "x0": 0,
+      "x1": 1280,
+      "y0": 0,
+      "y1": 33,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 1280,
+          "ny": 33,
+          "lag": {
+            "1": {
+              "sigma": 0.715,
+              "obs": 0.1645,
+              "exp": 0.3049,
+              "ratio": 0.54,
+              "excessCodes": 0
+            },
+            "2": {
+              "sigma": 0.405,
+              "obs": 0.1196,
+              "exp": 0.1729,
+              "ratio": 0.69,
+              "excessCodes": 0
+            },
+            "4": {
+              "sigma": 0.513,
+              "obs": 0.2146,
+              "exp": 0.2188,
+              "ratio": 0.98,
+              "excessCodes": 0
+            },
+            "8": {
+              "sigma": 0.675,
+              "obs": 0.3315,
+              "exp": 0.2876,
+              "ratio": 1.15,
+              "excessCodes": 0.067
+            },
+            "16": {
+              "sigma": 0.54,
+              "obs": 0.2185,
+              "exp": 0.2305,
+              "ratio": 0.95,
+              "excessCodes": 0
+            },
+            "32": {
+              "sigma": 0.675,
+              "obs": 0.2205,
+              "exp": 0.2877,
+              "ratio": 0.77,
+              "excessCodes": 0
+            },
+            "64": {
+              "sigma": 0.487,
+              "obs": 0.3302,
+              "exp": 0.2077,
+              "ratio": 1.59,
+              "excessCodes": 0.105
+            }
+          }
+        },
+        {
+          "ch": "G",
+          "nx": 1280,
+          "ny": 33,
+          "lag": {
+            "1": {
+              "sigma": 0.601,
+              "obs": 0.1247,
+              "exp": 0.2562,
+              "ratio": 0.49,
+              "excessCodes": 0
+            },
+            "2": {
+              "sigma": 0.331,
+              "obs": 0.0905,
+              "exp": 0.1413,
+              "ratio": 0.64,
+              "excessCodes": 0
+            },
+            "4": {
+              "sigma": 0.436,
+              "obs": 0.1191,
+              "exp": 0.1857,
+              "ratio": 0.64,
+              "excessCodes": 0
+            },
+            "8": {
+              "sigma": 0.545,
+              "obs": 0.1715,
+              "exp": 0.2322,
+              "ratio": 0.74,
+              "excessCodes": 0
+            },
+            "16": {
+              "sigma": 0.483,
+              "obs": 0.2766,
+              "exp": 0.2061,
+              "ratio": 1.34,
+              "excessCodes": 0.075
+            },
+            "32": {
+              "sigma": 0.569,
+              "obs": 0.1411,
+              "exp": 0.2427,
+              "ratio": 0.58,
+              "excessCodes": 0
+            },
+            "64": {
+              "sigma": 0.413,
+              "obs": 0.2391,
+              "exp": 0.1762,
+              "ratio": 1.36,
+              "excessCodes": 0.066
+            }
+          }
+        },
+        {
+          "ch": "B",
+          "nx": 1280,
+          "ny": 33,
+          "lag": {
+            "1": {
+              "sigma": 0.368,
+              "obs": 0.0834,
+              "exp": 0.157,
+              "ratio": 0.53,
+              "excessCodes": 0
+            },
+            "2": {
+              "sigma": 0.215,
+              "obs": 0.0859,
+              "exp": 0.0917,
+              "ratio": 0.94,
+              "excessCodes": 0
+            },
+            "4": {
+              "sigma": 0.291,
+              "obs": 0.1008,
+              "exp": 0.124,
+              "ratio": 0.81,
+              "excessCodes": 0
+            },
+            "8": {
+              "sigma": 0.35,
+              "obs": 0.1142,
+              "exp": 0.149,
+              "ratio": 0.77,
+              "excessCodes": 0
+            },
+            "16": {
+              "sigma": 0.328,
+              "obs": 0.1203,
+              "exp": 0.1397,
+              "ratio": 0.86,
+              "excessCodes": 0
+            },
+            "32": {
+              "sigma": 0.356,
+              "obs": 0.1239,
+              "exp": 0.1518,
+              "ratio": 0.82,
+              "excessCodes": 0
+            },
+            "64": {
+              "sigma": 0.331,
+              "obs": 0.2862,
+              "exp": 0.1411,
+              "ratio": 2.03,
+              "excessCodes": 0.102
+            }
+          }
+        }
+      ]
+    },
+    {
+      "label": "sky-right-side",
+      "x0": 704,
+      "x1": 1254,
+      "y0": 0,
+      "y1": 110,
+      "ch": [
+        {
+          "ch": "R",
+          "nx": 550,
+          "ny": 110,
+          "lag": {
+            "1": {
+              "sigma": 0.797,
+              "obs": 0.0647,
+              "exp": 0.1862,
+              "ratio": 0.35,
+              "excessCodes": 0
+            },
+            "2": {
+              "sigma": 0.438,
+              "obs": 0.0648,
+              "exp": 0.1024,
+              "ratio": 0.63,
+              "excessCodes": 0
+            },
+            "4": {
+              "sigma": 0.567,
+              "obs": 0.0997,
+              "exp": 0.1325,
+              "ratio": 0.75,
+              "excessCodes": 0
+            },
+            "8": {
+              "sigma": 0.749,
+              "obs": 0.136,
+              "exp": 0.175,
+              "ratio": 0.78,
+              "excessCodes": 0
+            },
+            "16": {
+              "sigma": 0.593,
+              "obs": 0.0789,
+              "exp": 0.1384,
+              "ratio": 0.57,
+              "excessCodes": 0
+            },
+            "32": {
+              "sigma": 0.739,
+              "obs": 0.0916,
+              "exp": 0.1727,
+              "ratio": 0.53,
+              "excessCodes": 0
+            },
+            "64": {
+              "sigma": 0.537,
+              "obs": 0.2066,
+              "exp": 0.1254,
+              "ratio": 1.65,
+              "excessCodes": 0.067
+            }
+          }
+        },
+        {
+          "ch": "G",
+          "nx": 550,
+          "ny": 110,
+          "lag": {
+            "1": {
+              "sigma": 0.574,
+              "obs": 0.0413,
+              "exp": 0.134,
+              "ratio": 0.31,
+              "excessCodes": 0
+            },
+            "2": {
+              "sigma": 0.306,
+              "obs": 0.0464,
+              "exp": 0.0715,
+              "ratio": 0.65,
+              "excessCodes": 0
+            },
+            "4": {
+              "sigma": 0.41,
+              "obs": 0.0483,
+              "exp": 0.0958,
+              "ratio": 0.5,
+              "excessCodes": 0
+            },
+            "8": {
+              "sigma": 0.526,
+              "obs": 0.0477,
+              "exp": 0.1228,
+              "ratio": 0.39,
+              "excessCodes": 0
+            },
+            "16": {
+              "sigma": 0.439,
+              "obs": 0.0662,
+              "exp": 0.1026,
+              "ratio": 0.65,
+              "excessCodes": 0
+            },
+            "32": {
+              "sigma": 0.533,
+              "obs": 0.0839,
+              "exp": 0.1246,
+              "ratio": 0.67,
+              "excessCodes": 0
+            },
+            "64": {
+              "sigma": 0.409,
+              "obs": 0.2774,
+              "exp": 0.0955,
+              "ratio": 2.9,
+              "excessCodes": 0.106
+            }
+          }
+        },
+        {
+          "ch": "B",
+          "nx": 550,
+          "ny": 110,
+          "lag": {
+            "1": {
+              "sigma": 0.312,
+              "obs": 0.0395,
+              "exp": 0.073,
+              "ratio": 0.54,
+              "excessCodes": 0
+            },
+            "2": {
+              "sigma": 0.173,
+              "obs": 0.0437,
+              "exp": 0.0404,
+              "ratio": 1.08,
+              "excessCodes": 0.007
+            },
+            "4": {
+              "sigma": 0.23,
+              "obs": 0.0451,
+              "exp": 0.0538,
+              "ratio": 0.84,
+              "excessCodes": 0
+            },
+            "8": {
+              "sigma": 0.293,
+              "obs": 0.0518,
+              "exp": 0.0684,
+              "ratio": 0.76,
+              "excessCodes": 0
+            },
+            "16": {
+              "sigma": 0.289,
+              "obs": 0.0587,
+              "exp": 0.0675,
+              "ratio": 0.87,
+              "excessCodes": 0
+            },
+            "32": {
+              "sigma": 0.337,
+              "obs": 0.1081,
+              "exp": 0.0786,
+              "ratio": 1.37,
+              "excessCodes": 0.03
+            },
+            "64": {
+              "sigma": 0.343,
+              "obs": 0.391,
+              "exp": 0.0801,
+              "ratio": 4.88,
+              "excessCodes": 0.156
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

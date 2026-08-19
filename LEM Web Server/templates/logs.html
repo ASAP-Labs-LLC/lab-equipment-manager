@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM — Logs</title>
+<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<style>
+
+  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;
+           padding:14px;border-bottom:1px solid var(--edge);
+           background:#0c0e13;flex:none}
+  .f{display:flex;flex-direction:column;gap:4px}
+  .f label{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
+           color:var(--ink3);font-weight:700}
+  #fQuery{min-width:200px}
+  .grow{flex:1}
+
+  main{flex:1;overflow:auto;padding:0 14px 24px}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{position:sticky;top:0;background:#0c0e13;text-align:left;
+     font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
+     color:var(--ink3);padding:10px 8px;border-bottom:1px solid var(--edge);
+     white-space:nowrap;z-index:1}
+  td{padding:8px;border-bottom:1px solid #1a1f28;vertical-align:top}
+  tr:hover td{background:#10141b}
+  .k{display:inline-block;padding:1px 6px;border-radius:5px;font-size:9.5px;
+     font-weight:800;letter-spacing:.1em;text-transform:uppercase;
+     background:#1d2436;color:#8fb2ff;white-space:nowrap}
+  .k-qc{background:#12291e;color:#5fd39b}
+  .k-run{background:#1b2130;color:#93a3bd}
+  .k-status_change{background:#302512;color:#e0b25f}
+  .k-override{background:#33202a;color:#f08fa6}
+  .k-comment{background:#1f2630;color:#a8b6c8}
+  .k-pm{background:#1d2436;color:#8fb2ff}
+  .k-calibration{background:#2a2136;color:#c79bff}
+  .k-config{background:#2b2412;color:var(--brass)}
+  .det{color:var(--ink3);font-family:var(--mono);font-size:11px;
+       word-break:break-word;max-width:420px}
+  .count{color:var(--ink3);font-size:11.5px;white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="frame">
+{% include '_nav.html' %}
+<div class="pane">
+  <header class="bar">
+    <h1 class="sign">LEM <b>·</b> Logs</h1>
+    <span class="spacer"></span>
+    <span class="count" id="count"></span>
+    <a class="tool" id="csv" href="/api/logs.csv">Export CSV</a>
+    <span class="who" id="who" hidden></span>
+    <button id="btnAuth" class="tool">Sign in</button>
+  </header>
+
+  <div class="filters">
+    <div class="f"><label for="fMachine">Instrument</label>
+      <select id="fMachine"><option value="">All</option></select></div>
+    <div class="f"><label for="fKindSel">Kind</label>
+      <select id="fKindSel"><option value="">All</option></select></div>
+    <div class="f"><label for="fSince">From</label>
+      <input id="fSince" type="date"></div>
+    <div class="f"><label for="fUntil">To</label>
+      <input id="fUntil" type="date"></div>
+    <div class="f grow"><label for="fQuery">Search</label>
+      <input id="fQuery" placeholder="Lab ID, test, comment, anything…"></div>
+    <button class="tool" id="clear">Clear</button>
+  </div>
+
+  <main>
+    <table>
+      <thead><tr>
+        <th>When</th><th>Instrument</th><th>Kind</th><th>Lab ID</th>
+        <th>Test</th><th>Value</th><th>Who</th><th>Detail</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="note"></div>
+  </main>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g,
+  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+// A `config` entry's interesting part is its detail, and a run's is its values.
+// Show the blob minus the keys already in their own columns.
+function detailText(e) {
+  const d = {...(e.detail || {})};
+  delete d.by; delete d.action;
+  const s = JSON.stringify(d);
+  return s === '{}' ? '' : s;
+}
+
+function query() {
+  const p = new URLSearchParams();
+  const m = $('#fMachine').value, k = $('#fKindSel').value;
+  const a = $('#fSince').value, b = $('#fUntil').value, q = $('#fQuery').value;
+  if (m) p.set('machine', m);
+  if (k) p.set('kind', k);
+  if (a) p.set('since', a);
+  if (b) p.set('until', b);
+  if (q.trim()) p.set('q', q.trim());
+  return p;
+}
+
+let machinesLoaded = false;
+
+async function load() {
+  const p = query();
+  $('#csv').href = '/api/logs.csv' + (p.toString() ? '?' + p : '');
+  const b = await fetch('/api/logs' + (p.toString() ? '?' + p : ''))
+    .then(r => r.json()).catch(() => null);
+  if (!b) {
+    $('#rows').innerHTML = '';
+    $('#note').innerHTML = '<p class="empty">Can\'t reach LabCore. '
+      + 'This page fills back in when it returns.</p>';
+    return;
+  }
+
+  // A read that timed out behind LabCore's write queue comes back as an EMPTY
+  // list, which reads as "this lab has no history". Say which it was.
+  if (b.error) {
+    $('#note').innerHTML = '<p class="empty" style="color:var(--amber)">'
+      + esc(b.error) + '</p>';
+  }
+
+  // Populate the kind filter from what's actually in the log, so it can never
+  // offer a kind that doesn't exist or miss one that does.
+  const sel = $('#fKindSel');
+  if (sel.options.length <= 1 && (b.kinds || []).length) {
+    b.kinds.forEach(k => {
+      const o = document.createElement('option');
+      o.value = k; o.textContent = k.replace(/_/g, ' ');
+      sel.appendChild(o);
+    });
+  }
+  if (!machinesLoaded) {
+    const ms = await fetch('/api/machines').then(r => r.json())
+      .catch(() => null);
+    if (ms && ms.machines) {
+      machinesLoaded = true;
+      ms.machines.forEach(m => {
+        const o = document.createElement('option');
+        o.value = m.machine_uid; o.textContent = m.title;
+        $('#fMachine').appendChild(o);
+      });
+    }
+  }
+
+  const evs = b.events || [];
+  $('#count').textContent = evs.length
+    ? `${evs.length} event${evs.length === 1 ? '' : 's'}` : '';
+  $('#rows').innerHTML = evs.map(e => `
+    <tr>
+      <td class="num" style="white-space:nowrap">${esc(e.ts.replace('T', ' ').slice(0, 19))}</td>
+      <td>${esc(e.machine_title)}</td>
+      <td><span class="k k-${esc(e.kind)}">${esc(e.kind.replace(/_/g, ' '))}</span></td>
+      <td class="num">${esc(e.lab_id)}</td>
+      <td>${esc(e.kind === 'config' ? e.action : e.test_name)}</td>
+      <td class="num">${esc(e.value)}</td>
+      <td>${esc(e.by)}</td>
+      <td class="det">${esc(detailText(e))}</td>
+    </tr>`).join('');
+  $('#note').innerHTML = evs.length ? ''
+    : '<p class="empty">Nothing matches those filters.</p>';
+}
+
+let t = null;
+const debounced = () => { clearTimeout(t); t = setTimeout(load, 220); };
+['#fMachine', '#fKindSel', '#fSince', '#fUntil'].forEach(
+  s => $(s).addEventListener('change', load));
+$('#fQuery').addEventListener('input', debounced);
+$('#clear').addEventListener('click', () => {
+  ['#fMachine', '#fKindSel', '#fSince', '#fUntil', '#fQuery']
+    .forEach(s => { $(s).value = ''; });
+  load();
+});
+
+let AUTHED = false, WHO = '';
+
+async function loadWho() {
+  const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
+  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
+  const who = $('#who');
+  who.hidden = !AUTHED;
+  who.innerHTML = AUTHED ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
+  $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
+}
+
+$('#btnAuth').addEventListener('click', async () => {
+  if (AUTHED) { await fetch('/api/logout', {method: 'POST'}); return loadWho(); }
+  location.href = '/floor';        // the sign-in dialog lives there
+});
+
+loadWho();
+load();
+</script>
+</div>
+</div>
+</body>
+</html>

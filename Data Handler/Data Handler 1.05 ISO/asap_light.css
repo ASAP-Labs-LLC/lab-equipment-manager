@@ -1,0 +1,111 @@
+/*  ASAP Labs Light Theme
+    Derived from the ASAP logo’s colors on a white-based background.
+    Accent colors match the teal (#2dbcb7), red (#f04d3f), orange (#f9a602).
+*/
+
+/* Main background + text color */
+QWidget {
+    background-color: #f7f7f7; /* light gray/white background */
+    color: #202020;           /* dark text */
+    font-family: "Segoe UI", "Arial", sans-serif;
+    selection-background-color: #2dbcb7; /* teal highlight */
+    selection-color: #f7f7f7;           /* white text on teal selection */
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #2dbcb7; /* teal accent */
+    color: #FFFFFF;
+    border: 1px solid #2dbcb7;
+    border-radius: 4px;
+    padding: 5px 10px;
+}
+QPushButton:hover {
+    background-color: #37D2CB;
+}
+QPushButton:pressed {
+    background-color: #25ABA5;
+}
+
+/* Danger button (red) */
+QPushButton#dangerButton {
+    background-color: #f04d3f;
+    color: #FFFFFF;
+    border: 1px solid #f04d3f;
+}
+QPushButton#dangerButton:hover {
+    background-color: #f3695a;
+}
+QPushButton#dangerButton:pressed {
+    background-color: #c93f33;
+}
+
+/* Orange accent usage for special labels/frames if desired */
+QLabel#orangeAccent,
+QFrame#orangeAccent {
+    color: #f9a602; /* orange accent text */
+}
+
+/* Edits, combos, etc. */
+QLineEdit, QComboBox, QSpinBox, QTextEdit {
+    background-color: #ffffff;
+    border: 1px solid #cccccc;
+    color: #202020;
+    selection-background-color: #2dbcb7;
+    selection-color: #ffffff;
+}
+
+/* Scrollbars (optional) */
+QScrollBar:vertical {
+    background: #f0f0f0;
+    width: 12px;
+}
+QScrollBar::handle:vertical {
+    background: #cccccc; 
+}
+QScrollBar::handle:vertical:hover {
+    background: #b3b3b3;
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical {
+    background: #f0f0f0;
+    border: none;
+}
+
+/* Menubar and menus */
+QMenuBar {
+    background-color: #f0f0f0;
+}
+QMenuBar::item {
+    background: transparent;
+    color: #202020;
+}
+QMenuBar::item:selected {
+    background: #e0e0e0;
+}
+QMenu {
+    background-color: #f0f0f0;
+    color: #202020;
+    border: 1px solid #cccccc;
+}
+QMenu::item:selected {
+    background-color: #2dbcb7;
+    color: #ffffff;
+}
+
+/* Tabs */
+QTabBar::tab {
+    background: #f0f0f0;
+    color: #202020;
+    padding: 6px;
+    margin: 2px;
+}
+QTabBar::tab:selected {
+    background-color: #2dbcb7;
+    color: #ffffff;
+    margin-bottom: -1px;
+}
+QTabBar::tab:hover {
+    background-color: #37D2CB;
+    color: #ffffff;
+}

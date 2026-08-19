@@ -1,0 +1,431 @@
+{
+  "version": 1,
+  "boxes": {
+    "box_2332332582384": {
+      "box_uid": "box_2332332582384",
+      "box_title": "BenchTop Bio",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Bio Results/Bio Results.csv",
+      "status": "UNKNOWN",
+      "reason": "Missing data for: QC, TESTING",
+      "last_good_qc": null,
+      "latest_match_time": "2026-06-01T10:50:36",
+      "used_parsed": false,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-01-29T15:36:25",
+      "watch_signature": [
+        "SetaCheck 5%::Bio - D7371"
+      ],
+      "results": [
+        {
+          "sample": "SetaCheck 5%",
+          "test": "Bio - D7371",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No numeric value in 'Bio'.",
+          "latest_time": "2026-06-01T10:50:36",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_2096856031904": {
+      "box_uid": "box_2096856031904",
+      "box_title": "PAC Flash 1",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 1/Pac Flash 1_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-07-27T08:34:08",
+      "latest_match_time": "2026-07-27T08:34:08",
+      "used_parsed": true,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-06-25T09:59:37",
+      "watch_signature": [
+        "Diesel - AO25::Flash - D7094"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Flash - D7094",
+          "latest_value": 63.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-27T08:34:08",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1840573737440": {
+      "box_uid": "box_1840573737440",
+      "box_title": "Auto Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Auto Grabner/Auto Grabner_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-07-27T09:19:40",
+      "latest_match_time": "2026-07-27T09:19:40",
+      "used_parsed": true,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-06-25T10:00:45",
+      "watch_signature": [
+        "Diesel - AO25::Flash - D7094"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Flash - D7094",
+          "latest_value": 63.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-27T09:19:40",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1840573733840": {
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed data/Multitek S_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-07-27T08:38:40",
+      "latest_match_time": "2026-07-27T08:38:40",
+      "used_parsed": true,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-06-25T10:04:31",
+      "watch_signature": [
+        "Diesel - AO25::Sulfur - D5453"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Sulfur - D5453",
+          "latest_value": 6.451,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-27T08:38:40",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1870507241056": {
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek NS/Parsed Data/Multitek NS_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-07-27T08:41:19",
+      "latest_match_time": "2026-07-27T08:41:19",
+      "used_parsed": true,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-06-25T10:07:25",
+      "watch_signature": [
+        "Diesel - AO25::Sulfur - D5453"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Sulfur - D5453",
+          "latest_value": 6.362,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-27T08:41:19",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_1870504657248": {
+      "box_uid": "box_1870504657248",
+      "box_title": "Agilent GC",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/GC Results/Parsed/Gas Chromatograph_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-07-24T16:35:24",
+      "latest_match_time": "2026-07-24T16:35:24",
+      "used_parsed": true,
+      "cached_at": "2026-07-24T23:59:33",
+      "first_seen": "2026-06-25T12:23:22",
+      "watch_signature": [
+        "Diesel - AO25::10% - D86",
+        "Diesel - AO25::50% - D86",
+        "Diesel - AO25::90% - D86",
+        "Diesel - AO25::FBP - D86",
+        "Diesel - AO25::IBP - D86"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "IBP - D86",
+          "latest_value": 166.54,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-24T16:35:24",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "Diesel - AO25",
+          "test": "10% - D86",
+          "latest_value": 209.35,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-24T16:35:24",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "Diesel - AO25",
+          "test": "50% - D86",
+          "latest_value": 264.65,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-24T16:35:24",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "Diesel - AO25",
+          "test": "90% - D86",
+          "latest_value": 318.25,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-24T16:35:24",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "Diesel - AO25",
+          "test": "FBP - D86",
+          "latest_value": 343.56,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-24T16:35:24",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2201765855296": {
+      "box_uid": "box_2201765855296",
+      "box_title": "PAC Flash 2",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 2/Pac Flash 2_parsed.csv",
+      "status": "GREEN",
+      "reason": "System nominal",
+      "last_good_qc": "2026-07-27T08:35:57",
+      "latest_match_time": "2026-07-27T08:35:57",
+      "used_parsed": true,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-06-30T08:54:58",
+      "watch_signature": [
+        "Diesel - AO25::Flash - D7094"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Flash - D7094",
+          "latest_value": 63.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-27T08:35:57",
+          "timestamp_source": "parsed"
+        }
+      ]
+    },
+    "box_2301728638432": {
+      "box_uid": "box_2301728638432",
+      "box_title": "Viscosity",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Viscosity Results/Viscosity Results.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2026-07-20T11:51:24",
+      "latest_match_time": "2026-07-20T11:51:24",
+      "used_parsed": false,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-07-02T10:09:31",
+      "watch_signature": [
+        "Diesel - AO25::Viscosity - D445"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Viscosity - D445",
+          "latest_value": 2.646,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-20T11:51:24",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_1834023730592": {
+      "box_uid": "box_1834023730592",
+      "box_title": "AQUAMAX KF",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/KF Results/KF Results.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2026-07-23T11:31:04",
+      "latest_match_time": "2026-07-23T11:31:04",
+      "used_parsed": false,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-07-07T16:01:02",
+      "watch_signature": [
+        "Diesel - AO25::KF - D6304"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "KF - D6304",
+          "latest_value": 56.25,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-23T11:31:04",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    },
+    "box_1770831432192": {
+      "box_uid": "box_1770831432192",
+      "box_title": "Eraspec",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Eraspec/eraspec_parsed.csv",
+      "status": "UNKNOWN",
+      "reason": "Missing data for: QC, TESTING",
+      "last_good_qc": "2026-07-15T12:24:38",
+      "latest_match_time": "2026-07-15T12:24:38",
+      "used_parsed": true,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-07-15T12:24:38",
+      "watch_signature": [
+        "Diesel - AJ24::10% - D86",
+        "Diesel - AJ24::50% - D86",
+        "Diesel - AJ24::90% - D86",
+        "Diesel - AJ24::API Gravity D4052-22",
+        "Diesel - AJ24::FBP - D86",
+        "Diesel - AJ24::IBP - D86",
+        "Gas - AA25::50% - D86",
+        "Gas - AA25::90% - D86",
+        "Gas - AA25::API Grav",
+        "Gas - AA25::FBP - D86",
+        "Gas - AA25::IBP - D86"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AJ24",
+          "test": "API Gravity D4052-22",
+          "latest_value": 37.25,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-15T12:24:38",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "Diesel - AJ24",
+          "test": "IBP - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Diesel - AJ24",
+          "test": "10% - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Diesel - AJ24",
+          "test": "50% - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Diesel - AJ24",
+          "test": "90% - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Diesel - AJ24",
+          "test": "FBP - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Gas - AA25",
+          "test": "API Grav",
+          "latest_value": 63.29,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-15T12:24:38",
+          "timestamp_source": "parsed"
+        },
+        {
+          "sample": "Gas - AA25",
+          "test": "IBP - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Gas - AA25",
+          "test": "50% - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Gas - AA25",
+          "test": "90% - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        },
+        {
+          "sample": "Gas - AA25",
+          "test": "FBP - D86",
+          "latest_value": null,
+          "in_spec": null,
+          "note": "No matching rows for sample ID.",
+          "latest_time": null,
+          "timestamp_source": ""
+        }
+      ]
+    },
+    "box_1840573738448": {
+      "box_uid": "box_1840573738448",
+      "box_title": "Mini Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Flash Results.csv",
+      "status": "YELLOW",
+      "reason": "Warnings in: QC",
+      "last_good_qc": "2026-07-24T08:47:04",
+      "latest_match_time": "2026-07-24T08:47:04",
+      "used_parsed": false,
+      "cached_at": "2026-07-27T09:39:34",
+      "first_seen": "2026-07-20T08:40:45",
+      "watch_signature": [
+        "Diesel - AO25::Flash - D7094"
+      ],
+      "results": [
+        {
+          "sample": "Diesel - AO25",
+          "test": "Flash - D7094",
+          "latest_value": 65.0,
+          "in_spec": true,
+          "note": "",
+          "latest_time": "2026-07-24T08:47:04",
+          "timestamp_source": "file_mtime"
+        }
+      ]
+    }
+  }
+}

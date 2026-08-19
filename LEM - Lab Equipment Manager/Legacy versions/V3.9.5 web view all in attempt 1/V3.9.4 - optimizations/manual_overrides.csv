@@ -1,0 +1,5 @@
+timestamp,box_uid,box_title,action,user,note
+2025-09-17T15:48:13,box_1870507241920,Eraspec,DEAD-LINE: ON,,
+2025-09-17T15:48:19,box_1870507241920,Eraspec,DEAD-LINE: OFF,RC,d
+2025-09-17T15:53:21,box_1840573738448,Mini Grabner,DEAD-LINE: ON,RC,Test
+2025-09-17T15:53:33,box_1840573738448,Mini Grabner,DEAD-LINE: OFF,RC,test again

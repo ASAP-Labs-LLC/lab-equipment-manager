@@ -1,0 +1,17 @@
+{
+  "tag": "low-t9-g0",
+  "url": "http://127.0.0.1:5601/static/world/dev/solo.html?mods=sky,gi,terrain&cam=low&time=9&hud=0&quality=ultra&weather=clear",
+  "cam": "low",
+  "time": "9",
+  "W": 1280,
+  "H": 720,
+  "camY": 24.05,
+  "pitchDeg": -7.448,
+  "fovDeg": 42,
+  "grainSetTo": 0,
+  "uniform": {
+    "found": 1,
+    "before": 0.012,
+    "now": 0
+  }
+}
