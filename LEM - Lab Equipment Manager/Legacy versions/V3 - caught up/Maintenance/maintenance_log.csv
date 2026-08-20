@@ -1,7 +1,0 @@
-timestamp,box_uid,box_title,task_id,task_name,action,user,comment
-2025-09-15T17:27:58,box_1931137744416,GC,,,comment,Test,Test
-2025-09-15T17:28:46,box_1931137744416,GC,mt_1757982489098,Calibrate GC,start,,
-2025-09-15T17:28:59,box_1931137744416,GC,mt_1757982489098,Calibrate GC,complete,Ryan,- Should work now
-2025-09-15T17:32:03,box_1931137744416,GC,mt_1757982505374,Clean GC,start,,
-2025-09-15T17:32:16,box_1931137744416,GC,mt_1757982505374,Clean GC,complete,,
-2025-09-15T17:33:13,box_1931137744416,GC,mt_1757982758058,tx,complete,,

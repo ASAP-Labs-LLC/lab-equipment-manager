@@ -1,5 +1,0 @@
-PyQt5
-pyserial
-pandas
-numexpr
-chardet
