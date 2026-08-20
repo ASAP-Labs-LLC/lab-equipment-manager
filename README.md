@@ -110,7 +110,7 @@ Key modules:
 | `qc_samples.py` | `QcSample` / `QcSampleTest` / `QcSampleStore` — the standards themselves. |
 | `snapshot_service.py` | Batched machine SQL behind the floor snapshot. |
 | `last_seen_cache.py` | Watch signatures and staleness — the difference between "offline" and "stale". |
-| `tray.py` | File-watch helpers (`iter_watched_files`, `snapshot`, `changed_files`) — not a system tray. |
+| `tray.py` | The launcher: a pystray tray icon (Open in Browser / Restart / Quit, plus a hideable console on Windows) **and** the file watcher that auto-restarts the server when a `.py`/`.pyw`/`.html`/`.css`/`.js` file changes. Flask's own reloader is unusable here — it re-execs the process, which would take the tray icon with it — so a restart means relaunching the script and exiting. Also owns the port handover (`port_is_free`, `wait_for_port_free`). |
 | `labcore_auth.py` | `LabCoreAuth`. |
 | `migrate_json_to_db.py` | One-shot import of V4's `lab_manager_config.json`. |
 | `models.py`, `data_source.py`, `maintenance.py`, `platform_utils.py` | Reused from V4 unchanged. |
