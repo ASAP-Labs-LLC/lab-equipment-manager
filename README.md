@@ -253,4 +253,4 @@ station mockup. `Data Handler/` was dropped here because it is preserved in full
 at [`ASAP-Labs-LLC/data-handler`](https://github.com/ASAP-Labs-LLC/data-handler).
 
 **None of it is lost** — every removed file is in this repo's git history
-(`git show a6cdf5f:<path>`) and still on the shared drive.
+(`git show 37092fc:<path>`) and still on the shared drive.

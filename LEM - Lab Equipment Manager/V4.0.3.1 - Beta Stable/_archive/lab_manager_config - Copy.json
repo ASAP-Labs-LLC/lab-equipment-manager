@@ -1,0 +1,1738 @@
+{
+  "version": 5,
+  "poll_minutes": 1,
+  "map_locked": true,
+  "sample_id_column": "Lab ID",
+  "samples": [
+    {
+      "name": "AJ24",
+      "sample_id_val": "AJ24",
+      "tests": [
+        {
+          "name": "API Gravity D4052-22",
+          "value_col": "API",
+          "expected": 37.23,
+          "std_dev": 0.06,
+          "k": 2.0,
+          "units": "API"
+        },
+        {
+          "name": "IBP - D86",
+          "value_col": "Dist - IBP",
+          "expected": 180.83,
+          "std_dev": 3.12,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "10% - D86",
+          "value_col": "Dist - 10%",
+          "expected": 211.93,
+          "std_dev": 1.3,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "50% - D86",
+          "value_col": "Dist - 50%",
+          "expected": 262.62,
+          "std_dev": 0.9,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "90% - D86",
+          "value_col": "Dist - 90%",
+          "expected": 328.16,
+          "std_dev": 1.6,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "FBP - D86",
+          "value_col": "Dist - FBP",
+          "expected": 357.46,
+          "std_dev": 2.76,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Flash - D3828",
+          "value_col": "Flash",
+          "expected": 72.27,
+          "std_dev": 1.12,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Viscosity - D445",
+          "value_col": "Viscosity - Kin",
+          "expected": 2.6226,
+          "std_dev": 0.0235,
+          "k": 2.0,
+          "units": "mm2/s"
+        },
+        {
+          "name": "Pour Point - D7346",
+          "value_col": "Pour Point",
+          "expected": -15.4,
+          "std_dev": 2.1,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Cloud Point - D7689",
+          "value_col": "Cloud Point, Au",
+          "expected": -9.9,
+          "std_dev": 0.065,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Sulfur - D5453",
+          "value_col": "Sulfur",
+          "expected": 7.16,
+          "std_dev": 0.53,
+          "k": 2.0,
+          "units": "mg/kg"
+        },
+        {
+          "name": "KF - D6304",
+          "value_col": "KF",
+          "expected": 69.6,
+          "std_dev": 15.0,
+          "k": 1.0,
+          "units": "ppm"
+        }
+      ]
+    },
+    {
+      "name": "AO24",
+      "sample_id_val": "AO24",
+      "tests": [
+        {
+          "name": "API Gravity D4052-22",
+          "value_col": "API",
+          "expected": 42.79,
+          "std_dev": 0.06,
+          "k": 2.0,
+          "units": "API"
+        },
+        {
+          "name": "IBP - D86",
+          "value_col": "Dist - IBP",
+          "expected": 165.69,
+          "std_dev": 2.78,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "10% - D86",
+          "value_col": "Dist - 10%",
+          "expected": 189.11,
+          "std_dev": 1.12,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "50% - D86",
+          "value_col": "Dist - 50%",
+          "expected": 246.67,
+          "std_dev": 1.12,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "90% - D86",
+          "value_col": "Dist - 90%",
+          "expected": 331.84,
+          "std_dev": 1.9,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "FBP - D86",
+          "value_col": "Dist - FBP",
+          "expected": 365.33,
+          "std_dev": 2.76,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Flash - D3828",
+          "value_col": "Flash",
+          "expected": 60.72,
+          "std_dev": 1.21,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Viscosity - D445",
+          "value_col": "Viscosity - Kin",
+          "expected": 2.2469,
+          "std_dev": 0.0239,
+          "k": 2.0,
+          "units": "mm2/s"
+        },
+        {
+          "name": "Pour Point - D7346",
+          "value_col": "Pour Point",
+          "expected": -23.0,
+          "std_dev": 2.3,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Cloud Point - D7689",
+          "value_col": "Cloud Point, Au",
+          "expected": -12.27,
+          "std_dev": 0.76,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Sulfur - D5453",
+          "value_col": "Sulfur",
+          "expected": 9.0,
+          "std_dev": 0.85,
+          "k": 2.0,
+          "units": "mg/kg"
+        },
+        {
+          "name": "KF - D6304",
+          "value_col": "KF",
+          "expected": 32.75,
+          "std_dev": 15.0,
+          "k": 1.0,
+          "units": "ppm"
+        }
+      ]
+    },
+    {
+      "name": "SetaCheck 5%",
+      "sample_id_val": "SC05",
+      "tests": [
+        {
+          "name": "Bio - D7371",
+          "value_col": "Bio",
+          "expected": 5.0,
+          "std_dev": 0.5,
+          "k": 1.0,
+          "units": "%"
+        }
+      ]
+    },
+    {
+      "name": "Cloud CRM",
+      "sample_id_val": "CP",
+      "tests": [
+        {
+          "name": "Cloud - D7689",
+          "value_col": "Cloud",
+          "expected": -7.4,
+          "std_dev": 2.8,
+          "k": 1.0,
+          "units": "C"
+        }
+      ]
+    },
+    {
+      "name": "Pour CRM",
+      "sample_id_val": "PP",
+      "tests": [
+        {
+          "name": "Pour Point - D7346",
+          "value_col": "Pour",
+          "expected": -18.3,
+          "std_dev": 6.4,
+          "k": 1.0,
+          "units": "C"
+        }
+      ]
+    },
+    {
+      "name": "AJ25",
+      "sample_id_val": "AJ25",
+      "tests": [
+        {
+          "name": "API Gravity D4052-22",
+          "value_col": "API",
+          "expected": 37.37,
+          "std_dev": 0.05,
+          "k": 2.0,
+          "units": "API"
+        },
+        {
+          "name": "IBP - D86",
+          "value_col": "Dist - IBP",
+          "expected": 161.38,
+          "std_dev": 2.73,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "10% - D86",
+          "value_col": "Dist - 10%",
+          "expected": 196.62,
+          "std_dev": 1.27,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "50% - D86",
+          "value_col": "Dist - 50%",
+          "expected": 257.08,
+          "std_dev": 0.88,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "90% - D86",
+          "value_col": "Dist - 90%",
+          "expected": 323.24,
+          "std_dev": 1.67,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "FBP - D86",
+          "value_col": "Dist - FBP",
+          "expected": 354.51,
+          "std_dev": 2.12,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Flash - D3828",
+          "value_col": "Flash",
+          "expected": 57.74,
+          "std_dev": 1.47,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Viscosity - D445",
+          "value_col": "Viscosity - Kin",
+          "expected": 2.36,
+          "std_dev": 0.0221,
+          "k": 2.0,
+          "units": "mm2/s"
+        },
+        {
+          "name": "Pour Point - D7346",
+          "value_col": "Pour Point",
+          "expected": -25.4,
+          "std_dev": 2.3,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Cloud Point - D7689",
+          "value_col": "Cloud Point, Au",
+          "expected": -13.9,
+          "std_dev": 1.6,
+          "k": 2.0,
+          "units": "C"
+        },
+        {
+          "name": "Sulfur - D5453",
+          "value_col": "Sulfur",
+          "expected": 8.9,
+          "std_dev": 0.74,
+          "k": 2.0,
+          "units": "mg/kg"
+        },
+        {
+          "name": "KF - D6304",
+          "value_col": "KF",
+          "expected": 52.4,
+          "std_dev": 15.0,
+          "k": 1.0,
+          "units": "ppm"
+        }
+      ]
+    }
+  ],
+  "boxes": [
+    {
+      "uid": "box_1870504657248",
+      "title": "Agilent GC",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/GC Results/Parsed/Gas Chromatograph_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "IBP - D86"
+        },
+        {
+          "sample": "AJ25",
+          "test": "10% - D86"
+        },
+        {
+          "sample": "AJ25",
+          "test": "50% - D86"
+        },
+        {
+          "sample": "AJ25",
+          "test": "90% - D86"
+        },
+        {
+          "sample": "AJ25",
+          "test": "FBP - D86"
+        }
+      ],
+      "pos": [
+        1058.4622222222222,
+        627.5355555555556
+      ],
+      "size": [
+        422.6074074074074,
+        350.8765432098765
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1870507241056",
+      "title": "Multitek NS",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek NS/Parsed Data/Multitek NS_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Sulfur - D5453"
+        }
+      ],
+      "pos": [
+        568.4962962962962,
+        626.7160493827159
+      ],
+      "size": [
+        489.9506172839506,
+        177.89012345679012
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1870507241920",
+      "title": "Eraspec",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Eraspec/Eraspec_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ24",
+          "test": "API Gravity D4052-22"
+        },
+        {
+          "sample": "AJ24",
+          "test": "IBP - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "10% - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "50% - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "90% - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "FBP - D86"
+        }
+      ],
+      "pos": [
+        568.3004115226337,
+        237.09190672153633
+      ],
+      "size": [
+        488.09627403442266,
+        392.0505793296206
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_2201765855296",
+      "title": "PAC Flash 2",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 2/Pac Flash 2_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828"
+        }
+      ],
+      "pos": [
+        -224.9962962962963,
+        229.03456790123457
+      ],
+      "size": [
+        399.9877811970783,
+        175.66871495402796
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1840573737440",
+      "title": "Auto Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Auto Grabner/Auto Grabner_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828"
+        }
+      ],
+      "pos": [
+        -227.20617283950617,
+        402.23827160493823
+      ],
+      "size": [
+        404.76028118325297,
+        179.97044240157607
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1840573738448",
+      "title": "Mini Grabner",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Flash Results.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828"
+        }
+      ],
+      "pos": [
+        -218.25928506710667,
+        -121.85841640211942
+      ],
+      "size": [
+        392.6111111111111,
+        178.4654320987654
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1840573733840",
+      "title": "Multitek S",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Sulfur Results/Multitek S/Parsed data/Multitek S_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Sulfur - D5453"
+        }
+      ],
+      "pos": [
+        563.8629629629629,
+        803.6753086419752
+      ],
+      "size": [
+        494.8024691358025,
+        179.61234567901232
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_2096856031904",
+      "title": "PAC Flash 1",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Flash Results/Optiflash 1/Pac Flash 1_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Flash - D3828"
+        }
+      ],
+      "pos": [
+        -221.6864197530864,
+        55.24345679012345
+      ],
+      "size": [
+        396.6333333333333,
+        174.83827160493826
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_2301728638432",
+      "title": "Viscosity",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Viscosity Results/Viscosity Results.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "Viscosity - D445"
+        }
+      ],
+      "pos": [
+        173,
+        60
+      ],
+      "size": [
+        403,
+        181
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_2301728342368",
+      "title": "Handheld API",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/API Results/API Results.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "API Gravity D4052-22"
+        }
+      ],
+      "pos": [
+        1051.0086419753086,
+        59.4495061728395
+      ],
+      "size": [
+        432.1555555555555,
+        183.02345679012345
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_175810797800001",
+      "title": "OptiMPP 1",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Cloud & Pour/OptiMPP 1/OptiMPP 1_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 168.0,
+      "watched_targets": [
+        {
+          "sample": "Cloud CRM",
+          "test": "Cloud - D7689"
+        },
+        {
+          "sample": "Pour CRM",
+          "test": "Pour Point - D7346"
+        }
+      ],
+      "pos": [
+        1052,
+        237
+      ],
+      "size": [
+        426,
+        179
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_175810797800002",
+      "title": "OptiMPP 2",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Cloud & Pour/OptiMPP 2/optimpp 2_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 168.0,
+      "watched_targets": [
+        {
+          "sample": "Cloud CRM",
+          "test": "Cloud - D7689"
+        },
+        {
+          "sample": "Pour CRM",
+          "test": "Pour Point - D7346"
+        }
+      ],
+      "pos": [
+        1053,
+        418
+      ],
+      "size": [
+        429,
+        208
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_2332332582384",
+      "title": "BenchTop Bio",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Bio Results/Bio Results.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "SetaCheck 5%",
+          "test": "Bio - D7371"
+        }
+      ],
+      "pos": [
+        1052.1650569374683,
+        -119.45477243631035
+      ],
+      "size": [
+        426.02469135802465,
+        178.76296296296294
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1834023730592",
+      "title": "AQUAMAX KF",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/KF Results/KF Results.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ25",
+          "test": "KF - D6304"
+        }
+      ],
+      "pos": [
+        171.1426611796982,
+        -119.72565157750341
+      ],
+      "size": [
+        405.0777777777777,
+        180.38888888888889
+      ],
+      "locked": false,
+      "manual_override": ""
+    },
+    {
+      "uid": "box_1765996407293",
+      "title": "Eraspec NIR",
+      "csv_path": "//asapserver/Labsharedrive/ASAP Lab Results/Eraspec NIR/eraspec nir_parsed.csv",
+      "timestamp_col": "",
+      "qc_expire_hours": 24.0,
+      "watched_targets": [
+        {
+          "sample": "AJ24",
+          "test": "API Gravity D4052-22"
+        },
+        {
+          "sample": "AJ24",
+          "test": "IBP - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "10% - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "50% - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "90% - D86"
+        },
+        {
+          "sample": "AJ24",
+          "test": "FBP - D86"
+        }
+      ],
+      "pos": [
+        572.0002013240829,
+        -120.85783653791722
+      ],
+      "size": [
+        480.0,
+        360.0
+      ],
+      "locked": false,
+      "manual_override": ""
+    }
+  ],
+  "users": [
+    {
+      "username": "cody",
+      "password": ""
+    },
+    {
+      "username": "kp",
+      "password": ""
+    },
+    {
+      "username": "ryan",
+      "password": ""
+    },
+    {
+      "username": "kejuan",
+      "password": ""
+    },
+    {
+      "username": "mike",
+      "password": ""
+    }
+  ],
+  "checklists": [
+    {
+      "uid": "60b2e81a-0ac3-4356-a1c6-ceb38db9a91d",
+      "name": "Opening Checklsit",
+      "due_time": "12:00",
+      "items": []
+    },
+    {
+      "uid": "0c8b3013-0d0a-4f06-bef6-e5a8b59d767b",
+      "name": "Opening",
+      "due_time": "12:00",
+      "items": []
+    },
+    {
+      "uid": "dcaf5379-095a-4628-b469-d4f0d0c17015",
+      "name": "Opening",
+      "due_time": "09:30",
+      "items": [
+        {
+          "text": "Start the lab",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "item_type": "header",
+          "uid": "b7b4ccbe-1fc5-49fd-b640-e063492d8823",
+          "parent_uid": null
+        },
+        {
+          "text": "Power on fans & Ventilation Systems",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "c04402a5-5f83-4a43-af47-31db03bae63a",
+          "parent_uid": null
+        },
+        {
+          "text": "Check and Record Gas Levels (Replace if under 300 PSI)",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "8589901e-f7fa-4c0e-bfcc-fe18be20d4be",
+          "parent_uid": null
+        },
+        {
+          "text": "Dishes",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "item_type": "header",
+          "uid": "0e29d550-da8c-4876-8134-b4076c906857",
+          "parent_uid": null
+        },
+        {
+          "text": "Put away dry glassware ",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "c7b717aa-159f-4d2e-8c53-dae4002f8ef8",
+          "parent_uid": null
+        },
+        {
+          "text": "Empty Dishwasher, put away, or set to dry",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "35ded44e-6807-4f20-93d1-5a836e909350",
+          "parent_uid": null
+        },
+        {
+          "text": "Empty Ultrasonic Cleaner (if still wet set to dry)",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "c6fca7ab-fea3-479f-a465-0fbdbe7d44ac",
+          "parent_uid": null
+        },
+        {
+          "text": "Verify Night Operation",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "item_type": "header",
+          "uid": "722afb1a-462f-40fe-b5ae-09ab42f20d0e",
+          "parent_uid": null
+        },
+        {
+          "text": "Verify that all parser instances are still running",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "2b982c8a-665a-4157-a6ba-d9ac33306f73",
+          "parent_uid": null
+        },
+        {
+          "text": "Check Equipment Manager (EQM) to see that all nightly testing machines were in spec",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "d53c9656-c7c9-421c-bb54-8ba2a9799b12",
+          "parent_uid": null
+        },
+        {
+          "text": "Check Master Spreadsheet to see that all nightly testing was completed.",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "c9410dbb-7d36-4cc5-b945-f1e2e1a0d6fe",
+          "parent_uid": null
+        },
+        {
+          "text": "REMOVE RAN SAMPLES, EMPTY WASTE AND REFILL SOLVENTS FOR THE FOLLOWING MACHINES:",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "item_type": "header",
+          "uid": "fb3f3d86-13ee-4fd8-af6a-3cc0dca47062",
+          "parent_uid": null
+        },
+        {
+          "text": "Sulfur (Solvent: Toluene)",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "96c0aebd-f93d-434e-b38a-301ac2cbedda",
+          "parent_uid": null
+        },
+        {
+          "text": "GC (Solvent: Acetone)",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "d04598aa-d012-4538-874e-60dfbaaa411b",
+          "parent_uid": null
+        },
+        {
+          "text": "Cloud and Pour",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "346336dc-c726-4ad7-a094-371906cb4c6a",
+          "parent_uid": null
+        },
+        {
+          "text": "Read microbial resutls, and enter them into QBench",
+          "days_active": [
+            0,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "a413b9f2-e7c9-4ec3-87e4-d86ce3cdf7b7",
+          "parent_uid": null
+        },
+        {
+          "text": "Create Karl Fisher Vessel and precondition them",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "38d1c3eb-cd52-4609-aac7-c1ddcdca50f1",
+          "parent_uid": null
+        },
+        {
+          "text": "Run QC on the following Machines and verify their resutls on the EQM",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "b96c2e40-9b9b-4f0c-b05c-103d04df7962",
+          "parent_uid": null
+        },
+        {
+          "text": "Eraspec",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "58920434-16b8-4b77-b144-1156a9101555",
+          "parent_uid": "b96c2e40-9b9b-4f0c-b05c-103d04df7962"
+        },
+        {
+          "text": "Flash Machines",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "86fa9e83-4694-4636-8240-498f0f7928af",
+          "parent_uid": "b96c2e40-9b9b-4f0c-b05c-103d04df7962"
+        },
+        {
+          "text": "Sulfur Machines",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "9fa4c7d4-74ce-4866-9a0b-5f548909a843",
+          "parent_uid": "b96c2e40-9b9b-4f0c-b05c-103d04df7962"
+        },
+        {
+          "text": "GC",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "subtask",
+          "uid": "ad3bc95a-d591-4c32-bd51-056488b1dd89",
+          "parent_uid": "b96c2e40-9b9b-4f0c-b05c-103d04df7962"
+        }
+      ]
+    },
+    {
+      "uid": "b2590669-35ec-4e26-8de3-a84efd47b9d0",
+      "name": "Closing",
+      "due_time": "18:00",
+      "items": [
+        {
+          "text": "Ensure all overnight and automated tests are running",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "33e4c193-4d20-4433-bad6-6f118e6a466a",
+          "parent_uid": null
+        },
+        {
+          "text": "Check the Master Log for pending or unresolved items",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "b95bbee3-75ca-4371-9a77-ad26023f7208",
+          "parent_uid": null
+        },
+        {
+          "text": "Dispose of retained samples older than 30 days",
+          "days_active": [
+            4
+          ],
+          "item_type": "item",
+          "uid": "3ce360a4-798e-4bf9-9c73-9b38dafd9445",
+          "parent_uid": null
+        },
+        {
+          "text": "Move all samples tested today into retain",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "15d7e516-3821-44c2-b741-ed5b7faf9d74",
+          "parent_uid": null
+        },
+        {
+          "text": "Clean out KF vessels with methanol and set to dry",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "18f118dd-773b-42e5-a634-92b27d926471",
+          "parent_uid": null
+        },
+        {
+          "text": "Move all glassware to the prep station",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "41881670-25c7-4952-9dd4-97395326d2c5",
+          "parent_uid": null
+        },
+        {
+          "text": "Rinse used glassware with acetone",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "92b4971c-58e8-4939-b7d8-f6327821c651",
+          "parent_uid": null
+        },
+        {
+          "text": "Load and run the dishwasher",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "3adbd72a-5012-47bf-bf45-77d2cf471ed1",
+          "parent_uid": null
+        },
+        {
+          "text": "Clean and reset each station for the next day",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "20b039cf-0119-4a9a-943a-5356da09f893",
+          "parent_uid": null
+        },
+        {
+          "text": "Replace and properly dispose of soiled absorbent pads",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "d5f762db-e6b2-4c76-84b5-02a3df382fe2",
+          "parent_uid": null
+        },
+        {
+          "text": "Restock Kimwipes",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "b208efba-e03e-4a64-91be-774ea6eb8607",
+          "parent_uid": null
+        },
+        {
+          "text": "Place Eraspec filters in Ultrasonic bath",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "f9969710-275b-4267-8322-d354af9c5e1c",
+          "parent_uid": null
+        },
+        {
+          "text": "Refill ASTM QC samples",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "8d808f8c-4dac-4ec9-8f7d-804c8312b352",
+          "parent_uid": null
+        },
+        {
+          "text": "Clean syringes with methanol",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "2e5dc490-aa6f-4176-8448-25e3423971eb",
+          "parent_uid": null
+        },
+        {
+          "text": "Refill all cleaning solvents",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "be4ba98b-caf6-4281-aa9b-cd8a8d054bce",
+          "parent_uid": null
+        },
+        {
+          "text": "Take out trash",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "f3778f8a-0eac-465c-ae72-be1791ae5305",
+          "parent_uid": null
+        },
+        {
+          "text": "Empty all full waste containers (Check all 4)",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "2d4db34a-505b-4c8c-91af-f14e23cb10b3",
+          "parent_uid": null
+        },
+        {
+          "text": "Ensure main waste container is sealed, clean, and leak-free",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "5877940a-455e-4145-9261-e57039045550",
+          "parent_uid": null
+        },
+        {
+          "text": "Check gas levels",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "efa6c981-54b4-4549-8829-6b876ae1aebc",
+          "parent_uid": null
+        },
+        {
+          "text": "Vacuum the lab",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "739ab783-a786-4c5a-ab71-ef0c882502e2",
+          "parent_uid": null
+        },
+        {
+          "text": "Turn off all fume hoods",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "b7fd3a37-9354-45e1-aeff-2df496ffc70b",
+          "parent_uid": null
+        },
+        {
+          "text": "POWER DOWN EQUIPMENT",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "header",
+          "uid": "c0e12b1c-0647-4501-836b-76b053ba46be",
+          "parent_uid": null
+        },
+        {
+          "text": "Auto Grabner",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "5d34bd08-186b-4b5b-8397-b12edbfa6438",
+          "parent_uid": null
+        },
+        {
+          "text": "Eraspec",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "d2eb13de-e2d0-4261-8fdf-2d92b3a86353",
+          "parent_uid": null
+        },
+        {
+          "text": "Copper Bath",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "0c3e8b42-ca84-4693-af2f-d3fef7923842",
+          "parent_uid": null
+        },
+        {
+          "text": "Thermal Bath",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "e225b314-3d48-4bba-92ab-84f9870c52bb",
+          "parent_uid": null
+        },
+        {
+          "text": "Visual camera and lights",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "5bd1e373-062a-49d1-a2f1-364665b0cb2b",
+          "parent_uid": null
+        },
+        {
+          "text": "Water & Sed camera and lights",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "1466c944-9bc7-45ee-9bdd-618ba037208e",
+          "parent_uid": null
+        },
+        {
+          "text": "Particle Counter",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "fc8a5b9d-9a27-4999-b34e-5ce2a82e85f0",
+          "parent_uid": null
+        },
+        {
+          "text": "PetroOxy",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "8c88d248-fce5-4b49-b765-7eb3b87e6ae1",
+          "parent_uid": null
+        },
+        {
+          "text": "Colorimeter",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "4bb6e669-501f-4744-b54e-f706c5b61e15",
+          "parent_uid": null
+        },
+        {
+          "text": "Color Machine",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "a2937eee-d70f-41eb-aa76-99536a637715",
+          "parent_uid": null
+        },
+        {
+          "text": "Scale",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "8c58c577-1889-4863-a102-fff6698f9be5",
+          "parent_uid": null
+        },
+        {
+          "text": "Viscosity",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "bda27f72-4ac7-48df-b574-cfbe443d8e5e",
+          "parent_uid": null
+        },
+        {
+          "text": "FBT",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "4b14095e-852b-4cf7-9ce4-db987cbae038",
+          "parent_uid": null
+        },
+        {
+          "text": "Turn off all lab lights",
+          "days_active": [
+            0,
+            1,
+            2,
+            3,
+            4
+          ],
+          "item_type": "item",
+          "uid": "3ca0ae48-c8df-4c51-8ddd-e65881693fed",
+          "parent_uid": null
+        }
+      ]
+    }
+  ],
+  "report_enabled": true,
+  "report_time": "17:00",
+  "report_dir": "//ASAPServer/Labsharedrive/Ryan C/EQM/Data/Reports",
+  "last_report_date": "2026-01-08",
+  "first_inspec_date": "2026-01-06",
+  "first_inspec_map": {
+    "box_1840573738448": "2026-01-06 16:12:42",
+    "box_2301728638432": "2026-01-06 16:12:42",
+    "box_2301728342368": "2026-01-06 16:12:42"
+  },
+  "status_log_dir": "//ASAPServer/Labsharedrive/Ryan C/EQM/Data/log",
+  "correction_factor_dir": "//asapserver/Labsharedrive/ASAP Lab Results\\EQM_Correction Factor",
+  "view_center": [
+    591.0,
+    336.0
+  ],
+  "view_zoom": 1.0,
+  "status_updates": [
+    {
+      "timestamp": "2025-10-22T12:11:52",
+      "box_uid": "box_2332332582384",
+      "box_title": "BenchTop Bio",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-23T11:53:54",
+      "box_uid": "box_1870504657248",
+      "box_title": "Agilent GC",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-24T13:51:57",
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-27T08:40:12",
+      "box_uid": "box_1840573738448",
+      "box_title": "Mini Grabner",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-27T10:10:12",
+      "box_uid": "box_2301728342368",
+      "box_title": "Handheld API",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-27T10:23:12",
+      "box_uid": "box_2301728638432",
+      "box_title": "Viscocity",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-27T18:31:15",
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-28T16:29:21",
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-30T11:17:30",
+      "box_uid": "box_2301728342368",
+      "box_title": "Handheld API",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-30T13:41:32",
+      "box_uid": "box_2332332582384",
+      "box_title": "BenchTop Bio",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-10-31T08:54:36",
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-03T09:31:50",
+      "box_uid": "box_2096856031904",
+      "box_title": "PAC Flash 1",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-03T10:37:50",
+      "box_uid": "box_1870504657248",
+      "box_title": "Agilent GC",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-03T17:14:53",
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-03T17:25:53",
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-06T12:48:17",
+      "box_uid": "box_2301728342368",
+      "box_title": "Handheld API",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-06T15:16:18",
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-10T08:47:46",
+      "box_uid": "box_1840573738448",
+      "box_title": "Mini Grabner",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-10T15:53:34",
+      "box_uid": "box_1870507241056",
+      "box_title": "Multitek NS",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-11T15:24:53",
+      "box_uid": "box_1834023730592",
+      "box_title": "AQUAMAX KF",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-13T13:03:29",
+      "box_uid": "box_2301728638432",
+      "box_title": "Viscocity",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-13T14:53:11",
+      "box_uid": "box_1840573733840",
+      "box_title": "Multitek S",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    },
+    {
+      "timestamp": "2025-11-14T15:31:20",
+      "box_uid": "box_1870504657248",
+      "box_title": "Agilent GC",
+      "desc": "Returned to spec (Red \u2192 Green)"
+    }
+  ],
+  "theme_mode": "dark",
+  "app_font_family": "Papyrus",
+  "app_font_size": 18,
+  "imported_fonts": [],
+  "ui_scale": 1.68,
+  "custom_qss_path": "",
+  "win_state_hex": "000000ff00000000fd00000002000000000000011a000003eafc0200000001fb0000002a00530074006100740075007300550070006400610074006500500061006e0065006c0044006f0063006b02000007820000001e000003be0000041a00000001000001f4000003c9fc0200000002fb00000028004d00610069006e00740065006e0061006e0063006500500061006e0065006c0044006f0063006b02000003b40000001e000003cc0000041afb00000024005300740061007400750073004c006f006700500061006e0065006c0044006f0063006b000000002c000003c9000000a800ffffff000004b0000002b200000004000000040000000800000008fc00000001000000020000000100000016004d00610069006e0054006f006f006c0062006100720100000000ffffffff0000000000000000",
+  "win_geom_hex": "01d9d0cb0003000000000723fffffc7e00000bd4ffffff8b00000724fffffc9d00000bd3ffffff8a0000000200000000078000000724fffffc9d00000bd3ffffff8a"
+}
