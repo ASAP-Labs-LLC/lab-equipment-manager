@@ -69,7 +69,7 @@ def _seed_demo(gw) -> None:
     DbConfigStore(gw).save(cfg)
 
 
-def main(argv) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LEM V5 — LabCore-backed dashboard")
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5557)
@@ -79,7 +79,33 @@ def main(argv) -> int:
                         help="console only, no system tray icon")
     parser.add_argument("--no-reload", action="store_true",
                         help="don't restart when the code changes")
-    args = parser.parse_args(argv)
+    parser.add_argument("--no-publish", action="store_true",
+                        help="do not publish this server's address to LabCore. "
+                             "For deployment health checks, which run on a "
+                             "scratch port that closes moments later — "
+                             "advertising it would point every bench at a dead "
+                             "port until the next real boot.")
+    return parser
+
+
+def _start_live_channel(app, gateway, host, port) -> str:
+    from live_presence import start_live_channel
+
+    return start_live_channel(app, gateway, host, port)
+
+
+def publish_live(*, app, gateway, host, port, no_publish: bool):
+    """Tell LabCore where the benches should push, unless asked not to.
+
+    Returns the published URL, or ``None`` when publishing was skipped.
+    """
+    if no_publish:
+        return None
+    return _start_live_channel(app, gateway, host, port)
+
+
+def main(argv) -> int:
+    args = build_parser().parse_args(argv)
 
     from web_app import create_app
 
@@ -98,9 +124,13 @@ def main(argv) -> int:
     # token. Boot, not create_app: the factory must stay side-effect free. Never
     # fatal — with no live config, modules simply skip the push and the floor
     # falls back to the record, which is how it worked before this existed.
-    from live_presence import start_live_channel
-    live_where = start_live_channel(app, gateway, args.host, args.port)
-    print(f"Live channel published to LabCore as {live_where}")
+    live_where = publish_live(app=app, gateway=gateway, host=args.host,
+                              port=args.port, no_publish=args.no_publish)
+    if live_where:
+        print(f"Live channel published to LabCore as {live_where}")
+    else:
+        print("Live channel NOT published (--no-publish): benches keep the "
+              "address they already have.")
     # Warm the caches off the request path. The first visitor to the checklist
     # page used to wait 7.5s for a cold cache and a busy LabCore; a thread can
     # wait instead. Daemon so it never holds up a shutdown or a restart.

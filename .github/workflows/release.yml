@@ -1,0 +1,133 @@
+name: Release
+
+# Tag-driven, matching the deployment's two tag forms: a semver-ish `v*` tag and
+# the date tag the release folders are named after.
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    env:
+      # The app is a SUBDIRECTORY of this repo. The archive roots here, not at
+      # the repo, so `current` (a junction onto the release) has web_server.pyw
+      # directly inside it — and so the release does not carry the Qt station
+      # module, the V4 rollback reference, docs or the scratchpad, none of
+      # which the web server needs.
+      APP_SUBDIR: LEM Web Server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Stage release contents
+        env:
+          PKG: lem-web-server-${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "dist/$PKG"
+          rsync -a "$APP_SUBDIR"/ "dist/$PKG/" \
+            --exclude '.venv/' \
+            --exclude '.venv-win/' \
+            --exclude 'venv/' \
+            --exclude '__pycache__/' \
+            --exclude '*.pyc' \
+            --exclude '.pytest_cache/' \
+            --exclude '.mypy_cache/' \
+            --exclude 'node_modules/' \
+            --exclude 'data/' \
+            --exclude 'restart.log' \
+            --exclude '*.log' \
+            --exclude '.DS_Store'
+
+      - name: Stamp VERSION from the tag
+        env:
+          PKG: lem-web-server-${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # From the tag, so the stamp and the tag cannot disagree: /healthz
+          # reports this back and the updater compares it with what it staged.
+          printf '%s\n' "${{ github.ref_name }}" > "dist/$PKG/VERSION"
+          cat "dist/$PKG/VERSION"
+
+      - name: Verify the archive
+        env:
+          PKG: lem-web-server-${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd "dist/$PKG"
+          bad=0
+          for f in restart.log .DS_Store; do
+            if [ -e "$f" ]; then echo "LEAKED: $f"; bad=1; fi
+          done
+          for d in data .venv .venv-win venv __pycache__ .pytest_cache; do
+            if [ -e "$d" ]; then echo "LEAKED: $d/"; bad=1; fi
+          done
+          if find . -name '*.pyc' -o -name '*.log' | grep -q .; then
+            echo "LEAKED: compiled or log files"; bad=1
+          fi
+          # Positive control. A negative check alone passes happily on an empty
+          # directory, which is exactly the failure it would need to catch.
+          for required in web_server.pyw web_app.py tray.py requirements.txt VERSION templates static; do
+            if [ ! -e "$required" ]; then echo "MISSING: $required"; bad=1; fi
+          done
+          # The station module must NOT be in here — if it is, the archive was
+          # rooted at the repo rather than at the app.
+          if [ -e "lem_station_module.py" ] || [ -d "LEM Station Module" ]; then
+            echo "LEAKED: the station module — archive rooted at the repo?"; bad=1
+          fi
+          if [ "$bad" -ne 0 ]; then echo "Refusing to publish."; exit 1; fi
+          echo "archive contents verified"
+
+      - name: Create zip and checksum
+        env:
+          PKG: lem-web-server-${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          zip -q -r "$PKG.zip" "$PKG"
+          sha256sum "$PKG.zip" > "$PKG.zip.sha256"
+          cat "$PKG.zip.sha256"
+          # Prove it verifies here, so a bad checksum cannot reach the updater,
+          # which treats a mismatch as a hard stop.
+          sha256sum -c "$PKG.zip.sha256"
+
+      - name: Write release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Quoted heredoc: backticks and backslashes stay literal. As an inline
+          # --notes string, bash tries to command-substitute the code fences.
+          cat > dist/notes.md <<'NOTES_END'
+          Automated release of the LEM Web Server.
+
+          Unpack into `C:\ASAPApps\lem\releases\<tag>\` and point the `current`
+          junction at it. LEM keeps its configuration in LabCore, so this
+          archive carries no state; `data/` is regenerable cache.
+
+          Verify the asset before use:
+          ```
+          sha256sum -c lem-web-server-<tag>.zip.sha256
+          ```
+          NOTES_END
+          sed -i "s/<tag>/$TAG/g" dist/notes.md
+          cat dist/notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PKG: lem-web-server-${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "${{ github.ref_name }}" \
+            "dist/$PKG.zip" \
+            "dist/$PKG.zip.sha256" \
+            --title "${{ github.ref_name }}" \
+            --notes-file dist/notes.md

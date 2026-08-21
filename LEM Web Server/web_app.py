@@ -53,6 +53,29 @@ STATUS_COLORS = {
 }
 
 
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def read_version(directory=None) -> str:
+    """The release tag from a VERSION file, or ``"dev"`` for a checkout.
+
+    CI writes VERSION into the release, so the stamp travels with the code
+    rather than with the data. Never raises: /healthz reporting "dev" is a
+    nuisance, /healthz returning 500 makes a working release look broken and
+    triggers a rollback that was never needed.
+    """
+    base = APP_DIR if directory is None else str(directory)
+    try:
+        with open(os.path.join(base, "VERSION"), encoding="utf-8") as fh:
+            stamp = fh.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return "dev"
+    return stamp.splitlines()[0].strip() if stamp else "dev"
+
+
+APP_VERSION = read_version()
+
+
 def format_timestamp(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None
@@ -439,6 +462,29 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # owns the lifecycle: web_server.pyw calls start(). Without a poller,
     # refresh_soon() refreshes inline, so behaviour stays correct either way.
     app.config["SNAPSHOTS"] = snapshots
+
+    @app.route("/healthz")
+    def healthz():
+        """Deployment health check — no auth, no LabCore call.
+
+        The updater starts a candidate release on a scratch port and asks this
+        before the release is live, so it must answer with no session and
+        without the admin password.
+
+        ``labcore`` is read straight off SnapshotService, which already tracks
+        reachability as a side effect of its own background reads. Probing here
+        would add an op per health check and, worse, would let a momentary
+        LabCore blip fail a release that was never broken — this whole server
+        exists to keep LabCore load independent of how many things are looking.
+        """
+        online = getattr(snapshots, "_online", None)
+        return jsonify({
+            "status": "ok",
+            "version": APP_VERSION,
+            "labcore": "unknown" if online is None else (
+                "reachable" if online else "unreachable"),
+            "pid": os.getpid(),
+        })
 
     # ── the page cache ────────────────────────────────────────────────
     # For answers this process is the ONLY writer of: checklist definitions,

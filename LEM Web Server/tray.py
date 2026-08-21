@@ -230,6 +230,26 @@ def how_to_free_port(port: int) -> str:
     return f"lsof -ti:{port} | xargs kill"
 
 
+def data_dir(root=None) -> str:
+    """Where this server writes things it wants to keep.
+
+    ``LEM_DATA_DIR`` when set, otherwise the code directory — so an existing
+    shared-drive install behaves exactly as it always has.
+
+    Under the deployment layout the code directory is a junction onto an
+    immutable release that a deploy swaps wholesale, so anything written there
+    is lost on the next deploy. LEM has very little at stake here, because its
+    configuration lives in LabCore's ``lem_*`` tables and ``data/`` is
+    regenerable cache — but ``restart.log`` is not regenerable, and losing it
+    on a deploy means losing the record of the deploy that went wrong.
+    """
+    configured = os.environ.get("LEM_DATA_DIR", "").strip()
+    if configured:
+        return configured
+    return str(root) if root else os.path.dirname(os.path.abspath(
+        sys.argv[0] or __file__))
+
+
 def log_path(root=None) -> str:
     """Where restart diagnostics go.
 
@@ -237,9 +257,7 @@ def log_path(root=None) -> str:
     nowhere and a failed restart looks like the program simply vanishing. This
     file is the only way to find out why.
     """
-    base = str(root) if root else os.path.dirname(os.path.abspath(
-        sys.argv[0] or __file__))
-    return os.path.join(base, "restart.log")
+    return os.path.join(data_dir(root), "restart.log")
 
 
 def note(message: str, root=None) -> None:
@@ -251,7 +269,9 @@ def note(message: str, root=None) -> None:
     except Exception:
         pass                            # no console: the file is the record
     try:
-        with open(log_path(root), "a", encoding="utf-8") as fh:
+        target = log_path(root)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except Exception:
         pass

@@ -1,0 +1,19 @@
+# Development / CI dependencies.
+#
+# Includes the runtime set by reference so the two cannot drift.
+
+-r requirements.txt
+
+pytest==9.1.1
+
+# tests/test_qc_window.py and tests/test_live_endpoint.py load the LEM Station
+# Module (a Qt module) to assert the bench and the server never disagree about
+# QC staleness or the live-push payload shape. Without PySide6 those six tests
+# fail at import with ModuleNotFoundError rather than being skipped, which
+# looks like a broken suite. They are the only reason this is here — nothing
+# in the web server imports Qt, and it is deliberately NOT in requirements.txt.
+PySide6==6.11.2
+
+# tests/test_release_workflow.py parses .github/workflows/release.yml. Without
+# it those checks importorskip themselves into silence.
+PyYAML==6.0.3
