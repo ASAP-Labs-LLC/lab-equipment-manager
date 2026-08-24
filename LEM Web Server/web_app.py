@@ -20,6 +20,7 @@ import json
 import os
 import threading
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -74,6 +75,35 @@ def read_version(directory=None) -> str:
 
 
 APP_VERSION = read_version()
+
+# ── activity, for unattended deploys ────────────────────────────────────────
+# "Is anyone using LEM?" is not "has LEM had a request?". LEM is a wall
+# display: the floor polls the machine list and the blip endpoints every 2
+# seconds from every open browser, and every bench POSTs /api/live on each
+# module poll. Counting those would make LEM permanently busy and an
+# idle-gated deploy could never fire.
+#
+# So activity means a person: any write, and any read that is not a background
+# poll, a bench push, a health check or a static asset.
+_last_activity = time.time()
+
+_POLL_PATHS = frozenset({
+    "/healthz",
+    "/api/machines",     # the floor list, every 2s
+    "/api/events",       # blips
+    "/api/live",         # benches pushing liveness - a machine, not a person
+})
+
+
+def _is_background(path: str, method: str) -> bool:
+    """Whether a request is machinery rather than a person."""
+    if method not in ("GET", "HEAD"):
+        # A write is always someone doing something, whatever the path.
+        return path == "/api/live"
+    if path in _POLL_PATHS or path.startswith("/static/"):
+        return True
+    # Per-machine blip polling: /api/machines/<uid>/events
+    return path.startswith("/api/machines/") and path.endswith("/events")
 
 
 def format_timestamp(dt: Optional[datetime]) -> Optional[str]:
@@ -463,6 +493,12 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # refresh_soon() refreshes inline, so behaviour stays correct either way.
     app.config["SNAPSHOTS"] = snapshots
 
+    @app.before_request
+    def _track_activity():
+        global _last_activity
+        if not _is_background(request.path, request.method):
+            _last_activity = time.time()
+
     @app.route("/healthz")
     def healthz():
         """Deployment health check — no auth, no LabCore call.
@@ -484,6 +520,12 @@ def create_app(gateway, admin_password: Optional[str] = None,
             "labcore": "unknown" if online is None else (
                 "reachable" if online else "unreachable"),
             "pid": os.getpid(),
+            # Seconds since a person last did something. Wall displays polling
+            # and benches pushing do not count - see _is_background.
+            "idle_seconds": round(time.time() - _last_activity, 1),
+            # LEM has no per-user sessions the way COA does; the floor is
+            # anonymous. Reported for a uniform shape across both apps.
+            "active_sessions": 0,
         })
 
     # ── the page cache ────────────────────────────────────────────────

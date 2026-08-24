@@ -162,6 +162,66 @@ class TestHealthz:
         assert resp.get_json()["status"] == "ok"
 
 
+# ── idleness ────────────────────────────────────────────────────────────────
+
+class TestIdleReporting:
+    """"Is anyone using LEM?" is not "has LEM had a request?".
+
+    LEM is a wall display. The floor polls ``/api/machines`` and the blip
+    endpoints every 2 seconds from every open browser, and the benches POST
+    ``/api/live`` on every module poll. Counting those as activity would make
+    LEM permanently busy and an idle-gated deploy could never fire — while
+    counting nothing would deploy on top of someone mid-edit.
+
+    So activity means a *person* doing something: anything that is not a
+    background poll, a bench push, a health check or a static asset.
+    """
+
+    def test_healthz_reports_idle_seconds(self, client):
+        body = client.get("/healthz").get_json()
+        assert "idle_seconds" in body
+        assert isinstance(body["idle_seconds"], (int, float))
+
+    @pytest.mark.parametrize("path", [
+        "/healthz",
+        "/api/machines",
+    ])
+    def test_background_polling_is_not_activity(self, client, path):
+        import web_app
+
+        web_app._last_activity = 0.0
+        client.get(path)
+        assert web_app._last_activity == 0.0, (
+            f"{path} counted as a person using LEM; the floor polls it every 2s"
+        )
+
+    def test_a_bench_push_is_not_activity(self, client):
+        """A module pushing liveness is a machine, not a person."""
+        import web_app
+
+        web_app._last_activity = 0.0
+        client.post("/api/live", json={"machine_uid": "x", "status": "GREEN"})
+        assert web_app._last_activity == 0.0
+
+    def test_a_real_page_view_is_activity(self, client):
+        import web_app
+
+        web_app._last_activity = 0.0
+        client.get("/")
+        assert web_app._last_activity > 0.0
+
+    def test_a_write_is_activity(self, client):
+        """Any mutation is a person, whatever the path."""
+        import web_app
+
+        web_app._last_activity = 0.0
+        client.post("/api/machines/does-not-exist/position", json={"x": 1, "y": 2})
+        assert web_app._last_activity > 0.0, (
+            "a write did not count as activity; deploying on top of one would "
+            "interrupt someone mid-edit"
+        )
+
+
 # ── health checks must not advertise themselves ─────────────────────────────
 
 class TestNoPublish:
