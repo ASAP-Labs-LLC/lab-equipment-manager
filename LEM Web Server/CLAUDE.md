@@ -496,3 +496,5 @@ distant woods have blue above red at *every* range — that is what aerial
 perspective does. The real target was green as the largest channel, which is
 achievable; the extra clause was invented, not observed, and it made a passing
 result unreportable. Measure the reference before writing the threshold.
+
+<!-- v1.0.2: exercises the unattended idle deploy end to end. -->
