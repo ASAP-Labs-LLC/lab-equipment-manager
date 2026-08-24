@@ -102,3 +102,5 @@ subclasses it to override `base_url` with the full HTTPS URL.
   it fronts LabCore/LabVision via Cloudflare and was intermittently 502 during
   investigation. There is no directly network-exposed SQL port — access is
   exclusively through LabCore's HTTP queue.
+
+<!-- v1.0.6: unattended idle deploy, end to end. -->
