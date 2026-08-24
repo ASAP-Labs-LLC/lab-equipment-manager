@@ -711,6 +711,20 @@ let LOCK_KNOWN = true;
 // parsed, show it leaving" — which is still exactly what they mean. Only what
 // happens on the other side changed.
 let WORLD = null;
+/* ── the 3D site is severed ──────────────────────────────────────────────
+ *
+ * Ryan, 2026-08-24: "just dont have it render trains in 3d okay? We are going
+ * to focus on the SVG rendering."
+ *
+ * `false` and the world is never loaded: no dynamic import, so no three.js and
+ * no subsystems come down the wire at all, and the SVG floor plan below is the
+ * only floor. `true` restores the site exactly as it was — nothing under
+ * `static/world/` moved, and every seam in this file still works, because the
+ * plan was always the other half of a toggle rather than a fallback.
+ *
+ * It is deliberately ONE constant. The severing is temporary and the way back
+ * has to be a word, not an archaeology exercise. */
+const SITE_VIEW = false;
 // Which of the two views is showing — see setView, far below. Declared up here
 // with the rest of the state rather than beside its button, because drawFloor()
 // has to ask, and a `let` read before its declaration is evaluated is a
@@ -742,6 +756,10 @@ function spawnBlip(uid, labId) {
 // from the world. It lives on `window` because the world loads as a module and
 // this file is a classic script — a module cannot see a `let` declared here.
 window.__floorBridge = {
+  /* The module below is a module; it cannot see anything declared in this
+   * classic script except through here. */
+  siteView: SITE_VIEW,
+
   attach(world) {
     WORLD = world;
     drawFloor();
@@ -2603,6 +2621,7 @@ $('#btnView').addEventListener('click', () => {
   setView(VIEW === 'plan' ? 'site' : 'plan');
 });
 
+
 const CAP_LEVELS = [
   ['off', 'Uncapped',  'draw as fast as the machine allows — best if it has headroom'],
   ['60',  '60 fps',    'steady cadence; the fix for hitching on a busy machine'],
@@ -3078,6 +3097,38 @@ setInterval(() => {
     d.toLocaleTimeString('en-GB', {hour12: false});
 }, 1000);
 window.addEventListener('resize', () => drawFloor());
+/* Severed: show the plan now, and take away the controls that have nothing
+ * behind them.
+ *
+ * The remembered view is normally applied in `__floorBridge.attach(world)` —
+ * and with the world severed NOTHING EVER CALLS ATTACH. Without this the page
+ * is a blank stage: `VIEW` stays 'site', #floorSimple keeps the `hidden` it was
+ * served with, and there is no error anywhere to say why the floor is empty.
+ *
+ * `remember: false` — a machine that had chosen the 3D site must still have
+ * chosen it when the site comes back. This is not the operator's decision.
+ *
+ * It runs HERE, with the other boot calls, and not beside `setView` where it
+ * reads better. `setView` paints the toolbar, which reads `ARRANGING` — a
+ * `let` declared further down the page. Called any earlier this is a
+ * temporal-dead-zone ReferenceError at the top level, which kills every
+ * listener registered after it: sign-in, the map lock, the poll loop, all of
+ * it, on a page that still looks completely normal. */
+if (!SITE_VIEW) {
+  const canvas = $('#world');
+  if (canvas) canvas.hidden = true;
+  setView('plan', {remember: false});
+  /* View toggles between two views when there is only one. Quality tunes a
+   * renderer that is not running. Arrange's whole-floor buttons return early on
+   * `!WORLD`, and there is no dragging in the plan — so all three are buttons
+   * that would silently do nothing, which is worse than a button that is not
+   * there. */
+  for (const sel of ['#btnView', '#btnQuality', '#btnArrange']) {
+    const b = $(sel);
+    if (b) b.hidden = true;
+  }
+}
+
 load();
 setInterval(() => { if (!dragging) load(); }, FLOOR_REFRESH_MS);
 // Warm what the operator is most likely to open next.
@@ -3088,39 +3139,50 @@ LEM.prefetch(['/api/checklists', '/api/maintenance', '/api/checklists/history'])
 // Boot the world. This is the only module script on the page; everything above
 // is the same classic script the floor has always had, and the two meet at
 // `window.__floorBridge`.
-import {LEMWorld} from 'world/index.js';
-
 const bridge = window.__floorBridge;
 const canvas = document.getElementById('world');
 
-try {
-  const world = new LEMWorld(canvas, {
-    onSelect: uid => bridge.onSelect(uid),
-    onContext: (uid, evt) => bridge.onContext(uid, evt),
-    onHover: (uid, at) => bridge.onHover(uid, at),
-    onMove: (uid, gx, gy) => bridge.onMove(uid, gx, gy),
-    canDrag: () => bridge.canDrag(),
-  });
-  world.on('dragging', ({uid}) => bridge.setDragging(uid));
-  // Named for the console and for the screenshot harness. NOT `window.world` —
-  // <canvas id="world"> already owns that name.
-  window.__lemWorld = world;
-  await world.ready();
-  bridge.attach(world);
-} catch (err) {
-  // WebGL2 missing, a driver refusing a context, a subsystem breaking badly
-  // enough to escape its own guard: say so plainly rather than leaving a black
-  // rectangle where the lab floor should be. The rails, the tally and every
-  // dialog on this page still work — they never depended on the map.
-  console.error('[floor] the 3D world could not start', err);
-  canvas.hidden = true;
-  const note = document.createElement('div');
-  note.className = 'empty';
-  note.style.cssText = 'padding:28px;max-width:46ch;margin:auto;text-align:center';
-  note.innerHTML = 'The floor view needs WebGL2, and this browser did not ' +
-    'give it. Every instrument and its status is still on the ' +
-    '<a class="link" href="/stations">Stations</a> page.';
-  document.getElementById('stage').appendChild(note);
+/* The site is severed (see SITE_VIEW above). Stop here.
+ *
+ * The import below is DYNAMIC for this one reason. A static `import` at the top
+ * of a module is fetched and evaluated whether or not anything beneath it runs,
+ * so guarding only the `new LEMWorld(...)` would still pull three.js, the
+ * terrain, the vegetation and the trains onto a bench PC — megabytes, to build
+ * a renderer nothing then starts. Severed has to mean the browser never asks.
+ *
+ * The classic script has already shown the plan and hidden this canvas; there
+ * is nothing for this module to do. */
+if (bridge.siteView) {
+  try {
+    const {LEMWorld} = await import('world/index.js');
+    const world = new LEMWorld(canvas, {
+      onSelect: uid => bridge.onSelect(uid),
+      onContext: (uid, evt) => bridge.onContext(uid, evt),
+      onHover: (uid, at) => bridge.onHover(uid, at),
+      onMove: (uid, gx, gy) => bridge.onMove(uid, gx, gy),
+      canDrag: () => bridge.canDrag(),
+    });
+    world.on('dragging', ({uid}) => bridge.setDragging(uid));
+    // Named for the console and for the screenshot harness. NOT `window.world` —
+    // <canvas id="world"> already owns that name.
+    window.__lemWorld = world;
+    await world.ready();
+    bridge.attach(world);
+  } catch (err) {
+    // WebGL2 missing, a driver refusing a context, a subsystem breaking badly
+    // enough to escape its own guard: say so plainly rather than leaving a black
+    // rectangle where the lab floor should be. The rails, the tally and every
+    // dialog on this page still work — they never depended on the map.
+    console.error('[floor] the 3D world could not start', err);
+    canvas.hidden = true;
+    const note = document.createElement('div');
+    note.className = 'empty';
+    note.style.cssText = 'padding:28px;max-width:46ch;margin:auto;text-align:center';
+    note.innerHTML = 'The floor view needs WebGL2, and this browser did not ' +
+      'give it. Every instrument and its status is still on the ' +
+      '<a class="link" href="/stations">Stations</a> page.';
+    document.getElementById('stage').appendChild(note);
+  }
 }
 </script>
 </div>

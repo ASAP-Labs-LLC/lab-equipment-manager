@@ -531,6 +531,55 @@ and **deploys them itself once nobody is using LEM**.
 - The API contract LEM depends on is in the LabLink repo:
   `apps/LabCore/src/LABCORE_INTEGRATION_GUIDE.txt`.
 
+## The 3D site is SEVERED — the SVG plan is the floor (2026-08-24)
+
+Ryan: "just dont have it render trains in 3d okay? We are going to focus on the
+SVG rendering."
+
+**Do not "fix" the blank canvas. It is switched off on purpose.** One constant
+near the top of `floor.html`:
+
+```js
+const SITE_VIEW = false;   // ← true restores the 3D site, nothing else to do
+```
+
+Nothing under `static/world/` moved, was deleted, or was edited. It is still in
+the import map and `test_world_assets.py` still holds it to the same rules — the
+world is disconnected, not gone, and flipping the word back brings it up exactly
+as it was.
+
+- **The import is DYNAMIC** (`await import('world/index.js')`) inside the guard.
+  A static `import` is fetched and evaluated whether or not anything below it
+  runs, so guarding only `new LEMWorld(...)` would still pull three.js, the
+  terrain, the vegetation and the trains onto a bench PC to build a renderer
+  nothing starts. Severed has to mean the browser never asks. Keep it dynamic.
+- **Something has to show the plan.** The remembered view is applied inside
+  `__floorBridge.attach(world)`, and with the world severed nothing ever calls
+  attach. A boot block does it instead — and it lives down with `load()`, NOT
+  beside `setView`, because `setView` paints the toolbar, which reads
+  `ARRANGING`, a `let` declared further down. Any earlier and it is a top-level
+  TDZ ReferenceError that kills every listener after it on a page that still
+  looks perfectly normal. `tests/js/floorboot.mjs` caught exactly that.
+- **View, Quality and Arrange are hidden** while severed. All three reach for
+  `WORLD`: two views when there is one, a renderer that is not running, and
+  whole-floor buttons that return early on `!WORLD` with no dragging in the
+  plan. A button that silently does nothing is worse than a missing one.
+- **Known and accepted:** `planStations()` asks `WORLD.plan.byUid` first and
+  falls back to its own index grid, so with no world an instrument nobody has
+  dragged can sit in a different bay than the 3D floor put it, and two machines
+  saved on the SAME bay can overlap — `claimBays()`' spill fix lives in
+  `world/index.js`, which no longer loads. Deliberate 80/20 call, not an
+  oversight. The fix, if the plan work needs it, is to lift `claimBays()` (and
+  `arrangement()`, if Arrange comes back) into a pure `world/layout.js` with no
+  three.js import; both are already pure and exported, and `tests/js/layout.mjs`
+  + `arrange.mjs` pull them out of `index.js` by text, so they'd be repointed.
+
+Tests: `tests/test_site_view_severed.py` (5) — the served page must not
+statically import the world, must still be able to reach it, and the switch must
+stay one named constant. Behaviour is in `tests/js/floorboot.mjs`, whose stub DOM
+now caches elements by selector and records attributes, so it can be asked what
+the page actually settled on rather than only whether it ran.
+
 ## The 3D floor (2026-08-06/07) — what cost days, so it doesn't again
 
 The floor map is a rendered 3D world now (`static/world/`, ~13 subsystem

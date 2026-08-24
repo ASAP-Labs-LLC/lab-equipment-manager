@@ -40,12 +40,20 @@ const src = scripts.sort((a, b) => b.length - a.length)[0];
 const touched = new Set();
 
 function makeElement(name = 'stub') {
+  const attrs = {};
   const el = {
     tagName: name.toUpperCase(),
     addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
     appendChild(c) { return c; }, removeChild(c) { return c; },
     insertBefore(c) { return c; }, remove() {}, focus() {}, blur() {}, click() {},
-    setAttribute() {}, removeAttribute() {}, getAttribute() { return ''; },
+    /* Attributes are RECORDED, not swallowed. `setView()` shows and hides the
+     * plan through the hidden ATTRIBUTE (an SVGElement has no `.hidden`
+     * property — see the note beside it in floor.html), so a stub that drops
+     * them cannot tell a shown plan from a hidden one. */
+    attrs,
+    setAttribute(k, v) { attrs[k] = String(v); },
+    removeAttribute(k) { delete attrs[k]; },
+    getAttribute(k) { return k in attrs ? attrs[k] : ''; },
     showModal() {}, close() {}, scrollIntoView() {}, select() {},
     getBoundingClientRect: () => ({left: 0, top: 0, width: 800, height: 600,
                                    right: 800, bottom: 600, x: 0, y: 0}),
@@ -70,10 +78,26 @@ function makeElement(name = 'stub') {
   });
 }
 
+/* The same selector must give back the SAME element, every time.
+ *
+ * A stub that mints a fresh object per query can prove the script RUNS but
+ * never what it DID: `$('#world').hidden = true` was written to an object
+ * thrown away on the next line. Caching by selector is both closer to a real
+ * document and the only way to ask afterwards what state the page settled in. */
+const els = new Map();
+const el = sel => {
+  if (!els.has(sel)) els.set(sel, makeElement());
+  return els.get(sel);
+};
+/* The plan starts hidden in the markup. Seed it, so "the plan is showing" is a
+ * claim about something that had to be removed rather than about something
+ * that was never there. */
+el('#floorSimple').setAttribute('hidden', '');
+
 const documentStub = {
-  querySelector: () => makeElement(),
+  querySelector: el,
   querySelectorAll: () => [],
-  getElementById: () => makeElement(),
+  getElementById: id => el('#' + id),
   createElement: name => makeElement(name),
   createElementNS: (ns, name) => makeElement(name),
   addEventListener() {}, removeEventListener() {},
@@ -322,6 +346,45 @@ if (!failed) {
     if (!failed) {
       console.log(`  ok   failure() judges all ${cases.length} answer shapes`);
     }
+  }
+}
+
+/* ---- the 3D site is severed; the SVG plan is the floor -----------------
+ *
+ * Ryan, 2026-08-24: "just dont have it render trains in 3d okay? We are going
+ * to focus on the SVG rendering."
+ *
+ * The switch is `SITE_VIEW` at the top of the page. What makes this worth a
+ * test rather than a comment is the boot order: the remembered view is applied
+ * inside `__floorBridge.attach(world)`, and with the world severed NOTHING EVER
+ * CALLS ATTACH. Miss that and the page is exactly as broken as a black canvas —
+ * `VIEW` stays 'site', the plan keeps the `hidden` it was served with, and the
+ * floor is a blank stage with no error anywhere to say why.
+ *
+ * So this asks the settled page what it is showing, rather than reading the
+ * source and believing it. */
+if (!failed) {
+  const bridge = sandbox.window.__floorBridge;
+  const claim = (what, ok) => {
+    if (ok) { console.log(`  ok   ${what}`); return; }
+    failed = true;
+    console.log(`FAIL: ${what}`);
+  };
+
+  claim('the site view is severed (__floorBridge.siteView is false)',
+        bridge && bridge.siteView === false);
+  claim('the plan is showing — #floorSimple lost its hidden attribute',
+        !('hidden' in el('#floorSimple').attrs));
+  claim('the 3D canvas is hidden', el('#world').hidden === true);
+
+  /* Controls with nothing behind them. Every one of these reaches for `WORLD`,
+   * which never arrives: View toggles between two views when there is only
+   * one, Quality tunes a renderer that is not running, and Arrange's whole-floor
+   * buttons return early on `!WORLD` — a button that silently does nothing is
+   * worse than one that is not there. */
+  for (const sel of ['#btnView', '#btnQuality', '#btnArrange']) {
+    claim(`${sel} is hidden while the world is severed`,
+          el(sel).hidden === true);
   }
 }
 
