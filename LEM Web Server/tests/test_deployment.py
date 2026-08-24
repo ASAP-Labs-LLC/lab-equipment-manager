@@ -185,20 +185,26 @@ class TestIdleReporting:
     @pytest.mark.parametrize("path", [
         "/healthz",
         "/api/machines",
-        # floor.html's load() fetches these two on the same 2s timer. They were
-        # missing from the first version of the exclusion list, which pinned
-        # LEM's idle time below one second against the real floor.
+        # All four of these are on floor.html's 2-second timers. The first
+        # version of this list had only /api/machines, the second added
+        # /api/me and /api/map, and /api/qc-samples was still missing - each
+        # time pinning idle below a second so a deploy could never fire.
+        # Reads are background wholesale now, so the list cannot rot again.
         "/api/me",
         "/api/map",
         "/api/events",
+        "/api/qc-samples",
+        "/",
     ])
-    def test_background_polling_is_not_activity(self, client, path):
+    def test_reads_are_never_activity(self, client, path):
         import web_app
 
         web_app._last_activity = 0.0
         client.get(path)
         assert web_app._last_activity == 0.0, (
-            f"{path} counted as a person using LEM; the floor polls it every 2s"
+            f"GET {path} counted as a person using LEM; the floor re-reads its "
+            "whole world every 2s, so no GET can be distinguished from a wall "
+            "display"
         )
 
     def test_a_bench_push_is_not_activity(self, client):
@@ -209,11 +215,12 @@ class TestIdleReporting:
         client.post("/api/live", json={"machine_uid": "x", "status": "GREEN"})
         assert web_app._last_activity == 0.0
 
-    def test_a_real_page_view_is_activity(self, client):
+    def test_a_delete_is_activity(self, client):
+        """Any mutation is a person, whatever the path."""
         import web_app
 
         web_app._last_activity = 0.0
-        client.get("/")
+        client.delete("/api/machines/does-not-exist")
         assert web_app._last_activity > 0.0
 
     def test_a_write_is_activity(self, client):

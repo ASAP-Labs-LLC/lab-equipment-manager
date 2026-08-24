@@ -92,29 +92,33 @@ _last_activity = time.time()
 # unattended deploys simply never fire and nothing says why.
 _last_activity_path = "(none since boot)"
 
-# Everything floor.html's load() and pollRuns() hit on their 2-second timers.
-# Measured against the running floor, not guessed: /api/me and /api/map were
-# missing from the first version of this list and kept LEM's idle time pinned
-# below one second, so it could never have deployed unattended.
-_POLL_PATHS = frozenset({
-    "/healthz",
-    "/api/machines",     # the floor list, every 2s
-    "/api/events",       # the run blips, every 2s
-    "/api/me",           # fetched by load(), every 2s
-    "/api/map",          # fetched by load(), every 2s
-    "/api/live",         # benches pushing liveness - a machine, not a person
-})
+_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 
 def _is_background(path: str, method: str) -> bool:
-    """Whether a request is machinery rather than a person."""
-    if method not in ("GET", "HEAD"):
-        # A write is always someone doing something, whatever the path.
+    """Whether a request is machinery rather than a person.
+
+    **Reads are background; writes are people.**
+
+    This started as a list of the endpoints the floor polls, and that list was
+    wrong twice in a row — first missing ``/api/me`` and ``/api/map``, then
+    ``/api/qc-samples``, each time pinning idle time under a second so an
+    unattended deploy could never fire. The failure is silent, and any new
+    poller added to floor.html would reintroduce it.
+
+    So the rule is inverted. ``floor.html`` re-reads its whole world every two
+    seconds from every open browser, which makes *any* GET indistinguishable
+    from a wall display; enumerating them is a losing game. What actually
+    deserves protection from a restart is someone **writing** — an edit, a
+    checklist tick, a correction factor. LEM holds no per-request state, so a
+    reader loses at most the ~10s the floor takes to repoll.
+
+    ``/api/live`` is excluded even though it is a POST: that is a bench module
+    pushing liveness, not a person.
+    """
+    if method in _WRITE_METHODS:
         return path == "/api/live"
-    if path in _POLL_PATHS or path.startswith("/static/"):
-        return True
-    # Per-machine blip polling: /api/machines/<uid>/events
-    return path.startswith("/api/machines/") and path.endswith("/events")
+    return True
 
 
 def format_timestamp(dt: Optional[datetime]) -> Optional[str]:
