@@ -403,6 +403,33 @@ the client's read timeout. So it returned None on every boot and the 15
 `pragma_table_list` now: 58 tables in 0.18s, with the old form as a fallback for
 SQLite older than 3.37.
 
+## Deployment: `/healthz`, idleness, and unattended deploys
+
+LEM runs from `C:\ASAPApps\lem\current` (a junction onto an immutable release),
+started by the "ASAPLabs LEM Web Server" scheduled task with `--no-tray`.
+`C:\ASAPApps\updater` polls for releases, health-checks them on a scratch port,
+and **deploys them itself once nobody is using LEM**.
+
+- **`/healthz`** takes no auth and makes **no LabCore call** — `labcore` is the
+  reachability `SnapshotService` already tracks as a side effect of its own
+  background reads. Probing here would add an op per health check to a server
+  whose whole design goal is keeping LabCore load independent of how many
+  things are looking.
+- **`--no-publish` is mandatory for health checks.** A boot writes this
+  server's address into `lem_meta` and every bench reads it from there; a
+  release under test on a scratch port would point the whole floor at a port
+  that closes seconds later. The updater passes it via `health_args`.
+- **Reads are background, writes are people** (`_is_background`). This began as
+  an allowlist of the floor's poll endpoints and was wrong twice — first
+  missing `/api/me` and `/api/map`, then `/api/qc-samples` — each time pinning
+  idle under a second so a deploy could never fire, silently. `floor.html`
+  re-reads its entire world every 2s from every open browser, so no GET is
+  distinguishable from a wall display. `/api/live` is excluded despite being a
+  POST: that is a bench module, not a person.
+- `/healthz` reports `last_activity` (the request that last counted) purely so
+  a wrong rule here is visible — this is a `.pyw` under pythonw with no console,
+  so werkzeug's request log goes nowhere.
+
 ## Key facts / gotchas
 
 - The QC→engine seam is `LabCoreDataSource.load_rows()`. If the LabCore schema
