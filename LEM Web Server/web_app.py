@@ -87,10 +87,16 @@ APP_VERSION = read_version()
 # poll, a bench push, a health check or a static asset.
 _last_activity = time.time()
 
+# Everything floor.html's load() and pollRuns() hit on their 2-second timers.
+# Measured against the running floor, not guessed: /api/me and /api/map were
+# missing from the first version of this list and kept LEM's idle time pinned
+# below one second, so it could never have deployed unattended.
 _POLL_PATHS = frozenset({
     "/healthz",
     "/api/machines",     # the floor list, every 2s
-    "/api/events",       # blips
+    "/api/events",       # the run blips, every 2s
+    "/api/me",           # fetched by load(), every 2s
+    "/api/map",          # fetched by load(), every 2s
     "/api/live",         # benches pushing liveness - a machine, not a person
 })
 

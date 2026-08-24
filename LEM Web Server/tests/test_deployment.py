@@ -185,6 +185,12 @@ class TestIdleReporting:
     @pytest.mark.parametrize("path", [
         "/healthz",
         "/api/machines",
+        # floor.html's load() fetches these two on the same 2s timer. They were
+        # missing from the first version of the exclusion list, which pinned
+        # LEM's idle time below one second against the real floor.
+        "/api/me",
+        "/api/map",
+        "/api/events",
     ])
     def test_background_polling_is_not_activity(self, client, path):
         import web_app
