@@ -86,6 +86,11 @@ APP_VERSION = read_version()
 # So activity means a person: any write, and any read that is not a background
 # poll, a bench push, a health check or a static asset.
 _last_activity = time.time()
+# What last counted as a person. Reported by /healthz purely so "why does this
+# app never look idle?" is answerable without adding request logging to a .pyw
+# that has no console. Getting the exclusion list wrong is otherwise silent -
+# unattended deploys simply never fire and nothing says why.
+_last_activity_path = "(none since boot)"
 
 # Everything floor.html's load() and pollRuns() hit on their 2-second timers.
 # Measured against the running floor, not guessed: /api/me and /api/map were
@@ -501,9 +506,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     @app.before_request
     def _track_activity():
-        global _last_activity
+        global _last_activity, _last_activity_path
         if not _is_background(request.path, request.method):
             _last_activity = time.time()
+            _last_activity_path = f"{request.method} {request.path}"
 
     @app.route("/healthz")
     def healthz():
@@ -529,6 +535,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # Seconds since a person last did something. Wall displays polling
             # and benches pushing do not count - see _is_background.
             "idle_seconds": round(time.time() - _last_activity, 1),
+            "last_activity": _last_activity_path,
             # LEM has no per-user sessions the way COA does; the floor is
             # anonymous. Reported for a uniform shape across both apps.
             "active_sessions": 0,
