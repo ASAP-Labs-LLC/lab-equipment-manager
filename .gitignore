@@ -55,3 +55,9 @@ service_account*.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Written into a release by CI (see .github/workflows/release.yml). A working
+# checkout has no VERSION and reports "dev". Committing one would make every
+# dev machine claim to be a release, and the updater compares this string
+# against the tag it staged to decide whether a deploy actually took effect.
+VERSION

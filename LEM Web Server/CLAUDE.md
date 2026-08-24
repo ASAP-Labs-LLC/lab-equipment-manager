@@ -403,6 +403,18 @@ the client's read timeout. So it returned None on every boot and the 15
 `pragma_table_list` now: 58 tables in 0.18s, with the old form as a fallback for
 SQLite older than 3.37.
 
+## Releasing
+
+**See `../RELEASING.md`** (repo root). Push a `v*` tag; CI archives **`LEM Web
+Server/` only** and the updater on ASAPSV1 stages, health-checks and **deploys
+it by itself** once nobody has written for 5 minutes.
+
+MAJOR matters more here than in most repos: the station module on every bench
+shares the QC staleness rule and the `/api/live` payload shape, so a change to
+either has to move the bench side with it. Schema changes go in
+`SCHEMA_MIGRATIONS`, never a bare `CREATE TABLE` — one missing column fails the
+whole batched read and drops the floor to the fallback path.
+
 ## Deployment: `/healthz`, idleness, and unattended deploys
 
 LEM runs from `C:\ASAPApps\lem\current` (a junction onto an immutable release),
