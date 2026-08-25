@@ -180,3 +180,7 @@ python C:\ASAPApps\updater\updater.py resume --app lem
 | Deployed and the floor looks wrong | `updater.py rollback --app lem` first, investigate after |
 | "LabCore offline" after a deploy | Usually a schema change breaking the batched read — see CLAUDE.md; add the column to `SCHEMA_MIGRATIONS` |
 | LEM keeps restarting | `updater.log` — after 3 starts in 15 min the supervisor gives up and logs CRITICAL |
+| "It says saved and nothing changed" / a QC assignment, correction factor or audit line that vanished | `C:\ASAPApps\lem\data\lem.log` — every refused LabCore write is written there by name |
+| The floor is slow to update, dots lag behind the benches | `data\lem.log` — look for "the live push address was NOT published"; benches read that address out of `lem_meta` |
+| A CSV export came out with uid-looking machine names | Nothing is wrong with the data — the names could not be read; `data\lem.log` says so, and the file carries a note of its own |
+| Where is that log? | `GET /healthz` reports its full path as `log`. It lives in the app's **data** directory, never inside a release: deploys swap the release folder wholesale, and this file has to survive the deploy that went wrong |

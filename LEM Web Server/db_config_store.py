@@ -64,6 +64,11 @@ CURRENT_VERSION = 5
 # Keys that are stored as their own rows/tables rather than in the settings blob.
 _LIST_KEYS = ("samples", "boxes", "users", "checklists")
 
+# Which column identifies a row in each list table. Needed by BOTH halves now:
+# the prune already knew, and the load has to know too — see `_read_rows`.
+_ID_COLUMN = {"lem_boxes": "uid", "lem_samples": "name",
+              "lem_users": "username", "lem_checklists": "uid"}
+
 _SCHEMA = (
     "CREATE TABLE IF NOT EXISTS lem_meta (key TEXT PRIMARY KEY, value TEXT)",
     "CREATE TABLE IF NOT EXISTS lem_boxes (uid TEXT PRIMARY KEY, data TEXT)",
@@ -80,6 +85,12 @@ class DbConfigStore:
         self._gw = gateway
         self._source = source
         self._schema_ready = False
+        # Rows this store READ and could not parse, per table. They are dropped
+        # from the AppConfig (nothing can be built from a broken blob) but they
+        # are NOT dropped from LabCore: `_rewrite_rows` keeps their ids, or the
+        # next save of anything else would prune away a row a person might still
+        # recover by hand. See `_read_rows`.
+        self._unparsed: dict = {}
         # Try now, but never fail construction: LEM has to come up and SAY
         # LabCore is down, not refuse to start because it is.
         self._ensure_schema()
@@ -167,7 +178,13 @@ class DbConfigStore:
         what_was_deleted` holds that half so this cannot decay into "never
         delete anything".
         """
-        keep = []
+        # Ids this store read and could not parse. They are not in `items` —
+        # `load()` could not build anything from them — so a prune computed
+        # from `items` alone would DELETE them, and a corrupt blob is at least
+        # recoverable by hand until something deletes it. Keeping them costs a
+        # row that nothing reads; the alternative is silent, permanent loss of
+        # a box or a QC standard because one field would not parse.
+        keep = list(self._unparsed.get(table, ()))
         for item in items:
             ident = str(item.get(id_field, ""))
             keep.append(ident)
@@ -178,7 +195,9 @@ class DbConfigStore:
             ))
         if not keep:
             # Emptying the list is a deliberate act — the accident above was
-            # emptying it on the way to refilling it.
+            # emptying it on the way to refilling it. (An unparseable row makes
+            # `keep` non-empty, so clearing a list never silently takes one
+            # with it either.)
             self._check(self._gw.sql(f"DELETE FROM {table}"))
             return
         holes = ",".join("?" * len(keep))
@@ -260,10 +279,31 @@ class DbConfigStore:
             return {}
 
     def _read_rows(self, table: str) -> list:
+        """Every parseable row, and a note of the ones that were not.
+
+        A blob that will not parse is dropped from the config — there is
+        nothing to build from it — but it used to be dropped SILENTLY, and the
+        next `save()` pruned every id it had not been handed, so one corrupt
+        row was deleted for good by an unrelated edit. The id is remembered
+        here and protected in `_rewrite_rows`, and the fact is logged: this is
+        a lab losing a box or a QC standard, and it should not take a diff of
+        LabCore to notice.
+        """
+        id_col = _ID_COLUMN.get(table, "rowid")
+        hurt = []
         out = []
-        for row in self._read(f"SELECT data FROM {table}"):
+        for row in self._read(f"SELECT {id_col}, data FROM {table}"):
             try:
                 out.append(json.loads(row["data"]))
             except (ValueError, TypeError, KeyError):
+                ident = row.get(id_col)
+                if ident is not None:
+                    hurt.append(str(ident))
+                logger.warning(
+                    "%s row %r could not be read (its stored JSON is broken). "
+                    "It is left out of the configuration and left ALONE in "
+                    "LabCore, so it can still be repaired by hand.",
+                    table, ident)
                 continue
+        self._unparsed[table] = hurt
         return out

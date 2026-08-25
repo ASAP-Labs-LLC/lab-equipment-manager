@@ -329,6 +329,11 @@ class TestRestartNeverLosesTheServer:
 
     def test_the_failure_is_written_down(self, tmp_path, monkeypatch):
         """Under pythonw there is no console, so the log is the only record."""
+        # `data_dir()` prefers LEM_DATA_DIR over the root it is handed, and the
+        # suite now sets one session-wide so the app's own log does not land in
+        # site-packages (see conftest). This test is about the `root` argument,
+        # so it states its precondition the way test_deployment already does.
+        monkeypatch.delenv("LEM_DATA_DIR", raising=False)
         monkeypatch.setattr(tray.subprocess, "Popen",
                             lambda *a, **k: (_ for _ in ()).throw(OSError("nope")))
         tray.relaunch(["x.py"], settle=0, root=tmp_path)

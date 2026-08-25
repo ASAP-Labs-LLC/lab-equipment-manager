@@ -308,10 +308,14 @@ class QueueFull:
     """A real gateway until it refuses. Reads keep working, so a test can show
     the stored schedule is exactly as it was before the refused write."""
 
-    def __init__(self, refuse_after=None):
+    def __init__(self, refuse_after=None, refuse_when=None):
         self.real = FakeLabCoreGateway()
         self.refusing = False
         self.refuse_after = refuse_after
+        # `refuse_when(sql)` names the statement the queue fills on, which a
+        # counter cannot do once the ORDER of the statements is the thing under
+        # test — a count silently follows the code it is meant to pin.
+        self.refuse_when = refuse_when
         self.writes = 0
 
     def refuse(self):
@@ -324,7 +328,8 @@ class QueueFull:
     def sql(self, sql, args=None, **kw):
         self.writes += 1
         if self.refusing or (self.refuse_after is not None
-                             and self.writes > self.refuse_after):
+                             and self.writes > self.refuse_after) or (
+                self.refuse_when is not None and self.refuse_when(sql)):
             return refusal_shapes.current()
         return self.real.sql(sql, args)
 
@@ -374,6 +379,54 @@ class TestARefusedScheduleWriteIsNeverReportedAsSaved:
                 working_days=[0], holidays={"2026-07-04": "Independence Day"}))
         gw.allow()
         assert store.load().holidays == {"2026-12-25": "Christmas"}
+
+    def test_a_refused_holiday_INSERT_leaves_the_old_holidays_standing(self):
+        """THE WIPE SHAPE, in the second place it lived (2026-08-25).
+
+        `save()` was "DELETE every holiday, then re-INSERT the list", and there
+        is no transaction across the two — so a queue that filled in between
+        left the lab with NO holidays and a saved schedule, which reports the
+        lab open on Christmas Day. It now upserts each holiday and prunes the
+        rest last, so a refusal can only leave a holiday too many.
+        """
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.save(LabSchedule(holidays={"2026-12-25": "Christmas"}))
+        gw.refuse_when = lambda sql: "lem_lab_holidays" in sql and \
+            sql.lstrip().upper().startswith("INSERT")
+        with pytest.raises(ScheduleWriteError):
+            store.save(LabSchedule(
+                working_days=[0], holidays={"2026-07-04": "Independence Day"}))
+        gw.refuse_when = None
+        assert store.load().holidays == {"2026-12-25": "Christmas"}
+
+    def test_a_refused_holiday_PRUNE_leaves_one_too_many_never_none(self):
+        """The other half: the new holiday landed and the old one could not be
+        removed. A holiday too many closes the lab for a day it was open —
+        visible, complained about, and fixed by saving again. A holiday too
+        few opens it on Christmas and nobody finds out."""
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.save(LabSchedule(holidays={"2026-12-25": "Christmas"}))
+        gw.refuse_when = lambda sql: sql.lstrip().upper().startswith("DELETE")
+        with pytest.raises(ScheduleWriteError):
+            store.save(LabSchedule(
+                working_days=[0], holidays={"2026-07-04": "Independence Day"}))
+        gw.refuse_when = None
+        assert store.load().holidays == {"2026-12-25": "Christmas",
+                                         "2026-07-04": "Independence Day"}
+
+    def test_an_accepted_save_still_removes_the_holidays_that_were_dropped(self):
+        """A prune that never prunes is the mirror-image bug: a holiday list
+        that only ever grows, and a lab shut on days it is open."""
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.save(LabSchedule(holidays={"2026-12-25": "Christmas",
+                                         "2026-07-04": "Independence Day"}))
+        store.save(LabSchedule(holidays={"2026-07-04": "Independence Day"}))
+        assert store.load().holidays == {"2026-07-04": "Independence Day"}
+        store.save(LabSchedule(holidays={}))
+        assert store.load().holidays == {}
 
     def test_add_holiday_raises_and_stores_nothing(self):
         gw = QueueFull()

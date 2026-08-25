@@ -19,7 +19,7 @@ import threading
 import time
 from datetime import datetime
 
-from labcore_result import refusal_of
+from labcore_result import refusal_of, retry_after
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,13 @@ MAX_MACHINES = 256
 
 LIVE_URL_KEY = "live_url"
 LIVE_TOKEN_KEY = "live_token"
+
+# How long a refused publish waits before the poller tries again. The same
+# discipline, and the same numbers, as SnapshotService's schema retry: LabCore's
+# queue is full for minutes, and a retry with no throttle is writes piling into
+# a queue that is refusing BECAUSE it is full.
+LIVE_RETRY_MIN = 30.0
+LIVE_RETRY_MAX = 300.0
 
 
 META_DDL = "CREATE TABLE IF NOT EXISTS lem_meta (key TEXT PRIMARY KEY, value TEXT)"
@@ -54,18 +61,94 @@ def resolve_token(configured=None) -> str:
     return token or secrets.token_urlsafe(32)
 
 
-def _publish_one(gateway, sql, args=None) -> str:
-    """Issue one publish write. "" if it landed, else why it did not.
+def _publish_attempt(gateway, url: str, token: str):
+    """One full publish. Returns (ok, why_not, wait_hint).
 
-    Never raises — see `publish_live_config`. Both ways a write can fail come
-    back the same way, because "the address was not published" is one fact
-    whether the socket died or the queue said no.
+    Split out of `publish_live_config` so `LiveConfigPublisher` can retry it
+    and honour the `retry_after` LabCore sent, without re-deriving either the
+    statements or the verdict.
     """
-    try:
-        res = gateway.sql(sql, args or [])
-    except Exception as exc:                        # transport, not logic
-        return "{0}: {1}".format(type(exc).__name__, exc)
-    return refusal_of(res) or ""
+    if not str(url or "").strip():
+        return False, "no address to publish", None
+    answers = []
+    for sql, args in ((META_DDL, None),
+                      (META_UPSERT, [LIVE_URL_KEY, str(url).strip()]),
+                      (META_UPSERT, [LIVE_TOKEN_KEY, str(token or "")])):
+        try:
+            res = gateway.sql(sql, args or [])
+        except Exception as exc:                    # transport, not logic
+            answers.append(("{0}: {1}".format(type(exc).__name__, exc), None))
+            continue
+        answers.append((refusal_of(res) or "", retry_after(res)))
+    trouble = [why for why, _hint in answers if why]
+    hints = [hint for _why, hint in answers if hint is not None]
+    return (not trouble), "; ".join(trouble), (max(hints) if hints else None)
+
+
+class LiveConfigPublisher:
+    """Keeps trying to tell LabCore where the benches should push.
+
+    THE ONE WRITE ON THIS BRANCH THAT DID NOT HEAL ITSELF (2026-08-25).
+    `start_live_channel` published the address once, at boot, and a refusal was
+    logged and forgotten — so every bench's fast path stayed dark until someone
+    restarted LEM, and nobody would, because nothing looks broken. The floor
+    keeps updating off the 12s snapshot; it just feels slow, forever.
+
+    Everything else here is either retried by the thing that issues it or
+    repeated by the operator who asked for it. This had neither, and LabCore's
+    queue is full for minutes rather than days.
+
+    Run from the snapshot poller (`SnapshotService.on_cycle`) — the thread that
+    is already awake and already talking to LabCore. It NEVER raises for the
+    same reason the boot publish never did: a raise there would stop the floor
+    refreshing, which is a far worse outage than a dark fast path.
+    """
+
+    def __init__(self, gateway, url: str, token: str, clock=time.monotonic):
+        self.gateway = gateway
+        self.url = str(url or "").strip()
+        self.token = token
+        self._clock = clock
+        self.published = False
+        self.attempts = 0
+        self.last_error = ""
+        self._retry_at = 0.0
+        self._backoff = 0.0
+
+    def publish_if_due(self) -> bool:
+        """Publish if it has not landed and the cooldown has passed.
+
+        Returns whether the address is published. Once it is, this costs
+        nothing forever after — no clock, no write — which matters because it
+        runs on every poller cycle of every healthy lab.
+        """
+        if self.published:
+            return True
+        now = self._clock()
+        if self.attempts and now < self._retry_at:
+            return False
+        self.attempts += 1
+        ok, trouble, hint = _publish_attempt(self.gateway, self.url, self.token)
+        if ok:
+            self.published = True
+            self.last_error = ""
+            self._backoff = 0.0
+            if self.attempts > 1:
+                logger.info("the live push address reached lem_meta on attempt "
+                            "%s (%s)", self.attempts, self.url)
+            return True
+        self.last_error = trouble
+        self._backoff = min(max(self._backoff * 2.0, LIVE_RETRY_MIN),
+                            LIVE_RETRY_MAX)
+        # `max`, not `or`: a hint of 4s must not shorten the back-off, and a
+        # hint of ten minutes must not be shortened BY it.
+        self._retry_at = now + max(self._backoff, hint or 0.0)
+        logger.warning(
+            "the live push address was NOT published to lem_meta (%s). Benches "
+            "will keep using whatever they last cached, or skip the push "
+            "entirely; the floor falls back to the snapshot and the heartbeat. "
+            "Retrying in %ss.", trouble, int(self._retry_at - now))
+        return False
 
 
 def publish_live_config(gateway, url: str, token: str) -> bool:
@@ -94,20 +177,14 @@ def publish_live_config(gateway, url: str, token: str) -> bool:
     whenever the table already exists, which is every boot but the first, so
     reporting only its verdict would report nothing.
     """
-    if not str(url or "").strip():
-        return False
-    trouble = [t for t in (
-        _publish_one(gateway, META_DDL),
-        _publish_one(gateway, META_UPSERT, [LIVE_URL_KEY, str(url).strip()]),
-        _publish_one(gateway, META_UPSERT,
-                     [LIVE_TOKEN_KEY, str(token or "")]),
-    ) if t]
-    if trouble:
-        logger.warning(
-            "the live push address was NOT published to lem_meta (%s). Benches "
-            "will keep using whatever they last cached, or skip the push "
-            "entirely; the floor falls back to the snapshot and the heartbeat.",
-            "; ".join(trouble))
+    ok, trouble, _hint = _publish_attempt(gateway, url, token)
+    if not ok:
+        if trouble:
+            logger.warning(
+                "the live push address was NOT published to lem_meta (%s). "
+                "Benches will keep using whatever they last cached, or skip "
+                "the push entirely; the floor falls back to the snapshot and "
+                "the heartbeat.", trouble)
         return False
     return True
 
@@ -153,7 +230,12 @@ def start_live_channel(app, gateway, host, port) -> str:
     """
     import os
     url = live_url(host, port, os.environ.get("LEM_LIVE_URL"))
-    publish_live_config(gateway, url, app.config.get("LIVE_TOKEN", ""))
+    publisher = LiveConfigPublisher(gateway, url,
+                                    app.config.get("LIVE_TOKEN", ""))
+    publisher.publish_if_due()
+    # Left where the poller can find it. A refused boot publish is not the end
+    # of the attempt any more — see LiveConfigPublisher.
+    app.config["LIVE_PUBLISHER"] = publisher
     return url
 
 

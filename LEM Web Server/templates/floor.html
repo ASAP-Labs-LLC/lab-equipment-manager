@@ -1418,7 +1418,12 @@ function requireAuth() {
 
 async function loadTests() {
   const b = await fetch('/api/test-names').then(r => r.json()).catch(() => null);
-  TESTS = (b && b.tests) || [];
+  // KEEP WHAT WE HAD on a failed read. The endpoint 503s when LabCore could
+  // not be asked (it no longer serves an empty list as an answer), and
+  // blanking TESTS here would empty a picker that is already on screen and
+  // correct — which reads as "this lab has no test methods", the one thing
+  // this list must never say by accident.
+  if (b && Array.isArray(b.tests)) TESTS = b.tests;
 }
 
 function renderQcLib() {

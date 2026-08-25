@@ -278,6 +278,13 @@ class SnapshotService:
         # scheduled anywhere". "Read it, it was empty" and "could not read it"
         # have to stay two different facts all the way to the route.
         self._table_errors: Dict[str, str] = {}
+        # One callable the poller runs after each refresh, or None. It exists
+        # for `live_presence.LiveConfigPublisher`: the live push address is a
+        # LabCore write that has to be RETRIED until it lands, and this is the
+        # thread that is already awake and already talking to LabCore. Anything
+        # hung here would be a periodic LabCore job with its own thread and its
+        # own idea of the interval, which is what this service exists to stop.
+        self.on_cycle = None
 
     # ── lifecycle ──────────────────────────────────────────────────────
     def start(self) -> None:
@@ -316,6 +323,15 @@ class SnapshotService:
                 # A refresh must never take the poller down with it, or the
                 # floor freezes on whatever it happened to be showing.
                 self._last_error = repr(exc)
+            hook = self.on_cycle
+            if hook is not None:
+                try:
+                    hook()
+                except Exception as exc:
+                    # Same rule, and it matters more here: a hook is a
+                    # passenger on this thread. The floor must not stop
+                    # refreshing because a retry of something optional raised.
+                    self._last_error = repr(exc)
             # Woken early by refresh_soon() after a write.
             self._wake.wait(self.next_wait(time.time() - started))
             self._wake.clear()
@@ -476,7 +492,28 @@ class SnapshotService:
             return
         self._schema_checked = True
         self._schema_hint = None       # the longest wait this round was asked for
-        existing = self._existing_tables()
+        existing, unanswered = self._existing_tables()
+        if existing is None and unanswered:
+            # THE PROBE ITSELF WAS REFUSED (2026-08-25). `existing_tables`
+            # answers None both for "this LabCore is too old to be asked" and
+            # for "the queue refused the question", and this used to declare
+            # all ten tables either way — ten refused writes into a queue that
+            # is refusing BECAUSE it is full, on every retry, for the length of
+            # the outage. A refused read is not evidence that a table is
+            # missing. Back off and ask again; `_declare` has nothing useful to
+            # do until LabCore is answering.
+            #
+            # The other case still declares blind (`unanswered` is "" for it,
+            # via probe_is_unsupported) — on a LabCore that cannot answer the
+            # question, declaring is the only way a schema ever forms.
+            self._schema_error = ("the table list could not be read, so "
+                                  "nothing was declared: {0}".format(unanswered))
+            self._schema_backoff = min(
+                max(self._schema_backoff * 2.0, self.SCHEMA_RETRY_MIN),
+                self.SCHEMA_RETRY_MAX)
+            self._schema_retry_at = now + self._schema_backoff
+            self._schema_ready = False
+            return
         trouble = []
         for ddl in SCHEMA_DDL:
             table = ddl.split("IF NOT EXISTS", 1)[1].split("(", 1)[0].strip()
@@ -550,9 +587,14 @@ class SnapshotService:
                     trouble.append("{0}.{1}: could not be inspected "
                                    "({2})".format(table, column, exc))
                     continue
-                if not res or res.get("error"):
+                # `refusal_of`, not `res.get("error")` (2026-08-25). The
+                # other refusal shape read as a successful answer listing NO
+                # columns, so every migration column looked missing and its
+                # ALTER was issued into the queue that had just refused.
+                refused = refusal_of(res)
+                if refused is not None:
                     trouble.append("{0}.{1}: could not be inspected ({2})".format(
-                        table, column, (res or {}).get("error") or "no answer"))
+                        table, column, refused))
                     continue
                 checked[table] = {str(r.get("name"))
                                   for r in (res.get("rows") or [])}
@@ -566,13 +608,21 @@ class SnapshotService:
         return trouble
 
     def _existing_tables(self):
-        """Shared with the config store — see labcore_gateway.existing_tables.
+        """(tables, why_not) — see labcore_gateway.existing_tables_answer.
 
-        None means declare everything: guessing "it probably exists" would let the
-        one-op batched read fail on a missing table for the whole first cooldown.
+        `tables is None` with an empty `why_not` means declare everything:
+        guessing "it probably exists" would let the one-op batched read fail on
+        a missing table for the whole first cooldown. `why_not` non-empty means
+        the question was REFUSED, which is not evidence about any table.
         """
-        from labcore_gateway import existing_tables
-        return existing_tables(self.gateway)
+        from labcore_gateway import (UNSUPPORTED_PROBE, existing_tables_answer,
+                                     probe_is_unsupported)
+
+        tables, why = existing_tables_answer(self.gateway)
+        if tables is not None or why == UNSUPPORTED_PROBE \
+                or probe_is_unsupported(why):
+            return tables, ""
+        return None, why
 
     def read_tables(self) -> Dict[str, List[dict]]:
         """Every machine table, in one op if LabCore allows it.

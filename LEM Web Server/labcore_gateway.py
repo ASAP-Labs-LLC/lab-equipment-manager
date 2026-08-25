@@ -165,10 +165,20 @@ class FakeLabCoreGateway:
         return {"samples": res.get("rows", [])} if res.get("ok") else None
 
     def get_test_names(self, **_kw) -> Optional[list]:
+        """The methods LabCore knows, or None if it could not be asked.
+
+        `refusal_of`, not `if not res.get("ok")` (2026-08-25). Demanding a
+        positive acknowledgement is the rule labcore_result documents as
+        unsafe, and this is a READ: an answer carrying rows and no verdict is
+        an answer, and throwing it away empties the only picker in the app that
+        knows which test names are legal.
+        """
+        from labcore_result import refusal_of
+
         res = self.read_sql("SELECT DISTINCT test_name FROM sample_tests ORDER BY test_name")
-        if not res.get("ok"):
+        if refusal_of(res) is not None:
             return None
-        return [r["test_name"] for r in res["rows"]]
+        return [r["test_name"] for r in (res.get("rows") or [])]
 
 
 def resolve_labcore_url(base_url: Optional[str] = None) -> str:
@@ -420,6 +430,16 @@ READ_TIMEOUT = 20.0
 def existing_tables(gateway, timeout: float = 45.0):
     """Which tables LabCore already has, or None if we could not find out.
 
+    Thin wrapper over `existing_tables_answer` for callers that only need the
+    set. See there for why the difference between "asked and answered" and
+    "could not ask" is worth keeping.
+    """
+    return existing_tables_answer(gateway, timeout)[0]
+
+
+def existing_tables_answer(gateway, timeout: float = 45.0):
+    """(tables, why_not) — the table list, and why there isn't one.
+
     `CREATE TABLE IF NOT EXISTS` is harmless but not free: it goes through the
     same serialised write queue as the rest of the lab, which lands about 1.5
     ops/sec. Fifteen of them on every start — ten for the snapshot's tables, five
@@ -430,6 +450,15 @@ def existing_tables(gateway, timeout: float = 45.0):
     because "nothing exists" is a real answer for a fresh database and callers must
     be able to tell it apart from "no idea, declare everything".
 
+    AND `why_not` SEPARATES THE TWO WAYS OF NOT KNOWING (2026-08-25). A LabCore
+    too old to answer the question and a queue too full to answer it both came
+    back as None, and the caller declared all ten tables either way — which for
+    the second one is ten refused writes into a queue that is refusing BECAUSE
+    it is full, repeated every retry for the length of the outage. `why_not` is
+    "" when answered, the refusal text when LabCore said no, and
+    `UNSUPPORTED_PROBE` when both forms came back as SQL the server does not
+    understand.
+
     Asks `pragma_table_list`, not `sqlite_master`. Against production the
     sqlite_master form **times out** — the client allows 8s and that query does not
     return inside it, though `SELECT COUNT(*) FROM sqlite_master` answers 110
@@ -438,16 +467,38 @@ def existing_tables(gateway, timeout: float = 45.0):
     3.37 (production runs 3.49); the sqlite_master form stays as a fallback for
     anything older.
     """
+    from labcore_result import refusal_of
+
+    trouble = []
     for sql in ("SELECT name FROM pragma_table_list WHERE type = 'table'",
                 "SELECT name FROM sqlite_master WHERE type = 'table'"):
         try:
             # Generous, for the same reason SnapshotService.READ_TIMEOUT is: reads
             # POST to /api/queue/write and wait behind every write in the lab.
             res = gateway.read_sql(sql, timeout=timeout)
-        except Exception:
-            return None
-        if not res or res.get("error"):
+        except Exception as exc:                     # transport, not logic
+            trouble.append("{0}: {1}".format(type(exc).__name__, exc))
+            continue
+        refused = refusal_of(res)
+        if refused is not None:
+            trouble.append(refused)
             continue            # unsupported or slow: try the next form
         return {str(r.get("name")) for r in (res.get("rows") or [])
-                if r.get("name")}
-    return None
+                if r.get("name")}, ""
+    if trouble and all(probe_is_unsupported(t) for t in trouble):
+        return None, UNSUPPORTED_PROBE
+    return None, "; ".join(trouble) or UNSUPPORTED_PROBE
+
+
+UNSUPPORTED_PROBE = "this LabCore cannot answer the table-list question"
+
+# What an "I do not understand that statement" answer looks like, as opposed to
+# "I am too busy to answer". The first means declare the tables blind — it is
+# the only way a LabCore that old ever gets a schema. The second means wait.
+_UNSUPPORTED = ("no such table", "no such function", "syntax error",
+                "unrecognized", "unknown", "not supported", "misuse")
+
+
+def probe_is_unsupported(why: str) -> bool:
+    text = str(why or "").lower()
+    return any(phrase in text for phrase in _UNSUPPORTED)

@@ -26,7 +26,7 @@ import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
 
-from flask import (Flask, Response, jsonify, redirect, render_template,
+from flask import (Flask, Response, g, jsonify, redirect, render_template,
                    request, session, url_for)
 
 from data_source import build_sample_index, evaluate_box
@@ -54,6 +54,85 @@ from models import (
 # with NameError instead of logging a skipped cache. The stores were swallowing
 # every LabCore failure, which is why that branch had never once run.
 logger = logging.getLogger(__name__)
+
+# ── somewhere for those warnings to land ────────────────────────────────────
+#
+# EVERY report this branch added is a `logger.warning`: a refused audit line, a
+# CSV whose machine names could not be read, a warm-up job that gave up, a live
+# address that was not published. On the target platform none of them went
+# anywhere. LEM runs on ASAPSV1 as a `.pyw` under pythonw.exe — no console —
+# and no handler was ever configured, so `logging` fell back to writing to a
+# `sys.stderr` that does not exist. Detecting a refused write and announcing it
+# into a void is barely better than not detecting it.
+#
+# WHERE IT GOES. `tray.data_dir()` — `C:\ASAPApps\lem\data` on the server,
+# via LEM_DATA_DIR — and NOT the code directory. A deploy re-points `current`
+# at a whole new release folder (RELEASING.md §1) and the release archive
+# excludes `data/`, so a log written inside the release disappears on the next
+# deploy: precisely the one you want to read after a deploy went wrong.
+# `restart.log` already lives there for the same reason.
+#
+# ROTATING, because a busy afternoon on a full LabCore queue is one warning per
+# refused write, and this app is not supposed to be able to fill a disk.
+LOG_FILENAME = "lem.log"
+LOG_MAX_BYTES = 2 * 1024 * 1024
+LOG_BACKUPS = 5
+
+
+def configure_logging(directory=None, level=logging.INFO) -> str:
+    """Open the app's log file. Returns its path, or "" if it could not.
+
+    Attached to the ROOT logger: every module here logs to
+    `logging.getLogger(__name__)`, so the stores, the snapshot service and
+    `live_presence` all reach it without each one being wired up separately.
+
+    Idempotent — `create_app` runs once in production and hundreds of times in
+    the test suite, and a handler per call would write every line that many
+    times over. Never raises: a server that refuses to start because it could
+    not open its log is a worse outage than the one the log was for.
+    """
+    from logging.handlers import RotatingFileHandler
+
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if getattr(handler, "_lem", False):
+            return getattr(handler, "baseFilename", "")
+    import tray
+
+    target = os.path.join(directory or tray.data_dir(), LOG_FILENAME)
+    try:
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        handler = RotatingFileHandler(
+            target, maxBytes=LOG_MAX_BYTES, backupCount=LOG_BACKUPS,
+            encoding="utf-8", delay=False)
+    except OSError as exc:                      # read-only, missing, in use
+        # `print`, not `logger`: the logger is precisely what does not work
+        # yet. On a console-less service this goes nowhere either, which is
+        # why the path is also reported by /healthz.
+        print("LEM could not open its log at {0}: {1}".format(target, exc))
+        return ""
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    # WARNING is what this branch reports with, so the handler has to be at or
+    # below it; INFO keeps the boot lines that say which LabCore and which
+    # version, which is the context those warnings need.
+    handler.setLevel(level)
+    handler._lem = True
+    root.addHandler(handler)
+    # ONE EXCEPTION, and it is the difference between a useful log and a full
+    # one. `floor.html` re-reads its whole world every two seconds from every
+    # open browser and every bench POSTs /api/live on each poll; werkzeug logs
+    # a line per request at INFO, which is thousands an hour and would rotate
+    # the refusals — the only reason this file exists — out of the file within
+    # a day. Filtered on OUR HANDLER rather than silenced at the logger, so a
+    # console dev run still shows its request log.
+    handler.addFilter(lambda record: not (
+        record.name.startswith("werkzeug") and record.levelno < logging.WARNING))
+    if root.level > level or root.level == logging.NOTSET:
+        # The root logger defaults to WARNING, which would be enough for the
+        # refusals and would silently drop the INFO context around them.
+        root.setLevel(level)
+    return target
 
 STATUS_COLORS = {
     STATUS_GREEN: "#21c071",
@@ -389,10 +468,63 @@ def _labcore_unreadable(exc, what: str):
     }), (502 if refused else 503)
 
 
+# ── saying a thing once ──────────────────────────────────────────────────────
+# How long an identical warning is held after it has been said.
+#
+# The floor polls /api/map every 2 seconds from every open browser, so its
+# failure branch wrote one line per poll per screen. Measured at ~167 bytes,
+# four wall displays make over a megabyte an hour — and the log is a 2 MB
+# rotating file with five backups, so a single afternoon of one degraded read
+# rotates away every refused write, every degraded schema and every unpublished
+# live address. The noise about a problem deleted the evidence of it, which is
+# the exact opposite of what this branch added logging for.
+#
+# Unsynchronised on purpose: two workers each saying it once is fine, and a lock
+# on a logging path that runs inside a request is a worse trade than an
+# occasional duplicate line.
+#
+# The store belongs to the APP, not the module. During a deploy the updater runs
+# a candidate release on a scratch port while the live one is serving, and a
+# module-global would let one app's first warning silence the other's — the
+# health check would suppress exactly the line the release is being judged on.
+WARN_REPEAT_SECONDS = 300
+
+
+def throttled_warning(logger, seen: Dict[str, list], key: str,
+                      message: str, *args) -> None:
+    """Say it, then hold it and count, then say it again with the count.
+
+    Never silence: the FIRST occurrence always lands, and the summary that
+    follows names how many were suppressed — a warning nobody sees is the same
+    as no warning, and "1 of 900" is the difference between a blip and an
+    afternoon.
+    """
+    now = time.time()
+    held = seen.get(key)
+    if held is None or now - held[0] >= WARN_REPEAT_SECONDS:
+        if held is not None and held[1]:
+            logger.warning("%s (and %d more like it in the last %ds)",
+                           message % args if args else message,
+                           held[1], int(now - held[0]))
+        else:
+            logger.warning(message, *args)
+        seen[key] = [now, 0]
+        return
+    held[1] += 1
+
+
 def create_app(gateway, admin_password: Optional[str] = None,
                secret: Optional[str] = None, authenticator=None,
                live=None, live_token: Optional[str] = None) -> Flask:
+    # Per-app, never module-global — see throttled_warning.
+    warn_seen: Dict[str, list] = {}
+
     app = Flask(__name__)
+
+    # First, before anything here can have something to say. See
+    # `configure_logging`: without this every warning on this branch is
+    # written to a stderr that does not exist on the target platform.
+    app.config["LOG_PATH"] = configure_logging()
 
     # The live road: what benches say about themselves, in memory only. The
     # record stays LabCore's. Publishing the address/token to `lem_meta` is a
@@ -633,7 +765,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
         try:
             return jsonify({"locked": map_settings.locked(), "known": True})
         except LabCoreError as exc:
-            logger.warning("map lock unreadable, defaulting to locked: %s", exc)
+            throttled_warning(logger, warn_seen, "map-lock-unreadable",
+                              "map lock unreadable, defaulting to locked: %s",
+                              exc)
             return jsonify({
                 "locked": True, "known": False,
                 "labcore": ("refused" if isinstance(exc, LabCoreRefused)
@@ -732,6 +866,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # and benches pushing do not count - see _is_background.
             "idle_seconds": round(time.time() - _last_activity, 1),
             "last_activity": _last_activity_path,
+            # Where the refusals are written down. This server has no console
+            # to print it to, and a log nobody can find is the void with an
+            # extra step. "" means it could not be opened.
+            "log": app.config.get("LOG_PATH", ""),
             # LEM has no per-user sessions the way COA does; the floor is
             # anonymous. Reported for a uniform shape across both apps.
             "active_sessions": 0,
@@ -1706,12 +1844,53 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # This is the only writer that can add a new `kind`, so this is the
             # only place the log's filter list can go stale.
             _page_drop("logkinds")
+            return True
         except LabCoreError as exc:
             logger.warning("audit line for %r on %r was not recorded: %s",
                            action, machine_uid or "-", exc)
         except Exception as exc:               # a gateway that raises outright
             logger.warning("audit line for %r on %r failed: %s",
                            action, machine_uid or "-", exc)
+        # AND SAY SO ON THE WAY OUT (2026-08-25). A warning was the whole
+        # report, and on the target platform it went to a stderr that does not
+        # exist — so the operator's change succeeded, the route answered a
+        # clean `{"ok": true}`, and the record of WHO changed a correction
+        # factor was simply gone. Still not an exception: the change already
+        # happened and refusing it now would be a lie in the other direction.
+        # `_report_unrecorded_audit` turns this flag into a line in the answer.
+        try:
+            g._lem_audit_failed = True
+        except RuntimeError:                   # outside a request context
+            pass
+        return False
+
+    AUDIT_LOST = ("This change was made, but LabCore refused the audit line "
+                  "that records who made it — so it will not appear in the "
+                  "log. LabCore's write queue is busy; nothing needs redoing.")
+
+    @app.after_request
+    def _report_unrecorded_audit(response):
+        """Carry a failed audit write out to whoever made the change.
+
+        One hook rather than a return value threaded through twenty routes:
+        every one of them already answers JSON, and the fact is the same
+        wherever it happens. Only successful JSON answers are touched — an
+        error response already has the operator's attention, and a CSV or a
+        template must not have a key spliced into it.
+        """
+        if not getattr(g, "_lem_audit_failed", False):
+            return response
+        if response.status_code >= 400 or response.direct_passthrough:
+            return response
+        if response.mimetype != "application/json":
+            return response
+        body = response.get_json(silent=True)
+        if not isinstance(body, dict) or "warning" in body:
+            return response
+        body["audit"] = False
+        body["warning"] = AUDIT_LOST
+        response.set_data(json.dumps(body))
+        return response
 
     LOG_KINDS = ("run", "qc", "status_change", "override", "comment", "pm",
                  "calibration", "config")
@@ -1753,17 +1932,32 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 pass
         limit = max(1, min(int(args.get("limit") or 500), 5000))
         clause = ("WHERE " + " AND ".join(where)) if where else ""
-        res = gateway.read_sql(
-            "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
-            f"FROM lem_machine_log {clause} ORDER BY ts DESC LIMIT ?",
-            params + [limit])
-        if res.get("error"):
+        try:
+            res = gateway.read_sql(
+                "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
+                f"FROM lem_machine_log {clause} ORDER BY ts DESC LIMIT ?",
+                params + [limit])
+            # `labcore_rows`, not `res.get("error")` (2026-08-25). The verdict
+            # was still hand-rolled here, in the file that imports the shared
+            # rule and uses it three lines further down — so a refusal carrying
+            # no "error" key read as a successful read of zero rows: /api/logs
+            # answered 200 with no events and no banner, and /api/logs.csv
+            # served a header row with nothing under it.
+            #
+            # missing_ok: `lem_machine_log` is declared centrally at boot, so a
+            # read that gets there first is honestly looking at nothing. That
+            # is the ONE error a read may call empty; a busy queue is not.
+            return labcore_rows(res)
+        except LabCoreError:
             # Reported, not swallowed: an unreadable log served as an empty one is
             # a confident wrong answer about a lab that has plenty of history.
             if failed is not None:
                 failed["at"] = True
             return []
-        return res.get("rows") or []
+        except Exception:                       # a client that raises outright
+            if failed is not None:
+                failed["at"] = True
+            return []
 
     def _log_entries(args, failed=None, unnamed=None) -> list:
         # TWO FLAGS, NOT ONE (2026-08-25). `_titles()` reaches LabCore when the
@@ -1901,7 +2095,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 for e in entries]
         return _csv_response(
             rows, ["timestamp", "machine", "kind", "lab_id", "test", "value",
-                   "by", "detail"], "lem_log.csv")
+                   "by", "detail"], "lem_log.csv",
+            note=NAMES_UNREAD if unnamed["at"] else "")
 
     @app.route("/logs")
     def logs_page():
@@ -2258,11 +2453,28 @@ def create_app(gateway, admin_password: Optional[str] = None,
             out.append(s)
         return jsonify({"series": sorted(out, key=lambda s: s["test_name"])})
 
-    def _csv_response(rows, header, filename):
+    NAMES_UNREAD = ("# NOTE: the machine names could not be read from LabCore "
+                    "when this file was made, so the machine column shows "
+                    "internal ids. The rows themselves are complete.")
+
+    def _csv_response(rows, header, filename, note=""):
+        """The file, plus a line saying what is wrong with it if anything is.
+
+        A CSV cannot carry a banner, and this branch's only other reporting
+        channel is `logger.warning` — which is a file on the server that
+        whoever opens the download will never see. So the caveat travels IN the
+        download.
+
+        AT THE END, not the top: a comment line above the header breaks every
+        parser that reads the file by column name, and being readable is the
+        whole reason the file is served rather than withheld.
+        """
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow(header)
         writer.writerows(rows)
+        if note:
+            writer.writerow([note] + [""] * (len(header) - 1))
         return Response(buf.getvalue(), mimetype="text/csv",
                         headers={"Content-Disposition":
                                  f'attachment; filename="{filename}"'})
@@ -2533,8 +2745,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
             return _labcore_unreadable(exc, "the lab's QC history")
         # Names decorate; the QC rows are the record. A blip on the machine
         # list leaves the `machine` column blank exactly as it already did for
-        # a retired uid, and does not withhold the file.
-        titles, _named = _titles_soft()
+        # a retired uid, and does not withhold the file — but the file now SAYS
+        # so, because "reported it in the log" means reported it to a file on
+        # the server that whoever opens this download will never see.
+        titles, named = _titles_soft()
         out = []
         for r in events:
             try:
@@ -2552,7 +2766,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                    "kind", "sample_id", "test", "value",
                                    "expected", "low", "high", "in_spec",
                                    "raw_value", "correction"],
-                             "LEM QC history.csv")
+                             "LEM QC history.csv",
+                             note="" if named else NAMES_UNREAD)
 
     @app.route("/api/machines/<machine_uid>/events")
     def api_machine_events(machine_uid):
@@ -2798,15 +3013,35 @@ def create_app(gateway, admin_password: Optional[str] = None,
         cached = _test_name_cache.get("names")
         if cached:
             return jsonify({"tests": cached, "cached": True})
-        names = gateway.get_test_names()
+        try:
+            names = gateway.get_test_names()
+        except Exception:                       # a client that raises outright
+            names = None
         if names is None:
             # Couldn't ask LabCore. The DISTINCT scan is the safety net, and it
             # needs a generous timeout: it reads every result row in the lab.
-            res = gateway.read_sql(
-                "SELECT DISTINCT test_name FROM sample_tests "
-                "WHERE test_name IS NOT NULL AND TRIM(test_name) != '' "
-                "ORDER BY test_name", timeout=60)
-            names = [r.get("test_name") for r in (res.get("rows") or [])]
+            try:
+                res = gateway.read_sql(
+                    "SELECT DISTINCT test_name FROM sample_tests "
+                    "WHERE test_name IS NOT NULL AND TRIM(test_name) != '' "
+                    "ORDER BY test_name", timeout=60)
+                # `labcore_rows`, not `res.get("rows") or []` (2026-08-25).
+                # This picker holds the ONLY legal test names — LEM has none of
+                # its own (CLAUDE.md) — so an empty list is not a harmless
+                # degrade: it is a page that offers nothing and looks exactly
+                # like a lab whose methods were never set up. missing_ok=False
+                # because `sample_tests` is LabCore's own table, not a `lem_*`
+                # one this app creates at boot.
+                found = labcore_rows(res, missing_ok=False)
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "the list of test methods")
+            except Exception as exc:
+                return _labcore_unreadable(
+                    LabCoreUnavailable(str(exc)), "the list of test methods")
+            names = [r.get("test_name") for r in found]
+        # Only a real answer is cached. An empty one is not cached either — a
+        # lab that adds its first method should not wait out a cache built
+        # before it existed.
         if names:
             _test_name_cache["names"] = names
         return jsonify({"tests": names or []})

@@ -14,12 +14,40 @@ Mapping:
     measurement               ->  sample_test_results.result_value
                                   (falling back to sample_tests.result)
     timestamp                 ->  updated_at, split into parsed_date + parsed_time
+
+WHAT LABCORE SAID IS READ HERE TOO (2026-08-25)
+-----------------------------------------------
+This module was missed when the rest of the app was converted, and it holds the
+read that FEEDS THE FLOOR: `/api/status` and `/api/refresh` both go through
+`StatusProvider.build_snapshot` → `load_rows`. It judged its two reads by hand,
+wrongly in both directions at once:
+
+  * `_latest_result` required a positive `ok` — the rule `labcore_result`
+    documents as unsafe, because nothing records what a real LabCore read
+    answers, so an answer carrying rows and no verdict was thrown away;
+  * `_latest_results`, the one `load_rows` actually calls, degraded ANY error
+    to `{}`. A busy write queue (reads travel the same endpoint and wait behind
+    every write in the lab) therefore produced no rows, and `evaluate_box`
+    turns no rows into UNKNOWN — the whole floor reporting "no QC data" with
+    HTTP 200 and nothing anywhere saying LabCore had refused.
+
+Both go through `labcore_result` now and RAISE. The routes above already catch
+`LabCoreError` and answer 503 with "this is not an empty result; try again" —
+the honest version of the same moment.
+
+`missing_ok=False`: these are LabCore's OWN tables (`samples`,
+`sample_test_results`), not `lem_*` ones this app creates at boot. "No such
+table: sample_test_results" is not "nothing has been recorded yet", it is a
+LabCore that is not the one this app was written against, and calling that
+empty would report a lab with no QC rather than a lab that could not be asked.
 """
 
 from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+from labcore_result import LabCoreUnavailable
+from labcore_result import rows as read_rows
 from models import SampleSpec
 
 
@@ -51,13 +79,42 @@ class LabCoreDataSource:
     def __init__(self, gateway) -> None:
         self._gw = gateway
 
+    @staticmethod
+    def _rows(res, what: str) -> List[dict]:
+        """The rows of one read, or a raise saying which read went unanswered.
+
+        `missing_ok=False` — see the module docstring: these are LabCore's own
+        tables, so a missing one is a broken LabCore rather than a lab that has
+        not started yet.
+        """
+        try:
+            return read_rows(res, missing_ok=False)
+        except LabCoreUnavailable as exc:
+            raise LabCoreUnavailable("{0} could not be read: {1}".format(
+                what, exc)) from exc
+
+    def _read(self, sql: str, args: list):
+        """One read, with a raised client error named the same as a refused one.
+
+        A socket error and a full queue are one fact to every caller above:
+        the observations are not known. Two families would mean two `except`
+        clauses in `build_snapshot`, and the one that gets forgotten is the one
+        that reaches a browser as "Internal Server Error".
+        """
+        try:
+            return self._gw.read_sql(sql, args)
+        except Exception as exc:                     # transport, not logic
+            raise LabCoreUnavailable(
+                "LabCore could not be read ({0}: {1})".format(
+                    type(exc).__name__, exc)) from exc
+
     def _latest_result(self, lab_id: str, test_name: str) -> Optional[Tuple[str, Optional[str]]]:
         """Return (value, updated_at) for the most recent observation, or None.
 
         Prefers sample_test_results (streamed by LabStation); falls back to
         sample_tests. Within the union, the newest updated_at wins.
         """
-        res = self._gw.read_sql(
+        res = self._read(
             """
             SELECT result_value AS value, updated_at, 2 AS pref
               FROM sample_test_results
@@ -71,11 +128,12 @@ class LabCoreDataSource:
              ORDER BY updated_at DESC, pref DESC
              LIMIT 1
             """,
-            [lab_id, test_name, lab_id, test_name],
-        )
-        if not res.get("ok") or not res.get("rows"):
+            [lab_id, test_name, lab_id, test_name])
+        found = self._rows(res, "the latest {0} for {1}".format(
+            test_name, lab_id))
+        if not found:
             return None
-        row = res["rows"][0]
+        row = found[0]
         return str(row["value"]), row.get("updated_at")
 
     def _latest_results(self, pairs: List[Tuple[str, str]]) -> Dict[Tuple[str, str],
@@ -96,7 +154,7 @@ class LabCoreDataSource:
         flat: List[str] = []
         for lab_id, test_name in pairs:
             flat.extend((lab_id, test_name))
-        res = self._gw.read_sql(
+        res = self._read(
             f"""
             SELECT lab_id, test_name, value, updated_at FROM (
               SELECT lab_id, test_name, value, updated_at,
@@ -116,12 +174,9 @@ class LabCoreDataSource:
                 )
             ) WHERE rn = 1
             """,
-            flat + flat,
-        )
-        if res.get("error"):
-            return {}
+            flat + flat)
         out: Dict[Tuple[str, str], Tuple[str, Optional[str]]] = {}
-        for row in res.get("rows") or []:
+        for row in self._rows(res, "the lab's latest QC observations"):
             key = (str(row.get("lab_id")), str(row.get("test_name")))
             out[key] = (str(row.get("value")), row.get("updated_at"))
         return out

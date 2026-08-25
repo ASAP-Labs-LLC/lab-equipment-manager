@@ -7,6 +7,8 @@ The TTL is per machine because the module offers a 5-minute poll interval. A
 fixed 90s window would make such a bench read live for 90s and from-record for
 the remaining 3½ minutes, every cycle, and the floor would visibly flap.
 """
+import time
+
 import pytest
 
 from live_presence import (
@@ -292,3 +294,197 @@ class TestPublishingLooksAtTheAnswer:
         gw = self.Refusing(self.REFUSAL)
         publish_live_config(gw, "http://10.0.0.5:5557", "tok")
         assert len(gw.seen) == 3
+
+
+class TestTheAddressIsRetriedNotPublishedOnceAndForgotten:
+    """The one thing on this branch that did not heal itself (2026-08-25).
+
+    Every other refused write here is either retried by the thing that issues
+    it or repeated by the operator who asked for it. The live push address is
+    written ONCE, at boot, by `start_live_channel` — so if that write is
+    refused, every bench's fast path stays dark until somebody restarts LEM.
+    Nobody will, because nothing looks broken: the floor still updates off the
+    12s snapshot, just slowly, and the live road is best-effort by design.
+
+    LabCore's queue is full for minutes, not days. The fix is to keep asking,
+    on the same discipline `SnapshotService.ensure_schema` uses for its DDL —
+    at least LIVE_RETRY_MIN between attempts, doubling to LIVE_RETRY_MAX, and
+    never sooner than the `retry_after` LabCore itself asked for.
+    """
+
+    class Queue:
+        """Refuses until told otherwise, and counts the attempts."""
+
+        def __init__(self, answer=None):
+            from labcore_gateway import FakeLabCoreGateway
+            self.real = FakeLabCoreGateway()
+            self.answer = answer
+            self.attempts = 0
+
+        def sql(self, sql, args=None, **kw):
+            self.attempts += 1
+            if self.answer is not None:
+                return dict(self.answer)
+            return self.real.sql(sql, args, **kw)
+
+    def _published(self, gw):
+        rows = gw.real.read_sql("SELECT key, value FROM lem_meta").get("rows")
+        return {r["key"]: r["value"] for r in (rows or [])}
+
+    def test_a_refused_boot_publish_is_retried_and_lands(self):
+        from live_presence import LiveConfigPublisher
+
+        clock = Clock()
+        gw = self.Queue({"error": "LabCore is busy", "busy": True})
+        pub = LiveConfigPublisher(gw, "http://10.0.0.5:5557", "tok",
+                                  clock=clock)
+        assert pub.publish_if_due() is False          # the boot attempt
+        gw.answer = None                              # the queue drains
+        clock.advance(3600)
+        assert pub.publish_if_due() is True
+        assert self._published(gw)["live_url"] == "http://10.0.0.5:5557"
+
+    def test_it_does_not_hammer_a_queue_that_is_already_full(self):
+        """The mirror-image bug the schema latch taught: a retry with no
+        throttle is dozens of writes a minute into a queue that is refusing
+        BECAUSE it is full."""
+        from live_presence import LiveConfigPublisher, LIVE_RETRY_MIN
+
+        clock = Clock()
+        gw = self.Queue({"error": "LabCore is busy", "busy": True})
+        pub = LiveConfigPublisher(gw, "http://x:1", "tok", clock=clock)
+        pub.publish_if_due()
+        for _ in range(50):                 # a poller cycle every 12 seconds
+            clock.advance(12)
+            pub.publish_if_due()
+        # Ten minutes of polling. Unthrottled that is 51 publishes — 153
+        # statements into a queue that is refusing because it is full.
+        assert pub.attempts > 1, "it gave up entirely"
+        assert pub.attempts <= 8, (
+            "no throttle: {0} publishes in ten minutes".format(pub.attempts))
+        assert LIVE_RETRY_MIN >= 30.0
+
+    def test_it_waits_at_least_as_long_as_labcore_asked(self):
+        from live_presence import LiveConfigPublisher
+
+        clock = Clock()
+        gw = self.Queue({"error": "LabCore is busy", "busy": True,
+                         "retry_after": 600})
+        pub = LiveConfigPublisher(gw, "http://x:1", "tok", clock=clock)
+        pub.publish_if_due()
+        after_boot = gw.attempts
+        clock.advance(120)                  # past the floor, inside the hint
+        pub.publish_if_due()
+        assert gw.attempts == after_boot
+        clock.advance(600)
+        pub.publish_if_due()
+        assert gw.attempts > after_boot
+
+    def test_once_it_lands_it_costs_nothing_forever_after(self):
+        """The steady state on every healthy lab: no clock, no write."""
+        from live_presence import LiveConfigPublisher
+
+        clock = Clock()
+        gw = self.Queue()
+        pub = LiveConfigPublisher(gw, "http://x:1", "tok", clock=clock)
+        assert pub.publish_if_due() is True
+        landed = gw.attempts
+        for _ in range(20):
+            clock.advance(3600)
+            assert pub.publish_if_due() is True
+        assert gw.attempts == landed
+
+    def test_a_gateway_that_raises_is_a_refusal_not_a_crash(self):
+        """This runs on the snapshot poller. A raise there stops the floor
+        refreshing, which is a far worse outage than a dark fast path."""
+        from live_presence import LiveConfigPublisher
+
+        class Dead:
+            def sql(self, *a, **k):
+                raise RuntimeError("connection reset")
+
+        pub = LiveConfigPublisher(Dead(), "http://x:1", "tok", clock=Clock())
+        assert pub.publish_if_due() is False
+
+    def test_start_live_channel_leaves_the_publisher_where_the_poller_finds_it(self):
+        from live_presence import LiveConfigPublisher, start_live_channel
+
+        class App:
+            config = {"LIVE_TOKEN": "tok"}
+
+        gw = self.Queue({"error": "LabCore is busy", "busy": True})
+        app = App()
+        url = start_live_channel(app, gw, "10.0.0.5", 5557)
+        pub = app.config.get("LIVE_PUBLISHER")
+        assert isinstance(pub, LiveConfigPublisher)
+        assert pub.url == url and pub.published is False
+
+    def test_the_server_hands_the_publisher_to_the_poller(self):
+        """The one line that connects the two halves.
+
+        Checked as text because `web_server.pyw` is not importable in this
+        suite off Windows — see tests/test_deployment.py::TestNoPublish, which
+        fails on macOS for the same reason and predates this branch. A weak
+        test of a real connection beats no test of it.
+        """
+        import os
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(here, "web_server.pyw"), encoding="utf-8").read()
+        assert "snapshots.on_cycle = publisher.publish_if_due" in src
+        # ...and only when the address was actually published: --no-publish
+        # exists so a health check on a scratch port never advertises itself.
+        assert src.index("if live_where:") < src.index("snapshots.on_cycle")
+
+    def test_the_snapshot_poller_runs_it_every_cycle(self):
+        """Wired to the thing that is already awake and already talking to
+        LabCore, rather than to a thread of its own."""
+        import snapshot_service
+
+        called = []
+        svc = snapshot_service.SnapshotService(
+            gateway=_QuietGateway(), interval=0.01,
+            builder=lambda tables: {"machines": []})
+        svc.on_cycle = lambda: called.append(1)
+        svc.start()
+        try:
+            for _ in range(200):
+                if called:
+                    break
+                time.sleep(0.01)
+        finally:
+            svc.stop()
+        assert called, "the poller never ran the hook"
+
+    def test_a_hook_that_raises_does_not_stop_the_floor_refreshing(self):
+        import snapshot_service
+
+        svc = snapshot_service.SnapshotService(
+            gateway=_QuietGateway(), interval=0.01,
+            builder=lambda tables: {"machines": []})
+        svc.on_cycle = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+        svc.start()
+        try:
+            for _ in range(200):
+                if svc.refreshes > 2:
+                    break
+                time.sleep(0.01)
+        finally:
+            svc.stop()
+        assert svc.refreshes > 2
+
+
+class _QuietGateway:
+    """Answers everything, writes nothing anyone reads."""
+
+    def __init__(self):
+        from labcore_gateway import FakeLabCoreGateway
+        self.real = FakeLabCoreGateway()
+
+    def is_running(self):
+        return True
+
+    def sql(self, sql, args=None, **kw):
+        return self.real.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.real.read_sql(sql, args, **kw)

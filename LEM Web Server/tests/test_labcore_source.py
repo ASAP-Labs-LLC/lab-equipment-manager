@@ -5,7 +5,11 @@ dicts in the exact shape data_source.evaluate_box already expects, so the V4
 evaluation engine is reused unchanged.
 """
 
+import pytest
+
+import refusal_shapes
 from data_source import evaluate_box
+from labcore_result import LabCoreUnavailable
 from labcore_gateway import FakeLabCoreGateway
 from labcore_source import LabCoreDataSource
 from models import (
@@ -216,13 +220,78 @@ def test_no_samples_means_no_read_at_all():
     assert gw.reads == []
 
 
-def test_a_failed_read_yields_no_rows_rather_than_raising():
-    class Dead(FakeLabCoreGateway):
-        def read_sql(self, sql, args=None, **kw):
-            return {"error": "LabCore is busy", "busy": True}
+class Refusing(FakeLabCoreGateway):
+    """LabCore answers, and the answer says the read did not happen."""
 
-    src = LabCoreDataSource(Dead())
-    assert src.load_rows([_sample()], "Lab ID") == []
+    def __init__(self, shape=None):
+        super().__init__()
+        self.shape = shape
+
+    def read_sql(self, sql, args=None, **kw):
+        return dict(self.shape if self.shape is not None
+                    else refusal_shapes.current())
+
+
+@pytest.mark.usefixtures("both_refusal_shapes")
+def test_a_read_that_was_refused_is_not_a_lab_with_no_qc():
+    """THIS TEST USED TO ASSERT THE DEGRADE.
+
+    It was `test_a_failed_read_yields_no_rows_rather_than_raising`, and it
+    pinned `load_rows(...) == []` for a busy queue — the one judgement
+    `labcore_result` exists to abolish, sitting in the read that feeds
+    `/api/status` and `/api/refresh`. No rows is not a neutral answer here:
+    `evaluate_box` turns it into UNKNOWN for every instrument in the lab, so a
+    routine LabCore blip painted the whole floor "no QC data" and the page
+    said 200 OK.
+
+    Both refusal shapes, because the old code judged by `res.get("error")` and
+    would still be fooled by the other one.
+    """
+    src = LabCoreDataSource(Refusing())
+    with pytest.raises(LabCoreUnavailable):
+        src.load_rows([_sample()], "Lab ID")
+
+
+def test_a_transport_failure_is_the_same_fact():
+    """A client that raises read nothing either, and `build_snapshot` must not
+    have to catch two different families to say so."""
+    class Blown(FakeLabCoreGateway):
+        def read_sql(self, sql, args=None, **kw):
+            raise OSError("connection reset by peer")
+
+    with pytest.raises(LabCoreUnavailable):
+        LabCoreDataSource(Blown()).load_rows([_sample()], "Lab ID")
+
+
+@pytest.mark.usefixtures("both_refusal_shapes")
+def test_the_single_pair_read_no_longer_demands_a_positive_ok():
+    """`_latest_result` judged its answer with `if not res.get("ok")`, which is
+    the rule that fails EVERY read against a real service that simply returns
+    its rows. Same rule as everywhere else now: refuse on a positive failure
+    signal, accept anything else."""
+    gw = FakeLabCoreGateway()
+    _seed(gw, "STD-1", "Test1", 10.0)
+    real = gw.read_sql
+
+    class NoVerdict(FakeLabCoreGateway):
+        def read_sql(self, sql, args=None, **kw):
+            answer = dict(real(sql, args, **kw))
+            answer.pop("ok", None)          # an answer with rows and no verdict
+            return answer
+
+    # Rows, no verdict — the shape a real service is free to answer with, and
+    # the one the old `if not res.get("ok")` threw on the floor.
+    assert LabCoreDataSource(NoVerdict())._latest_result(
+        "STD-1", "Test1")[0] == "10.0"
+    assert LabCoreDataSource(gw)._latest_result("STD-1", "Test1")[0] == "10.0"
+    with pytest.raises(LabCoreUnavailable):
+        LabCoreDataSource(Refusing())._latest_result("STD-1", "Test1")
+
+
+def test_a_lab_with_no_results_yet_is_still_empty_not_an_error():
+    """The degrade that WAS honest stays: LabCore answered, it had nothing."""
+    gw = FakeLabCoreGateway()
+    assert LabCoreDataSource(gw).load_rows([_sample()], "Lab ID") == []
 
 
 def test_the_timestamp_still_splits_into_date_and_time():

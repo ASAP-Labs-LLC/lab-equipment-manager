@@ -438,6 +438,16 @@ Three rules that follow, each with a bug behind it:
   config, appends a box and saves it back, and `save()` prunes each table to
   match what it is handed — so a config degraded to `{}` is an instruction to
   delete the lab's QC library.
+- **A rewrite upserts first and prunes last.** "DELETE the set, then INSERT the
+  new one" is not a transaction here — the queue takes one statement at a time —
+  so a refusal in between leaves nothing. Confirming the statements only makes
+  the loss loud; the ORDER is what makes it survivable. Three places do this and
+  all three are written the same way: `db_config_store._rewrite_rows`,
+  `QcTargetStore.assign` (an instrument left assigned to no QC reads as the
+  perfectly legitimate "No QC assigned", so nobody investigates) and
+  `LabScheduleStore.save`'s holidays (an emptied list reports the lab open on
+  Christmas Day). A refusal now leaves a superset — visible, and fixed by saving
+  again.
 - **Declaring a schema is throttled.** `SnapshotService.ensure_schema()` is
   called from `read_tables` (every 12s) and from every audit and PM write. A
   refused round buys `SCHEMA_RETRY_MIN`..`SCHEMA_RETRY_MAX` of cooldown, never
@@ -446,6 +456,21 @@ Three rules that follow, each with a bug behind it:
   `schema: ok | degraded | unknown` — **unknown** before the first refresh,
   because a candidate on a scratch port has not looked yet and "degraded" there
   fails a good release.
+
+## Where the warnings go (2026-08-25)
+
+Every refusal this app detects is reported with `logger.warning`, and on ASAPSV1
+the server is a `.pyw` under pythonw.exe: no console, and until now no handler,
+so `logging` wrote to a `sys.stderr` that does not exist. `create_app` opens a
+rotating file — **`tray.data_dir()/lem.log`**, i.e. `C:\ASAPApps\lem\data\lem.log`
+— at INFO, once per process (`web_app.configure_logging`).
+
+**Not in the code directory.** A deploy re-points `current` at a whole new
+release folder and the archive excludes `data/`, so a log written inside the
+release vanishes on the deploy you most want to read about. `/healthz` reports
+the path as `log`, because a console-less service cannot print it and a file
+nobody can find is the void with an extra step. RELEASING.md §7 sends people
+there.
 
 ## Releasing
 

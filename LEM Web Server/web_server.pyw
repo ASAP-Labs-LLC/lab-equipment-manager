@@ -151,6 +151,18 @@ def main(argv) -> int:
                               port=args.port, no_publish=args.no_publish)
     if live_where:
         print(f"Live channel published to LabCore as {live_where}")
+        # AND KEPT TRYING. The boot write can be refused like any other — the
+        # queue is full at 09:00 on a Monday — and until 2026-08-25 that was
+        # the end of it: every bench's fast path stayed dark until somebody
+        # restarted LEM, and nobody would, because the floor still updates off
+        # the 12s snapshot and merely feels slow. The publisher rides the
+        # snapshot poller, on the same throttle the schema retry uses. Only
+        # when we actually published: --no-publish must stay silent, or a
+        # health check on a scratch port would keep trying to point the whole
+        # floor at a port that closes seconds later.
+        publisher = app.config.get("LIVE_PUBLISHER")
+        if publisher is not None:
+            snapshots.on_cycle = publisher.publish_if_due
     else:
         print("Live channel NOT published (--no-publish): benches keep the "
               "address they already have.")

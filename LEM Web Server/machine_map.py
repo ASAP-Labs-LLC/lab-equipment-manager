@@ -43,6 +43,19 @@ So: every write goes through `confirm_write`, every read through `rows`, and
 each read path states in a comment whether a missing table may honestly mean
 empty. The rule is in labcore_result.py, tested once, rather than re-derived
 here and re-derived wrong.
+
+AND CONFIRMING IS NOT ENOUGH ON ITS OWN (2026-08-25)
+-----------------------------------------------------
+`QcTargetStore.assign` was "DELETE the whole set, then INSERT the new one" with
+every statement confirmed — and a refusal in between still left an instrument
+assigned to NOTHING, because the queue takes one statement at a time and there
+is no transaction across them. That loss is the quiet kind: no QC assigned is a
+legitimate state, drawn in grey, and nobody investigates grey.
+
+`assign` now upserts what is wanted and prunes what is not, last and in one
+statement, exactly as `db_config_store._rewrite_rows` does. A refusal leaves a
+superset — an extra target that is checked, shows on the floor, and is cleared
+by saving again — never an empty set.
 """
 
 from __future__ import annotations
@@ -287,27 +300,36 @@ class QcTargetStore:
             self._ready = True
 
     def assign(self, machine_uid: str, targets: List[WatchedTarget]) -> None:
-        """Replace this machine's whole assignment set.
+        """Make this machine's assignment set exactly `targets`.
 
-        This is the most dangerous write in the file. QC here is
-        assignment-only — no row means the instrument is not checked at all,
-        and the floor says "No QC assigned" in grey rather than shouting — so a
-        refusal that nobody reads leaves the lab believing an instrument is
-        being watched when nothing is watching it.
+        THE MOST DANGEROUS WRITE IN THE FILE, AND THE ORDER IS THE FIX
+        (2026-08-25). It used to be "DELETE this machine's whole set, then
+        INSERT the new one", with no transaction across the statements because
+        the queue takes one at a time. Every statement was confirmed — but
+        confirmation only makes the loss LOUD, and the loss here is the quiet
+        kind: QC is assignment-only (CLAUDE.md, 2026-08-03), so an instrument
+        with no rows is not visibly broken. The floor says "No QC assigned" in
+        grey, which is a legitimate state nobody investigates, and the bench
+        keeps running with nothing checking it. A test asserted that empty set
+        as correct; see `test_a_refused_insert_leaves_the_old_assignment_
+        standing`.
 
-        It is not a transaction and cannot be one: the queue takes a statement
-        at a time. So the DELETE is confirmed BEFORE any INSERT is attempted
-        (a refused DELETE leaves the old set intact, which is the safe
-        failure), and every INSERT is confirmed in turn. A refusal partway
-        through raises naming the machine and saying the set is now partial —
-        an honest "some of this did not save, re-apply it" beats both a silent
-        drop and a pretence that nothing changed.
+        So, exactly as `db_config_store._rewrite_rows` does:
+
+          1. upsert every wanted target, each confirmed. A refusal here leaves
+             the old assignments plus whatever landed — a superset, visible on
+             the floor, and corrected by repeating the save.
+          2. only then prune what is no longer wanted, in ONE statement. A
+             refusal here leaves a stale extra target, which is checked, shows
+             up, and is likewise fixed by saving again.
+
+        Neither failure can leave an instrument checked against nothing. The
+        prune is still a real prune — `test_an_accepted_assign_still_removes_
+        what_was_dropped` holds that half, so this cannot decay into "never
+        remove anything".
         """
         self.ensure_schema()
-        _write(self.gateway,
-               "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
-               [machine_uid],
-               what="clearing the QC assignment of {0}".format(machine_uid))
+        keep = []
         seen = set()
         for target in targets:
             if not target.sample.strip() or not target.test.strip():
@@ -316,13 +338,38 @@ class QcTargetStore:
             if key in seen:
                 continue
             seen.add(key)
+            keep.append(key)
+            # ON CONFLICT DO NOTHING, not a plain INSERT: with the DELETE moved
+            # to the end, re-saving a set that already holds this pair is the
+            # NORMAL case, and a primary-key collision answered as an error
+            # would fail an assignment that is already correct.
             _write(self.gateway,
                    "INSERT INTO lem_machine_targets (machine_uid, sample_name, "
-                   "test_name) VALUES (?, ?, ?)",
+                   "test_name) VALUES (?, ?, ?) ON CONFLICT(machine_uid, "
+                   "sample_name, test_name) DO NOTHING",
                    [machine_uid, key[0], key[1]],
-                   what="assigning {0} / {1} to {2} (its assignment set is now "
-                        "incomplete and must be re-applied)".format(
-                            key[0], key[1], machine_uid))
+                   what="assigning {0} / {1} to {2} (its previous assignment "
+                        "is still in force and the set must be re-applied)"
+                        .format(key[0], key[1], machine_uid))
+        if not keep:
+            # Clearing is a deliberate act — the accident above was clearing on
+            # the way to refilling.
+            _write(self.gateway,
+                   "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
+                   [machine_uid],
+                   what="clearing the QC assignment of {0}".format(machine_uid))
+            return
+        holes = " AND ".join(
+            "NOT (sample_name = ? AND test_name = ?)" for _ in keep)
+        args = [machine_uid]
+        for sample, test in keep:
+            args.extend((sample, test))
+        _write(self.gateway,
+               "DELETE FROM lem_machine_targets WHERE machine_uid = ? AND "
+               + holes, args,
+               what="removing the QC targets {0} is no longer checked against "
+                    "(the new ones are assigned; a stale extra target may "
+                    "remain until this is saved again)".format(machine_uid))
 
     def targets(self, machine_uid: str) -> List[WatchedTarget]:
         # No `ensure_schema()` — see MapSettingsStore.locked().

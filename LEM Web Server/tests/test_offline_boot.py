@@ -92,7 +92,24 @@ class TestBootsWithoutLabCore:
     def test_qc_reads_return_empty_not_errors(self, client):
         assert client.get("/api/qc-samples").get_json()["samples"] == []
         assert client.get("/api/qc-specs").get_json()["specs"] == []
-        assert client.get("/api/test-names").get_json()["tests"] == []
+
+    def test_the_method_list_says_it_could_not_be_read(self, client):
+        """USED TO ASSERT `{"tests": []}` HERE, and that was the degrade.
+
+        Same correction as `test_status_snapshot_says_it_could_not_read_rather_
+        than_inventing_one` above, for the same reason. These are LabCore's
+        test METHODS, and LEM has no test names of its own (CLAUDE.md) — so an
+        empty list is not a neutral fallback, it is the app saying "this lab
+        has no methods", on the picker that decides what a QC standard may be
+        checked against.
+
+        The page is better off, not worse: `loadTests` keeps the list it
+        already had rather than blanking it, which an empty 200 forced it to
+        do.
+        """
+        res = client.get("/api/test-names")
+        assert res.status_code in (502, 503)
+        assert res.get_json()["retry"] is True
 
     def test_map_lock_defaults_to_locked_when_unknown(self, client):
         """Can't read the setting → don't invite edits that will fail.

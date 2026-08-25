@@ -10,6 +10,22 @@ import refusal_shapes
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _app_log_goes_somewhere_disposable(tmp_path_factory):
+    """Keep the app's real log file out of the checkout.
+
+    `create_app` now opens a rotating log in `tray.data_dir()` (see
+    web_app.configure_logging) — which, under pytest, resolves off
+    `sys.argv[0]` and lands inside site-packages. The behaviour is right and
+    the suite should not be the thing that exercises it into someone's venv,
+    so every test run gets its own throwaway data dir. Tests that care about
+    the path set LEM_DATA_DIR themselves with monkeypatch, which wins over
+    this.
+    """
+    os.environ.setdefault("LEM_DATA_DIR", str(tmp_path_factory.mktemp("lemdata")))
+    yield
+
+
 @pytest.fixture(params=refusal_shapes.BOTH, ids=refusal_shapes.IDS)
 def both_refusal_shapes(request):
     """Run a whole suite once per refusal shape.

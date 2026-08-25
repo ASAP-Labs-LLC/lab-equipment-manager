@@ -470,6 +470,10 @@ class TestRefusedLayoutWrites:
         assert MachineLayoutStore(gw).positions() == {}
 
 
+_INSERTS = lambda sql: sql.lstrip().upper().startswith("INSERT")
+_DELETES = lambda sql: sql.lstrip().upper().startswith("DELETE")
+
+
 class TestRefusedTargetWrites:
     def test_a_refused_assign_raises_and_leaves_the_old_set(self, gw):
         """An instrument the lab believes is being checked, and is not."""
@@ -480,16 +484,86 @@ class TestRefusedTargetWrites:
         assert QcTargetStore(gw).targets("m1") == [
             WatchedTarget("Cloud CRM", "Cloud Point")]
 
-    def test_a_refused_insert_after_a_good_delete_still_raises(self, gw):
-        """The queue can fill mid-assignment. There is no transaction, so the
-        honest answer is a raise that says the set is now incomplete — never a
-        return that lets the route reply "ok"."""
-        blocked = QcTargetStore(QueueFullGateway(
-            gw, refuse_when=lambda sql: sql.lstrip().upper().startswith("INSERT")))
+    def test_a_refused_insert_leaves_the_old_assignment_standing(self, gw):
+        """THIS TEST USED TO ASSERT THE LOSS.
+
+        It was `test_a_refused_insert_after_a_good_delete_still_raises`, and it
+        ended `assert QcTargetStore(gw).targets("m1") == []` — pinning as
+        correct an instrument left assigned to NOTHING because the queue filled
+        between the wipe and the re-insert. The raise was real and is still
+        here; what was wrong is the state it left behind. QC is
+        assignment-only, so no row means the bench is not checked at all, and
+        "No QC assigned" is a legitimate grey state nobody investigates.
+
+        `assign` upserts what is wanted and prunes last, so a refused INSERT
+        cannot delete anything: the old assignment is still standing, the
+        operator is told, and repeating the save fixes it.
+        """
+        QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blocked = QcTargetStore(QueueFullGateway(gw, refuse_when=_INSERTS))
         with pytest.raises(MapWriteRefused) as caught:
-            blocked.assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+            blocked.assign("m1", [WatchedTarget("Pour CRM", "Pour Point")])
         assert "re-applied" in str(caught.value)
-        assert QcTargetStore(gw).targets("m1") == []
+        assert QcTargetStore(gw).targets("m1") == [
+            WatchedTarget("Cloud CRM", "Cloud Point")]
+
+    def test_a_refused_prune_leaves_a_superset_never_an_empty_set(self, gw):
+        """The other half: the new targets landed, the removal of the old ones
+        did not. A stale extra target SHOWS on the floor — it is checked, it is
+        wrong, somebody sees it — where a missing one is invisible."""
+        QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blocked = QcTargetStore(QueueFullGateway(gw, refuse_when=_DELETES))
+        with pytest.raises(MapWriteRefused):
+            blocked.assign("m1", [WatchedTarget("Pour CRM", "Pour Point")])
+        assert QcTargetStore(gw).targets("m1") == [
+            WatchedTarget("Cloud CRM", "Cloud Point"),
+            WatchedTarget("Pour CRM", "Pour Point")]
+
+    def test_nothing_is_deleted_before_the_new_set_has_landed(self, gw):
+        """The ordering IS the fix. Confirming a wipe-then-refill would only
+        make the loss loud; issuing the prune last makes it impossible."""
+        seen = []
+
+        class Watching:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def sql(self, sql, args=None, **kw):
+                seen.append(sql.lstrip().split()[0].upper())
+                return self.inner.sql(sql, args, **kw)
+
+            def read_sql(self, sql, args=None, **kw):
+                return self.inner.read_sql(sql, args, **kw)
+
+        QcTargetStore(Watching(gw)).assign(
+            "m1", [WatchedTarget("Cloud CRM", "Cloud Point"),
+                   WatchedTarget("Pour CRM", "Pour Point")])
+        assert "DELETE" in seen and "INSERT" in seen
+        assert seen.index("DELETE") > max(
+            i for i, verb in enumerate(seen) if verb == "INSERT")
+
+    def test_an_accepted_assign_still_removes_what_was_dropped(self, gw):
+        """A prune that never prunes would be the mirror-image bug: an
+        instrument accumulating every standard it was ever checked against."""
+        store = QcTargetStore(gw)
+        store.assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point"),
+                            WatchedTarget("Pour CRM", "Pour Point")])
+        store.assign("m1", [WatchedTarget("Pour CRM", "Pour Point")])
+        assert store.targets("m1") == [WatchedTarget("Pour CRM", "Pour Point")]
+        store.assign("m2", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        store.assign("m1", [])
+        assert store.targets("m1") == []
+        assert store.targets("m2") == [WatchedTarget("Cloud CRM", "Cloud Point")]
+
+    def test_a_refused_clear_raises_and_the_assignment_survives(self, gw):
+        """Clearing is the one case that is still a bare DELETE — it must not
+        be able to report success it did not get."""
+        QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blocked = QcTargetStore(QueueFullGateway(gw, refuse_when=_DELETES))
+        with pytest.raises(MapWriteRefused):
+            blocked.assign("m1", [])
+        assert QcTargetStore(gw).targets("m1") == [
+            WatchedTarget("Cloud CRM", "Cloud Point")]
 
     def test_a_refused_forget_raises_and_the_assignment_survives(self, gw):
         QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])

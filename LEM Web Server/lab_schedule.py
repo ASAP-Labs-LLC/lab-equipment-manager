@@ -279,24 +279,32 @@ class LabScheduleStore:
         # Holidays are a set, not a patch: saving a schedule that names them
         # replaces the list, so removing one in the UI actually removes it.
         #
-        # The wipe-then-reinsert is not atomic — LabCore's queue takes one
-        # statement at a time and there is no transaction across them. That is
-        # unchanged, but it is now VISIBLE: if the wipe lands and an insert is
-        # refused, this raises with holidays missing, and the operator is told
-        # to save again. Before, the same sequence emptied the holiday list and
-        # returned "ok", so the first anyone knew was a lab reported open on
-        # Christmas Day.
+        # UPSERT FIRST, PRUNE LAST (2026-08-25) — the same shape, and the same
+        # fix, as `QcTargetStore.assign` and `db_config_store._rewrite_rows`.
+        # This used to be `DELETE FROM lem_lab_holidays` followed by one INSERT
+        # per holiday, and there is no transaction across them: LabCore's queue
+        # takes a statement at a time. Every statement was CONFIRMED, so a
+        # refusal in between raised — but it raised over a holiday list that
+        # had already been emptied, and the lab is then reported open on
+        # Christmas Day by a schedule that looks perfectly normal.
         #
-        # THE WIPE IS UNCONDITIONAL (2026-08-25). It used to be guarded with
-        # `if schedule.holidays:`, so removing the LAST holiday issued no
-        # DELETE at all: the operator deleted Christmas, the POST answered ok,
-        # and the row was still there — the lab reported closed on a day it was
-        # open, which is the same class of silent wrong answer as a refused
-        # write reported as saved. An empty holiday list is a deliberate
-        # instruction, not an absence of one.
-        self._write("DELETE FROM lem_lab_holidays")
+        # Now a refusal during the upserts leaves the old holidays plus
+        # whatever landed, and a refused prune leaves one holiday too many.
+        # Both are visible (the lab reads closed on a day it is open, and
+        # somebody says so) and both are fixed by saving again. The old order
+        # could lose a day nobody notices until it is worked.
         for day, name in schedule.holidays.items():
             self.add_holiday(day, name)
+        keep = [parse_day(day) for day in schedule.holidays]
+        if not keep:
+            # Removing the last holiday is a deliberate instruction, not an
+            # absence of one — see the note this replaces.
+            self._write("DELETE FROM lem_lab_holidays")
+            return schedule
+        holes = ",".join("?" * len(keep))
+        self._write(
+            "DELETE FROM lem_lab_holidays WHERE day NOT IN ({0})".format(holes),
+            keep)
         return schedule
 
     def add_holiday(self, day: str, name: str = "") -> None:

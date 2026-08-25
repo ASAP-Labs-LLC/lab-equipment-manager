@@ -482,3 +482,47 @@ class TestTheWritesTheROUTEIssuesItself:
         body = res.get_json()
         assert body.get("incomplete") is True
         assert body.get("created") == 0
+
+
+class TestAPollingRouteCannotFloodTheLog:
+    """The reporting channel must survive the outage it exists to report.
+
+    `/api/map` is polled by floor.html every 2 seconds from every open browser,
+    and its failure branch logged one line per poll. Measured at ~167 bytes a
+    line, four wall displays produce over a megabyte an hour — against a 2 MB
+    rotating handler with 5 backups, that rotates every refused write, every
+    degraded schema and every unpublished live address out of existence inside a
+    day. The louder the lab's problem, the faster the evidence of it is deleted.
+
+    So a repeated identical warning is said once, then counted.
+    """
+
+    class BusyMap(FakeLabCoreGateway):
+        """Only the map-lock read is refused, the way LabCore refuses."""
+
+        def read_sql(self, sql, args=None, **kw):
+            if "lem_map_settings" in sql:
+                return {"error": "LabCore is busy, try again",
+                        "busy": True, "retry_after": 4}
+            return super().read_sql(sql, args, **kw)
+
+    def test_a_hundred_failed_polls_do_not_write_a_hundred_lines(self, caplog):
+        client, _app = _client(self.BusyMap())
+        caplog.set_level("WARNING")
+        for _ in range(100):
+            r = client.get("/api/map")
+            assert r.status_code == 200            # still answers
+            assert r.get_json()["known"] is False  # still honest
+        said = [rec for rec in caplog.records
+                if "map lock unreadable" in rec.getMessage()]
+        assert len(said) < 10, (
+            "the poll wrote %d lines; a real outage's evidence would be "
+            "rotated away by the noise about it" % len(said))
+
+    def test_it_still_says_it_at_least_once(self, caplog):
+        """Throttling must not become silence — the first one always lands."""
+        client, _app = _client(self.BusyMap())
+        caplog.set_level("WARNING")
+        client.get("/api/map")
+        assert any("map lock unreadable" in rec.getMessage()
+                   for rec in caplog.records)
