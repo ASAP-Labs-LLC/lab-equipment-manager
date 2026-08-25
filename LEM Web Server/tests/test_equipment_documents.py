@@ -1248,11 +1248,24 @@ class TestAWriteIsNotDoneUntilItIsAcknowledged:
     positively: a write happened only if the answer says so.
     """
 
-    @pytest.fixture(params=[None, {}, {"ok": False, "status": "rejected",
-                                       "pending": 100}],
-                    ids=["no-answer", "empty-answer", "queue-refusal"])
+    @pytest.fixture(params=[None,
+                            {"error": "LabCore is busy, try again",
+                             "busy": True, "retry_after": 4},
+                            {"ok": False, "status": "rejected",
+                             "pending": 100}],
+                    ids=["no-answer", "busy-refusal", "queue-refusal"])
     def unacknowledged(self, request, gw, tmp_path):
-        """The three answers that mean nothing was written."""
+        """The answers that mean nothing was written.
+
+        `{}` used to be in this list. It was removed when the shared rule was
+        corrected, not loosened: nothing records what real LabCore answers to a
+        write that SUCCEEDS, so an answer carrying no failure signal has to be
+        accepted — demanding an acknowledgement we have never seen would fail
+        every write in the lab. See
+        tests/test_labcore_result.py::TestAgainstWhatLabCoreActuallySends.
+
+        The evidenced busy dict takes its place, so this fixture now drives the
+        one refusal shape the lab has actually measured."""
         store = EquipmentDocumentStore(gw, root=tmp_path / "documents")
         return store, UnacknowledgingGateway(gw, answer=request.param)
 

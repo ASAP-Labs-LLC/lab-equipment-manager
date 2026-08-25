@@ -1463,7 +1463,8 @@ class TestTheDdlCarriesTheNewColumns:
 # `labcore_result`, the one rule this app has for "what did LabCore tell me?".
 # ═══════════════════════════════════════════════════════════════════════════
 
-from labcore_result import LabCoreRefused, LabCoreUnavailable  # noqa: E402
+from labcore_result import (  # noqa: E402
+    LabCoreError, LabCoreRefused, LabCoreUnavailable)
 
 
 class BlindGateway:
@@ -1619,15 +1620,28 @@ class TestCouldNotAskIsNeverNothingRecorded:
                 EquipmentHistory(blind).timeline("m1")
 
     def test_the_machine_log_read_is_judged_here_not_by_the_reader(self, gw):
-        """`MachineStateReader.events` answers a failed read with `[]` — its
-        own rule, in a module this one does not own and must not edit. The
-        query is still borrowed; the verdict is taken back."""
+        """The whole app judges a read the same way now, and this test records
+        that it did not always.
+
+        `MachineStateReader.events` used to answer a failed read with `[]` — its
+        own private rule, in a module this one does not own — so the timeline
+        borrowed its QUERY and took the VERDICT back with `_JudgedRead`, or a
+        blip would have read as an instrument with no history and the timeline
+        would have certified that emptiness as complete.
+
+        qc_specs was converted with the rest of the app, so the reader now
+        raises on its own. `_JudgedRead` is therefore belt-and-braces rather
+        than load-bearing — deliberately kept, because this module's guarantee
+        is about ITS timeline and must not depend on another module continuing
+        to agree. Both halves are asserted so that if either regresses, this
+        fails and says which."""
         TestEquipmentHistoryTimeline().seed_log(gw)
         blind = self.blinded(gw, "lem_machine_log")
         from qc_specs import MachineStateReader
-        assert MachineStateReader(blind).events("m1", 5) == []   # its rule
+        with pytest.raises(LabCoreError):
+            MachineStateReader(blind).events("m1", 5)            # now its rule too
         with pytest.raises(LabCoreUnavailable):
-            EquipmentHistory(blind).timeline("m1")               # ours
+            EquipmentHistory(blind).timeline("m1")               # and ours
 
     def test_the_one_error_a_read_may_still_swallow(self, bare):
         """A table nobody has declared yet genuinely holds nothing — every
