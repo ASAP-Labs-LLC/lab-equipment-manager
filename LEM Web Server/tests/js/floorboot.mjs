@@ -268,5 +268,62 @@ if (!failed) {
   }
 }
 
+/* ---- and now RUN the reader every write on this page goes through --------
+ *
+ * `failure(r)` is what turns a 503 or a 502 into words on the dialog. Every
+ * `await failure(...)` call site is correct only if this function is, and until
+ * now the only thing testing it was a Python test grepping the template for
+ * the string "if (r.ok) return null;". That test would pass with the body
+ * replaced by `return null` — i.e. with the whole point of the branch gutted —
+ * as long as the line still appeared somewhere in the file.
+ *
+ * So it is executed here, against response objects shaped like the ones the
+ * routes actually send. The engine decides, the way the browser would.
+ */
+if (!failed) {
+  const fn = sandbox.failure;
+  if (typeof fn !== 'function') {
+    failed = true;
+    console.log('FAIL: failure() is gone — every write on the floor would '
+                + 'close its dialog on "Saved" regardless of the answer');
+  } else {
+    const res = (ok, status, body) => ({
+      ok, status, json: () => Promise.resolve(body),
+    });
+    const cases = [
+      ['a 200 is not a failure', res(true, 200, {ok: true}), v => v === null],
+      /* what _labcore_failed sends for a refused write */
+      ['a 502 carries the route\'s own words',
+       res(false, 502, {error: 'The QC band was NOT saved. LabCore is busy.',
+                        saved: false, retry: true}),
+       v => typeof v === 'string' && v.includes('NOT saved')],
+      /* what _labcore_unreadable sends */
+      ['a 503 is a failure too',
+       res(false, 503, {error: 'That checklist could not be read.'}),
+       v => typeof v === 'string' && v.includes('could not be read')],
+      /* a proxy or a dev-server error page: not JSON at all */
+      ['a failure with an unreadable body still fails',
+       {ok: false, status: 500, json: () => Promise.reject(new Error('html'))},
+       v => typeof v === 'string' && v.length > 0],
+    ];
+    for (const [what, response, ok] of cases) {
+      let got;
+      try {
+        got = await fn(response);
+      } catch (err) {
+        report(`failure() threw on ${what}`, err);
+        continue;
+      }
+      if (!ok(got)) {
+        failed = true;
+        console.log(`FAIL: ${what} — failure() answered ${JSON.stringify(got)}`);
+      }
+    }
+    if (!failed) {
+      console.log(`  ok   failure() judges all ${cases.length} answer shapes`);
+    }
+  }
+}
+
 console.log(failed ? '\nthe floor does not boot' : '\nthe floor boots');
 process.exit(failed ? 1 : 0);

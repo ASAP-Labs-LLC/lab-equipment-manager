@@ -12,8 +12,8 @@ wrong, each in a different direction:
     "there was nothing to delete" about a document that was still there, and `save()`
     skipped dedupe and wrote a permanent duplicate.
   - `equipment_documents._run` decided a WRITE had succeeded from the ABSENCE of an
-    "error" key, so a gateway answering `None`, `{}` or
-    `{"ok": False, "status": "rejected", "pending": 100}` was read as "done".
+    "error" key, so a gateway answering `None`, `{}` or any refusal that reports
+    itself another way was read as "done".
 
 That is not three mistakes, it is one API that invites them, so the rule lives here
 once instead of being re-derived per store. `snapshot_service.SnapshotReadError`
@@ -111,9 +111,15 @@ class TestWritesMustBeAcknowledged:
             confirm_write({"error": "queue full"})
 
     def test_a_refusal_carrying_no_error_key_still_raises(self):
-        """The exact shape the queue sends when it is past 100 pending."""
+        """A refusal that reports itself without an "error" key.
+
+        SYNTHETIC — see tests/refusal_shapes.py. The rule has to hold for one,
+        because the only refusal this lab has RECORDED is the busy error dict
+        and nothing records what else that queue may answer. Driving only
+        `{"error": ...}` would test the one case the old code already handled.
+        """
         with pytest.raises(LabCoreRefused):
-            confirm_write({"ok": False, "status": "rejected", "pending": 100})
+            confirm_write({"ok": False, "status": "rejected"})
 
     def test_a_non_answer_is_not_success(self):
         """Not an answer at all — a dead gateway, or a transport handing back
@@ -198,6 +204,9 @@ class TestAgainstWhatLabCoreActuallySends:
             confirm_write({"busy": True})
 
     def test_an_explicit_negative_is_refused(self):
+        """`ok` and `queued` are the rule's two verdict flags — a present-and-
+        falsy one means refused. This is a test of the FLAGS, not a claim that
+        LabCore sends either of these bodies."""
         for answer in ({"ok": False}, {"queued": False}):
             with pytest.raises(LabCoreRefused):
                 confirm_write(answer)

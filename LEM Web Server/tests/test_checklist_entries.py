@@ -20,6 +20,7 @@ from datetime import date
 
 import pytest
 
+import refusal_shapes
 from checklists import (Checklist, ChecklistItem, ChecklistStore,
                         ChecklistWriteError, import_v4_checklists)
 from labcore_gateway import FakeLabCoreGateway
@@ -518,11 +519,13 @@ class TestBulkImportIsHonest:
 
     Updated 2026-08-24 with `labcore_result`. Two things changed:
 
-    * The refusal used below carries an "error" key, which is the ONE shape the
-      old `if not res.get("error")` already handled. Past ~100 pending the real
-      queue answers `{"queued": false, "pending": 137}` with no "error" key at
-      all, so the class now refuses in that shape too — otherwise it is testing
-      the case the bug cannot occur in.
+    * The refusal used below carries an "error" key — the EVIDENCED shape
+      (notes.md; lem_station_module.py:495), and also the ONE shape the old
+      `if not res.get("error")` already handled. So the class refuses in a
+      second, SYNTHETIC shape as well, one carrying no "error" key: nobody has
+      recorded what else that queue answers, and a suite that only drives the
+      shape the old code coped with is testing the case the bug cannot occur
+      in. See tests/refusal_shapes.py.
     * An exhausted batch RAISES instead of returning a short count. Re-running
       the import is an upsert keyed on (day, checklist_uid, item_uid) and is
       therefore safe, whereas a smaller number in a JSON payload is not how you
@@ -551,8 +554,9 @@ class TestBulkImportIsHonest:
                  "at": "2026-01-01T09:00:00", "value": ""} for i in range(n)]
 
     def test_a_rejected_batch_is_not_counted_as_imported(self):
-        """Refused in the queue's real shape: no exception, no "error" key."""
-        gw = self.Busy(refusal={"queued": False, "pending": 137})
+        """Refused with no "error" key — a SYNTHETIC shape (refusal_shapes),
+        driven because it is the half of the rule a key test cannot see."""
+        gw = self.Busy(refusal=dict(refusal_shapes.NO_ERROR_KEY))
         store = ChecklistStore(gw)
         store.ensure_schema()                 # declared while LabCore is well
         gw.fail_times = gw.calls + 99

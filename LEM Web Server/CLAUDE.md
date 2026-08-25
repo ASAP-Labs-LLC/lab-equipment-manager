@@ -403,6 +403,50 @@ the client's read timeout. So it returned None on every boot and the 15
 `pragma_table_list` now: 58 tables in 0.18s, with the old form as a fallback for
 SQLite older than 3.37.
 
+## What LabCore's answer means — one rule, and which half is evidence (2026-08-25)
+
+`labcore_result.py` is the only place that decides what a gateway answer means.
+Never re-derive it in a store, a route or a test.
+
+**EVIDENCED** (notes.md; `lem_station_module.py:495`): the write queue refuses
+past ~100 pending by **ANSWERING** —
+`{"error": "LabCore is busy…", "busy": true, "retry_after": n}` — an error dict
+returned normally, not raised.
+
+**NOT EVIDENCED**: what LabCore answers to a write that SUCCEEDS. Every
+`{"ok": true, "rows_affected": N}` in this tree is our own sqlite fake. So the
+rule refuses on a **positive failure signal** (`error`, truthy `busy`,
+present-and-falsy `ok`/`queued`) and **accepts anything else**. Tightening it to
+demand an acknowledgement would fail every write in the lab against a service
+answering `{"rows_affected": 1}`, with `/healthz` still green.
+
+A third shape, `{"queued": false, "pending": 137}`, was **invented** during
+development, written into a docstring as though someone had seen it, and then
+cited by three later rounds of work as fact. It survives only as a test fixture, labelled, in
+`tests/refusal_shapes.py`; `tests/test_no_invented_protocol.py` fails if any
+source file describes it as something LabCore sends.
+
+Three rules that follow, each with a bug behind it:
+
+- **A read declares nothing.** `CREATE TABLE IF NOT EXISTS` goes through the
+  same queue as everything else, so declaring from a read means a full WRITE
+  queue takes down read-only pages — for tables that have existed for months —
+  while adding to the congestion. Writes still declare strictly.
+- **A read that failed is never an empty answer.** "No QC assigned", "nothing
+  scheduled", "no configuration" are answers an operator acts on.
+  `db_config_store.load()` raising is load-bearing: `/api/boxes` loads the
+  config, appends a box and saves it back, and `save()` prunes each table to
+  match what it is handed — so a config degraded to `{}` is an instruction to
+  delete the lab's QC library.
+- **Declaring a schema is throttled.** `SnapshotService.ensure_schema()` is
+  called from `read_tables` (every 12s) and from every audit and PM write. A
+  refused round buys `SCHEMA_RETRY_MIN`..`SCHEMA_RETRY_MAX` of cooldown, never
+  shorter than the `retry_after` LabCore sent; a refused statement is still
+  retried, and still never recorded as done. `/healthz` reports
+  `schema: ok | degraded | unknown` — **unknown** before the first refresh,
+  because a candidate on a scratch port has not looked yet and "degraded" there
+  fails a good release.
+
 ## Releasing
 
 **See `../RELEASING.md`** (repo root). Push a `v*` tag; CI archives **`LEM Web

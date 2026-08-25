@@ -215,3 +215,80 @@ class TestTheTokenNobodyHasToType:
 
         rows = gw.read_sql("SELECT key, value FROM lem_meta").get("rows") or []
         assert rows == []
+
+
+class TestPublishingLooksAtTheAnswer:
+    """Never RAISING is not the same as never LOOKING (2026-08-25).
+
+    `publish_live_config` issues three writes — the `lem_meta` DDL and the two
+    upserts — and read none of the answers, swallowing everything in a bare
+    `except Exception: return`. Its docstring defends the non-raising, and that
+    defence is right: a queue that is full at boot must not stop the floor
+    coming up. It never defended the not-looking.
+
+    What the silence costs is specific. Every bench reads its push address out
+    of `lem_meta` (`build_live_config_query` in the station module). A refused
+    publish means the address is stale or absent, so the live push goes nowhere
+    — and the live road's whole design is to fail soft, so NOTHING complains.
+    The floor's dots and blips quietly go back to waiting on a 12s snapshot and
+    a five-minute heartbeat, and the first symptom is someone saying the floor
+    feels slow.
+
+    So: still non-raising, but the answers are read and what happened is
+    logged and returned.
+    """
+
+    REFUSAL = {"error": "LabCore is busy, try again later", "busy": True,
+               "retry_after": 4}
+
+    class Refusing:
+        def __init__(self, answer):
+            self.answer = answer
+            self.seen = []
+
+        def sql(self, sql, args=None, **kw):
+            self.seen.append(sql)
+            return dict(self.answer)
+
+    def test_a_refused_publish_is_reported_not_swallowed(self, caplog):
+        gw = self.Refusing(self.REFUSAL)
+        with caplog.at_level("WARNING"):
+            ok = publish_live_config(gw, "http://10.0.0.5:5557", "tok")
+        assert ok is False
+        assert any("live" in r.message.lower() or "lem_meta" in r.message
+                   for r in caplog.records), \
+            "nothing in the log said the floor's address was never published"
+
+    def test_a_refusal_with_no_error_key_is_still_a_refusal(self):
+        """A shape a bare `if res.get("error")` would have waved through.
+
+        SYNTHETIC (see tests/refusal_shapes.py) — chosen for that property, not
+        a shape LabCore has been recorded sending. The evidenced one is
+        `REFUSAL` above, and the test before this drives it.
+        """
+        gw = self.Refusing({"ok": False})
+        assert publish_live_config(gw, "http://10.0.0.5:5557", "tok") is False
+
+    def test_it_still_does_not_raise(self):
+        """The half of the old behaviour that was correct, held in place."""
+        class Dead:
+            def sql(self, *a, **k):
+                raise RuntimeError("queue full")
+
+        assert publish_live_config(Dead(), "http://x", "t") is False
+
+    def test_a_successful_publish_says_so(self):
+        from labcore_gateway import FakeLabCoreGateway
+        gw = FakeLabCoreGateway()
+        assert publish_live_config(gw, "http://10.0.0.5:5557", "tok") is True
+
+    def test_a_refused_ddl_does_not_hide_a_refused_upsert(self):
+        """All three writes are attempted and all three are judged.
+
+        Returning at the first refusal would be defensible; reporting only the
+        first would not, because the DDL is the one that succeeds when the
+        table already exists — which is every boot but the first.
+        """
+        gw = self.Refusing(self.REFUSAL)
+        publish_live_config(gw, "http://10.0.0.5:5557", "tok")
+        assert len(gw.seen) == 3

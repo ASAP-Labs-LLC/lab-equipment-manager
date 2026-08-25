@@ -385,7 +385,12 @@ from checklists import ChecklistWriteError
 from labcore_result import LabCoreError, LabCoreUnavailable
 
 
-REFUSAL = {"queued": False, "pending": 137}
+import refusal_shapes                                   # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("both_refusal_shapes")
+
+# SYNTHETIC — see refusal_shapes.
+REFUSAL = refusal_shapes.NO_ERROR_KEY
 
 
 class QueueFull:
@@ -409,7 +414,7 @@ class QueueFull:
         self.writes += 1
         if self.refusing or (self.refuse_after is not None
                              and self.writes > self.refuse_after):
-            return dict(REFUSAL)
+            return refusal_shapes.current()
         return self.real.sql(sql, args)
 
     def read_sql(self, sql, args=None, **kw):
@@ -552,10 +557,11 @@ def store_checklist(store, gw):
 
 class TestImportStateCountsOnlyWhatLanded:
     def test_a_refused_batch_raises_instead_of_being_counted_as_imported(self):
-        """The headline bug in this file. `if not res.get("error")` is TRUE for
-        {"queued": False, "pending": 137}, so every rejected batch was added to
-        the total and the operator was told 3,096 historical ticks had arrived
-        when hundreds never left."""
+        """The headline bug in this file. `if not res.get("error")` is TRUE
+        for any refusal that reports itself some other way, so every rejected
+        batch was added to the total and the operator was told 3,096 historical
+        ticks had arrived when hundreds never left. `QueueFull` refuses in both
+        shapes this module runs — see tests/refusal_shapes.py."""
         gw = QueueFull()
         store = ChecklistStore(gw)
         store.ensure_schema()

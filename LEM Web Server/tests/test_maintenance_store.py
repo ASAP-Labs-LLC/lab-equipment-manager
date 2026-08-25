@@ -195,21 +195,28 @@ class TestMaintenanceApi:
 # ── the write queue says no, and the store must not say yes ─────────────────
 #
 # LabCore's HTTP write queue serialises at roughly 1.5 writes a second and
-# refuses past ~100 pending BY ANSWERING. No exception is raised, and the answer
-# does not necessarily carry an "error" key. Every test below refuses in that
-# real shape, because {"error": ...} is the one shape the old code already
-# handled and proving anything with it would be arranging the case the bug
-# cannot occur in.
+# refuses past ~100 pending BY ANSWERING rather than raising.
+# Every test in this module runs TWICE, once per refusal shape — see
+# tests/refusal_shapes.py for which of the two is evidence and which is a
+# fixture. In short: the error dict carrying `busy` is recorded from a real
+# incident; the one with no "error" key is synthetic, kept because
+# `{"error": ...}` is the ONE shape the old `if not res.get("error")` code
+# already handled, so a suite refusing only that way proves nothing.
 
 from labcore_result import LabCoreError, LabCoreUnavailable
 from maintenance_store import MaintenanceWriteError
 
 
-REFUSAL = {"queued": False, "pending": 137}
+import refusal_shapes                                   # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("both_refusal_shapes")
+
+# SYNTHETIC — see refusal_shapes.
+REFUSAL = refusal_shapes.NO_ERROR_KEY
 
 
 class QueueFull:
-    """A real gateway until it refuses — then LabCore's actual refusal shape.
+    """A real gateway until it refuses — with the shape this run is driving.
 
     Reads keep working on purpose: a test that a WRITE raised is only worth
     anything if it can then look at the stored state and show nothing changed.
@@ -232,7 +239,7 @@ class QueueFull:
         self.writes += 1
         if self.refusing or (self.refuse_after is not None
                              and self.writes > self.refuse_after):
-            return dict(REFUSAL)
+            return refusal_shapes.current()
         return self.real.sql(sql, args)
 
     def read_sql(self, sql, args=None, **kw):

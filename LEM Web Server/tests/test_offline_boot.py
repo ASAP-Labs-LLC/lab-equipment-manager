@@ -66,10 +66,28 @@ class TestBootsWithoutLabCore:
         assert body["labcore_online"] is False
         assert body["machines"] == []
 
-    def test_status_snapshot_degrades_gracefully(self, client):
+    def test_status_snapshot_says_it_could_not_read_rather_than_inventing_one(
+            self, client):
+        """CHANGED 2026-08-25, and not to make a fix pass.
+
+        This asserted `200` + `labcore_online: False` over a snapshot built
+        from a config read that never happened — `boxes: []` for a lab full of
+        instruments. `DbConfigStore.load()` raises now, because the SAME object
+        is what `/api/boxes` saves back and the save prunes each table to match
+        it: an empty config read is an instruction to delete the QC library.
+
+        The dashboard is better off, not worse. `refresh()` fetches config and
+        status with `Promise.allSettled` and keeps the previous value when one
+        rejects, so a 503 leaves the last good floor on screen where a 200 with
+        `boxes: []` wiped it. "The master view survives LabCore being down" is
+        held by `test_pages_still_serve` — the page comes up and says so.
+        """
         r = client.get("/api/status")
-        assert r.status_code == 200
-        assert r.get_json()["labcore_online"] is False
+        assert r.status_code in (502, 503)
+        body = r.get_json()
+        assert body["retry"] is True
+        assert "boxes" not in body, (
+            "an empty floor must not be served as if it were read")
 
     def test_qc_reads_return_empty_not_errors(self, client):
         assert client.get("/api/qc-samples").get_json()["samples"] == []
@@ -132,6 +150,36 @@ class FlakyGateway(DeadGateway):
 
 
 class TestSelfHealsWhenLabCoreReturns:
+    """The store must pick the tables up when LabCore comes back — on the first
+    WRITE, which is the first moment they are needed.
+
+    CHANGED 2026-08-25: this used to drive the recovery through `load()`,
+    because `load()` declared the schema. A read declares nothing now. The
+    declaration was cheap on a lab whose tables exist and not cheap in the two
+    cases that matter — tables genuinely missing, or `existing_tables` unable
+    to answer — where a path that only wanted to READ pushed five CREATEs into
+    the queue, and on a full queue five refusals. A read that finds no table
+    reads as an empty config, which on a LabCore where LEM has never saved one
+    is the truth.
+    """
+
+    def _config(self):
+        from models import AppConfig
+        return AppConfig(version=5, poll_minutes=5, map_locked=False,
+                         samples=[], boxes=[])
+
+    def test_a_read_during_the_outage_does_not_declare_anything(self):
+        from db_config_store import DbConfigStore
+        from labcore_result import LabCoreError
+        import pytest as _pytest
+
+        gw = FlakyGateway()
+        store = DbConfigStore(gw)          # boots while LabCore is down
+        assert gw.created == []
+        with _pytest.raises(LabCoreError):
+            store.load()                   # and says so, rather than "no config"
+        assert gw.created == []
+
     def test_schema_is_created_once_labcore_is_back(self):
         from db_config_store import DbConfigStore
         gw = FlakyGateway()
@@ -139,7 +187,8 @@ class TestSelfHealsWhenLabCoreReturns:
         assert gw.created == []
 
         gw.alive = True
-        store.load()                       # first use after recovery
+        ok, why = store.save(self._config())    # first WRITE after recovery
+        assert ok, why
         assert any("CREATE TABLE" in s.upper() for s in gw.created)
 
     def test_schema_creation_is_not_repeated_forever(self):
@@ -147,9 +196,12 @@ class TestSelfHealsWhenLabCoreReturns:
         gw = FlakyGateway()
         gw.alive = True
         store = DbConfigStore(gw)
-        first = len(gw.created)
-        store.load(); store.load()
-        assert len(gw.created) == first    # created once, then left alone
+        store.save(self._config())
+        creates = len([s for s in gw.created if "CREATE TABLE" in s.upper()])
+        store.save(self._config())
+        store.save(self._config())
+        assert len([s for s in gw.created
+                    if "CREATE TABLE" in s.upper()]) == creates
 
 
 # ── The shell: mode selector at the root, floor at /floor ───────────────────

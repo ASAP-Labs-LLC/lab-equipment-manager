@@ -42,6 +42,11 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from labcore_result import (LabCoreRefused, LabCoreUnavailable, confirm_write,
                             wrote_rows)
 from labcore_result import rows as read_rows
+# NOT a local copy. This file had its own `_retry_after` — same field, second
+# reading of it — in the module that already imports the shared rule. The zero
+# and negative cases it documented live in `labcore_result.retry_after` now,
+# where every other caller gets them too.
+from labcore_result import retry_after as _retry_after
 
 # NOT `lem_checklists` — that name is already taken by db_config_store, which
 # holds V4's AppConfig.checklists as (uid, data) blobs AND rewrites the whole
@@ -80,26 +85,6 @@ class ChecklistWriteError(LabCoreRefused):
     A subclass of `LabCoreRefused` so a route can catch this by name, or
     `LabCoreRefused`, or `LabCoreError` for every store at once.
     """
-
-
-def _retry_after(res, default: float = 2.0) -> float:
-    """The queue's own "come back in N seconds", if the answer carries one.
-
-    Defensive about the shape because a refusal is whatever LabCore's queue felt
-    like sending — including `None`, which is why this cannot just index it.
-    """
-    if not isinstance(res, dict):
-        return default
-    hint = res.get("retry_after")
-    if hint is None:
-        return default
-    try:
-        wait = float(hint)
-    except (TypeError, ValueError):
-        return default
-    # A queue that says 0 means "come straight back", so 0 is an answer rather
-    # than a falsy blank. The old `or 2` turned it into a two-second wait.
-    return wait if wait >= 0 else default
 
 
 def _hhmm(raw: str) -> str:
@@ -265,15 +250,24 @@ class ChecklistStore:
             raise LabCoreUnavailable(
                 f"LabCore could not be read ({type(exc).__name__}: "
                 f"{exc})") from exc
-        # missing_ok=False on every read in this file: `ensure_schema` runs
-        # first and now CONFIRMS both CREATEs, so the tables provably exist by
-        # the time anything is selected. "No such table" after that contradicts
-        # an acknowledged write rather than meaning "not created yet", and
-        # swallowing it would reinstate exactly the blank-round bug above.
-        return read_rows(res, missing_ok=False)
+        # missing_ok=True on every read in this file, and it is a correction
+        # (2026-08-25). It used to be False, justified by "`ensure_schema` runs
+        # first and CONFIRMS both CREATEs, so the tables provably exist" — but
+        # that justification was itself the bug: it required every read to
+        # declare a schema, so a `CREATE TABLE IF NOT EXISTS` refused by a full
+        # WRITE queue took down the round-viewing page for tables that had
+        # existed for months. Reads declare nothing now, so a missing table is
+        # once again a real possibility and the honest reading of it is empty:
+        # nobody has created a round, so there are none.
+        #
+        # This is NOT a loosening of the rule that matters. A read timeout, a
+        # busy answer, a non-answer — everything except literally "no such
+        # table" — still raises, and that is the shape that used to blank the
+        # morning round.
+        return read_rows(res, missing_ok=True)
 
     def ensure_schema(self) -> None:
-        """Declare both tables and apply the column migration.
+        """Declare both tables and apply the column migration. WRITES ONLY.
 
         The old body was `except Exception: pass` with "retried on the next
         call" — but `_ready` was set inside the try, so a refused CREATE meant
@@ -281,6 +275,13 @@ class ChecklistStore:
         call, while `save()` INSERTed into a table that might not exist and
         reported success. `_ready` is now set only once everything is
         acknowledged.
+
+        And it is called only from the methods that WRITE. Calling it from
+        `all()`, `state()` and `values()` — which is what shipped first — meant
+        a refused DDL failed a page that only wanted to display a round, during
+        exactly the congestion this store was hardened for. A write genuinely
+        needs the table to exist before it INSERTs; a SELECT does not, because
+        SELECT says so itself.
         """
         if self._ready:
             return
@@ -304,8 +305,11 @@ class ChecklistStore:
 
     # ── definitions ────────────────────────────────────────────────────
     def all(self) -> List[Checklist]:
-        """Every round. Raises rather than reporting a lab with no checklists."""
-        self.ensure_schema()
+        """Every round. Raises rather than reporting a lab with no checklists.
+
+        Declares nothing: a page that only lists the rounds must not fail
+        because the WRITE queue is full. See `ensure_schema`.
+        """
         out = []
         for row in self._read(
                 "SELECT uid, name, slot, due_time, items FROM "
@@ -384,8 +388,9 @@ class ChecklistStore:
         An empty answer during a blip shows every item unticked; whoever is on
         shift re-runs the round or re-ticks it, and `set_tick` then overwrites
         the real record's name and time with theirs.
+
+        Declares nothing — see `ensure_schema`.
         """
-        self.ensure_schema()
         out: Dict[str, Dict[str, dict]] = {}
         for row in self._read(
                 "SELECT checklist_uid, item_uid, checked, user, at, value "
@@ -439,8 +444,9 @@ class ChecklistStore:
 
         Raises on an outage rather than drawing a flat empty chart, which reads
         as "this cylinder has never been measured".
+
+        Declares nothing — see `ensure_schema`.
         """
-        self.ensure_schema()
         out = []
         for row in self._read(
                 "SELECT day, value, user FROM lem_checklist_state "
@@ -476,15 +482,18 @@ class ChecklistStore:
         return touched
 
     def import_state(self, rows: List[dict], batch: int = 100,
-                     pause: float = 0.35, attempts: int = 6) -> int:
+                     pause: float = 0.35, attempts: int = 6,
+                     budget: float = 90.0) -> int:
         """Bulk-load historical ticks. Returns how many actually landed.
 
         LabCore serialises its write queue at roughly 1.5 operations a second
         and rejects new work once ~100 are pending. It reports that by
-        ANSWERING — `{"busy": true, "retry_after": n}`, or a bare
-        `{"queued": false, "pending": 137}` with no "error" key at all — so the
-        old `if not res.get("error")` counted rejected batches as imported and
-        told the operator 3,096 rows had arrived when hundreds had not. Hence:
+        ANSWERING rather than raising — the recorded shape is an error dict
+        carrying `busy` and `retry_after` (notes.md; lem_station_module.py:495)
+        — so the old `if not res.get("error")` counted rejected batches as
+        imported and told the operator 3,096 rows had arrived when hundreds had
+        not. `confirm_write` is what judges it, and it refuses on any positive
+        failure signal rather than on that one shape. Hence:
         multi-row inserts to keep the op count down, a pause between them, a
         real back-off that re-tries a rejected batch, and `confirm_write` so
         only an acknowledged batch is counted.
@@ -494,11 +503,22 @@ class ChecklistStore:
         batches into a queue that just refused six times makes it worse, and a
         silently short return value is indistinguishable from "the file only
         had that many rows".
+
+        AND IT HAS A DEADLINE (2026-08-25). This runs on the Flask request
+        thread: six escalating waits per batch, capped at 15s each, times as
+        many batches as the file has, is a request that can hold a worker and a
+        waiting browser for MINUTES — and every one of those waits is spent on
+        a queue that has already said no. `budget` seconds after it starts, it
+        stops waiting and refuses with the count that landed. Nothing about the
+        honesty changes: an unfinished import still RAISES, and re-running it
+        is an upsert keyed on (day, checklist_uid, item_uid), so what already
+        arrived is skipped.
         """
         if not rows:
             return 0
         self.ensure_schema()
         done = 0
+        deadline = time.monotonic() + max(float(budget), 0.0)
         for chunk in _batched(rows, batch):
             values = ",".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(chunk))
             args: List[object] = []
@@ -528,14 +548,27 @@ class ChecklistStore:
                     break
                 # Busy is temporary; wait the queue's own suggestion, backing
                 # off if it keeps saying no. No wait after the last try — there
-                # is nothing left to wait for.
-                if attempt + 1 < attempts:
-                    time.sleep(min(_retry_after(res) * (attempt + 1), 15))
+                # is nothing left to wait for, and none at all once the budget
+                # is spent.
+                left = deadline - time.monotonic()
+                if attempt + 1 < attempts and left > 0:
+                    time.sleep(min(_retry_after(res, 2.0) * (attempt + 1), 15,
+                                   left))
             if not landed:
+                spent = "" if time.monotonic() < deadline else (
+                    f" It stopped waiting after {budget:.0f}s rather than hold "
+                    f"the request open any longer.")
                 raise ChecklistWriteError(
                     f"LabCore refused a batch of {len(chunk)} historical ticks "
                     f"after {attempts} attempts; {done} rows landed before it. "
-                    f"Last answer: {refusal}")
+                    f"Last answer: {refusal}.{spent} Run the import again — "
+                    f"what already landed is skipped.")
+            if time.monotonic() >= deadline:
+                raise ChecklistWriteError(
+                    f"The import ran out of its {budget:.0f}s budget with "
+                    f"{done} rows landed, because LabCore's queue was taking "
+                    f"them slower than that. Run it again — what already "
+                    f"landed is skipped.")
             time.sleep(pause)
         return done
 
@@ -544,8 +577,9 @@ class ChecklistStore:
 
         Raises rather than answering "no days": this is the archive an auditor
         reads, and an empty one during an outage says the rounds were never run.
+
+        Declares nothing — see `ensure_schema`.
         """
-        self.ensure_schema()
         out = []
         for row in self._read(
                 "SELECT day, COUNT(*) AS total, "

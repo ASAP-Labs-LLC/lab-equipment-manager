@@ -13,10 +13,15 @@ path to us degrades to exactly today's behaviour rather than a blank floor.
 
 See docs/superpowers/specs/2026-08-05-live-push-channel-design.md.
 """
+import logging
 import secrets
 import threading
 import time
 from datetime import datetime
+
+from labcore_result import refusal_of
+
+logger = logging.getLogger(__name__)
 
 # The TTL is per machine, not fixed. The module offers poll intervals of 15s,
 # 30s, 60s and 5 min; a fixed 90s window would make a 5-minute bench read live
@@ -49,7 +54,21 @@ def resolve_token(configured=None) -> str:
     return token or secrets.token_urlsafe(32)
 
 
-def publish_live_config(gateway, url: str, token: str) -> None:
+def _publish_one(gateway, sql, args=None) -> str:
+    """Issue one publish write. "" if it landed, else why it did not.
+
+    Never raises — see `publish_live_config`. Both ways a write can fail come
+    back the same way, because "the address was not published" is one fact
+    whether the socket died or the queue said no.
+    """
+    try:
+        res = gateway.sql(sql, args or [])
+    except Exception as exc:                        # transport, not logic
+        return "{0}: {1}".format(type(exc).__name__, exc)
+    return refusal_of(res) or ""
+
+
+def publish_live_config(gateway, url: str, token: str) -> bool:
     """Put the server's address and token where every module already looks.
 
     In `lem_meta`, so a bench that moves to another PC picks them up with no
@@ -57,17 +76,40 @@ def publish_live_config(gateway, url: str, token: str) -> None:
     from create_app: a factory with side effects gives every test a LabCore
     write, the same trap the snapshot poller taught.
 
-    Never raises. A queue that is full at boot must not take the floor with it;
-    the modules simply keep using what they already cached, or skip the push.
+    NEVER RAISES — AND, SINCE 2026-08-25, NEVER SILENT. The old body was three
+    unread `gateway.sql()` calls inside a bare `except Exception: return`, and
+    the docstring defended the non-raising. That defence is still right: a
+    queue that is full at boot must not take the floor with it. It was never a
+    defence for not LOOKING.
+
+    What the silence cost: every bench reads its push address out of `lem_meta`
+    (`build_live_config_query`). A refused publish leaves that stale or absent,
+    so the live push goes nowhere — and the live road is best-effort by design,
+    so nothing anywhere complains. The floor's dots and blips fall back to a 12s
+    snapshot and a five-minute heartbeat, and the first symptom is somebody
+    saying the floor feels slow.
+
+    Returns True when all three writes were acknowledged. Every one is
+    attempted and judged rather than stopping at the first: the DDL succeeds
+    whenever the table already exists, which is every boot but the first, so
+    reporting only its verdict would report nothing.
     """
     if not str(url or "").strip():
-        return
-    try:
-        gateway.sql(META_DDL)
-        gateway.sql(META_UPSERT, [LIVE_URL_KEY, str(url).strip()])
-        gateway.sql(META_UPSERT, [LIVE_TOKEN_KEY, str(token or "")])
-    except Exception:
-        return
+        return False
+    trouble = [t for t in (
+        _publish_one(gateway, META_DDL),
+        _publish_one(gateway, META_UPSERT, [LIVE_URL_KEY, str(url).strip()]),
+        _publish_one(gateway, META_UPSERT,
+                     [LIVE_TOKEN_KEY, str(token or "")]),
+    ) if t]
+    if trouble:
+        logger.warning(
+            "the live push address was NOT published to lem_meta (%s). Benches "
+            "will keep using whatever they last cached, or skip the push "
+            "entirely; the floor falls back to the snapshot and the heartbeat.",
+            "; ".join(trouble))
+        return False
+    return True
 
 
 def _primary_ip() -> str:

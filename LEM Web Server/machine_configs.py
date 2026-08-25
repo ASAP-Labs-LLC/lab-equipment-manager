@@ -23,8 +23,9 @@ EVERY ANSWER FROM THE GATEWAY IS READ (2026-08-25)
 --------------------------------------------------
 `save()` and `delete()` used to throw LabCore's answer away, and both reads
 turned any error into "there is nothing there". LabCore's write queue refuses
-past 100 pending BY ANSWERING — `{"queued": false, "pending": 137}`, no
-exception and no "error" key — so a config the floor reported as saved could
+past ~100 pending BY ANSWERING — the recorded shape is an error dict carrying
+`busy` and `retry_after` (notes.md; lem_station_module.py:495), returned
+normally rather than raised — so a config the floor reported as saved could
 simply never have been written, and a module adopting that machine would come
 back to its picker with the old mappings or none at all.
 
@@ -127,29 +128,73 @@ class MachineConfigStore:
         self._ready = False
 
     def ensure_schema(self) -> None:
-        # `_ready` is set only once the CREATE is ACKNOWLEDGED. Setting it
-        # unconditionally meant a boot during a full write queue left the store
-        # believing its table existed for the life of the process, writing
-        # every config afterwards into a table that was never made.
+        """Declare `lem_machine_config`, or raise. WRITES ONLY.
+
+        `_ready` is set only once the CREATE is ACKNOWLEDGED. Setting it
+        unconditionally meant a boot during a full write queue left the store
+        believing its table existed for the life of the process, writing every
+        config afterwards into a table that was never made.
+
+        `list()` and `get()` used to call this and no longer do (2026-08-25).
+        A refused CREATE from a full WRITE queue was failing the picker and the
+        adopt dialog for a table that had existed for months — a read taken
+        down by a write, during exactly the congestion this store was hardened
+        for. A SELECT needs no declaration; it answers "no such table" itself.
+        """
         if not self._ready:
-            _confirm(self.gateway.sql(CONFIG_DDL),
+            _confirm(self._sql(CONFIG_DDL, what="creating lem_machine_config"),
                      "creating lem_machine_config")
             self._ready = True
+
+    def _read_sql(self, sql: str, args: Optional[list] = None, *,
+                  what: str) -> dict:
+        """Issue a read, turning a RAISED transport error into an ANSWER.
+
+        The read calls sat bare inside `_read(...)`, which converts the ANSWER
+        and can convert nothing when the client THROWS instead. So a socket
+        error escaped `machine_configs` entirely, sailed past every
+        `except ConfigReadUnavailable` in web_app, and became a bare 500 —
+        "Internal Server Error" about a configuration whose existence is
+        exactly what the caller was asking about.
+        """
+        try:
+            return self.gateway.read_sql(sql, args or [])
+        except Exception as exc:
+            return {"error": "{0} — LabCore could not be read ({1}: "
+                             "{2})".format(what, type(exc).__name__, exc)}
+
+    def _sql(self, sql: str, args: Optional[list] = None, *, what: str) -> dict:
+        """Issue a write, turning a RAISED transport error into our own type.
+
+        Without this the `gateway.sql(...)` call sat bare inside `_confirm(...)`
+        and only the ANSWER was converted — so a socket error, which is a write
+        that equally did not happen, escaped as a raw `OSError` past every
+        `except MachineConfigError` in web_app and became a bare 500. The
+        stores with `_write` helpers (checklists, lab_schedule,
+        maintenance_store) already did this; these did not.
+        """
+        try:
+            return self.gateway.sql(sql, args or [])
+        except Exception as exc:
+            raise ConfigWriteRefused(
+                "{0} — not saved: LabCore could not be written to ({1}: "
+                "{2})".format(what, type(exc).__name__, exc)) from exc
 
     # ── read ───────────────────────────────────────────────────────────
     def list(self) -> List[dict]:
         """Names and timestamps only — the picker doesn't need every mapping
         in the lab."""
-        self.ensure_schema()
-        # missing_ok: no table means no module has ever registered, and an
+        # No `ensure_schema()` — see the note there. missing_ok: no table means
+        # no module has ever registered, and an
         # empty picker is then the truth. Any other error raises, because an
         # empty picker during a blip invites an operator to create a SECOND
         # configuration for an instrument that already has one — a duplicate
         # nobody asked for, which is the equipment-document bug in a new coat.
         found = _read(
-            self.gateway.read_sql(
+            self._read_sql(
                 "SELECT machine_uid, title, updated_at, updated_by "
-                "FROM lem_machine_config ORDER BY title"),
+                "FROM lem_machine_config ORDER BY title",
+                what="listing the machine configurations"),
             "listing the machine configurations", missing_ok=True)
         return [{"machine_uid": str(r.get("machine_uid") or ""),
                  "title": str(r.get("title") or ""),
@@ -158,16 +203,17 @@ class MachineConfigStore:
                 for r in found]
 
     def get(self, machine_uid: str) -> Optional[dict]:
-        self.ensure_schema()
+        # No `ensure_schema()` — see the note there.
         # missing_ok: with no table there is genuinely no configuration for
         # anyone, so None is honest. A read ERROR is not: None here becomes the
         # route's 404 "No configuration for that machine" about a machine that
         # is running right now, and duplicate() reads through this method, so a
         # blip would make it refuse to copy a config that plainly exists.
         found = _read(
-            self.gateway.read_sql(
+            self._read_sql(
                 "SELECT machine_uid, title, config, updated_at, updated_by "
-                "FROM lem_machine_config WHERE machine_uid = ?", [machine_uid]),
+                "FROM lem_machine_config WHERE machine_uid = ?", [machine_uid],
+                what="reading the configuration of {0}".format(machine_uid)),
             "reading the configuration of {0}".format(machine_uid),
             missing_ok=True)
         if not found:
@@ -205,13 +251,15 @@ class MachineConfigStore:
         # whole bench's mappings, QC wiring and PM tasks while the floor shows
         # the new name.
         _confirm(
-            self.gateway.sql(
+            self._sql(
                 "INSERT INTO lem_machine_config (machine_uid, title, config, "
                 "updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(machine_uid) DO UPDATE SET title=excluded.title, "
                 "config=excluded.config, updated_at=excluded.updated_at, "
                 "updated_by=excluded.updated_by",
-                [machine_uid, title, json.dumps(config or {}), when, by]),
+                [machine_uid, title, json.dumps(config or {}), when, by],
+                what="saving the configuration of {0} ({1})".format(
+                    title, machine_uid)),
             "saving the configuration of {0} ({1})".format(title, machine_uid))
         return {"machine_uid": machine_uid, "title": title,
                 "updated_at": when, "updated_by": by}
@@ -246,7 +294,8 @@ class MachineConfigStore:
         # retired.
         self.ensure_schema()
         _confirm(
-            self.gateway.sql(
+            self._sql(
                 "DELETE FROM lem_machine_config WHERE machine_uid = ?",
-                [machine_uid]),
+                [machine_uid],
+                what="deleting the configuration of {0}".format(machine_uid)),
             "deleting the configuration of {0}".format(machine_uid))

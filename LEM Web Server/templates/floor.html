@@ -1864,6 +1864,8 @@ $('#authForm').addEventListener('submit', e => {
 // ── lab hours: which silences are expected ──────────────────────────────
 const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 let SCHED = null;
+// Whether SCHED is LabCore's answer or the fallback week. See openHours().
+let SCHED_KNOWN = true;
 
 function renderSchedule() {
   const on = new Set((SCHED.working_days || []).map(Number));
@@ -1884,7 +1886,18 @@ function renderSchedule() {
 async function openHours() {
   SCHED = await fetch('/api/schedule').then(r => r.json()).catch(() => null);
   if (!SCHED) return;
-  $('#schedErr').textContent = '';
+  // `known: false` means LabCore could not be read and this is the DEFAULT
+  // week, not the lab's. Drawing it is fine — the floor would rather show a
+  // plausible week than an error. SAVING it is not: every checkbox in this
+  // dialog is posted back verbatim, so pressing Save on a fallback would write
+  // Mon-Fri over a lab that works Saturdays, and nothing on screen would have
+  // said the boxes were a guess. A read that decides a write, one layer up.
+  SCHED_KNOWN = SCHED.known !== false;
+  $('#schedSave').disabled = !SCHED_KNOWN;
+  $('#schedErr').textContent = SCHED_KNOWN ? ''
+    : 'LabCore did not answer, so these are the default hours and not the '
+      + 'lab\'s. Saving is off until it does — it would overwrite the real '
+      + 'ones with this guess.';
   renderSchedule();
   if (!$('#schedDlg').open) $('#schedDlg').showModal();
 }
@@ -1898,6 +1911,13 @@ $('#schedDays').addEventListener('change', e => {
 
 $('#schedSave').addEventListener('click', async () => {
   if (!requireAuth()) return;
+  // Belt and braces with the disabled attribute above: a save built from a
+  // fallback week is a write built out of a failed read.
+  if (!SCHED_KNOWN) {
+    $('#schedErr').textContent = 'The hours shown are a fallback, not the '
+      + 'lab\'s. Reopen this when LabCore answers.';
+    return;
+  }
   const days = [...document.querySelectorAll('#schedDays input:checked')]
     .map(cb => parseInt(cb.value, 10));
   const r = await fetch('/api/schedule', {method: 'POST',

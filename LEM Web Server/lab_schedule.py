@@ -156,10 +156,13 @@ class LabScheduleStore:
     a read deciding a write, served from "could not ask". `load()` therefore
     raises now.
 
-    The true half survives, but has to be ASKED FOR by name:
-    `load(degrade_to_default=True)` is for a pure display path that would rather
-    draw a plausible week than an error. Nothing that goes on to write may use
-    it.
+    The true half survives, but it lives in the ROUTE now, not here. There was
+    a `load(degrade_to_default=True)` for it; nothing ever called it, and its
+    docstring described a rule no code exercised — which is the same failure
+    mode as the invented refusal shape, one layer down. `/api/schedule` does
+    the degrade itself and ships `known: false` with it, which the flag could
+    not do: a plausible week that does not say it is a guess is how a lab that
+    works Saturdays saw its own hours quietly replaced by Mon-Fri.
     """
 
     def __init__(self, gateway) -> None:
@@ -185,18 +188,19 @@ class LabScheduleStore:
         — removing a holiday somebody else removed first still happened."""
         return wrote_rows(self._write(sql, args))
 
-    def _read(self, sql: str, args: Optional[list] = None) -> List[dict]:
+    def _read(self, sql: str, args: Optional[list] = None,
+              missing_ok: bool = False) -> List[dict]:
         try:
             res = self.gateway.read_sql(sql, args or [])
         except Exception as exc:
             raise LabCoreUnavailable(
                 f"LabCore could not be read ({type(exc).__name__}: "
                 f"{exc})") from exc
-        # missing_ok=False: `ensure_schema` has just confirmed both CREATEs, so
-        # a "no such table" here would contradict an acknowledged write rather
-        # than mean "nothing created yet". The degrade a caller may want is the
-        # explicit one on `load`, not a silent one buried here.
-        return read_rows(res, missing_ok=False)
+        # `missing_ok=False` by default: after `ensure_schema` has confirmed
+        # both CREATEs, a "no such table" would contradict an acknowledged
+        # write rather than mean "nothing created yet". `load()` asks for the
+        # other reading, because it no longer declares anything — see there.
+        return read_rows(res, missing_ok=missing_ok)
 
     def ensure_schema(self) -> None:
         """Declare both tables, and raise if LabCore will not.
@@ -214,20 +218,28 @@ class LabScheduleStore:
         self._write(HOLIDAY_DDL)
         self._ready = True
 
-    def load(self, *, degrade_to_default: bool = False) -> LabSchedule:
-        """The lab's hours as LabCore holds them.
+    def load(self) -> LabSchedule:
+        """The lab's hours as LabCore holds them. Raises if it cannot be asked.
 
-        Raises `LabCoreError` when LabCore cannot be asked. Pass
-        `degrade_to_default=True` ONLY from a path that just draws the answer:
-        it turns an outage into a plausible Monday-to-Friday week, which is
-        exactly what must not happen on any path that then writes.
+        A READ DECLARES NOTHING (2026-08-25). This called `ensure_schema()`,
+        which raises when a CREATE is refused — so a full WRITE queue made the
+        lab's opening hours unreadable, for two tables that have existed for
+        months, and pushed two more statements into the queue on the way. That
+        is precisely the regression `tests/test_reads_survive_a_full_write_
+        queue.py` was written for; this was the read path it missed.
+
+        The two tables genuinely may not exist, on a LabCore where LEM has
+        never saved its hours. `missing_ok=True` is the honest reading of that:
+        a lab that has never set its hours has the default week. Every other
+        read failure still raises, because `save()` fills the fields the
+        operator did not type from this, and a degraded read would post back a
+        Mon-Fri week with every holiday deleted.
         """
         try:
-            self.ensure_schema()
             schedule = LabSchedule()
             rows = self._read(
                 "SELECT working_days, opens, closes FROM lem_lab_schedule "
-                "WHERE id = 1")
+                "WHERE id = 1", missing_ok=True)
             if rows:
                 row = rows[0]
                 try:
@@ -244,17 +256,15 @@ class LabScheduleStore:
             schedule.holidays = {
                 str(r.get("day")): str(r.get("name") or "")
                 for r in self._read(
-                    "SELECT day, name FROM lem_lab_holidays ORDER BY day")
+                    "SELECT day, name FROM lem_lab_holidays ORDER BY day",
+                    missing_ok=True)
                 if r.get("day")}
             return schedule
         except LabCoreError:
-            if not degrade_to_default:
-                raise
-            # DELIBERATE, and only because the caller named it. A fresh default
-            # rather than the half-filled object above: a schedule with real
-            # hours and silently no holidays is a worse lie than the plain
-            # Monday-to-Friday assumption this is allowed to make.
-            return LabSchedule()
+            # No `degrade_to_default` any more. The one caller that wants a
+            # plausible week does it in the route, where it can also say
+            # `known: false` — see web_app.api_schedule.
+            raise
 
     def save(self, schedule: LabSchedule) -> LabSchedule:
         schedule.validate()
@@ -276,10 +286,17 @@ class LabScheduleStore:
         # to save again. Before, the same sequence emptied the holiday list and
         # returned "ok", so the first anyone knew was a lab reported open on
         # Christmas Day.
-        if schedule.holidays:
-            self._write("DELETE FROM lem_lab_holidays")
-            for day, name in schedule.holidays.items():
-                self.add_holiday(day, name)
+        #
+        # THE WIPE IS UNCONDITIONAL (2026-08-25). It used to be guarded with
+        # `if schedule.holidays:`, so removing the LAST holiday issued no
+        # DELETE at all: the operator deleted Christmas, the POST answered ok,
+        # and the row was still there — the lab reported closed on a day it was
+        # open, which is the same class of silent wrong answer as a refused
+        # write reported as saved. An empty holiday list is a deliberate
+        # instruction, not an absence of one.
+        self._write("DELETE FROM lem_lab_holidays")
+        for day, name in schedule.holidays.items():
+            self.add_holiday(day, name)
         return schedule
 
     def add_holiday(self, day: str, name: str = "") -> None:

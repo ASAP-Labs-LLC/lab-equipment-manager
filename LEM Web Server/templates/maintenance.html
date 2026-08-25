@@ -71,6 +71,7 @@
       moves its next due date on from today.</p>
       <div class="tally" id="tally"></div>
       <p class="err" id="err"></p>
+      <p class="err" id="named"></p>
       <div id="taskList"><p class="empty">Loading…</p></div>
     </section>
 
@@ -159,11 +160,20 @@ async function load() {
       + 'This page fills back in when it returns.</p>';
     $('#doneList').innerHTML = '<p class="empty">&nbsp;</p>';
     $('#tally').innerHTML = '';
+    $('#named').textContent = '';
     return;
   }
 
   let tasks = now.tasks || [];
   if (KIND) tasks = tasks.filter(t => t.kind === KIND);
+  // `machines_named: false` means the TASKS are all here and their machine
+  // names are not — the server serves the record rather than withholding it
+  // over its labels (the rule /api/export/qc.csv follows). Without this line a
+  // row reading "m1" looks like an instrument actually called m1.
+  $('#named').textContent = now.machines_named === false
+    ? 'LabCore did not answer for the instrument names, so some rows are '
+      + 'labelled by id. The schedule itself is complete.'
+    : '';
   const n = s => tasks.filter(t => t.status === s).length;
   $('#tally').innerHTML =
     `<span class="chip red">overdue <b>${n('RED')}</b></span>

@@ -31,11 +31,26 @@ THE GATEWAY'S CONTRACT, read off labcore_gateway.py:
 
 and — the part that catches people — the REAL client's `write()` returns
 `resp.json()` verbatim from LabCore's HTTP queue. That queue serialises at roughly
-1.5 writes a second and refuses past 100 pending by ANSWERING, not by raising. So a
-refusal can arrive in any shape LabCore felt like sending, including one with no
-"error" key at all. Which is why the rule below is stated positively:
+1.5 writes a second and refuses past ~100 pending by ANSWERING, not by raising.
+The one refusal this lab has RECORDED is an error dict carrying `busy` and
+`retry_after`. What a SUCCESSFUL write answers is not recorded anywhere — every
+`{"ok": True, "rows_affected": N}` in this tree is our own sqlite fake — and that
+asymmetry decides the rule:
 
-    a write succeeded only if the answer SAYS SO. Silence is never success.
+    refuse on a POSITIVE failure signal. Accept anything else.
+
+An earlier version of this module said the opposite ("a write succeeded only if
+the answer SAYS SO"), which is a better principle and a worse implementation:
+against a real service replying `{"rows_affected": 1}` it fails every write in the
+lab, with /healthz green the whole time — the case RELEASING.md §5 says nothing in
+the deploy pipeline catches. Failing closed is only safe when you know what open
+looks like.
+
+This paragraph is load-bearing. The invented refusal shape that reached three
+rounds of tests got there because a comment asserted something nobody had
+measured, and the next agent read the comment as evidence. Do not restate the old
+rule here, and do not describe a shape as something LabCore sends unless it is in
+notes.md or lem_station_module.py.
 
 THE ONE READ ERROR THAT IS ALLOWED TO MEAN EMPTY is "no such table". Every lem_*
 table is created centrally at boot (see snapshot_service), so a module read before
@@ -126,8 +141,10 @@ def refusal_of(res: Any) -> Optional[str]:
         # that handed back something unparseable. That IS a failure.
         return "LabCore returned no answer ({!r})".format(res)
     # Whatever the signal, the operational detail rides along. "LabCore said no"
-    # sends someone to a log file; "LabCore said no, 137 pending, retry in 4s"
-    # tells them it is a queue and it will clear.
+    # sends someone to a log file; "LabCore said no, retry in 4s" tells them it
+    # is a queue and it will clear. `retry_after` and `busy` are the recorded
+    # fields; `pending` is picked up opportunistically if an answer happens to
+    # carry one, and nothing depends on it being there.
     detail = ", ".join(
         "{}={}".format(k, res[k]) for k in ("pending", "retry_after", "busy")
         if k in res)
@@ -152,14 +169,22 @@ def retry_after(res: Any, default: Optional[float] = None) -> Optional[float]:
 
     notes.md requires bulk writes to honour this, and a caller cannot honour what
     it cannot read. Returns `default` when the answer carries no hint.
+
+    Zero is an ANSWER — "come straight back" — so it is returned as 0.0 rather
+    than falling through as falsy. A NEGATIVE is not: it is a malformed field,
+    and `time.sleep(-5)` raises, so it takes the default like any other
+    unusable value. Both of those judgements live here rather than in each
+    caller, which is the whole point of this module — checklists.py had grown
+    its own copy of this function.
     """
     if not isinstance(res, dict):
         return default
     hint = res.get("retry_after")
     try:
-        return float(hint)
+        wait = float(hint)
     except (TypeError, ValueError):
         return default
+    return wait if wait >= 0 else default
 
 
 def _error_of(res: Any) -> Optional[str]:
@@ -197,16 +222,20 @@ def rows(res: Any, *, missing_ok: bool = True) -> List[Dict[str, Any]]:
 
 
 def confirm_write(res: Any) -> None:
-    """Raise unless the answer positively acknowledges the write.
+    """Raise if the answer says the write did not happen. Accept otherwise.
 
-    Stated positively on purpose. The old test — "no error key, so it worked" —
-    passes for `None`, for `{}`, and for the refusal LabCore's queue sends when it is
-    past 100 pending, all of which mean the row was never written. A store that
-    believes any of those tells the operator their work was saved.
+    NOT "raise unless it positively acknowledges" — that is what this used to do,
+    and it is unsafe here for one specific reason: nothing records what real
+    LabCore answers to a write that WORKS. Demanding an acknowledgement we have
+    never seen turns a busy afternoon into an app where nothing can be saved.
 
-    `rows_affected: 0` IS an acknowledgement. Deleting something already gone did
-    happen; it just changed nothing, which is a fact about the data rather than a
-    failure of the write.
+    So the failure must be positive: an "error", a truthy "busy", or a
+    present-and-falsy "ok"/"queued". A `None` is still refused — that is not an
+    answer at all, it is a gateway that stopped talking.
+
+    `rows_affected: 0` is fine. Deleting something already gone did happen; it
+    just matched nothing, which is a fact about the data rather than a failure of
+    the write.
     """
     err = refusal_of(res)
     if err is not None:

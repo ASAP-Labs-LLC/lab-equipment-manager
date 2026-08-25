@@ -48,16 +48,35 @@ def _build_gateway(dev: bool, seed: bool):
 
 
 def _seed_demo(gw) -> None:
-    """Populate a fake gateway with one machine and QC data for a live demo."""
+    """Populate a fake gateway with one machine and QC data for a live demo.
+
+    Every answer is read, like every other write in this app. These three were
+    the last unjudged `gw.write(...)` calls in the tree — and while a demo
+    seeder is the lowest-stakes place in it, an example of the habit is
+    exactly how the habit spreads. A half-seeded demo also produces the
+    confusing empty floor the seeder exists to avoid, so failing loudly here
+    is worth four lines.
+    """
     from datetime import datetime
 
     from db_config_store import DbConfigStore
+    from labcore_result import LabCoreError, confirm_write
     from models import AppConfig, BoxConfig, SampleSpec, SampleTestSpec, WatchedTarget
 
+    def seed(operation, params):
+        try:
+            confirm_write(gw.write(operation, params))
+        except LabCoreError as exc:
+            raise RuntimeError(
+                "--seed could not write the demo data ({0}: {1}). The "
+                "dashboard would come up empty and look broken.".format(
+                    operation, exc)) from exc
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    gw.write("insert_sample", {"lab_id": "STD-1", "customer": "QC Standard"})
-    gw.write("add_test", {"lab_id": "STD-1", "test_name": "Flash Point"})
-    gw.write("update_cell", {"lab_id": "STD-1", "test_name": "Flash Point", "value": "65", "updated_at": now})
+    seed("insert_sample", {"lab_id": "STD-1", "customer": "QC Standard"})
+    seed("add_test", {"lab_id": "STD-1", "test_name": "Flash Point"})
+    seed("update_cell", {"lab_id": "STD-1", "test_name": "Flash Point",
+                         "value": "65", "updated_at": now})
 
     sample = SampleSpec(name="Diesel QC", sample_id_val="STD-1",
                         tests=[SampleTestSpec(name="Flash", value_col="Flash Point",
@@ -66,7 +85,11 @@ def _seed_demo(gw) -> None:
                     watched_targets=[WatchedTarget(sample="Diesel QC", test="Flash")])
     cfg = AppConfig(version=5, poll_minutes=5, map_locked=False,
                     sample_id_column="Lab ID", samples=[sample], boxes=[box])
-    DbConfigStore(gw).save(cfg)
+    ok, why = DbConfigStore(gw).save(cfg)
+    if not ok:
+        raise RuntimeError(
+            "--seed could not save the demo configuration ({0}). The "
+            "dashboard would come up with no instruments on it.".format(why))
 
 
 def build_parser() -> argparse.ArgumentParser:

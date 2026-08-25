@@ -4,8 +4,25 @@ from datetime import datetime, timedelta
 
 import pytest
 
+import refusal_shapes
+
 # Make the V5 app package importable (modules live one dir up).
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+@pytest.fixture(params=refusal_shapes.BOTH, ids=refusal_shapes.IDS)
+def both_refusal_shapes(request):
+    """Run a whole suite once per refusal shape.
+
+    A module opts in with `pytestmark = pytest.mark.usefixtures(
+    "both_refusal_shapes")` and answers `refusal_shapes.current()` from its
+    fake gateway. The point is that the suites which decide whether this app
+    reports a write honestly were all driving ONE shape — and it was the
+    invented one. See tests/refusal_shapes.py for which half is evidence.
+    """
+    refusal_shapes.use(request.param)
+    yield request.param
+    refusal_shapes.use(refusal_shapes.EVIDENCED)
 
 
 @pytest.fixture

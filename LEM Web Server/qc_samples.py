@@ -77,6 +77,24 @@ def _doing(what: str):
         raise QcSampleRefused("Could not {}: {}".format(what, exc)) from exc
 
 
+
+def _sql(gateway, sql: str, args=None) -> dict:
+    """Issue one write, turning a RAISED transport error into an ANSWER.
+
+    `confirm_write(gateway.sql(...))` reads the answer but leaves the CALL
+    bare, so a socket error — a write that equally did not happen — escaped
+    past every `except QcSampleStoreError` as a raw OSError and became a bare
+    500. "Internal Server Error" does not tell an operator whether the standard was
+    saved. Handing it back in the shape `labcore_result` already refuses keeps
+    one rule instead of two.
+    """
+    try:
+        return gateway.sql(sql, args or [])
+    except Exception as exc:                       # transport, not logic
+        return {"error": "LabCore could not be written to ({0}: {1})".format(
+            type(exc).__name__, exc)}
+
+
 QC_SAMPLES_DDL = (
     "CREATE TABLE IF NOT EXISTS lem_qc_samples ("
     "name TEXT PRIMARY KEY, sample_id_val TEXT, tests TEXT)"
@@ -165,23 +183,8 @@ class QcSampleStore:
         if self._schema_ready:
             return
         with _doing("create lem_qc_samples"):
-            confirm_write(self.gateway.sql(QC_SAMPLES_DDL))
+            confirm_write(_sql(self.gateway, QC_SAMPLES_DDL))
         self._schema_ready = True
-
-    def _schema_for_read(self) -> None:
-        """Best-effort CREATE ahead of a read. DELIBERATE SWALLOW, defended.
-
-        If the table exists the read works whether or not the CREATE was
-        accepted; if it does not, the read answers "no such table", which is the
-        one error `rows()` is allowed to call empty. Failing to DISPLAY the
-        standards because the write queue is busy would take the page down during
-        exactly the congestion this change is about. Reads still raise on
-        everything else.
-        """
-        try:
-            self.ensure_schema()
-        except QcSampleRefused:
-            pass
 
     def save(self, sample: QcSample) -> None:
         if not sample.name.strip():
@@ -197,7 +200,8 @@ class QcSampleStore:
                 raise ValueError("k must be greater than zero.")
         self.ensure_schema()
         with _doing("save the QC standard {!r}".format(sample.name.strip())):
-            confirm_write(self.gateway.sql(
+            confirm_write(_sql(
+                self.gateway,
                 "INSERT INTO lem_qc_samples (name, sample_id_val, tests) "
                 "VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
                 "sample_id_val=excluded.sample_id_val, tests=excluded.tests",
@@ -215,7 +219,8 @@ class QcSampleStore:
         """
         self.ensure_schema()
         with _doing("delete the QC standard {!r}".format(name)):
-            confirm_write(self.gateway.sql(
+            confirm_write(_sql(
+                self.gateway,
                 "DELETE FROM lem_qc_samples WHERE name = ?", [name]))
 
     def list_samples(self, *, missing_ok: bool = True) -> List[QcSample]:
@@ -234,8 +239,15 @@ class QcSampleStore:
         list: there, "could not ask" served as "does not exist" would report the
         operator's real lot as not found, or let a duplicate lot be created over
         a library it could not see.
+
+        A READ DECLARES NOTHING (2026-08-25). The first cut of this called a
+        best-effort `_schema_for_read()` which swallowed a refusal but still
+        ISSUED the CREATE — one more op per read into a queue that was already
+        past 100 pending, forever, since the flag can never latch while it is
+        being refused. The declaration belongs to `save()`/`delete()`, which
+        genuinely need the table before they INSERT. A SELECT says "no such
+        table" for itself, and that is the one error `rows()` may call empty.
         """
-        self._schema_for_read()
         res = self.gateway.read_sql(
             "SELECT name, sample_id_val, tests FROM lem_qc_samples ORDER BY name")
         with _doing("read the QC standards"):

@@ -365,19 +365,26 @@ class TestLivenessFallback:
 
 # ── the write queue answers "no", and the answer must be read ────────────────
 #
-# LabCore's write queue serialises at ~1.5 writes/sec and REFUSES past 100
-# pending by ANSWERING — no exception, no "error" key, no "ok". Every test
-# below refuses in that real shape, because `{"error": ...}` is the one shape
-# the old `if not res.get("error")` code already coped with, and testing only
-# that would prove nothing about the bug being fixed.
+# LabCore's write queue serialises at ~1.5 writes/sec and REFUSES past ~100
+# pending by ANSWERING rather than raising.
+# Every test in this module runs TWICE, once per refusal shape — see
+# tests/refusal_shapes.py for which of the two is evidence and which is a
+# fixture. In short: the error dict carrying `busy` is recorded from a real
+# incident; the one with no "error" key is synthetic, kept because
+# `{"error": ...}` is the ONE shape the old `if not res.get("error")` code
+# already handled, so a suite refusing only that way proves nothing.
 
 from labcore_result import LabCoreError, LabCoreRefused, LabCoreUnavailable
 from machine_map import (MachineMapError, MapReadUnavailable, MapSettingsStore,
                          MapWriteRefused)
 
-# The literal body seen from a full queue: it is a dict, it is not an error,
-# and it is not an acknowledgement either.
-QUEUE_FULL = {"queued": False, "pending": 137}
+import refusal_shapes                                   # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("both_refusal_shapes")
+
+# SYNTHETIC — a dict that is not an error and not an acknowledgement either.
+# Chosen for that property; not a body anyone has seen. See refusal_shapes.
+QUEUE_FULL = refusal_shapes.NO_ERROR_KEY
 
 
 class QueueFullGateway:
@@ -389,8 +396,9 @@ class QueueFullGateway:
     schema still forms and the store under test is exercised past ensure_schema.
     """
 
-    def __init__(self, inner, refuse_when=None, answer=QUEUE_FULL):
+    def __init__(self, inner, refuse_when=None, answer=None):
         self.inner = inner
+        # `None` means "whichever shape this run of the suite is driving".
         self.answer = answer
         self.refuse_when = refuse_when or (
             lambda sql: not sql.lstrip().upper().startswith("CREATE"))
@@ -399,6 +407,8 @@ class QueueFullGateway:
     def sql(self, sql, args=None, **kw):
         if self.refuse_when(sql):
             self.refused.append(sql)
+            if self.answer is None:
+                return refusal_shapes.current()
             return self.answer
         return self.inner.sql(sql, args, **kw)
 
@@ -451,7 +461,7 @@ class TestRefusedLayoutWrites:
         assert MachineLayoutStore(gw).positions() == {"m1": (2.0, 3.0)}
 
     @pytest.mark.parametrize("answer", [None, {"ok": False},
-                                        {"queued": False, "pending": 137}])
+                                        refusal_shapes.NO_ERROR_KEY])
     def test_silence_is_never_success(self, gw, answer):
         """None, {} and a queue refusal all mean the row was never written."""
         blocked = MachineLayoutStore(QueueFullGateway(gw, answer=answer))

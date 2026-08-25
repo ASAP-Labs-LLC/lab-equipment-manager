@@ -135,20 +135,27 @@ class TestStore:
         with pytest.raises(LabCoreError):
             LabScheduleStore(Dead()).load()
 
-    def test_a_display_path_can_still_ask_for_the_default_by_name(self):
-        """The true half of the old doctrine survives — as an opt-in. A wall
-        display would rather draw a plausible week than an error; nothing that
-        goes on to write may use this."""
-        class Dead:
-            def sql(self, *a, **k):
-                raise RuntimeError("LabCore down")
+    def test_the_display_degrade_lives_in_the_ROUTE_not_here(self):
+        """REPLACED 2026-08-25, and this is the honest version of it.
 
-            def read_sql(self, *a, **k):
-                return {"error": "LabCore down"}
+        `load(degrade_to_default=True)` was an opt-in escape hatch with no
+        caller anywhere in the app — a documented rule nothing exercised, which
+        is how a comment becomes false without any test noticing. It is gone.
 
-        s = LabScheduleStore(Dead()).load(degrade_to_default=True)
-        assert s.working_days == [0, 1, 2, 3, 4]
-        assert s.holidays == {}
+        The behaviour it described is real and still wanted, and it is on
+        `/api/schedule`, where the degrade can ALSO ship `known: false` — the
+        part the flag could never do, and the part that matters: a plausible
+        Mon-Fri week that does not admit it is a guess is how a lab that works
+        Saturdays saw its own hours quietly replaced.
+        `test_route_honesty_gaps.TestTheScheduleSaysWhenItIsGuessing` holds it.
+        """
+        import inspect
+
+        assert "degrade_to_default" not in inspect.signature(
+            LabScheduleStore.load).parameters
+        source = inspect.getsource(LabScheduleStore.load)
+        assert "raise" in source, (
+            "load() must still raise; the degrade belongs to the route")
 
 
 # ── what it changes about a machine ─────────────────────────────────────────
@@ -289,7 +296,12 @@ from labcore_result import LabCoreError, LabCoreUnavailable
 from lab_schedule import ScheduleWriteError
 
 
-REFUSAL = {"queued": False, "pending": 137}
+import refusal_shapes                                   # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("both_refusal_shapes")
+
+# SYNTHETIC — see refusal_shapes.
+REFUSAL = refusal_shapes.NO_ERROR_KEY
 
 
 class QueueFull:
@@ -313,7 +325,7 @@ class QueueFull:
         self.writes += 1
         if self.refusing or (self.refuse_after is not None
                              and self.writes > self.refuse_after):
-            return dict(REFUSAL)
+            return refusal_shapes.current()
         return self.real.sql(sql, args)
 
     def read_sql(self, sql, args=None, **kw):

@@ -83,9 +83,9 @@ class QcSpecRefused(QcSpecStoreError, LabCoreRefused):
 def _doing(what: str):
     """Re-label `labcore_result`'s verdict with the operation that failed.
 
-    "LabCore did not acknowledge the write ({'pending': 137})" is true and
-    useless on a floor; "Could not save the QC band for m1 / Cloud Point" is what
-    an operator needs to see before running another standard against it.
+    "LabCore did not acknowledge the write" is true and useless on a floor;
+    "Could not save the QC band for m1 / Cloud Point" is what an operator needs
+    to see before running another standard against it.
     """
     try:
         yield
@@ -95,6 +95,24 @@ def _doing(what: str):
         raise QcSpecUnavailable("Could not {}: {}".format(what, exc)) from exc
     except LabCoreRefused as exc:
         raise QcSpecRefused("Could not {}: {}".format(what, exc)) from exc
+
+
+def _sql(gateway, sql: str, args=None) -> dict:
+    """Issue one write, turning a RAISED transport error into an ANSWER.
+
+    `confirm_write(gateway.sql(...))` reads the answer but leaves the CALL
+    bare, so a socket error — a write that equally did not happen — escaped
+    past every `except QcSpecStoreError` as a raw OSError and became a bare
+    500. "Internal Server Error" does not tell an operator whether the band was
+    saved. Handing it back in the shape `labcore_result` already refuses keeps
+    one rule instead of two.
+    """
+    try:
+        return gateway.sql(sql, args or [])
+    except Exception as exc:                       # transport, not logic
+        return {"error": "LabCore could not be written to ({0}: {1})".format(
+            type(exc).__name__, exc)}
+
 
 QC_SPECS_DDL = (
     "CREATE TABLE IF NOT EXISTS lem_qc_specs ("
@@ -169,24 +187,8 @@ class QcSpecStore:
         if self._schema_ready:
             return
         with _doing("create lem_qc_specs"):
-            confirm_write(self.gateway.sql(QC_SPECS_DDL))
+            confirm_write(_sql(self.gateway, QC_SPECS_DDL))
         self._schema_ready = True
-
-    def _schema_for_read(self) -> None:
-        """Best-effort CREATE ahead of a read. DELIBERATE SWALLOW, defended.
-
-        A read has nothing to lose by a refused CREATE and everything to lose by
-        raising on one: if the table already exists the read works regardless,
-        and if it genuinely does not exist the read itself answers "no such
-        table", which `rows()` reads as the honest empty. Turning a busy write
-        queue into a failure to DISPLAY the bands would take the floor down
-        during exactly the congestion this whole change is about. Reads still
-        raise on every other error — see each read below.
-        """
-        try:
-            self.ensure_schema()
-        except QcSpecRefused:
-            pass
 
     def save(self, spec: QcSpec) -> None:
         if not spec.test_name.strip():
@@ -198,7 +200,8 @@ class QcSpecStore:
         self.ensure_schema()
         with _doing("save the QC band for {} / {}".format(
                 spec.machine_uid, spec.test_name.strip())):
-            confirm_write(self.gateway.sql(
+            confirm_write(_sql(
+                self.gateway,
                 "INSERT INTO lem_qc_specs (machine_uid, test_name, sample_id, "
                 "expected, std_dev, k, units) VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
@@ -220,7 +223,8 @@ class QcSpecStore:
         self.ensure_schema()
         with _doing("delete the QC band for {} / {}".format(
                 machine_uid, test_name)):
-            confirm_write(self.gateway.sql(
+            confirm_write(_sql(
+                self.gateway,
                 "DELETE FROM lem_qc_specs WHERE machine_uid = ? "
                 "AND test_name = ?", [machine_uid, test_name]))
 
@@ -240,8 +244,15 @@ class QcSpecStore:
         Pass `missing_ok=False` from a path that is about to WRITE off the back
         of this list: there, "could not ask" served as "does not exist" is how a
         save becomes a 404 about something real.
+
+        A READ DECLARES NOTHING (2026-08-25). The first cut of this called a
+        best-effort `_schema_for_read()` which swallowed a refusal but still
+        ISSUED the CREATE — one more op per read into a queue that was already
+        past 100 pending, forever, since the flag can never latch while it is
+        being refused. The declaration belongs to `save()`/`delete()`, which
+        genuinely need the table before they INSERT. A SELECT says "no such
+        table" for itself, and that is the one error `rows()` may call empty.
         """
-        self._schema_for_read()
         if machine_uid:
             res = self.gateway.read_sql(
                 "SELECT machine_uid, test_name, sample_id, expected, std_dev, "
@@ -392,9 +403,10 @@ class MachineStateReader:
         # while the bench keeps running samples on it — and the reverse, an
         # unheard "clear", leaves a healthy machine locked out.
         with _doing("create lem_machine_control"):
-            confirm_write(self.gateway.sql(CONTROL_DDL))
+            confirm_write(_sql(self.gateway, CONTROL_DDL))
         with _doing("set the override for {}".format(machine_uid)):
-            confirm_write(self.gateway.sql(
+            confirm_write(_sql(
+                self.gateway,
                 "INSERT INTO lem_machine_control (machine_uid, "
                 "manual_override, comment, updated_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(machine_uid) DO UPDATE SET "

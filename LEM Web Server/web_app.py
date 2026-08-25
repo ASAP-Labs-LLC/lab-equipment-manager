@@ -313,10 +313,12 @@ def static_version(path: str) -> str:
 
 # ── how this app answers "LabCore did not do that" ──────────────────────────
 #
-# LabCore's write queue serialises at ~1.5 writes a second and refuses past 100
-# pending BY ANSWERING — no exception, no "error" key. Every store now raises
-# instead of reading that answer as success, which means every route below has
-# to decide what the operator is told. Two rules, and they are the whole point:
+# LabCore's write queue serialises at ~1.5 writes a second and refuses past ~100
+# pending BY ANSWERING rather than raising — the recorded shape is an error dict
+# carrying `busy` and `retry_after` (notes.md; lem_station_module.py:495). Every
+# store now puts that answer through `labcore_result` instead of reading it as
+# success, which means every route below has to decide what the operator is
+# told. Two rules, and they are the whole point:
 #
 #   1. A refusal is never a 200. A dialog that closes on "Saved" after the band
 #      was dropped is the failure this branch exists to remove.
@@ -445,6 +447,33 @@ def create_app(gateway, admin_password: Optional[str] = None,
     provider = StatusProvider(gateway)
     app.config["PROVIDER"] = provider
 
+    def _confirmed_write(sql: str, args: Optional[list] = None) -> dict:
+        """One write this route issues itself, with BOTH failures named alike.
+
+        `confirm_write(gateway.sql(...))` reads the ANSWER and leaves the CALL
+        bare. A socket error, a DNS failure or a proxy 502 never produces an
+        answer, so it sailed straight past every `except LabCoreError` in here
+        and out as "Internal Server Error" — which tells an operator nothing
+        about whether their correction factor, their completion or their
+        machine deletion went through. The row is equally not written either
+        way; the only difference was which words they got.
+
+        `LabCoreUnavailable`, not `LabCoreRefused`: nothing answered, so the
+        state of the write is unknown, and `_labcore_failed` says exactly that
+        (503, "did not go through and its state is unknown") rather than
+        "LabCore said no". The four stores already do this in their own
+        `_write` helpers; this is the same rule for the writes web_app does not
+        hand to a store.
+        """
+        try:
+            res = gateway.sql(sql, args or [])
+        except Exception as exc:                    # transport, not logic
+            raise LabCoreUnavailable(
+                "LabCore could not be written to ({0}: {1})".format(
+                    type(exc).__name__, exc)) from exc
+        confirm_write(res)
+        return res
+
     def authed() -> bool:
         return bool(session.get("user"))
 
@@ -480,13 +509,26 @@ def create_app(gateway, admin_password: Optional[str] = None,
         return redirect(url_for("floor"))
 
     # ── read endpoints ────────────────────────────────────────────────
+    #
+    # Both of these render the stored AppConfig, and `DbConfigStore.load()`
+    # raises now instead of answering `{}` (2026-08-25). It has to: the same
+    # object feeds `/api/boxes`, which saves it straight back, and the save
+    # prunes to match. What that costs HERE is only a status code, and the
+    # alternative is the V4 dashboard drawing a lab with every instrument
+    # retired because a queue was busy for eight seconds.
     @app.route("/api/status")
     def api_status():
-        return jsonify(provider.build_snapshot())
+        try:
+            return jsonify(provider.build_snapshot())
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the lab's configuration")
 
     @app.route("/api/config")
     def api_config():
-        return jsonify(serialize_config(provider.load_config()))
+        try:
+            return jsonify(serialize_config(provider.load_config()))
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the lab's configuration")
 
     @app.route("/api/me")
     def api_me():
@@ -526,7 +568,16 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
-        cfg = provider.load_config()
+        try:
+            # THE READ THAT DECIDES A WRITE. `save()` rewrites each list table
+            # to match what it is handed — upsert the wanted rows, delete the
+            # rest — so a config degraded to `{}` by a failed read is an
+            # instruction to delete every QC standard, user and checklist in
+            # the lab. Adding one box must never be able to do that, which is
+            # why `load()` raises and this does not paper over it.
+            cfg = provider.load_config()
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the lab's configuration")
         box = BoxConfig(
             uid=body.get("uid") or f"box_{uuid.uuid4().hex[:12]}",
             title=str(body.get("title") or "New Machine"),
@@ -541,7 +592,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     @app.route("/api/refresh", methods=["POST"])
     def api_refresh():
-        return jsonify(provider.build_snapshot())
+        try:
+            return jsonify(provider.build_snapshot())
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the lab's configuration")
 
     # ── LEM Station bridge: machines, QC specs, events, overrides ─────
     #
@@ -649,11 +703,30 @@ def create_app(gateway, admin_password: Optional[str] = None,
         exists to keep LabCore load independent of how many things are looking.
         """
         online = getattr(snapshots, "_online", None)
+        # Whether LabCore ever accepted our CREATEs and ALTERs. Deliberately
+        # NOT part of `status`: a degraded schema still serves a usable floor,
+        # and answering 500 would fail a release that works. But it must be
+        # VISIBLE — a refused CREATE at boot drops the snapshot onto the
+        # fifteen-read fallback path and can leave `correction` missing from
+        # lem_machine_specs, and both of those are invisible from the outside.
+        # RELEASING.md §5: nothing else in the pipeline catches a release that
+        # starts perfectly and shows the wrong thing.
+        schema_ok = getattr(snapshots, "schema_ready", True)
+        # "unknown", not "degraded", before the first refresh. `schema_ready`
+        # is False on a server that has simply not looked yet — which is
+        # exactly when the updater probes a candidate on its scratch port — and
+        # answering "degraded" with an EMPTY `schema_error` there blocks a
+        # release that works. A health check that cries wolf gets ignored, and
+        # it takes the real signal with it.
+        checked = getattr(snapshots, "schema_checked", True)
+        schema = "ok" if schema_ok else ("degraded" if checked else "unknown")
         return jsonify({
             "status": "ok",
             "version": APP_VERSION,
             "labcore": "unknown" if online is None else (
                 "reachable" if online else "unreachable"),
+            "schema": schema,
+            "schema_error": getattr(snapshots, "schema_error", ""),
             "pid": os.getpid(),
             # Seconds since a person last did something. Wall displays polling
             # and benches pushing do not count - see _is_background.
@@ -756,9 +829,34 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # only DRAWS the answer. Nothing is decided from it, the floor
             # shows Mon–Fri until LabCore answers, and the alternative is a 503
             # on the page a lab leaves open all day.
-            return jsonify(
-                schedule_store.load(degrade_to_default=True).to_dict(_now()))
-        return jsonify(schedule_from_tables(tables).to_dict(_now()))
+            #
+            # But it has to SAY it is guessing. `/api/map` already ships
+            # `known: false` for its own fallback, and this one had no flag at
+            # all — so a lab that works Saturdays saw its own hours quietly
+            # replaced by Mon–Fri, and every silent module on a Saturday was
+            # reported `closed` rather than `stopped`. Degrading is a judgement
+            # call; degrading invisibly is the bug this branch is about.
+            try:
+                loaded = schedule_store.load()
+                known = True
+            except LabCoreError as exc:
+                logger.warning("lab schedule unreadable, showing the default "
+                               "week: %s", exc)
+                from lab_schedule import LabSchedule as _LabSchedule
+                loaded, known = _LabSchedule(), False
+            body = loaded.to_dict(_now())
+            body["known"] = known
+            return jsonify(body)
+        # Same check as /api/maintenance: the snapshot tolerates one failed
+        # arm, so `sched: []` here can mean "the lab has never set its hours"
+        # OR "that read timed out", and only one of those honestly draws a
+        # Mon-Fri week. The floor is allowed to keep drawing one either way —
+        # it just has to admit which.
+        unread = (snapshots.table_error("sched")
+                  or snapshots.table_error("holiday"))
+        body = schedule_from_tables(tables).to_dict(_now())
+        body["known"] = not unread
+        return jsonify(body)
 
     @app.route("/api/schedule", methods=["POST"])
     def api_save_schedule():
@@ -1216,11 +1314,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # machine that still has its configuration.
         def _drop(table):
             def go():
-                res = gateway.sql(
-                    "DELETE FROM {0} WHERE machine_uid = ?".format(table),
-                    [machine_uid])
                 try:
-                    confirm_write(res)
+                    _confirmed_write(
+                        "DELETE FROM {0} WHERE machine_uid = ?".format(table),
+                        [machine_uid])
                 except LabCoreRefused as exc:
                     # The one refusal that honestly means "already gone": a
                     # table nothing has ever written to holds no rows for this
@@ -1374,10 +1471,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def api_get_machine_config(machine_uid):
         try:
             record = config_store.get(machine_uid)
-        except ConfigReadUnavailable as exc:
+        except MachineConfigError as exc:
             # THE 404 TRAP. "Could not ask" served as "does not exist" is how a
             # module that has been parsing all morning is told it was never
             # configured — and it would then offer to make a second one.
+            #
+            # `MachineConfigError`, not `ConfigReadUnavailable`: the narrower
+            # catch left every other way this can fail — a refusal, a raised
+            # transport error — falling through as a bare 500, and "Internal
+            # Server Error" answers the module's question no better than a 404
+            # does. `_labcore_unreadable` already tells a refusal (502) from an
+            # outage (503), so one catch loses nothing.
             return _labcore_unreadable(exc, "that machine's configuration")
         if record is None:
             return jsonify({"error": "No configuration for that machine."}), 404
@@ -1553,13 +1657,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
         logged = True
         try:
             snapshots.ensure_schema()
-            confirm_write(gateway.sql(
+            _confirmed_write(
                 "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
                 "test_name, value, detail) VALUES (?, ?, ?, '', '', '', ?)",
                 [task.machine_uid, datetime.now().isoformat(), task.kind,
                  json.dumps({"task": task.name, "completed": when,
                              "note": note,
-                             "by": session.get("user", "")})]))
+                             "by": session.get("user", "")})])
         except LabCoreError as exc:
             logged = False
             logger.warning("completion of %s not written to the log: %s",
@@ -1661,15 +1765,27 @@ def create_app(gateway, admin_password: Optional[str] = None,
             return []
         return res.get("rows") or []
 
-    def _log_entries(args, failed=None) -> list:
-        # `_titles()` reaches LabCore when the snapshot has not built, and it
-        # now raises rather than shrugging. That must land in the SAME `failed`
-        # flag the log read uses — this route already has the honest answer
-        # shape ("this list may be incomplete"), so a raise belongs there rather
-        # than in a 500 that loses the events we did manage to read.
+    def _log_entries(args, failed=None, unnamed=None) -> list:
+        # TWO FLAGS, NOT ONE (2026-08-25). `_titles()` reaches LabCore when the
+        # snapshot has not built, and it raises rather than shrugging — but a
+        # missing NAME and a missing EVENT are different facts and folding them
+        # into one flag made the CSV export refuse a whole download because the
+        # machine column could not be labelled.
+        #
+        # /api/export/qc.csv, reading the same log table, already serves the
+        # record with a blank name column and says so in its comment: "names
+        # decorate; the QC rows are the record". Two rules for one question in
+        # one file is how this branch's bugs started.
+        #
+        # `failed` still means "the list may be incomplete" — that is what the
+        # JSON banner and the CSV refusal are both for. `unnamed` means "the
+        # rows are all here, their labels are not".
         titles, ok = _titles_soft()
-        if not ok and failed is not None:
-            failed["at"] = True
+        if not ok:
+            if unnamed is not None:
+                unnamed["at"] = True
+            elif failed is not None:
+                failed["at"] = True
         needle = (args.get("q") or "").strip().lower()
         out = []
         for row in _log_rows(args, failed=failed):
@@ -1712,32 +1828,44 @@ def create_app(gateway, admin_password: Optional[str] = None,
         failed = {"at": False}
         entries = _log_entries(request.args, failed=failed)
 
+        # "The read failed" and "this lab has no log yet" are two facts, and
+        # this used to answer `[]` to both — judged with `res.get("error")`,
+        # the hand-rolled test the rest of this branch removes, so a refusal
+        # carrying no "error" key read as an empty vocabulary. The drop-down
+        # then vanished exactly when the log is busiest, with nothing saying
+        # why.
+        kinds_failed = {"at": False}
+
         def kinds_now():
             # A DISTINCT over the whole machine log, to fill a dropdown of about
             # six fixed words. On the live table that is the same shape of query
             # that once took eight seconds — and it was running per request.
             res = gateway.read_sql(
                 "SELECT DISTINCT kind FROM lem_machine_log ORDER BY kind")
-            if res.get("error"):
+            try:
+                found = labcore_rows(res)
+            except LabCoreError:
                 # DELIBERATE DEGRADATION. This fills a filter DROP-DOWN, and the
                 # very same request already reports the read failure through
                 # `failed["at"]` — raising here would replace an honest partial
-                # answer with a 503 the page cannot render. An empty filter list
-                # hides no events; it only offers no shortcuts.
-                #
-                return []
-            return [str(r.get("kind")) for r in (res.get("rows") or [])
-                    if r.get("kind")]
+                # answer with a 503 the page cannot render. But the fallback is
+                # the vocabulary this app WRITES, not a blank: every filter the
+                # page can offer still works, and `kinds_known: false` tells it
+                # the list was not read.
+                kinds_failed["at"] = True
+                return list(LOG_KINDS)
+            return [str(r.get("kind")) for r in found if r.get("kind")]
 
         kinds = _page("logkinds", kinds_now)
-        if not kinds:
-            # A BLANK is never kept. `_page` caches whatever `produce()`
-            # returns, and the only thing that drops this key is a config
-            # change (`_audit`) — so one timed-out DISTINCT would empty the
-            # filter for days, which is the same shape of bug as the rest of
-            # this branch, just in a drop-down.
+        if kinds_failed["at"] or not kinds:
+            # A GUESS IS NEVER KEPT, and neither is a blank. `_page` caches
+            # whatever `produce()` returns, and the only thing that drops this
+            # key is a config change (`_audit`) — so one timed-out DISTINCT
+            # would leave the fallback list in place for days, reported as if
+            # it had been read.
             _page_drop("logkinds")
-        out = {"events": entries, "kinds": kinds}
+        out = {"events": entries, "kinds": kinds,
+               "kinds_known": not kinds_failed["at"]}
         if failed["at"]:
             out["error"] = ("LabCore did not answer in time — its write queue is "
                             "busy. This list may be incomplete; try again shortly.")
@@ -1750,13 +1878,23 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # under it is the one version of this bug that leaves the building and
         # gets filed as the lab's history.
         failed = {"at": False}
-        entries = _log_entries(request.args, failed=failed)
+        unnamed = {"at": False}
+        entries = _log_entries(request.args, failed=failed, unnamed=unnamed)
         if failed["at"]:
+            # The EVENTS could not be read. A file cannot carry a warning, and
+            # a download with a header row and nothing under it is the one
+            # version of this bug that leaves the building and gets filed as
+            # the lab's history.
             return jsonify({
                 "error": "LabCore did not answer in time, so this export would "
                          "be incomplete and nothing has been downloaded. Try "
                          "again in a moment.",
                 "retry": True, "labcore": "unavailable"}), 503
+        # `unnamed` deliberately does NOT refuse. Every event is present and
+        # correct; only the `machine` column falls back to the uid, exactly as
+        # it already does for a retired machine, and exactly as
+        # /api/export/qc.csv does. Withholding the record over its decoration
+        # would be the larger failure.
         rows = [[e["ts"], e["machine_title"], e["kind"], e["lab_id"],
                  e["test_name"], e["value"], e["by"],
                  json.dumps(e["detail"], separators=(",", ":"))]
@@ -1944,7 +2082,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # Stamp the event at the completion date, not now, so the history
             # sorts and charts as the work actually happened.
             try:
-                confirm_write(gateway.sql(
+                _confirmed_write(
                     "INSERT INTO lem_machine_log (machine_uid, ts, kind, "
                     "lab_id, test_name, value, detail) "
                     "VALUES (?, ?, ?, '', '', '', ?)",
@@ -1954,7 +2092,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                  "completed": entry["completed"],
                                  "note": entry["note"],
                                  "by": entry["by"] or session.get("user", ""),
-                                 "imported": True})]))
+                                 "imported": True})])
             except LabCoreError as exc:
                 failure = exc
                 break
@@ -1998,15 +2136,35 @@ def create_app(gateway, admin_password: Optional[str] = None,
         which no per-machine dialog can answer."""
         from snapshot_service import maintenance_from_tables, titles_from_tables
         tables = _snapshot_tables()
-        if tables is None:                 # first request, or LabCore down at boot
-            # Names only; `tables` is empty either way on this branch, so the
-            # task list is the same and a blip costs the titles, not the page.
-            titles, tables = _titles_soft()[0], {}
+        named = True
+        if tables is None:
+            # First request, or LabCore down at boot. This used to substitute
+            # `tables = {}` and serve the empty task list that falls out of it —
+            # a 200 saying "nothing scheduled anywhere" built from a snapshot
+            # that had never been built. Ask LabCore instead, and if it cannot
+            # answer, say so: `for_machine` on the sibling route already does.
+            try:
+                grouped = maint_store.all()
+            except LabCoreError as exc:
+                return _labcore_unreadable(
+                    exc, "the lab's PM and calibration schedule")
+            titles, named = _titles_soft()
         else:
+            # The snapshot tolerates one failed arm — right for the floor, where
+            # a missing maintenance row costs one pill. Not right here, where the
+            # arm IS the answer: "nothing is overdue anywhere" invented out of a
+            # read that timed out is how a calibration gets missed, and it is the
+            # same lie as a write reported as saved.
+            unread = snapshots.table_error("maint")
+            if unread:
+                return _labcore_unreadable(
+                    LabCoreUnavailable(unread),
+                    "the lab's PM and calibration schedule")
+            grouped = maintenance_from_tables(tables)
             titles = titles_from_tables(tables)
         today = _now().date()
         tasks = []
-        for uid, records in maintenance_from_tables(tables).items():
+        for uid, records in grouped.items():
             for task in records:
                 # today, not date.today(): the interval status is judged per
                 # request, so a task falling due overnight is red in the morning.
@@ -2016,7 +2174,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
         tasks.sort(key=lambda t: (t["status"] != "RED", t["status"] != "YELLOW",
                                  t["machine_title"], t["name"]))
         due = sum(1 for t in tasks if t["status"] in ("RED", "YELLOW"))
-        return jsonify({"tasks": tasks, "due_count": due})
+        # A NAME decorates; the task is the record. Losing the titles leaves a
+        # row labelled `m1` rather than "Multitek NS", which is ugly and
+        # complete — withholding the schedule over its labels would be the
+        # larger failure, and it is the rule /api/export/qc.csv already follows.
+        # But an unlabelled row must not read as a machine that is genuinely
+        # called m1, so the page is told.
+        return jsonify({"tasks": tasks, "due_count": due,
+                        "machines_named": named})
 
     @app.route("/api/maintenance/<uid>", methods=["DELETE"])
     def api_delete_maintenance(uid):
@@ -2126,7 +2291,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
     _corrections_ready = {"at": False}
 
     def _corrections_schema() -> None:
-        """Declare the table once, and only once it is ACKNOWLEDGED.
+        """Declare the table once, and only once it is ACKNOWLEDGED. WRITES ONLY.
 
         The flag used to not exist at all — the DDL ran on every read of every
         correction dialog, one more write into a queue that serialises at ~1.5
@@ -2134,10 +2299,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
         half of the bug: a boot while the queue was full would leave this
         believing the table exists for the life of the process, and every
         correction written afterwards would go nowhere.
+
+        And `_corrections()` no longer calls it (2026-08-25). Declaring from
+        the read meant a full WRITE queue closed the corrections dialog — the
+        one dialog whose whole job is to show an offset that IS in force —
+        because a `CREATE TABLE IF NOT EXISTS` for a table that already existed
+        came back refused. The declaration stays where a row is about to be
+        INSERTed, which is the only place it buys anything.
         """
         if _corrections_ready["at"]:
             return
-        confirm_write(gateway.sql(CORRECTIONS_DDL))
+        _confirmed_write(CORRECTIONS_DDL)
         _corrections_ready["at"] = True
 
     def _corrections(machine_uid: str) -> dict:
@@ -2147,8 +2319,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
         that is a claim about every result this instrument reports. It also
         feeds the audit line on a save — a degraded read would record
         `previous: 0.0` about a bench that has been running at -3.0.
+
+        Declares nothing; `labcore_rows` still swallows exactly one error, "no
+        such table", which on a LabCore where no correction has ever been saved
+        is the honest `{}` rather than an invented one.
         """
-        _corrections_schema()
         res = gateway.read_sql(
             "SELECT test_name, correction, units FROM lem_correction_factors "
             "WHERE machine_uid = ? ORDER BY test_name", [machine_uid])
@@ -2244,7 +2419,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
         try:
             existing = _corrections(machine_uid).get(test_name)
             previous = existing["correction"] if existing else 0.0
-            confirm_write(gateway.sql(
+            # HERE, not in `_corrections()`: this is the path that INSERTs, so
+            # this is the path that needs the table to exist.
+            _corrections_schema()
+            _confirmed_write(
                 "INSERT INTO lem_correction_factors (machine_uid, test_name, "
                 "correction, units, updated_at, updated_by) "
                 "VALUES (?, ?, ?, ?, ?, ?) "
@@ -2255,7 +2433,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 [machine_uid, test_name, correction,
                  str(body.get("units") or ""),
                  _now().isoformat(timespec="seconds"),
-                 session.get("user", "")]))
+                 session.get("user", "")])
         except LabCoreError as exc:
             # This number is added to EVERY measurement the bench reports, not
             # only its QC. Reported as saved and dropped, the lab believes it is
@@ -2284,9 +2462,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if existing is None:
             return jsonify({"error": f"No correction for “{test_name}”."}), 404
         try:
-            confirm_write(gateway.sql(
+            _confirmed_write(
                 "DELETE FROM lem_correction_factors WHERE machine_uid = ? "
-                "AND test_name = ?", [machine_uid, test_name]))
+                "AND test_name = ?", [machine_uid, test_name])
         except LabCoreError as exc:
             # A correction reported as removed and still in force keeps being
             # added to every reading, and the dialog now shows it as gone.

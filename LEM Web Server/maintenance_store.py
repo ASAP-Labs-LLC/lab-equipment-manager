@@ -142,20 +142,33 @@ class MaintenanceStore:
             raise LabCoreUnavailable(
                 f"LabCore could not be read ({type(exc).__name__}: "
                 f"{exc})") from exc
-        # missing_ok=False everywhere in this file. `ensure_schema` runs first
-        # and now CONFIRMS its CREATE TABLE, so by the time a read is issued the
-        # table provably exists — "no such table" after that is not "nothing has
-        # been created yet", it is a contradiction, and swallowing it would put
-        # us straight back to reporting an unreachable schedule as an empty one.
-        return read_rows(res, missing_ok=False)
+        # missing_ok=True, corrected 2026-08-25. It was False, justified by
+        # "`ensure_schema` runs first and CONFIRMS its CREATE, so the table
+        # provably exists" — and that justification was the regression: it
+        # required every READ to declare a schema, so a `CREATE TABLE IF NOT
+        # EXISTS` refused by a full WRITE queue made the PM dialog fail for a
+        # table that had existed for months. Reads declare nothing now, which
+        # puts "no such table" back on the table as a real answer, and its
+        # honest reading is empty: nobody has ever scheduled any maintenance.
+        #
+        # Every other error still raises — a timeout, a busy answer, a
+        # non-answer. Those are the shapes that would report "nothing
+        # scheduled" about an instrument with a calibration due.
+        return read_rows(res, missing_ok=True)
 
     def ensure_schema(self) -> None:
-        """Declare the table, and raise if LabCore will not.
+        """Declare the table, and raise if LabCore will not. WRITES ONLY.
 
         `_ready` is only set once the CREATE is acknowledged. It used to be set
         unconditionally, so a refused CREATE latched "ready" for the life of the
         process and every INSERT afterwards was aimed at a table that did not
         exist — and reported success.
+
+        Called from the writing methods and from nowhere else. `_rows()` used
+        to call it, which meant merely LOOKING at a schedule failed while the
+        write queue was full. A SELECT does not need the table declared: it
+        says "no such table" itself, which is the one error a read may call
+        empty.
         """
         if not self._ready:
             self._write(MAINTENANCE_DDL)
@@ -217,7 +230,8 @@ class MaintenanceStore:
             "DELETE FROM lem_maintenance WHERE machine_uid = ?", [machine_uid])
 
     def _rows(self, where: str = "", args: Optional[list] = None) -> List[dict]:
-        self.ensure_schema()
+        # No `ensure_schema()`: see the note there. Reading a schedule must not
+        # fail because the write queue is full.
         return self._read(
             "SELECT uid, machine_uid, name, kind, interval_days, last_done, "
             "note FROM lem_maintenance " + where + " ORDER BY kind, name",

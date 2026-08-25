@@ -21,9 +21,15 @@ calls threw their answer away, and every read decided for itself that an
 error meant "empty".
 
 That is not a stylistic gap, it is a silent data-loss bug, because LabCore's
-write queue serialises at roughly 1.5 writes a second and **refuses past 100
-pending by ANSWERING** — no exception, no "error" key. A refusal looks like
-`{"queued": false, "pending": 137}`. Dropped on the floor, it means:
+write queue serialises at roughly 1.5 writes a second and **refuses past ~100
+pending by ANSWERING** rather than raising. The refusal this lab has actually
+recorded (notes.md; lem_station_module.py:495) is
+
+    {"error": "LabCore is busy…", "busy": true, "retry_after": n}
+
+an error DICT returned normally. `labcore_result` is what decides — it refuses
+on any positive failure signal and never re-derives the shape here. Dropped on
+the floor, a refusal means:
 
   * a dragged instrument that snaps back to where it was on the next refresh,
     with "saved" already on screen — the map that "keeps rearranging itself";
@@ -112,6 +118,26 @@ def _confirm(res, what: str) -> None:
         raise MapWriteRefused("{0} — not saved: {1}".format(what, exc)) from exc
 
 
+def _write(gateway, sql: str, args=None, *, what: str) -> None:
+    """Issue one write and confirm it, converting BOTH ways it can fail.
+
+    The nine call sites here used to read `_confirm(gateway.sql(...), what)`,
+    which converts the ANSWER but leaves the CALL bare: a socket error or a
+    client that raises is a write that equally did not happen, and it escaped
+    as a raw OSError past every `except MapWriteRefused` in web_app and landed
+    as a bare 500. "Internal Server Error" does not tell an operator whether
+    their drag was saved. checklists/lab_schedule/maintenance_store already had
+    `_write` helpers doing exactly this; this brings the map stores in line.
+    """
+    try:
+        res = gateway.sql(sql, args or [])
+    except Exception as exc:                       # transport, not logic
+        raise MapWriteRefused(
+            "{0} — not saved: LabCore could not be written to ({1}: "
+            "{2})".format(what, type(exc).__name__, exc)) from exc
+    _confirm(res, what)
+
+
 def _read(res, what: str, *, missing_ok: bool):
     """Rows from a read, or a raise saying which read could not be answered."""
     try:
@@ -137,12 +163,15 @@ class MapSettingsStore:
         # table that was never made. Raising here also means a caller retries
         # on its next request instead of failing forever.
         if not self._ready:
-            _confirm(self.gateway.sql(SETTINGS_DDL),
-                     "creating lem_map_settings")
+            _write(self.gateway, SETTINGS_DDL, what="creating lem_map_settings")
             self._ready = True
 
     def locked(self) -> bool:
-        self.ensure_schema()
+        # NO `ensure_schema()` (2026-08-25). Every open floor screen polls this
+        # every two seconds; declaring a schema from it meant a full WRITE
+        # queue pushed one refused CREATE per screen per two seconds into the
+        # queue that was already full, and the answer degraded to "locked" —
+        # the map froze itself because the queue was busy.
         # missing_ok: a table nobody has ever written to is a map nobody has
         # ever locked, and unlocked is the honest default (V4's too).
         # Every OTHER error raises, because THIS READ DECIDES A WRITE:
@@ -157,12 +186,11 @@ class MapSettingsStore:
 
     def set_locked(self, locked: bool) -> None:
         self.ensure_schema()
-        _confirm(
-            self.gateway.sql(
-                "INSERT INTO lem_map_settings (key, value) VALUES ('locked', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                ["1" if locked else "0"]),
-            "{0} the map".format("locking" if locked else "unlocking"))
+        _write(self.gateway,
+               "INSERT INTO lem_map_settings (key, value) VALUES ('locked', ?) "
+               "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+               ["1" if locked else "0"],
+               what="{0} the map".format("locking" if locked else "unlocking"))
 
 
 @dataclass(frozen=True)
@@ -190,9 +218,10 @@ class MachineLayoutStore:
 
     def ensure_schema(self) -> None:
         # Confirmed before `_ready`, for the reason in MapSettingsStore.
+        # WRITES ONLY — `positions()` no longer calls it.
         if not self._ready:
-            _confirm(self.gateway.sql(LAYOUT_DDL),
-                     "creating lem_machine_layout")
+            _write(self.gateway, LAYOUT_DDL,
+                   what="creating lem_machine_layout")
             self._ready = True
 
     def save_position(self, machine_uid: str, x: float, y: float) -> None:
@@ -200,13 +229,12 @@ class MachineLayoutStore:
         # A dropped position write is the floor silently refusing to remember a
         # drag: the instrument snaps back on the next 2s refresh while the page
         # has already said "saved". The operator drags it again, and again.
-        _confirm(
-            self.gateway.sql(
-                "INSERT INTO lem_machine_layout (machine_uid, pos_x, pos_y) "
-                "VALUES (?, ?, ?) ON CONFLICT(machine_uid) DO UPDATE SET "
-                "pos_x=excluded.pos_x, pos_y=excluded.pos_y",
-                [machine_uid, float(x), float(y)]),
-            "moving {0} on the floor".format(machine_uid))
+        _write(self.gateway,
+               "INSERT INTO lem_machine_layout (machine_uid, pos_x, pos_y) "
+               "VALUES (?, ?, ?) ON CONFLICT(machine_uid) DO UPDATE SET "
+               "pos_x=excluded.pos_x, pos_y=excluded.pos_y",
+               [machine_uid, float(x), float(y)],
+               what="moving {0} on the floor".format(machine_uid))
 
     def forget(self, machine_uid: str) -> None:
         # rows_affected 0 is fine and confirm_write allows it: forgetting a
@@ -214,14 +242,13 @@ class MachineLayoutStore:
         # nothing. What must not pass is a refusal, which would leave a retired
         # instrument's bay claimed on a floor that says it was cleared.
         self.ensure_schema()
-        _confirm(
-            self.gateway.sql(
-                "DELETE FROM lem_machine_layout WHERE machine_uid = ?",
-                [machine_uid]),
-            "clearing the floor position of {0}".format(machine_uid))
+        _write(self.gateway,
+               "DELETE FROM lem_machine_layout WHERE machine_uid = ?",
+               [machine_uid],
+               what="clearing the floor position of {0}".format(machine_uid))
 
     def positions(self) -> Dict[str, Tuple[float, float]]:
-        self.ensure_schema()
+        # No `ensure_schema()` — see MapSettingsStore.locked().
         # missing_ok: no layout table means nobody has arranged the floor yet,
         # and the painter's own bay algorithm covers that honestly. Any other
         # error raises: silently reporting "no saved positions" during a blip
@@ -253,9 +280,10 @@ class QcTargetStore:
 
     def ensure_schema(self) -> None:
         # Confirmed before `_ready`, for the reason in MapSettingsStore.
+        # WRITES ONLY — `targets()` and `all()` no longer call it.
         if not self._ready:
-            _confirm(self.gateway.sql(TARGETS_DDL),
-                     "creating lem_machine_targets")
+            _write(self.gateway, TARGETS_DDL,
+                   what="creating lem_machine_targets")
             self._ready = True
 
     def assign(self, machine_uid: str, targets: List[WatchedTarget]) -> None:
@@ -276,11 +304,10 @@ class QcTargetStore:
         drop and a pretence that nothing changed.
         """
         self.ensure_schema()
-        _confirm(
-            self.gateway.sql(
-                "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
-                [machine_uid]),
-            "clearing the QC assignment of {0}".format(machine_uid))
+        _write(self.gateway,
+               "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
+               [machine_uid],
+               what="clearing the QC assignment of {0}".format(machine_uid))
         seen = set()
         for target in targets:
             if not target.sample.strip() or not target.test.strip():
@@ -289,17 +316,16 @@ class QcTargetStore:
             if key in seen:
                 continue
             seen.add(key)
-            _confirm(
-                self.gateway.sql(
-                    "INSERT INTO lem_machine_targets (machine_uid, sample_name, "
-                    "test_name) VALUES (?, ?, ?)",
-                    [machine_uid, key[0], key[1]]),
-                "assigning {0} / {1} to {2} (its assignment set is now "
-                "incomplete and must be re-applied)".format(
-                    key[0], key[1], machine_uid))
+            _write(self.gateway,
+                   "INSERT INTO lem_machine_targets (machine_uid, sample_name, "
+                   "test_name) VALUES (?, ?, ?)",
+                   [machine_uid, key[0], key[1]],
+                   what="assigning {0} / {1} to {2} (its assignment set is now "
+                        "incomplete and must be re-applied)".format(
+                            key[0], key[1], machine_uid))
 
     def targets(self, machine_uid: str) -> List[WatchedTarget]:
-        self.ensure_schema()
+        # No `ensure_schema()` — see MapSettingsStore.locked().
         # missing_ok: no table means nothing has ever been assigned anywhere,
         # which is a real state on a fresh LabCore and reads as "No QC
         # assigned" — the honest grey. Every other error raises: "no QC
@@ -318,15 +344,20 @@ class QcTargetStore:
                 for r in found]
 
     def all(self) -> Dict[str, List[WatchedTarget]]:
-        self.ensure_schema()
+        # No `ensure_schema()` — see MapSettingsStore.locked(). The one caller
+        # that DECIDES A WRITE from this (`qc_samples.changeover`) declares the
+        # schema itself before it starts, so the missing-table case cannot
+        # reach it silently.
         # missing_ok=False, and it is the only read here that refuses to
         # degrade: THIS READ DECIDES WRITES. qc_samples.changeover() walks it
         # to move every machine off a retired QC lot onto the new one, and an
         # empty answer means "no machine was checked against the old lot" — it
         # would report "0 moved", leave every instrument pointed at a lot that
         # no longer exists, and stop QC across the lab, which is the exact
-        # failure changeover() was written to prevent. Nor can the table
-        # honestly be missing here: ensure_schema() just confirmed its CREATE.
+        # failure changeover() was written to prevent. A missing table stays
+        # loud here too: on a LabCore with no lem_machine_targets at all, a
+        # changeover reporting "0 moved" would be technically true and read as
+        # "everything is fine", which is the answer this store must never give.
         found = _read(
             self.gateway.read_sql(
                 "SELECT machine_uid, sample_name, test_name FROM "
@@ -345,8 +376,7 @@ class QcTargetStore:
         # A surviving assignment row for a retired machine would be picked up
         # again by changeover() and by the floor's own reads.
         self.ensure_schema()
-        _confirm(
-            self.gateway.sql(
-                "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
-                [machine_uid]),
-            "clearing the QC assignment of {0}".format(machine_uid))
+        _write(self.gateway,
+               "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
+               [machine_uid],
+               what="clearing the QC assignment of {0}".format(machine_uid))

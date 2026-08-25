@@ -3,14 +3,24 @@
 The bug these tests exist for, stated once:
 
     LabCore's write queue serialises at roughly 1.5 writes a second and refuses
-    past 100 pending BY ANSWERING — no exception, no "error" key, sometimes not
-    even an "ok". So `self.gateway.sql(...)` whose answer nobody reads reports
-    success for a write that never happened, and the dialog closes on "Saved".
+    past ~100 pending BY ANSWERING rather than raising. So `self.gateway.sql(
+    ...)` whose answer nobody reads reports success for a write that never
+    happened, and the dialog closes on "Saved".
 
-Which is why every write test below drives the REAL refusal shape,
-`{"queued": False, "pending": 137}`. `{"error": ...}` is the one shape the old
-`if not res.get("error")` code already coped with; a suite that only refuses
-that way proves nothing about the bug being fixed.
+Every write test below runs TWICE, once per refusal shape, and the two are not
+the same kind of thing (see tests/refusal_shapes.py):
+
+  * the EVIDENCED refusal — `{"error": "LabCore is busy…", "busy": true,
+    "retry_after": n}`, an error dict returned normally. notes.md and
+    lem_station_module.py:495 both record it from a real incident;
+  * a SYNTHETIC shape carrying no "error" key at all. Worth driving because
+    `{"error": ...}` is the one shape the old `if not res.get("error")` code
+    already coped with, so a suite that refuses only that way proves nothing
+    about the bug — but it is a fixture, not a measurement.
+
+This suite used to drive ONLY the synthetic one, while its docstring called it
+"the REAL refusal shape". That is how an invention became a fact three rounds
+of work relied on.
 
 And every write test asserts TWO things, because the whole failure was the gap
 between them:
@@ -20,24 +30,43 @@ between them:
        again;
     2. LabCore's tables are unchanged, read directly past the app.
 
-Reads get their own section. A read cannot be refused with the queue-full shape
-(no "error" key means `labcore_result.rows` reads it as an empty answer, which
-is correct — LabCore replied, it simply listed nothing), so those are driven
-with a real timeout. Their rule is the sibling of the write rule: "no QC
-assigned", "nothing scheduled", "no rounds recorded" and "no such configuration"
-are all answers an operator acts on, and none of them may be invented out of a
-read that never happened.
+Reads get their own section, driven with a real timeout. Their rule is the
+sibling of the write rule: "no QC assigned", "nothing scheduled", "no rounds
+recorded" and "no such configuration" are all answers an operator acts on, and
+none of them may be invented out of a read that never happened.
+
+CORRECTION (2026-08-25). This paragraph used to go on: "a read cannot be
+refused with the queue-full shape". That reasoning is about ONE shape —
+a shape carrying no "error" key, which `labcore_result.rows` therefore reads
+as an answered-but-empty read, correctly.
+It does not hold for the shape LabCore is actually recorded as sending,
+`{"error": "LabCore is busy…", "busy": true, …}`, and reads travel the same
+endpoint as writes. Standing there unchallenged, it was why no read test in
+this branch drove a refusal at all. That case now lives in
+tests/test_reads_survive_a_full_write_queue.py
+(`TestAReadCanBeREFUSEDAsWellAsUnanswerable`), along with the regression where
+a full WRITE queue took down read-only pages.
+
+The synthetic shape is named honestly in tests/refusal_shapes.py: it was
+INVENTED during this work and then cited by later work as if measured. It still
+refuses correctly, so the tests using it stand — but it is not evidence, and no
+more of it should be added.
 """
 import json
+import os
 
 import pytest
 
+import refusal_shapes
 from labcore_gateway import FakeLabCoreGateway
 from web_app import create_app
 
+# Every test in this module runs once per refusal shape.
+pytestmark = pytest.mark.usefixtures("both_refusal_shapes")
 
-# The queue's refusal, verbatim off the live system.
-QUEUE_FULL = {"queued": False, "pending": 137}
+# Kept as a name for the tests that pass an explicit `answer=`. SYNTHETIC —
+# see refusal_shapes.
+QUEUE_FULL = refusal_shapes.NO_ERROR_KEY
 # A read waiting behind that queue until the client gives up.
 READ_BLIP = {"error": "HTTPSConnectionPool(host='labvision'): Read timed out"}
 
@@ -74,7 +103,8 @@ class Refusing:
     def sql(self, sql, args=None, **kw):
         if self.refuse(sql):
             self.refused.append(sql)
-            return dict(QUEUE_FULL)
+            # Whichever shape this run of the suite is driving.
+            return refusal_shapes.current()
         return self.real.sql(sql, args, **kw)
 
     def read_sql(self, sql, args=None, **kw):
@@ -707,14 +737,28 @@ class TestAnUnreadableAnswerIsNotAnEmptyOne:
         unreadable(r)
         assert "text/csv" not in r.headers.get("Content-Type", "")
 
-    def test_the_kind_filter_never_caches_a_blank(self, lab):
-        # `_page` keeps whatever it is given, and only a config change drops
-        # this key — so one timed-out DISTINCT would empty the filter for days.
+    def test_the_kind_filter_never_caches_a_failed_read(self, lab):
+        """`_page` keeps whatever it is given, and only a config change drops
+        this key — so one timed-out DISTINCT could sit in the filter for days.
+
+        UPDATED 2026-08-25. This asserted `kinds == []` on the failure, which
+        pinned in place the very conflation the route now avoids: an empty list
+        is what a lab with no log yet honestly has, and answering it to a
+        failed read is the same "could not ask" served as a fact that the rest
+        of this suite is about. The failure now falls back to the vocabulary
+        this app writes and flags `kinds_known: false`. What this test is
+        actually for — that the fallback is not cached — is unchanged and
+        asserted below.
+        """
         gw = Refusing(lab, fail_read=lambda sql: "DISTINCT kind" in sql)
         c = _client(gw)
-        assert c.get("/api/logs").get_json()["kinds"] == []
+        body = c.get("/api/logs").get_json()
+        assert body["kinds_known"] is False
+        assert body["kinds"], "the filter went blank because a read failed"
         gw.fail_read = lambda sql: False
-        assert c.get("/api/logs").get_json()["kinds"] != []
+        healed = c.get("/api/logs").get_json()
+        assert healed["kinds_known"] is True
+        assert healed["kinds"] != []
 
     def test_the_log_reports_the_blip_in_the_shape_the_page_reads(self, lab):
         # This route already had the right answer shape, so it keeps its 200 and
@@ -763,14 +807,55 @@ class TestThePagesReadTheStatusTheyGetBack:
     a 503 carries a JSON body too. `{error: …}` then flowed in as data and
     rendered as an empty schedule, an empty archive, a bench with no
     corrections.
+
+    WHAT THIS CLASS IS AND IS NOT (2026-08-25). Everything below greps the
+    template for a string. That is honest coverage for "does this call site
+    exist" — a call site either is written or is not, and a rename or a
+    refactor that drops one is exactly what these catch. It is NOT coverage of
+    BEHAVIOUR, and it was standing in for behaviour coverage of `failure()`,
+    which is the single function every write on the floor is judged by.
+
+    Demonstrated, not assumed: replacing the body of `failure()` with
+
+        const unused = b.error || '…';
+        return null;
+
+    leaves every string these tests look for in the file, so all twelve pass —
+    while every dialog on the floor closes on "Saved" for a write LabCore
+    refused, which is the whole branch undone. `test_the_floor_actually_runs`
+    below runs the function instead and fails on it in three cases.
     """
+
+    def test_the_floor_actually_runs_its_reader(self):
+        """Execute `failure()`, do not grep for it.
+
+        tests/js/floorboot.mjs pulls the page's classic script into a `vm`
+        context against a stub DOM and calls `failure()` with response objects
+        shaped like the ones `_labcore_failed` and `_labcore_unreadable` send.
+        A grep cannot tell a working function from a gutted one; the engine
+        can, and it is the same engine the browser uses.
+        """
+        import shutil
+        import subprocess
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node is not installed; run tests/js/floorboot.mjs "
+                        "directly on a machine that has it")
+        here = os.path.dirname(os.path.abspath(__file__))
+        done = subprocess.run(
+            [node, os.path.join(here, "js", "floorboot.mjs")],
+            capture_output=True, text=True, timeout=120)
+        assert done.returncode == 0, done.stdout + done.stderr
+        # And the assertion this test exists for actually ran, rather than the
+        # harness quietly skipping it after an earlier failure.
+        assert "failure() judges" in done.stdout, done.stdout
 
     def test_the_floor_has_one_reader_for_a_refused_write(self):
         src = _tpl("floor.html")
         assert "async function failure(r)" in src
-        # And it has to actually consult the status. A `failure()` that always
-        # answers "fine" would leave every call site below looking correct
-        # while changing nothing, which is the same silence one layer up.
+        # Kept as a NAME check only. What the body does is settled by
+        # test_the_floor_actually_runs_its_reader above; this one catches the
+        # rename, which that one reports differently ("failure() is gone").
         body = src.split("async function failure(r) {", 1)[1][:200]
         assert "if (r.ok) return null;" in body
         assert "b.error" in body

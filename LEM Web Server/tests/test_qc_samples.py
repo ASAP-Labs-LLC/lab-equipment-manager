@@ -284,10 +284,12 @@ class TestChangeoverApi:
 
 # ── The refusal that answers ────────────────────────────────────────────────
 #
-# LabCore's write queue refuses past 100 pending BY ANSWERING — no exception, no
-# "error" key, no "ok". That is the shape every test below uses. Refusing with
-# `{"error": ...}` instead would prove almost nothing: that is the one shape the
-# old `if res.get("error")` code already coped with.
+# Every test in this module runs TWICE, once per refusal shape — see
+# tests/refusal_shapes.py for which of the two is evidence and which is a
+# fixture. In short: the error dict carrying `busy` is recorded from a real
+# incident; the one with no "error" key is synthetic, kept because
+# `{"error": ...}` is the ONE shape the old `if not res.get("error")` code
+# already handled, so a suite refusing only that way proves nothing.
 
 from labcore_result import LabCoreError, LabCoreRefused, LabCoreUnavailable
 from qc_samples import (
@@ -296,7 +298,12 @@ from qc_samples import (
     QcSampleUnavailable,
 )
 
-QUEUE_FULL = {"queued": False, "pending": 137}
+import refusal_shapes                                   # noqa: E402
+
+pytestmark = pytest.mark.usefixtures("both_refusal_shapes")
+
+# SYNTHETIC — see refusal_shapes.
+QUEUE_FULL = refusal_shapes.NO_ERROR_KEY
 READ_BLIP = {"error": "HTTPSConnectionPool(host='labvision'): Read timed out"}
 
 
@@ -308,15 +315,18 @@ class QueueFullGateway:
     Everything else goes through to a real fake, so the before-state is true.
     """
 
-    def __init__(self, real=None, refuse=lambda sql: True, answer=QUEUE_FULL):
+    def __init__(self, real=None, refuse=lambda sql: True, answer=None):
         self.real = real if real is not None else FakeLabCoreGateway()
         self.refuse = refuse
+        # `None` means "whichever shape this run of the suite is driving".
         self.answer = answer
         self.refused = []
 
     def sql(self, sql, args=None, **kw):
         if self.refuse(sql):
             self.refused.append(sql)
+            if self.answer is None:
+                return refusal_shapes.current()
             return dict(self.answer) if isinstance(self.answer, dict) \
                 else self.answer
         return self.real.sql(sql, args, **kw)
@@ -512,4 +522,9 @@ class TestTheExceptionsRoutesWillCatch:
         with pytest.raises(QcSampleRefused) as caught:
             QcSampleStore(gw).save(QcSample("Cloud CRM", "CP", []))
         assert "Cloud CRM" in str(caught.value)
-        assert "137" in str(caught.value)
+        # And whatever detail the answer carried. This used to assert `"137"`,
+        # pinning the message to the one field of the INVENTED shape.
+        carried = [k for k in ("retry_after", "busy", "pending")
+                   if k in refusal_shapes.current()]
+        assert carried, "the shape under test carries no detail at all"
+        assert any(k in str(caught.value) for k in carried)
