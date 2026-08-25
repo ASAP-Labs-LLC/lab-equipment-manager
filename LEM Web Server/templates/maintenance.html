@@ -187,7 +187,15 @@ async function load() {
        anywhere. Add PMs and calibrations from an instrument's record on the
        <a href="/floor">map</a>.</p>`;
 
-  const hist = (done && done.history) || [];
+  // `done` is null when its fetch failed and nothing was cached (see lem.js).
+  // "Nothing completed yet anywhere" is a compliance claim, so it may not be
+  // the answer to a read that never happened.
+  if (!done) {
+    $('#doneList').innerHTML = `<p class="empty">LabCore did not answer, so the
+      completed work could not be read. This is not an empty record.</p>`;
+    return;
+  }
+  const hist = done.history || [];
   $('#doneList').innerHTML = hist.length ? hist.map(h => `
     <div class="ev">
       <span class="kind ${esc(h.kind)}">${
@@ -225,12 +233,16 @@ document.addEventListener('click', async e => {
     `/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
     {method: 'POST', headers: {'Content-Type': 'application/json'},
      body: JSON.stringify({note})});
+  const b = await r.json().catch(() => ({}));
   if (!r.ok) {
-    const b = await r.json().catch(() => ({}));
     $('#err').textContent = b.error || 'Could not record that.';
     return;
   }
-  $('#err').textContent = '';
+  // Completing is TWO writes — the reschedule and the history line — and the
+  // second can be refused on its own. The task really is done and rescheduled,
+  // so this is a 200; but the PM/CAL record is what an auditor reads, and only
+  // the person standing here can put the entry back.
+  $('#err').textContent = b.logged === false ? (b.warning || '') : '';
   LEM.bust('/api/maintenance');
   load();
 });

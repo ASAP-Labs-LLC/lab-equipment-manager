@@ -15,6 +15,19 @@ either side, and a list of holidays. Outside those, a quiet module is reported
 a holiday never makes a live module dead.
 
 Stored in LabCore like everything else, so every screen agrees.
+
+Every answer LabCore gives goes through `labcore_result` (2026-08-24). This file
+used to be the worst offender in the app: `ensure_schema` wrapped both CREATEs in
+`except Exception: pass`, `load` wrapped both reads the same way and then asked
+`if not res.get("error")` — the exact test `labcore_result` exists to abolish,
+because LabCore's write queue refuses past ~100 pending BY ANSWERING, with no
+exception and not necessarily an "error" key. Four writes (the schedule upsert,
+the holiday wipe, and each holiday insert) reported success without ever reading
+the answer.
+
+What that cost in practice: the working-hours panel says saved, the row is not
+there, and next Monday the floor is red again — the precise symptom this module
+was written to remove.
 """
 
 from __future__ import annotations
@@ -23,6 +36,10 @@ import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from typing import Dict, List, Optional
+
+from labcore_result import (LabCoreError, LabCoreRefused, LabCoreUnavailable,
+                            confirm_write, wrote_rows)
+from labcore_result import rows as read_rows
 
 SCHEDULE_DDL = (
     "CREATE TABLE IF NOT EXISTS lem_lab_schedule ("
@@ -41,6 +58,14 @@ DEFAULT_WORKING_DAYS = [0, 1, 2, 3, 4]
 
 WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
                  "Saturday", "Sunday")
+
+
+class ScheduleWriteError(LabCoreRefused):
+    """A working-hours or holiday write LabCore did not acknowledge.
+
+    A subclass of `LabCoreRefused` so a route can catch this, `LabCoreRefused`,
+    or `LabCoreError` and get the right thing either way.
+    """
 
 
 def parse_hhmm(raw: str) -> Optional[time]:
@@ -120,58 +145,121 @@ class LabSchedule:
 class LabScheduleStore:
     """Owns `lem_lab_schedule` + `lem_lab_holidays`.
 
-    Never raises on a LabCore outage: a floor that can't render because the
-    calendar is unreachable is worse than one that assumes Monday-to-Friday.
+    It used to promise "never raises on a LabCore outage: a floor that can't
+    render because the calendar is unreachable is worse than one that assumes
+    Monday-to-Friday". Half of that is still true and half of it was a bug.
+
+    The bug: `save()` in web_app fills the fields the operator did not type from
+    `load()`. So a `load()` that quietly degrades to defaults during a blip means
+    someone editing only the opening time also resets the lab's working days to
+    Mon-Fri and drops every holiday from the form they are about to POST back —
+    a read deciding a write, served from "could not ask". `load()` therefore
+    raises now.
+
+    The true half survives, but has to be ASKED FOR by name:
+    `load(degrade_to_default=True)` is for a pure display path that would rather
+    draw a plausible week than an error. Nothing that goes on to write may use
+    it.
     """
 
     def __init__(self, gateway) -> None:
         self.gateway = gateway
         self._ready = False
 
+    # ── talking to LabCore ────────────────────────────────────────────
+    def _write(self, sql: str, args: Optional[list] = None) -> dict:
+        try:
+            res = self.gateway.sql(sql, args or [])
+        except Exception as exc:                     # transport, not logic
+            raise ScheduleWriteError(
+                f"LabCore could not be written to ({type(exc).__name__}: "
+                f"{exc})") from exc
+        try:
+            confirm_write(res)
+        except LabCoreRefused as exc:
+            raise ScheduleWriteError(str(exc)) from exc
+        return res
+
+    def _write_rows(self, sql: str, args: Optional[list] = None) -> int:
+        """Row count of a confirmed write. 0 means "already gone", not "failed"
+        — removing a holiday somebody else removed first still happened."""
+        return wrote_rows(self._write(sql, args))
+
+    def _read(self, sql: str, args: Optional[list] = None) -> List[dict]:
+        try:
+            res = self.gateway.read_sql(sql, args or [])
+        except Exception as exc:
+            raise LabCoreUnavailable(
+                f"LabCore could not be read ({type(exc).__name__}: "
+                f"{exc})") from exc
+        # missing_ok=False: `ensure_schema` has just confirmed both CREATEs, so
+        # a "no such table" here would contradict an acknowledged write rather
+        # than mean "nothing created yet". The degrade a caller may want is the
+        # explicit one on `load`, not a silent one buried here.
+        return read_rows(res, missing_ok=False)
+
     def ensure_schema(self) -> None:
+        """Declare both tables, and raise if LabCore will not.
+
+        The old body swallowed everything with `except Exception: pass` and the
+        comment "retried next call; defaults meanwhile" — but `_ready` was set
+        inside the try, so a refusal was retried forever while `save()` went on
+        INSERTing into tables that might not exist and telling the operator it
+        had worked. Now `_ready` is set only after both CREATEs are
+        acknowledged, and a store that cannot declare its tables says so.
+        """
         if self._ready:
             return
-        try:
-            self.gateway.sql(SCHEDULE_DDL)
-            self.gateway.sql(HOLIDAY_DDL)
-            self._ready = True
-        except Exception:
-            pass                       # retried next call; defaults meanwhile
+        self._write(SCHEDULE_DDL)
+        self._write(HOLIDAY_DDL)
+        self._ready = True
 
-    def load(self) -> LabSchedule:
-        self.ensure_schema()
-        schedule = LabSchedule()
+    def load(self, *, degrade_to_default: bool = False) -> LabSchedule:
+        """The lab's hours as LabCore holds them.
+
+        Raises `LabCoreError` when LabCore cannot be asked. Pass
+        `degrade_to_default=True` ONLY from a path that just draws the answer:
+        it turns an outage into a plausible Monday-to-Friday week, which is
+        exactly what must not happen on any path that then writes.
+        """
         try:
-            res = self.gateway.read_sql(
+            self.ensure_schema()
+            schedule = LabSchedule()
+            rows = self._read(
                 "SELECT working_days, opens, closes FROM lem_lab_schedule "
                 "WHERE id = 1")
-        except Exception:
+            if rows:
+                row = rows[0]
+                try:
+                    days = json.loads(row.get("working_days") or "null")
+                except (TypeError, ValueError):
+                    # A hand-edited blob is bad data, not an unreachable
+                    # LabCore: LabCore answered, the answer is unusable, and
+                    # falling back to the default week is the honest reading.
+                    days = None
+                if isinstance(days, list) and days:
+                    schedule.working_days = [int(d) for d in days]
+                schedule.opens = str(row.get("opens") or "")
+                schedule.closes = str(row.get("closes") or "")
+            schedule.holidays = {
+                str(r.get("day")): str(r.get("name") or "")
+                for r in self._read(
+                    "SELECT day, name FROM lem_lab_holidays ORDER BY day")
+                if r.get("day")}
             return schedule
-        rows = [] if res.get("error") else (res.get("rows") or [])
-        if rows:
-            row = rows[0]
-            try:
-                days = json.loads(row.get("working_days") or "null")
-            except (TypeError, ValueError):
-                days = None
-            if isinstance(days, list) and days:
-                schedule.working_days = [int(d) for d in days]
-            schedule.opens = str(row.get("opens") or "")
-            schedule.closes = str(row.get("closes") or "")
-        try:
-            res = self.gateway.read_sql(
-                "SELECT day, name FROM lem_lab_holidays ORDER BY day")
-        except Exception:
-            return schedule
-        if not res.get("error"):
-            schedule.holidays = {str(r.get("day")): str(r.get("name") or "")
-                                 for r in res.get("rows") or [] if r.get("day")}
-        return schedule
+        except LabCoreError:
+            if not degrade_to_default:
+                raise
+            # DELIBERATE, and only because the caller named it. A fresh default
+            # rather than the half-filled object above: a schedule with real
+            # hours and silently no holidays is a worse lie than the plain
+            # Monday-to-Friday assumption this is allowed to make.
+            return LabSchedule()
 
     def save(self, schedule: LabSchedule) -> LabSchedule:
         schedule.validate()
         self.ensure_schema()
-        self.gateway.sql(
+        self._write(
             "INSERT INTO lem_lab_schedule (id, working_days, opens, closes) "
             "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
             "working_days=excluded.working_days, opens=excluded.opens, "
@@ -180,8 +268,16 @@ class LabScheduleStore:
              schedule.opens, schedule.closes])
         # Holidays are a set, not a patch: saving a schedule that names them
         # replaces the list, so removing one in the UI actually removes it.
+        #
+        # The wipe-then-reinsert is not atomic — LabCore's queue takes one
+        # statement at a time and there is no transaction across them. That is
+        # unchanged, but it is now VISIBLE: if the wipe lands and an insert is
+        # refused, this raises with holidays missing, and the operator is told
+        # to save again. Before, the same sequence emptied the holiday list and
+        # returned "ok", so the first anyone knew was a lab reported open on
+        # Christmas Day.
         if schedule.holidays:
-            self.gateway.sql("DELETE FROM lem_lab_holidays")
+            self._write("DELETE FROM lem_lab_holidays")
             for day, name in schedule.holidays.items():
                 self.add_holiday(day, name)
         return schedule
@@ -189,12 +285,14 @@ class LabScheduleStore:
     def add_holiday(self, day: str, name: str = "") -> None:
         day = parse_day(day)
         self.ensure_schema()
-        self.gateway.sql(
+        self._write(
             "INSERT INTO lem_lab_holidays (day, name) VALUES (?, ?) "
             "ON CONFLICT(day) DO UPDATE SET name=excluded.name",
             [day, (name or "").strip() or "Holiday"])
 
-    def remove_holiday(self, day: str) -> None:
+    def remove_holiday(self, day: str) -> int:
+        """Returns the rows removed. 0 is fine — a holiday deleted on another
+        screen a moment ago is gone, which is what was asked for."""
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_lab_holidays WHERE day = ?",
-                         [parse_day(day)])
+        return self._write_rows(
+            "DELETE FROM lem_lab_holidays WHERE day = ?", [parse_day(day)])

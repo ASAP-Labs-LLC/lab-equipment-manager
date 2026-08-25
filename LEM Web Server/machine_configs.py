@@ -18,6 +18,24 @@ existing machine, duplicate one, or create a new one.
 
 The one rule that matters: **runtime state never travels.** A copy carrying the
 source's uid, file position or standing override would corrupt both machines.
+
+EVERY ANSWER FROM THE GATEWAY IS READ (2026-08-25)
+--------------------------------------------------
+`save()` and `delete()` used to throw LabCore's answer away, and both reads
+turned any error into "there is nothing there". LabCore's write queue refuses
+past 100 pending BY ANSWERING — `{"queued": false, "pending": 137}`, no
+exception and no "error" key — so a config the floor reported as saved could
+simply never have been written, and a module adopting that machine would come
+back to its picker with the old mappings or none at all.
+
+The reads were worse in one specific way: `get()` returning None on a read
+error made the route answer **404, "No configuration for that machine"**, about
+a configuration that exists — and `duplicate()` reads through `get()`, so a
+blip made it refuse to copy a real config. "Could not ask" served as "does not
+exist" is exactly how a save becomes a 404 about something real.
+
+Writes now go through `confirm_write`, reads through `rows`, and each read
+path says in a comment whether a missing table may honestly mean empty.
 """
 
 from __future__ import annotations
@@ -26,6 +44,14 @@ import json
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional
+
+from labcore_result import (
+    LabCoreError,
+    LabCoreRefused,
+    LabCoreUnavailable,
+    confirm_write,
+    rows,
+)
 
 CONFIG_DDL = (
     "CREATE TABLE IF NOT EXISTS lem_machine_config ("
@@ -54,6 +80,45 @@ def strip_runtime(config: dict) -> dict:
     return {k: v for k, v in (config or {}).items() if k not in RUNTIME_KEYS}
 
 
+class MachineConfigError(LabCoreError):
+    """The configuration store could not be trusted — one name for the routes.
+
+    Subclasses `LabCoreError` so a caller that treats every store alike still
+    catches it, and the two children below keep the split `labcore_result`
+    exists for: a route can only honestly offer "try again" if it can tell
+    "LabCore said no" from "LabCore could not be asked".
+    """
+
+
+class ConfigWriteRefused(MachineConfigError, LabCoreRefused):
+    """A configuration was not written. The caller must not report "saved"."""
+
+
+class ConfigReadUnavailable(MachineConfigError, LabCoreUnavailable):
+    """A configuration could not be read, so its existence is unknown.
+
+    Explicitly NOT "there is no such configuration" — that distinction is the
+    difference between a 503 and a 404 about a machine the lab is running.
+    """
+
+
+def _confirm(res, what: str) -> None:
+    """Confirm one write, or raise naming the configuration that was lost."""
+    try:
+        confirm_write(res)
+    except LabCoreRefused as exc:
+        raise ConfigWriteRefused(
+            "{0} — not saved: {1}".format(what, exc)) from exc
+
+
+def _read(res, what: str, *, missing_ok: bool):
+    """Rows from a read, or a raise saying which read could not be answered."""
+    try:
+        return rows(res, missing_ok=missing_ok)
+    except LabCoreUnavailable as exc:
+        raise ConfigReadUnavailable("{0}: {1}".format(what, exc)) from exc
+
+
 class MachineConfigStore:
     """Owns `lem_machine_config` — written by the floor and by every module."""
 
@@ -62,8 +127,13 @@ class MachineConfigStore:
         self._ready = False
 
     def ensure_schema(self) -> None:
+        # `_ready` is set only once the CREATE is ACKNOWLEDGED. Setting it
+        # unconditionally meant a boot during a full write queue left the store
+        # believing its table existed for the life of the process, writing
+        # every config afterwards into a table that was never made.
         if not self._ready:
-            self.gateway.sql(CONFIG_DDL)
+            _confirm(self.gateway.sql(CONFIG_DDL),
+                     "creating lem_machine_config")
             self._ready = True
 
     # ── read ───────────────────────────────────────────────────────────
@@ -71,34 +141,47 @@ class MachineConfigStore:
         """Names and timestamps only — the picker doesn't need every mapping
         in the lab."""
         self.ensure_schema()
-        res = self.gateway.read_sql(
-            "SELECT machine_uid, title, updated_at, updated_by "
-            "FROM lem_machine_config ORDER BY title")
-        if res.get("error"):
-            return []
+        # missing_ok: no table means no module has ever registered, and an
+        # empty picker is then the truth. Any other error raises, because an
+        # empty picker during a blip invites an operator to create a SECOND
+        # configuration for an instrument that already has one — a duplicate
+        # nobody asked for, which is the equipment-document bug in a new coat.
+        found = _read(
+            self.gateway.read_sql(
+                "SELECT machine_uid, title, updated_at, updated_by "
+                "FROM lem_machine_config ORDER BY title"),
+            "listing the machine configurations", missing_ok=True)
         return [{"machine_uid": str(r.get("machine_uid") or ""),
                  "title": str(r.get("title") or ""),
                  "updated_at": str(r.get("updated_at") or ""),
                  "updated_by": str(r.get("updated_by") or "")}
-                for r in res.get("rows") or []]
+                for r in found]
 
     def get(self, machine_uid: str) -> Optional[dict]:
         self.ensure_schema()
-        res = self.gateway.read_sql(
-            "SELECT machine_uid, title, config, updated_at, updated_by "
-            "FROM lem_machine_config WHERE machine_uid = ?", [machine_uid])
-        if res.get("error"):
+        # missing_ok: with no table there is genuinely no configuration for
+        # anyone, so None is honest. A read ERROR is not: None here becomes the
+        # route's 404 "No configuration for that machine" about a machine that
+        # is running right now, and duplicate() reads through this method, so a
+        # blip would make it refuse to copy a config that plainly exists.
+        found = _read(
+            self.gateway.read_sql(
+                "SELECT machine_uid, title, config, updated_at, updated_by "
+                "FROM lem_machine_config WHERE machine_uid = ?", [machine_uid]),
+            "reading the configuration of {0}".format(machine_uid),
+            missing_ok=True)
+        if not found:
             return None
-        rows = res.get("rows") or []
-        if not rows:
-            return None
-        row = rows[0]
+        row = found[0]
         try:
             config = json.loads(row.get("config") or "{}")
             if not isinstance(config, dict):
                 config = {}
         except (TypeError, ValueError):
-            # A hand-edited or truncated blob must not blank the floor.
+            # Kept deliberately, and it is about the DATA, not the answer: a
+            # hand-edited or truncated blob is one broken config, and taking
+            # the whole floor down for it would be the larger failure. LabCore
+            # answered; what it holds is unreadable.
             config = {}
         return {"machine_uid": str(row.get("machine_uid") or ""),
                 "title": str(row.get("title") or ""),
@@ -117,13 +200,19 @@ class MachineConfigStore:
             raise ValueError("A configuration needs a machine name.")
         self.ensure_schema()
         when = datetime.now().isoformat(timespec="seconds")
-        self.gateway.sql(
-            "INSERT INTO lem_machine_config (machine_uid, title, config, "
-            "updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(machine_uid) DO UPDATE SET title=excluded.title, "
-            "config=excluded.config, updated_at=excluded.updated_at, "
-            "updated_by=excluded.updated_by",
-            [machine_uid, title, json.dumps(config or {}), when, by])
+        # The return value below is the route's "ok, saved" payload, so it
+        # must not be built from an unread answer: a refused write here loses a
+        # whole bench's mappings, QC wiring and PM tasks while the floor shows
+        # the new name.
+        _confirm(
+            self.gateway.sql(
+                "INSERT INTO lem_machine_config (machine_uid, title, config, "
+                "updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(machine_uid) DO UPDATE SET title=excluded.title, "
+                "config=excluded.config, updated_at=excluded.updated_at, "
+                "updated_by=excluded.updated_by",
+                [machine_uid, title, json.dumps(config or {}), when, by]),
+            "saving the configuration of {0} ({1})".format(title, machine_uid))
         return {"machine_uid": machine_uid, "title": title,
                 "updated_at": when, "updated_by": by}
 
@@ -150,6 +239,14 @@ class MachineConfigStore:
         return self.save(uid, title, config, by=by)
 
     def delete(self, machine_uid: str) -> None:
+        # rows_affected 0 is an acknowledgement and confirm_write accepts it:
+        # deleting a config that was already gone DID happen. A refusal is the
+        # opposite — the config survives and offers itself in the module's
+        # picker again, so a bench can adopt a machine the floor says it
+        # retired.
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_machine_config WHERE machine_uid = ?",
-                         [machine_uid])
+        _confirm(
+            self.gateway.sql(
+                "DELETE FROM lem_machine_config WHERE machine_uid = ?",
+                [machine_uid]),
+            "deleting the configuration of {0}".format(machine_uid))

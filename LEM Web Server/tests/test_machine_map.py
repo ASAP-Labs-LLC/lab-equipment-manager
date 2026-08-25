@@ -361,3 +361,212 @@ class TestLivenessFallback:
         m = client.get("/api/machines?fresh=1").get_json()["machines"][0]
         assert m["module_state"] == "unknown"
         assert m["module_running"] is False
+
+
+# ── the write queue answers "no", and the answer must be read ────────────────
+#
+# LabCore's write queue serialises at ~1.5 writes/sec and REFUSES past 100
+# pending by ANSWERING — no exception, no "error" key, no "ok". Every test
+# below refuses in that real shape, because `{"error": ...}` is the one shape
+# the old `if not res.get("error")` code already coped with, and testing only
+# that would prove nothing about the bug being fixed.
+
+from labcore_result import LabCoreError, LabCoreRefused, LabCoreUnavailable
+from machine_map import (MachineMapError, MapReadUnavailable, MapSettingsStore,
+                         MapWriteRefused)
+
+# The literal body seen from a full queue: it is a dict, it is not an error,
+# and it is not an acknowledgement either.
+QUEUE_FULL = {"queued": False, "pending": 137}
+
+
+class QueueFullGateway:
+    """A real gateway with a full write queue in front of it.
+
+    Reads still answer — the queue serialises writes, not reads — which is what
+    lets each test assert the row was NEVER WRITTEN rather than merely that a
+    call raised. `refuse_when` defaults to "everything except CREATE", so the
+    schema still forms and the store under test is exercised past ensure_schema.
+    """
+
+    def __init__(self, inner, refuse_when=None, answer=QUEUE_FULL):
+        self.inner = inner
+        self.answer = answer
+        self.refuse_when = refuse_when or (
+            lambda sql: not sql.lstrip().upper().startswith("CREATE"))
+        self.refused = []
+
+    def sql(self, sql, args=None, **kw):
+        if self.refuse_when(sql):
+            self.refused.append(sql)
+            return self.answer
+        return self.inner.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.inner.read_sql(sql, args, **kw)
+
+
+class BlipGateway:
+    """LabCore cannot be asked at all. Writes go through so state can be set up
+    before the blip; reads time out the way this repo documents as routine."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.blind = False
+
+    def sql(self, sql, args=None, **kw):
+        return self.inner.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        if self.blind:
+            return {"error": "ReadTimeout: read timed out"}
+        return self.inner.read_sql(sql, args, **kw)
+
+
+class TestRefusedLayoutWrites:
+    def test_a_refused_position_raises_and_saves_nothing(self, gw):
+        """The floor silently refusing to remember a drag — the whole bug."""
+        MachineLayoutStore(gw).save_position("m1", 1.0, 1.0)
+        blocked = MachineLayoutStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused):
+            blocked.save_position("m1", 9.0, 9.0)
+        assert MachineLayoutStore(gw).positions() == {"m1": (1.0, 1.0)}
+
+    def test_a_refused_forget_raises_and_the_row_survives(self, gw):
+        MachineLayoutStore(gw).save_position("m1", 1.0, 1.0)
+        blocked = MachineLayoutStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused):
+            blocked.forget("m1")
+        assert MachineLayoutStore(gw).positions() == {"m1": (1.0, 1.0)}
+
+    def test_a_refused_create_is_not_remembered_as_done(self, gw):
+        """`_ready` used to be set whatever LabCore said, so one refusal at
+        boot poisoned the store for the life of the process."""
+        blocking = QueueFullGateway(gw, refuse_when=lambda sql: True)
+        store = MachineLayoutStore(blocking)
+        with pytest.raises(MapWriteRefused):
+            store.save_position("m1", 1.0, 1.0)
+        blocking.refuse_when = lambda sql: False
+        store.save_position("m1", 2.0, 3.0)          # retried, not stuck
+        assert MachineLayoutStore(gw).positions() == {"m1": (2.0, 3.0)}
+
+    @pytest.mark.parametrize("answer", [None, {"ok": False},
+                                        {"queued": False, "pending": 137}])
+    def test_silence_is_never_success(self, gw, answer):
+        """None, {} and a queue refusal all mean the row was never written."""
+        blocked = MachineLayoutStore(QueueFullGateway(gw, answer=answer))
+        with pytest.raises(MapWriteRefused):
+            blocked.save_position("m1", 1.0, 1.0)
+        assert MachineLayoutStore(gw).positions() == {}
+
+
+class TestRefusedTargetWrites:
+    def test_a_refused_assign_raises_and_leaves_the_old_set(self, gw):
+        """An instrument the lab believes is being checked, and is not."""
+        QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blocked = QcTargetStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused):
+            blocked.assign("m1", [WatchedTarget("Pour CRM", "Pour Point")])
+        assert QcTargetStore(gw).targets("m1") == [
+            WatchedTarget("Cloud CRM", "Cloud Point")]
+
+    def test_a_refused_insert_after_a_good_delete_still_raises(self, gw):
+        """The queue can fill mid-assignment. There is no transaction, so the
+        honest answer is a raise that says the set is now incomplete — never a
+        return that lets the route reply "ok"."""
+        blocked = QcTargetStore(QueueFullGateway(
+            gw, refuse_when=lambda sql: sql.lstrip().upper().startswith("INSERT")))
+        with pytest.raises(MapWriteRefused) as caught:
+            blocked.assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        assert "re-applied" in str(caught.value)
+        assert QcTargetStore(gw).targets("m1") == []
+
+    def test_a_refused_forget_raises_and_the_assignment_survives(self, gw):
+        QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blocked = QcTargetStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused):
+            blocked.forget("m1")
+        assert QcTargetStore(gw).targets("m1") == [
+            WatchedTarget("Cloud CRM", "Cloud Point")]
+
+
+class TestRefusedLockWrites:
+    def test_a_refused_lock_raises_and_the_map_stays_unlocked(self, gw):
+        blocked = MapSettingsStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused):
+            blocked.set_locked(True)
+        assert MapSettingsStore(gw).locked() is False
+
+    def test_a_refused_unlock_raises_and_the_map_stays_locked(self, gw):
+        MapSettingsStore(gw).set_locked(True)
+        blocked = MapSettingsStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused):
+            blocked.set_locked(False)
+        assert MapSettingsStore(gw).locked() is True
+
+
+class TestReadsDoNotInventAnEmptyFloor:
+    def test_a_blip_does_not_unlock_the_map(self, gw):
+        """This read GATES A WRITE — api_machine_position asks it before
+        saving a drag. Answering False during a blip would silently unlock a
+        map the lab froze."""
+        blip = BlipGateway(gw)
+        store = MapSettingsStore(blip)
+        store.set_locked(True)
+        blip.blind = True
+        with pytest.raises(MapReadUnavailable):
+            store.locked()
+
+    def test_a_blip_does_not_empty_the_floor(self, gw):
+        blip = BlipGateway(gw)
+        store = MachineLayoutStore(blip)
+        store.save_position("m1", 1.0, 1.0)
+        blip.blind = True
+        with pytest.raises(MapReadUnavailable):
+            store.positions()
+
+    def test_a_blip_does_not_report_no_qc_assigned(self, gw):
+        """"No QC assigned" is a verdict the floor paints grey. Painting it
+        because a read timed out says an instrument is unchecked when it may be
+        checked and failing."""
+        blip = BlipGateway(gw)
+        store = QcTargetStore(blip)
+        store.assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blip.blind = True
+        with pytest.raises(MapReadUnavailable):
+            store.targets("m1")
+
+    def test_a_blip_does_not_tell_a_changeover_that_nobody_is_assigned(self, gw):
+        """qc_samples.changeover() walks all() to decide who to move. An empty
+        answer means "0 moved" and stops QC across the lab."""
+        blip = BlipGateway(gw)
+        store = QcTargetStore(blip)
+        store.assign("m1", [WatchedTarget("Cloud CRM", "Cloud Point")])
+        blip.blind = True
+        with pytest.raises(MapReadUnavailable):
+            store.all()
+
+
+class TestOneNameToCatch:
+    def test_a_refusal_is_catchable_both_ways(self, gw):
+        blocked = MachineLayoutStore(QueueFullGateway(gw))
+        for expected in (MachineMapError, LabCoreRefused, LabCoreError):
+            with pytest.raises(expected):
+                blocked.save_position("m1", 1.0, 1.0)
+
+    def test_a_blip_is_catchable_both_ways(self, gw):
+        blip = BlipGateway(gw)
+        store = MachineLayoutStore(blip)
+        store.ensure_schema()
+        blip.blind = True
+        for expected in (MachineMapError, LabCoreUnavailable, LabCoreError):
+            with pytest.raises(expected):
+                store.positions()
+
+    def test_the_message_names_what_was_lost(self, gw):
+        """A queue refusal carries no hint of what it dropped; an operator
+        needs to know which drag to redo."""
+        blocked = MachineLayoutStore(QueueFullGateway(gw))
+        with pytest.raises(MapWriteRefused) as caught:
+            blocked.save_position("OptiMPP-1", 1.0, 1.0)
+        assert "OptiMPP-1" in str(caught.value)

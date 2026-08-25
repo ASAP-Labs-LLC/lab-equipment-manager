@@ -159,7 +159,14 @@ class TestStore:
         gw.sql("UPDATE lem_checklist_defs SET items = '{bad' WHERE uid = 'c1'")
         assert store.all()[0].items == []
 
-    def test_a_broken_backend_is_no_checklists_rather_than_an_error(self):
+    def test_a_broken_backend_is_an_error_rather_than_no_checklists(self):
+        """This test used to assert the opposite, and the assertion was the bug.
+
+        Nobody looking at a round with no items concludes LabCore is down; they
+        conclude the round is done or was never set up, and the closing checks
+        do not get run. `get()` is built on this too, and `get()` is what the
+        tick route uses to answer "no such checklist" — a read deciding a write.
+        """
         class Dead:
             def sql(self, *a, **k):
                 raise RuntimeError("down")
@@ -167,7 +174,8 @@ class TestStore:
             def read_sql(self, *a, **k):
                 return {"error": "down"}
 
-        assert ChecklistStore(Dead()).all() == []
+        with pytest.raises(LabCoreError):
+            ChecklistStore(Dead()).all()
 
 
 class TestDailyState:
@@ -363,3 +371,270 @@ class TestThePage:
         app = create_app(Dead(), authenticator=StubAuth(), secret="s")
         app.config["TESTING"] = True
         assert app.test_client().get("/checklists").status_code == 200
+
+
+# ── the write queue says no, and the store must not say yes ─────────────────
+#
+# LabCore's queue refuses past ~100 pending BY ANSWERING: nothing raises, and
+# the answer need not carry an "error" key. `import_state` used to ask
+# `if not res.get("error")` — true for the refusal below — and counted every
+# rejected batch as rows imported. Refusing with {"error": ...} instead would be
+# testing the one shape the old code already handled.
+
+from checklists import ChecklistWriteError
+from labcore_result import LabCoreError, LabCoreUnavailable
+
+
+REFUSAL = {"queued": False, "pending": 137}
+
+
+class QueueFull:
+    """A real gateway until it refuses. Reads keep working, so a test that a
+    write raised can then show the stored ticks are exactly as they were."""
+
+    def __init__(self, refuse_after=None):
+        self.real = FakeLabCoreGateway()
+        self.refusing = False
+        self.refuse_after = refuse_after
+        self.writes = 0
+
+    def refuse(self):
+        self.refusing = True
+
+    def allow(self):
+        self.refusing = False
+        self.refuse_after = None
+
+    def sql(self, sql, args=None, **kw):
+        self.writes += 1
+        if self.refusing or (self.refuse_after is not None
+                             and self.writes > self.refuse_after):
+            return dict(REFUSAL)
+        return self.real.sql(sql, args)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.real.read_sql(sql, args)
+
+
+class Unreadable:
+    def __init__(self):
+        self.real = FakeLabCoreGateway()
+
+    def sql(self, sql, args=None, **kw):
+        return self.real.sql(sql, args)
+
+    def read_sql(self, sql, args=None, **kw):
+        return {"error": "HTTPSConnectionPool(...): Read timed out"}
+
+
+def warm(gw, checklist=None):
+    """A store with its schema declared and one saved round, then refusing."""
+    store = ChecklistStore(gw)
+    store.save(checklist or a_list())
+    gw.refuse()
+    return store
+
+
+def tick_rows(n, day="2026-08-03"):
+    return [{"day": day, "checklist_uid": "c1", "item_uid": f"i{i}",
+             "checked": True, "user": "kaden", "at": f"{day}T09:0{i}:00",
+             "value": ""} for i in range(n)]
+
+
+class TestARefusedTickIsNeverReportedAsDone:
+    """A tick IS the record that the job was done. A dropped one is not a stale
+    screen, it is an audit trail saying nobody checked the nitrogen."""
+
+    def test_set_tick_raises_and_the_item_stays_unticked(self):
+        gw = QueueFull()
+        store = warm(gw)
+        with pytest.raises(ChecklistWriteError):
+            store.set_tick("c1", "i1", True, "2026-08-03", "kaden")
+        gw.allow()
+        assert store.state("2026-08-03") == {}
+
+    def test_unticking_raises_and_the_original_tick_stands(self):
+        gw = QueueFull()
+        store = ChecklistStore(gw)
+        store.save(a_list())
+        store.set_tick("c1", "i1", True, "2026-08-03", "kaden")
+        gw.refuse()
+        with pytest.raises(ChecklistWriteError):
+            store.set_tick("c1", "i1", False, "2026-08-03", "sam")
+        gw.allow()
+        state = store.state("2026-08-03")["c1"]["i1"]
+        assert state["checked"] is True and state["user"] == "kaden"
+
+    def test_set_value_raises_and_no_reading_is_recorded(self):
+        gw = QueueFull()
+        store = warm(gw)
+        with pytest.raises(ChecklistWriteError):
+            store.set_value("c1", "i1", "1800", "2026-08-03", "kaden")
+        gw.allow()
+        assert store.state("2026-08-03") == {}
+        assert store.values("c1", "i1") == []
+
+    def test_toggle_raises_on_the_parent_and_nothing_is_ticked(self):
+        gw = QueueFull()
+        store = warm(gw, a_list(items=[
+            ChecklistItem(uid="p", text="Gas checks"),
+            ChecklistItem(uid="s1", text="Nitrogen", item_type="subtask",
+                          parent_uid="p")]))
+        with pytest.raises(ChecklistWriteError):
+            store.toggle(store_checklist(store, gw), "p", True, "2026-08-03",
+                         "kaden")
+        gw.allow()
+        assert store.state("2026-08-03") == {}
+
+    def test_save_raises_and_the_round_is_not_changed(self):
+        gw = QueueFull()
+        store = warm(gw)
+        with pytest.raises(ChecklistWriteError):
+            store.save(a_list(name="Opening round v2"))
+        gw.allow()
+        assert store.all()[0].name == "Opening round"
+
+    def test_delete_raises_and_the_round_survives(self):
+        gw = QueueFull()
+        store = warm(gw)
+        with pytest.raises(ChecklistWriteError):
+            store.delete("c1")
+        gw.allow()
+        assert [c.uid for c in store.all()] == ["c1"]
+
+    def test_a_refused_create_table_raises_rather_than_latching_ready(self):
+        """The old body swallowed everything and set `_ready` inside the try, so
+        a refused CREATE meant three more writes into the refusing queue on
+        every later call while `save()` reported success."""
+        gw = QueueFull()
+        gw.refuse()
+        store = ChecklistStore(gw)
+        with pytest.raises(ChecklistWriteError):
+            store.ensure_schema()
+        assert store._ready is False
+
+    def test_the_store_recovers_once_the_queue_drains(self):
+        gw = QueueFull()
+        gw.refuse()
+        store = ChecklistStore(gw)
+        with pytest.raises(ChecklistWriteError):
+            store.save(a_list())
+        gw.allow()
+        store.save(a_list())
+        assert [c.uid for c in store.all()] == ["c1"]
+
+    def test_an_already_applied_migration_is_still_swallowed(self):
+        """The one deliberate swallow: `ADD COLUMN value` on a table that has it
+        is the normal case on every boot after the first. It must not raise —
+        and it must not stop the schema being marked ready."""
+        gw = FakeLabCoreGateway()
+        store = ChecklistStore(gw)
+        store.ensure_schema()
+        second = ChecklistStore(gw)
+        second.ensure_schema()             # the column already exists
+        assert second._ready is True
+
+    def test_the_refusal_is_catchable_as_one_labcore_error(self):
+        gw = QueueFull()
+        gw.refuse()
+        with pytest.raises(LabCoreError):
+            ChecklistStore(gw).save(a_list())
+
+
+def store_checklist(store, gw):
+    """The saved round, read back while reads still work."""
+    was, gw.refusing = gw.refusing, False
+    try:
+        return store.get("c1")
+    finally:
+        gw.refusing = was
+
+
+class TestImportStateCountsOnlyWhatLanded:
+    def test_a_refused_batch_raises_instead_of_being_counted_as_imported(self):
+        """The headline bug in this file. `if not res.get("error")` is TRUE for
+        {"queued": False, "pending": 137}, so every rejected batch was added to
+        the total and the operator was told 3,096 historical ticks had arrived
+        when hundreds never left."""
+        gw = QueueFull()
+        store = ChecklistStore(gw)
+        store.ensure_schema()
+        gw.refuse()
+        with pytest.raises(ChecklistWriteError):
+            store.import_state(tick_rows(3), batch=100, pause=0, attempts=1)
+        gw.allow()
+        assert store.state("2026-08-03") == {}
+
+    def test_the_error_says_how_many_rows_did_land(self):
+        """A partial import is the dangerous one: the first batches are real
+        history and the rest are missing, so the number has to be in the words
+        the operator sees."""
+        gw = QueueFull()
+        store = ChecklistStore(gw)
+        store.ensure_schema()
+        gw.refuse_after = gw.writes + 1        # batch one lands, batch two does not
+        with pytest.raises(ChecklistWriteError) as caught:
+            store.import_state(tick_rows(4), batch=2, pause=0, attempts=1)
+        assert "2 rows landed" in str(caught.value)
+        gw.allow()
+        assert len(store.state("2026-08-03")["c1"]) == 2
+
+    def test_a_batch_that_lands_after_a_retry_is_counted_once(self):
+        """The back-off is deliberate and stays: a busy queue is temporary, and
+        losing a retryable batch would be the opposite mistake. It is counted
+        once, not once per attempt."""
+        gw = QueueFull()
+        store = ChecklistStore(gw)
+        store.ensure_schema()
+
+        refused = {"n": 0}
+        real_sql = gw.sql
+
+        def busy_once(sql, args=None, **kw):
+            if "VALUES (?, ?, ?, ?, ?, ?, ?)" in sql and refused["n"] == 0:
+                refused["n"] = 1
+                return {"busy": True, "retry_after": 0}
+            return real_sql(sql, args)
+
+        gw.sql = busy_once
+        assert store.import_state(tick_rows(2), batch=100, pause=0,
+                                  attempts=3) == 2
+        gw.sql = real_sql
+        assert refused["n"] == 1
+        assert len(store.state("2026-08-03")["c1"]) == 2
+
+    def test_nothing_to_import_is_not_a_write(self):
+        gw = QueueFull()
+        gw.refuse()
+        assert ChecklistStore(gw).import_state([]) == 0
+
+
+class TestCouldNotAskIsNotNothingToDo:
+    def test_state_raises_rather_than_showing_an_untouched_round(self):
+        """An empty answer shows every item unticked; whoever is on shift
+        re-ticks, and `set_tick` overwrites the real record's name and time."""
+        with pytest.raises(LabCoreUnavailable):
+            ChecklistStore(Unreadable()).state("2026-08-03")
+
+    def test_get_raises_rather_than_answering_none(self):
+        """`None` here is the tick route's 404 about a round that exists."""
+        with pytest.raises(LabCoreUnavailable):
+            ChecklistStore(Unreadable()).get("c1")
+
+    def test_history_does_not_report_an_archive_with_no_days(self):
+        with pytest.raises(LabCoreUnavailable):
+            ChecklistStore(Unreadable()).history()
+
+    def test_values_does_not_draw_a_cylinder_that_was_never_measured(self):
+        with pytest.raises(LabCoreUnavailable):
+            ChecklistStore(Unreadable()).values("c1", "i1")
+
+    def test_a_corrupt_blob_is_still_tolerated(self):
+        """The one read-side swallow that stays: LabCore ANSWERED and one row's
+        JSON is unreadable. That is bad data, not an unreachable LabCore, and
+        one hand-edited row must not take the page down."""
+        gw = FakeLabCoreGateway()
+        store = ChecklistStore(gw)
+        store.save(a_list())
+        gw.sql("UPDATE lem_checklist_defs SET items = '{bad' WHERE uid = 'c1'")
+        assert store.all()[0].items == []

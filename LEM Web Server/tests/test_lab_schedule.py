@@ -116,8 +116,15 @@ class TestStore:
         with pytest.raises(ValueError):
             store.add_holiday("25/12/2026", "Christmas")
 
-    def test_a_broken_backend_still_yields_a_usable_default(self):
-        """LabCore outages must not take the floor down (see test_offline_boot)."""
+    def test_a_broken_backend_no_longer_pretends_it_is_monday_to_friday(self):
+        """This test used to assert the opposite, and the assertion was the bug.
+
+        `api_save_schedule` fills the fields the operator did not type from
+        `load()`. So a `load()` that silently degrades means editing only the
+        opening time also resets the working days to Mon-Fri and posts back a
+        form with every holiday missing — a read deciding a write, served from
+        "could not ask". It raises now.
+        """
         class Dead:
             def sql(self, *a, **k):
                 raise RuntimeError("LabCore down")
@@ -125,8 +132,23 @@ class TestStore:
             def read_sql(self, *a, **k):
                 return {"error": "LabCore down"}
 
-        s = LabScheduleStore(Dead()).load()
+        with pytest.raises(LabCoreError):
+            LabScheduleStore(Dead()).load()
+
+    def test_a_display_path_can_still_ask_for_the_default_by_name(self):
+        """The true half of the old doctrine survives — as an opt-in. A wall
+        display would rather draw a plausible week than an error; nothing that
+        goes on to write may use this."""
+        class Dead:
+            def sql(self, *a, **k):
+                raise RuntimeError("LabCore down")
+
+            def read_sql(self, *a, **k):
+                return {"error": "LabCore down"}
+
+        s = LabScheduleStore(Dead()).load(degrade_to_default=True)
         assert s.working_days == [0, 1, 2, 3, 4]
+        assert s.holidays == {}
 
 
 # ── what it changes about a machine ─────────────────────────────────────────
@@ -253,3 +275,159 @@ class TestScheduleEndpoint:
             "2026-12-25": "Christmas"}
         client.delete("/api/holidays/2026-12-25")
         assert client.get("/api/schedule").get_json()["holidays"] == {}
+
+
+# ── the write queue says no, and the store must not say yes ─────────────────
+#
+# LabCore's queue refuses past ~100 pending BY ANSWERING: nothing raises, and
+# the answer need not carry an "error" key. This file used to ask
+# `if not res.get("error")` — true for the refusal below — across four writes.
+# Refusing with {"error": ...} instead would test the one shape the old code
+# already handled.
+
+from labcore_result import LabCoreError, LabCoreUnavailable
+from lab_schedule import ScheduleWriteError
+
+
+REFUSAL = {"queued": False, "pending": 137}
+
+
+class QueueFull:
+    """A real gateway until it refuses. Reads keep working, so a test can show
+    the stored schedule is exactly as it was before the refused write."""
+
+    def __init__(self, refuse_after=None):
+        self.real = FakeLabCoreGateway()
+        self.refusing = False
+        self.refuse_after = refuse_after
+        self.writes = 0
+
+    def refuse(self):
+        self.refusing = True
+
+    def allow(self):
+        self.refusing = False
+        self.refuse_after = None
+
+    def sql(self, sql, args=None, **kw):
+        self.writes += 1
+        if self.refusing or (self.refuse_after is not None
+                             and self.writes > self.refuse_after):
+            return dict(REFUSAL)
+        return self.real.sql(sql, args)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.real.read_sql(sql, args)
+
+
+class Unreadable:
+    def __init__(self):
+        self.real = FakeLabCoreGateway()
+
+    def sql(self, sql, args=None, **kw):
+        return self.real.sql(sql, args)
+
+    def read_sql(self, sql, args=None, **kw):
+        return {"error": "HTTPSConnectionPool(...): Read timed out"}
+
+
+class TestARefusedScheduleWriteIsNeverReportedAsSaved:
+    def test_save_raises_and_the_old_hours_stand(self):
+        """The symptom this whole module exists to remove: the panel says saved,
+        the row is not there, and next Monday the floor is red again."""
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.save(LabSchedule(working_days=[0, 1, 2], opens="08:00",
+                               closes="16:30"))
+        gw.refuse()
+        with pytest.raises(ScheduleWriteError):
+            store.save(LabSchedule(working_days=[5, 6], opens="22:00",
+                                   closes="23:00"))
+        gw.allow()
+        s = store.load()
+        assert s.working_days == [0, 1, 2]
+        assert s.opens == "08:00" and s.closes == "16:30"
+
+    def test_a_refused_holiday_wipe_raises_instead_of_emptying_the_list(self):
+        """Wipe-then-reinsert is not atomic and never was — LabCore's queue
+        takes one statement at a time. What changed is that the failure is now
+        visible instead of returning "ok" over an emptied holiday list, which
+        reports the lab open on Christmas Day."""
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.save(LabSchedule(holidays={"2026-12-25": "Christmas"}))
+        gw.refuse_after = gw.writes + 1        # the hours land, the wipe does not
+        with pytest.raises(ScheduleWriteError):
+            store.save(LabSchedule(
+                working_days=[0], holidays={"2026-07-04": "Independence Day"}))
+        gw.allow()
+        assert store.load().holidays == {"2026-12-25": "Christmas"}
+
+    def test_add_holiday_raises_and_stores_nothing(self):
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.ensure_schema()
+        gw.refuse()
+        with pytest.raises(ScheduleWriteError):
+            store.add_holiday("2026-12-25", "Christmas")
+        gw.allow()
+        assert store.load().holidays == {}
+
+    def test_remove_holiday_raises_and_the_holiday_survives(self):
+        gw = QueueFull()
+        store = LabScheduleStore(gw)
+        store.add_holiday("2026-12-25", "Christmas")
+        gw.refuse()
+        with pytest.raises(ScheduleWriteError):
+            store.remove_holiday("2026-12-25")
+        gw.allow()
+        assert store.load().holidays == {"2026-12-25": "Christmas"}
+
+    def test_a_refused_create_table_raises_rather_than_latching_ready(self):
+        """The old body was `except Exception: pass` with `_ready` set inside
+        the try, so a refusal was retried forever while `save()` INSERTed into
+        tables that might not exist and said it had worked."""
+        gw = QueueFull()
+        gw.refuse()
+        store = LabScheduleStore(gw)
+        with pytest.raises(ScheduleWriteError):
+            store.ensure_schema()
+        assert store._ready is False
+
+    def test_the_store_recovers_once_the_queue_drains(self):
+        gw = QueueFull()
+        gw.refuse()
+        store = LabScheduleStore(gw)
+        with pytest.raises(ScheduleWriteError):
+            store.save(LabSchedule(working_days=[0]))
+        gw.allow()
+        store.save(LabSchedule(working_days=[0]))
+        assert store.load().working_days == [0]
+
+    def test_the_refusal_is_catchable_as_one_labcore_error(self):
+        gw = QueueFull()
+        gw.refuse()
+        with pytest.raises(LabCoreError):
+            LabScheduleStore(gw).add_holiday("2026-12-25", "Christmas")
+
+
+class TestCouldNotAskIsNotMondayToFriday:
+    def test_load_raises_on_an_unreadable_labcore(self):
+        with pytest.raises(LabCoreUnavailable):
+            LabScheduleStore(Unreadable()).load()
+
+    def test_the_holidays_read_is_not_allowed_to_vanish_on_its_own(self):
+        """The hours row can be read and the holidays row cannot: the old code
+        returned the hours with an empty holiday list, so a lab with real
+        working hours read as having no holidays at all."""
+        class HalfReadable(Unreadable):
+            def read_sql(self, sql, args=None, **kw):
+                if "lem_lab_holidays" in sql:
+                    return {"error": "Read timed out"}
+                return self.real.read_sql(sql, args)
+
+        gw = HalfReadable()
+        LabScheduleStore(gw.real).save(
+            LabSchedule(working_days=[0], holidays={"2026-12-25": "Christmas"}))
+        with pytest.raises(LabCoreUnavailable):
+            LabScheduleStore(gw).load()

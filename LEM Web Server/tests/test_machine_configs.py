@@ -255,3 +255,171 @@ class TestEndpoints:
         MachineConfigStore(gw).save("m1", "OptiMPP 1", a_config())
         signed_in.delete("/api/machines/m1")
         assert MachineConfigStore(gw).get("m1") is None
+
+
+# ── the write queue answers "no", and the answer must be read ────────────────
+#
+# LabCore's queue refuses past 100 pending BY ANSWERING: no exception, no
+# "error" key, no "ok". Every refusal below uses that real shape. Refusing with
+# `{"error": ...}` instead would prove almost nothing — that is the one shape
+# the old `if not res.get("error")` code already handled.
+
+from labcore_result import LabCoreError, LabCoreRefused, LabCoreUnavailable
+from machine_configs import (ConfigReadUnavailable, ConfigWriteRefused,
+                             MachineConfigError)
+
+QUEUE_FULL = {"queued": False, "pending": 137}
+
+
+class QueueFullGateway:
+    """A real gateway with a full write queue in front of it.
+
+    Reads pass through, so every test can assert the config store's actual
+    contents rather than just that a call raised. CREATE is allowed by default
+    so the store is exercised past ensure_schema.
+    """
+
+    def __init__(self, inner, refuse_when=None, answer=QUEUE_FULL):
+        self.inner = inner
+        self.answer = answer
+        self.refuse_when = refuse_when or (
+            lambda sql: not sql.lstrip().upper().startswith("CREATE"))
+
+    def sql(self, sql, args=None, **kw):
+        if self.refuse_when(sql):
+            return self.answer
+        return self.inner.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.inner.read_sql(sql, args, **kw)
+
+
+class BlipGateway:
+    """Writes work (so a test can arrange state), reads time out."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.blind = False
+
+    def sql(self, sql, args=None, **kw):
+        return self.inner.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        if self.blind:
+            return {"error": "ReadTimeout: read timed out"}
+        return self.inner.read_sql(sql, args, **kw)
+
+
+class TestRefusedConfigWrites:
+    def test_a_refused_save_raises_and_keeps_the_old_config(self, gw, store):
+        """A whole bench's mappings, QC wiring and PM tasks, lost while the
+        floor says saved."""
+        store.save("m1", "OptiMPP 1", a_config(), by="kaden")
+        blocked = MachineConfigStore(QueueFullGateway(gw))
+        with pytest.raises(ConfigWriteRefused):
+            blocked.save("m1", "OptiMPP 1 renamed", a_config(csv_path="X:/new"))
+        got = store.get("m1")
+        assert got["title"] == "OptiMPP 1"
+        assert got["config"]["csv_path"] == "C:/prints/optimpp.csv"
+
+    def test_a_refused_create_registers_nothing(self, gw, store):
+        blocked = MachineConfigStore(QueueFullGateway(gw))
+        with pytest.raises(ConfigWriteRefused):
+            blocked.create("Multitek S")
+        assert store.list() == []
+
+    def test_a_refused_duplicate_leaves_one_config(self, gw, store):
+        store.save("m1", "OptiMPP 1", a_config())
+        blocked = MachineConfigStore(QueueFullGateway(gw))
+        with pytest.raises(ConfigWriteRefused):
+            blocked.duplicate("m1", "OptiMPP 2")
+        assert [c["title"] for c in store.list()] == ["OptiMPP 1"]
+
+    def test_a_refused_delete_raises_and_the_config_survives(self, gw, store):
+        """A config the floor reported as deleted still offers itself in the
+        module's picker, so a bench adopts a machine that was retired."""
+        store.save("m1", "OptiMPP 1", a_config())
+        blocked = MachineConfigStore(QueueFullGateway(gw))
+        with pytest.raises(ConfigWriteRefused):
+            blocked.delete("m1")
+        assert store.get("m1") is not None
+
+    def test_a_refused_create_table_is_not_remembered_as_done(self, gw, store):
+        """`_ready` used to be set whatever LabCore answered, so one refusal at
+        boot left the store writing into a table that was never made."""
+        blocking = QueueFullGateway(gw, refuse_when=lambda sql: True)
+        blocked = MachineConfigStore(blocking)
+        with pytest.raises(ConfigWriteRefused):
+            blocked.save("m1", "OptiMPP 1", a_config())
+        blocking.refuse_when = lambda sql: False
+        blocked.save("m1", "OptiMPP 1", a_config())   # retried, not stuck
+        assert store.get("m1")["title"] == "OptiMPP 1"
+
+    @pytest.mark.parametrize("answer", [None, {"ok": False},
+                                        {"queued": False, "pending": 137}])
+    def test_silence_is_never_success(self, gw, store, answer):
+        blocked = MachineConfigStore(QueueFullGateway(gw, answer=answer))
+        with pytest.raises(ConfigWriteRefused):
+            blocked.save("m1", "OptiMPP 1", a_config())
+        assert store.get("m1") is None
+
+
+class TestReadsDoNotInventAMissingConfig:
+    def test_a_blip_is_not_a_404_about_a_real_machine(self, gw, store):
+        """get() returning None on a read error made the route answer "No
+        configuration for that machine" about a machine running right now."""
+        store.save("m1", "OptiMPP 1", a_config())
+        blip = BlipGateway(gw)
+        blind = MachineConfigStore(blip)
+        blind.ensure_schema()
+        blip.blind = True
+        with pytest.raises(ConfigReadUnavailable):
+            blind.get("m1")
+
+    def test_a_blip_does_not_empty_the_picker(self, gw, store):
+        """An empty picker invites a second config for a machine that has one."""
+        store.save("m1", "OptiMPP 1", a_config())
+        blip = BlipGateway(gw)
+        blind = MachineConfigStore(blip)
+        blind.ensure_schema()
+        blip.blind = True
+        with pytest.raises(ConfigReadUnavailable):
+            blind.list()
+
+    def test_a_blip_does_not_make_duplicate_deny_the_source(self, gw, store):
+        """duplicate() reads through get(); "could not ask" served as "does not
+        exist" would refuse to copy a config that plainly exists."""
+        store.save("m1", "OptiMPP 1", a_config())
+        blip = BlipGateway(gw)
+        blind = MachineConfigStore(blip)
+        blind.ensure_schema()
+        blip.blind = True
+        with pytest.raises(ConfigReadUnavailable):
+            blind.duplicate("m1", "OptiMPP 2")
+
+    def test_a_genuinely_absent_config_is_still_None(self, store):
+        """The distinction has to cut both ways or it is just noise."""
+        assert store.get("nobody") is None
+
+
+class TestOneNameToCatch:
+    def test_a_refusal_is_catchable_both_ways(self, gw):
+        blocked = MachineConfigStore(QueueFullGateway(gw))
+        for expected in (MachineConfigError, LabCoreRefused, LabCoreError):
+            with pytest.raises(expected):
+                blocked.save("m1", "OptiMPP 1", a_config())
+
+    def test_a_blip_is_catchable_both_ways(self, gw, store):
+        blip = BlipGateway(gw)
+        blind = MachineConfigStore(blip)
+        blind.ensure_schema()
+        blip.blind = True
+        for expected in (MachineConfigError, LabCoreUnavailable, LabCoreError):
+            with pytest.raises(expected):
+                blind.list()
+
+    def test_the_message_names_the_configuration(self, gw):
+        blocked = MachineConfigStore(QueueFullGateway(gw))
+        with pytest.raises(ConfigWriteRefused) as caught:
+            blocked.save("m1", "OptiMPP 1", a_config())
+        assert "OptiMPP 1" in str(caught.value)

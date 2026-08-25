@@ -695,6 +695,10 @@ const applySim = list => list.map(m => SIM.status[m.machine_uid]
   : m);
 function simOn() { return Object.keys(SIM.status).length > 0 || SIM.on; }
 let AUTHED = false, WHO = '', LOCKED = true, dragging = null, moved = false;
+// Whether LOCKED came from LabCore or from the server's fail-safe. /api/map
+// answers `known: false` when it could not read the setting and held the
+// floor locked instead of inviting drags that would all be refused.
+let LOCK_KNOWN = true;
 
 // ── the world ───────────────────────────────────────────────────────────
 // The floor used to be an SVG drawing built here: a projection, a prism
@@ -860,9 +864,19 @@ const hideTip = () => $('#tip').classList.remove('on');
 // before it fails.
 async function drawTrend(m) {
   const box = $('#trend');
-  const b = await fetch(`/api/machines/${encodeURIComponent(m.machine_uid)}/qc-trend`)
-    .then(r => r.json()).catch(() => null);
-  if (!b || !b.series.length) {
+  const res = await fetch(
+    `/api/machines/${encodeURIComponent(m.machine_uid)}/qc-trend`)
+    .catch(() => null);
+  if (!res || !res.ok) {
+    // "No QC results recorded yet" about an instrument with a month of checks
+    // behind it is the sentence someone quotes at an assessor. Say which it is.
+    const e = res ? await res.json().catch(() => ({})) : {};
+    box.innerHTML = `<p class="empty">${esc(e.error
+      || 'LabCore did not answer, so the QC history could not be read.')}</p>`;
+    return;
+  }
+  const b = await res.json();
+  if (!b || !(b.series || []).length) {
     box.innerHTML = '<p class="empty">No QC results recorded yet.</p>';
     return;
   }
@@ -1175,6 +1189,15 @@ async function select(m) {
   drawTrend(m);
   const r = await fetch(`/api/machines/${encodeURIComponent(m.machine_uid)}/events?limit=60`);
   const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    // "Nothing logged yet for this instrument" is a reason people walk over and
+    // start touching a bench that is running perfectly well.
+    $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
+      <h2 class="sign">Recent activity</h2></div>
+      <p class="empty">${esc(body.error
+        || 'LabCore did not answer, so this history could not be read.')}</p>`;
+    return;
+  }
   const evs = body.events || [];
   $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
     <h2 class="sign">Recent activity</h2></div>` + (evs.length ? evs.map(e => `
@@ -1252,7 +1275,11 @@ async function load() {
     fetch('/api/map').then(r => r.json()).catch(() => null),
   ]);
   if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
-  if (mp) LOCKED = !!mp.locked;
+  // `known: false` means LabCore could not be asked, so the server answered
+  // with the fail-safe (locked) rather than a reading. Carried through to the
+  // lock button's tooltip: a lock nobody can explain looks like a bug, and the
+  // next thing that happens is someone trying to drag the floor.
+  if (mp) { LOCKED = !!mp.locked; LOCK_KNOWN = mp.known !== false; }
   paintTools();
   paintDebug();
   if (selected) selected = MACHINES.find(x => x.machine_uid === selected.machine_uid) || null;
@@ -1284,8 +1311,18 @@ function feedSignature(events) {
 }
 
 async function renderFeed() {
-  const b = await fetch('/api/events?limit=60').then(r => r.json())
-    .catch(() => null);
+  const res = await fetch('/api/events?limit=60').catch(() => null);
+  const b = res ? await res.json().catch(() => null) : null;
+  if (res && !res.ok) {
+    // A quiet rail reads as a quiet lab. This one is polled, so it says so
+    // once rather than clearing itself every two seconds.
+    FEED_SIG = 'error';
+    $('#railR').innerHTML = `<div class="railhead"><div class="cap">Lab activity</div>
+      <h2 class="sign">Latest</h2></div>
+      <p class="empty">${esc((b && b.error)
+        || 'LabCore did not answer, so recent activity could not be read.')}</p>`;
+    return;
+  }
   const titles = Object.fromEntries(MACHINES.map(m => [m.machine_uid, m.title]));
   const evs = (b && b.events) || [];
   const sig = feedSignature(evs);
@@ -1535,9 +1572,20 @@ $('#sampleSave').addEventListener('click', async () => {
     $('#sampleErr').textContent = b.error || 'Could not save.'; return;
   }
   if (editingSample && editingSample !== name) {
-    await fetch('/api/qc-samples', {method: 'DELETE',
+    // A rename is save-new-then-delete-old. If the delete is dropped the
+    // library ends up holding BOTH lots under the same Lab ID, so this cannot
+    // be fire-and-forget.
+    const gone = await fetch('/api/qc-samples', {method: 'DELETE',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: editingSample})});
+    const bad = await failure(gone);
+    if (bad) {
+      $('#sampleErr').textContent =
+        `Saved as “${name}”, but the old “${editingSample}” could not be `
+        + `removed: ${bad}`;
+      await load(); renderQcLib();
+      return;
+    }
   }
   $('#sampleDlg').close(); await load(); renderQcLib();
 });
@@ -1546,9 +1594,11 @@ $('#sampleDelete').addEventListener('click', async () => {
   if (!editingSample) return;
   if (!requireAuth()) return;
   if (!confirm(`Delete “${editingSample}”? Instruments relying on it go UNKNOWN.`)) return;
-  await fetch('/api/qc-samples', {method: 'DELETE',
+  const r = await fetch('/api/qc-samples', {method: 'DELETE',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name: editingSample})});
+  const bad = await failure(r);
+  if (bad) { $('#sampleErr').textContent = bad; return; }
   $('#sampleDlg').close(); await load(); renderQcLib();
 });
 
@@ -1585,12 +1635,24 @@ async function openMaint(m, kind) {
 // "last done" threw away who did it and what they found.
 async function loadMaintPanel(m) {
   const uid = encodeURIComponent(m.machine_uid);
+  // `.then(r => r.json())` alone is not enough any more: a 503 has a JSON body
+  // too, so an unreadable list arrived as {error:…} and rendered as "nothing
+  // scheduled" / "nothing completed" — a compliance gap invented out of a blip.
+  const read = url => fetch(url).then(async r =>
+    r.ok ? r.json() : {__err: (await r.json().catch(() => ({}))).error
+                             || 'LabCore did not answer.'})
+    .catch(() => ({__err: 'LabCore could not be reached.'}));
   const [now, done] = await Promise.all([
-    fetch(`/api/machines/${uid}/maintenance`).then(r => r.json())
-      .catch(() => ({tasks: []})),
-    fetch(`/api/machines/${uid}/maintenance-history`).then(r => r.json())
-      .catch(() => ({history: []})),
+    read(`/api/machines/${uid}/maintenance`),
+    read(`/api/machines/${uid}/maintenance-history`),
   ]);
+  if (now.__err || done.__err) {
+    $('#maintNow').innerHTML =
+      `<p class="empty">${esc(now.__err || done.__err)} This is not an empty
+       schedule — it could not be read.</p>`;
+    $('#maintDone').innerHTML = '';
+    return;
+  }
   const tasks = now.tasks || [];
   $('#maintNow').innerHTML = tasks.length ? tasks.map(t => `
     <div class="qc" style="margin-bottom:8px">
@@ -1619,8 +1681,14 @@ $('#maintClose').addEventListener('click', () => $('#maintDlg').close());
 
 async function refreshMaint() {
   const uid = encodeURIComponent(maintFor.machine_uid);
-  const b = await fetch(`/api/machines/${uid}/maintenance`)
-    .then(r => r.json()).catch(() => ({tasks: []}));
+  const r = await fetch(`/api/machines/${uid}/maintenance`);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    $('#maintList').innerHTML = `<p class="empty">${esc(e.error
+      || 'LabCore did not answer.')} This is not an empty schedule.</p>`;
+    return;
+  }
+  const b = await r.json();
   const tasks = b.tasks || [];
   $('#maintList').innerHTML = tasks.length ? tasks.map(t => `
     <div class="qc" style="margin-bottom:8px">
@@ -1656,9 +1724,16 @@ document.addEventListener('click', async e => {
   if (done) {
     if (!requireAuth()) return;
     const note = prompt('Note for this completion (optional):') ?? '';
-    await fetch(`/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
+    const r = await fetch(
+      `/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
       {method: 'POST', headers: {'Content-Type': 'application/json'},
        body: JSON.stringify({note})});
+    const bad = await failure(r);
+    if (bad) { sayMaint(bad); return; }
+    // 200 does not always mean the whole thing landed: the reschedule and the
+    // history line are two writes, and the second can be refused on its own.
+    const out = await r.json().catch(() => ({}));
+    sayMaint(out.logged === false ? (out.warning || '') : '');
     // Completable from either place: the dialog or the instrument's PM tab.
     if ($('#maintDlg').open && maintFor) await refreshMaint();
     if (selected) await loadMaintPanel(selected);
@@ -1668,8 +1743,12 @@ document.addEventListener('click', async e => {
   if (dm) {
     if (!requireAuth()) return;
     if (!confirm('Remove this scheduled task?')) return;
-    await fetch(`/api/maintenance/${encodeURIComponent(dm.dataset.delmaint)}`,
+    const r = await fetch(
+      `/api/maintenance/${encodeURIComponent(dm.dataset.delmaint)}`,
       {method: 'DELETE'});
+    const bad = await failure(r);
+    if (bad) { sayMaint(bad); return; }
+    sayMaint('');
     await refreshMaint(); load();
   }
 });
@@ -1849,8 +1928,13 @@ document.addEventListener('click', async e => {
   const dh = e.target.closest('[data-delhol]');
   if (!dh) return;
   if (!requireAuth()) return;
-  await fetch(`/api/holidays/${encodeURIComponent(dh.dataset.delhol)}`,
-              {method: 'DELETE'});
+  const r = await fetch(`/api/holidays/${encodeURIComponent(dh.dataset.delhol)}`,
+                        {method: 'DELETE'});
+  const bad = await failure(r);
+  // A holiday still in LabCore keeps the lab reading CLOSED on a working day,
+  // which is what "stopped" is judged against.
+  if (bad) { $('#schedErr').textContent = bad; return; }
+  $('#schedErr').textContent = '';
   await openHours(); load();
 });
 
@@ -2543,10 +2627,17 @@ async function setArrange(on) {
     LOCKED = false;
   }
   if (!on && !LOCKED) {
-    await fetch('/api/map', {method: 'POST',
+    const r = await fetch('/api/map', {method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({locked: true})}).catch(() => {});
-    LOCKED = true;
+      body: JSON.stringify({locked: true})}).catch(() => null);
+    const bad = r ? await failure(r) : 'LabCore could not be reached.';
+    if (bad) {
+      // Leaving the floor unlocked when the lab thinks it was re-frozen is how
+      // it gets rearranged by accident, so this cannot be swallowed.
+      alert(bad);
+    } else {
+      LOCKED = true;
+    }
   }
   ARRANGING = on;
   document.documentElement.classList.toggle('arranging', on);
@@ -2598,7 +2689,8 @@ $('#btnLock').addEventListener('click', async () => {
   const r = await fetch('/api/map', {method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({locked: !LOCKED})});
-  if (!r.ok) alert('Could not change the lock.');
+  const bad = await failure(r);
+  if (bad) alert(bad);
   load();
 });
 
@@ -2618,6 +2710,10 @@ function paintTools() {
   }
   $('#btnLock').textContent = LOCKED ? '🔒 Locked' : '🔓 Unlocked';
   $('#btnLock').classList.toggle('live', !LOCKED);
+  $('#btnLock').title = LOCK_KNOWN
+    ? 'Lock or unlock the floor layout'
+    : 'LabCore did not answer, so the floor is held locked until it does — '
+      + 'a drag saved now would be dropped.';
   $('#hint').textContent = ARRANGING
     ? 'drag an instrument onto a bay'
     : (!LOCKED && AUTHED)
@@ -2643,8 +2739,19 @@ async function renderCorrections() {
   const m = corrMachine, uid = encodeURIComponent(m.machine_uid);
   const body = $('#corrBody');
   body.innerHTML = '<p class="empty">Loading…</p>';
-  const saved = await fetch(`/api/machines/${uid}/corrections`)
-    .then(r => r.json()).catch(() => ({corrections: [], methods: []}));
+  const res = await fetch(`/api/machines/${uid}/corrections`)
+    .catch(() => null);
+  if (!res || !res.ok) {
+    // Never fall back to {corrections: []} here. Zero is a CLAIM — that no
+    // offset is in force on every result this bench reports — and an operator
+    // reading it types the correction in again over one already there.
+    const e = res ? await res.json().catch(() => ({})) : {};
+    body.innerHTML = `<p class="empty">${esc(e.error
+      || 'LabCore did not answer.')} The corrections in force here are unknown,
+      so nothing is shown rather than showing zero.</p>`;
+    return;
+  }
+  const saved = await res.json();
   const by = Object.fromEntries((saved.corrections || [])
     .map(c => [c.test_name, c]));
   // EVERY method this bench reports, not just the QC-assigned ones. A correction
@@ -2771,6 +2878,24 @@ document.addEventListener('click', e => {
   if (!e.target.closest('#menu')) $('#menu').classList.remove('on');
 });
 
+// Every write below can now come back 502/503 with a message: LabCore's queue
+// refused it, or could not be asked. Both mean NOT SAVED, and the one thing the
+// page must never do is carry on as if it had been.
+// #maintErr lives inside the PM dialog, but "Mark done" is also on the
+// instrument's PM tab with that dialog closed — where writing into a hidden
+// <p> is the same silence this branch is removing. So: the line when it can be
+// seen, an alert when it cannot.
+function sayMaint(msg) {
+  $('#maintErr').textContent = msg || '';
+  if (msg && !$('#maintDlg').open) alert(msg);
+}
+
+async function failure(r) {
+  if (r.ok) return null;
+  const b = await r.json().catch(() => ({}));
+  return b.error || 'LabCore did not accept that — nothing was saved.';
+}
+
 async function act(what, m) {
   const uid = encodeURIComponent(m.machine_uid);
   const post = (url, body) => fetch(url, {method: 'POST',
@@ -2798,12 +2923,17 @@ async function act(what, m) {
     return load();
   }
   if (what === 'reset') {
+    // The first call is deliberately allowed to fail: nulls are refused as
+    // non-numeric, and it is only here to clear a stored position. The second
+    // is the write, and it is the one that has to be heard.
     await post(`/api/machines/${uid}/position`, {x: null, y: null})
       .catch(() => {});
     // no stored position → falls back into the default grid
-    await fetch(`/api/machines/${uid}/position`, {method: 'POST',
+    const r = await fetch(`/api/machines/${uid}/position`, {method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({x: 0, y: 0})});
+    const bad = await failure(r);
+    if (bad) alert(bad);
     return load();
   }
   if (['service', 'dead', 'clear'].includes(what)) {
@@ -2814,7 +2944,11 @@ async function act(what, m) {
     if (comment === null || !comment.trim()) return;
     const r = await post(`/api/machines/${uid}/override`,
                          {override: mode, comment: comment.trim()});
-    if (!r.ok) alert('Could not apply the override.');
+    const bad = await failure(r);
+    // The bench reads lem_machine_control and takes ITSELF out of service. A
+    // dropped override means the floor would show it stopped while it keeps
+    // running samples, so this alert is the whole safety of the feature.
+    if (bad) alert(bad);
     return load();
   }
   if (what === 'delete') {
@@ -2823,9 +2957,17 @@ async function act(what, m) {
                  `re-appear on the next poll.`)) return;
     const purge = confirm('Also erase its history from the machine log?\n\n' +
                           'OK = erase, Cancel = keep.');
-    await fetch(`/api/machines/${uid}`, {method: 'DELETE',
+    const r = await fetch(`/api/machines/${uid}`, {method: 'DELETE',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({purge_history: purge})});
+    const bad = await failure(r);
+    if (bad) {
+      // Half-retired is a real state — the server says which parts went and
+      // stops rather than reporting a clean retirement over a machine that
+      // still has its configuration. Pressing Delete again finishes it.
+      alert(bad);
+      return load();
+    }
     if (selected && selected.machine_uid === m.machine_uid) selected = null;
     return load();
   }
@@ -2856,7 +2998,14 @@ $('#qcSave').addEventListener('click', async () => {
   const r = await fetch(`/api/machines/${encodeURIComponent(uid)}/qc-targets`,
     {method: 'POST', headers: {'Content-Type': 'application/json'},
      body: JSON.stringify({targets})});
-  if (!r.ok) alert('Could not save the assignment.');
+  const bad = await failure(r);
+  if (bad) {
+    // The sheet stays OPEN on a failure. Closing it is what made this silent:
+    // QC here is assignment-only, so an instrument left with no row is not
+    // checked at all, and it says so in quiet grey.
+    alert(bad);
+    return;
+  }
   $('#qcSheet').close();
   load();
 });
@@ -2871,8 +3020,12 @@ $('#qcCancel').addEventListener('click', () => $('#qcSheet').close());
 // station and run out along the line to the LabCore terminal. One parse, one
 // train — see spawnBlip above and /static/world/trains.js.
 async function pollRuns() {
-  const body = await fetch('/api/events?limit=60').then(r => r.json())
-    .catch(() => null);
+  // A failed poll must not be read as "no runs": `seenRuns` is seeded from the
+  // FIRST answer, and seeding it from an error would replay the whole feed as
+  // new trains the moment LabCore came back.
+  const res = await fetch('/api/events?limit=60').catch(() => null);
+  if (!res || !res.ok) return;
+  const body = await res.json().catch(() => null);
   if (!body) return;
   const runs = (body.events || []).filter(e => e.kind === 'run');
   const keys = runs.map(e => `${e.machine_uid}|${e.ts}|${e.lab_id}`);

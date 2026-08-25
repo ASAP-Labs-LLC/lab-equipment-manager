@@ -87,6 +87,81 @@ def is_missing_table(error_text: Any) -> bool:
     return _MISSING_TABLE in str(error_text or "").lower()
 
 
+# The failure signals LabCore actually sends, evidenced rather than assumed.
+#
+# notes.md and lem_station_module.py:495 both record the same measured shape from
+# a real incident — a bulk import that "reported imported 3094 while nothing
+# landed":
+#
+#     {"error": "LabCore is busy…", "busy": true, "retry_after": n}
+#
+# an error DICT returned normally, not raised. The station module, which is the
+# half that has actually run against production LabCore, judges every write by
+# `result.get("error")`.
+#
+# WHAT IS NOT RECORDED ANYWHERE is what LabCore answers to a write that SUCCEEDS.
+# Every `{"ok": True, "rows_affected": N}` in this tree is our own sqlite fake.
+# This module's first version demanded a truthy `ok` on the principle that
+# silence is not success — sound as a principle, unsafe as an implementation,
+# because a real service answering `{"rows_affected": 1}` would have had every
+# write in the lab raising while /healthz stayed green. RELEASING.md §5 is
+# explicit that nothing in the deploy pipeline catches that.
+#
+# So the rule refuses on a POSITIVE failure signal and accepts otherwise. It
+# cannot break a write that worked, and it still catches the refusal that caused
+# the 3094.
+_FAILURE_FLAGS = ("busy",)          # truthy means refused
+_VERDICT_FLAGS = ("ok", "queued")   # present-and-falsy means refused
+
+
+def refusal_of(res: Any) -> Optional[str]:
+    """Why this answer says the work did not happen, or None if it does not.
+
+    Positive signals only. An answer carrying no verdict at all is not a
+    refusal — it is a protocol we have not recorded, and guessing "failed" there
+    is the guess that takes the lab down.
+    """
+    if not isinstance(res, dict):
+        # Not an answer at all: a gateway that returned nothing, or a transport
+        # that handed back something unparseable. That IS a failure.
+        return "LabCore returned no answer ({!r})".format(res)
+    # Whatever the signal, the operational detail rides along. "LabCore said no"
+    # sends someone to a log file; "LabCore said no, 137 pending, retry in 4s"
+    # tells them it is a queue and it will clear.
+    detail = ", ".join(
+        "{}={}".format(k, res[k]) for k in ("pending", "retry_after", "busy")
+        if k in res)
+    suffix = " ({})".format(detail) if detail else ""
+
+    err = res.get("error")
+    if err:
+        return "{}{}".format(err, suffix)
+    for flag in _FAILURE_FLAGS:
+        if res.get(flag):
+            return "LabCore reported {}={!r}{}".format(
+                flag, res.get(flag), suffix)
+    for flag in _VERDICT_FLAGS:
+        if flag in res and not res.get(flag):
+            return "LabCore reported {}={!r}{}".format(
+                flag, res.get(flag), suffix)
+    return None
+
+
+def retry_after(res: Any, default: Optional[float] = None) -> Optional[float]:
+    """How long LabCore asked us to wait, if it said.
+
+    notes.md requires bulk writes to honour this, and a caller cannot honour what
+    it cannot read. Returns `default` when the answer carries no hint.
+    """
+    if not isinstance(res, dict):
+        return default
+    hint = res.get("retry_after")
+    try:
+        return float(hint)
+    except (TypeError, ValueError):
+        return default
+
+
 def _error_of(res: Any) -> Optional[str]:
     """The error text in an answer, or None if it does not carry one.
 
@@ -110,7 +185,10 @@ def rows(res: Any, *, missing_ok: bool = True) -> List[Dict[str, Any]]:
     An answer with no "rows" key is empty rather than broken: LabCore has replied,
     it simply had nothing to list.
     """
-    err = _error_of(res)
+    # `refusal_of`, not `_error_of`: reads travel the same endpoint as writes and
+    # can be turned away the same way. Answering `[]` to a busy queue is how a
+    # full WRITE queue empties the floor.
+    err = refusal_of(res)
     if err is not None:
         if missing_ok and is_missing_table(err):
             return []
@@ -130,12 +208,9 @@ def confirm_write(res: Any) -> None:
     happen; it just changed nothing, which is a fact about the data rather than a
     failure of the write.
     """
-    err = _error_of(res)
+    err = refusal_of(res)
     if err is not None:
         raise LabCoreRefused(err)
-    if not res.get("ok"):
-        raise LabCoreRefused(
-            "LabCore did not acknowledge the write ({!r})".format(res))
 
 
 def wrote_rows(res: Any) -> int:

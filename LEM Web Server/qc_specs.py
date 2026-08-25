@@ -23,8 +23,17 @@ the in-memory fake used by the tests.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+from labcore_result import (
+    LabCoreError,
+    LabCoreRefused,
+    LabCoreUnavailable,
+    confirm_write,
+    rows,
+)
 
 STATUS_COLORS = {
     "GREEN": "#21c071",
@@ -36,6 +45,56 @@ STATUS_COLORS = {
 }
 
 VALID_OVERRIDES = ("", "SERVICE", "DEAD-LINE")
+
+
+# ── What this store raises ───────────────────────────────────────────────────
+#
+# Every `gateway.sql()` here used to be fire-and-forget. LabCore's write queue
+# serialises at ~1.5 writes/sec and refuses past 100 pending by ANSWERING —
+# no exception, no "error" key — so a refused write looked exactly like a
+# successful one and the operator was told their QC band was saved. On this
+# table that is the worst version of the bug in the app: `lem_qc_specs` is what
+# every station module reads to judge its own instrument, so a dropped write
+# means a bench is checked against a band the lab believes it set and did not.
+
+
+class QcSpecStoreError(LabCoreError):
+    """Something this store asked LabCore to do cannot be reported as done.
+
+    Named so a route can catch this store specifically, and a subclass of
+    `LabCoreError` so a route that folds every LabCore problem into one status
+    still catches it with a single `except`. The two below keep the distinction
+    `labcore_result` draws, because a route has to tell "ask again in a moment"
+    apart from "LabCore answered and the band was not written" to choose between
+    503 and 502 — and because they subclass the labcore_result pair as well, a
+    caller may equally catch `LabCoreRefused` and get this.
+    """
+
+
+class QcSpecUnavailable(QcSpecStoreError, LabCoreUnavailable):
+    """LabCore could not be asked, so the QC bands are unknown — not empty."""
+
+
+class QcSpecRefused(QcSpecStoreError, LabCoreRefused):
+    """LabCore answered, and the write did not happen."""
+
+
+@contextmanager
+def _doing(what: str):
+    """Re-label `labcore_result`'s verdict with the operation that failed.
+
+    "LabCore did not acknowledge the write ({'pending': 137})" is true and
+    useless on a floor; "Could not save the QC band for m1 / Cloud Point" is what
+    an operator needs to see before running another standard against it.
+    """
+    try:
+        yield
+    except QcSpecStoreError:
+        raise                      # already labelled; do not wrap twice
+    except LabCoreUnavailable as exc:
+        raise QcSpecUnavailable("Could not {}: {}".format(what, exc)) from exc
+    except LabCoreRefused as exc:
+        raise QcSpecRefused("Could not {}: {}".format(what, exc)) from exc
 
 QC_SPECS_DDL = (
     "CREATE TABLE IF NOT EXISTS lem_qc_specs ("
@@ -100,9 +159,34 @@ class QcSpecStore:
         self._schema_ready = False
 
     def ensure_schema(self) -> None:
-        if not self._schema_ready:
-            self.gateway.sql(QC_SPECS_DDL)
-            self._schema_ready = True
+        """Make sure `lem_qc_specs` exists, or say why it might not.
+
+        `_schema_ready` is set only after the CREATE is ACKNOWLEDGED. Caching it
+        on an unread answer is the same bug one level up: a refused CREATE would
+        be remembered as done, and every save for the rest of the process would
+        write into a table that is not there.
+        """
+        if self._schema_ready:
+            return
+        with _doing("create lem_qc_specs"):
+            confirm_write(self.gateway.sql(QC_SPECS_DDL))
+        self._schema_ready = True
+
+    def _schema_for_read(self) -> None:
+        """Best-effort CREATE ahead of a read. DELIBERATE SWALLOW, defended.
+
+        A read has nothing to lose by a refused CREATE and everything to lose by
+        raising on one: if the table already exists the read works regardless,
+        and if it genuinely does not exist the read itself answers "no such
+        table", which `rows()` reads as the honest empty. Turning a busy write
+        queue into a failure to DISPLAY the bands would take the floor down
+        during exactly the congestion this whole change is about. Reads still
+        raise on every other error — see each read below.
+        """
+        try:
+            self.ensure_schema()
+        except QcSpecRefused:
+            pass
 
     def save(self, spec: QcSpec) -> None:
         if not spec.test_name.strip():
@@ -112,25 +196,52 @@ class QcSpecStore:
         if spec.k <= 0:
             raise ValueError("k must be greater than zero.")
         self.ensure_schema()
-        self.gateway.sql(
-            "INSERT INTO lem_qc_specs (machine_uid, test_name, sample_id, "
-            "expected, std_dev, k, units) VALUES (?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
-            "sample_id=excluded.sample_id, expected=excluded.expected, "
-            "std_dev=excluded.std_dev, k=excluded.k, units=excluded.units",
-            [spec.machine_uid, spec.test_name.strip(), spec.sample_id.strip(),
-             float(spec.expected), float(spec.std_dev), float(spec.k),
-             spec.units],
-        )
+        with _doing("save the QC band for {} / {}".format(
+                spec.machine_uid, spec.test_name.strip())):
+            confirm_write(self.gateway.sql(
+                "INSERT INTO lem_qc_specs (machine_uid, test_name, sample_id, "
+                "expected, std_dev, k, units) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
+                "sample_id=excluded.sample_id, expected=excluded.expected, "
+                "std_dev=excluded.std_dev, k=excluded.k, units=excluded.units",
+                [spec.machine_uid, spec.test_name.strip(),
+                 spec.sample_id.strip(), float(spec.expected),
+                 float(spec.std_dev), float(spec.k), spec.units],
+            ))
 
     def delete(self, machine_uid: str, test_name: str) -> None:
-        self.ensure_schema()
-        self.gateway.sql(
-            "DELETE FROM lem_qc_specs WHERE machine_uid = ? AND test_name = ?",
-            [machine_uid, test_name])
+        """Remove a band. Raises unless LabCore says the DELETE ran.
 
-    def list_specs(self, machine_uid: Optional[str] = None) -> List[QcSpec]:
+        `confirm_write`, not `wrote_rows`: matching no rows is a fact about the
+        data (the band was already gone) and the caller asked for it to be gone.
+        Not being told whether it ran is the failure — a band left in place while
+        the floor says it was removed keeps a bench judging against it.
+        """
         self.ensure_schema()
+        with _doing("delete the QC band for {} / {}".format(
+                machine_uid, test_name)):
+            confirm_write(self.gateway.sql(
+                "DELETE FROM lem_qc_specs WHERE machine_uid = ? "
+                "AND test_name = ?", [machine_uid, test_name]))
+
+    def list_specs(self, machine_uid: Optional[str] = None,
+                   *, missing_ok: bool = True) -> List[QcSpec]:
+        """The stored bands, or an exception saying why they are not known.
+
+        MISSING TABLE MAY DEGRADE TO EMPTY (`missing_ok`, the default): nothing
+        has ever saved a band, so "no QC assigned" is the truth — the honest grey
+        state described in CLAUDE.md, not a guess.
+
+        EVERY OTHER ERROR RAISES. This used to be `if res.get("error"): return
+        []`, which during a routine LabCore blip made the floor report "No QC
+        assigned" for instruments it was actively judging — the same lie
+        `lem_machine_specs` was added to stop telling.
+
+        Pass `missing_ok=False` from a path that is about to WRITE off the back
+        of this list: there, "could not ask" served as "does not exist" is how a
+        save becomes a 404 about something real.
+        """
+        self._schema_for_read()
         if machine_uid:
             res = self.gateway.read_sql(
                 "SELECT machine_uid, test_name, sample_id, expected, std_dev, "
@@ -140,9 +251,9 @@ class QcSpecStore:
             res = self.gateway.read_sql(
                 "SELECT machine_uid, test_name, sample_id, expected, std_dev, "
                 "k, units FROM lem_qc_specs ORDER BY machine_uid, test_name")
-        if res.get("error"):
-            return []
-        return [QcSpec.from_row(row) for row in res.get("rows") or []]
+        with _doing("read the QC bands"):
+            return [QcSpec.from_row(row)
+                    for row in rows(res, missing_ok=missing_ok)]
 
     def specs_by_machine(self) -> Dict[str, List[QcSpec]]:
         grouped: Dict[str, List[QcSpec]] = {}
@@ -161,10 +272,16 @@ class MachineStateReader:
         res = self.gateway.read_sql(
             "SELECT machine_uid, title, status, reason, updated_at "
             "FROM lem_machine_status ORDER BY updated_at DESC")
-        if res.get("error"):
-            return []  # no station module has reported yet
+        # MISSING TABLE MAY DEGRADE TO EMPTY: no station module has ever
+        # reported, so there genuinely are no machines to list.
+        # ANYTHING ELSE RAISES. This list is not only shown — `plan_import`
+        # matches spreadsheet rows against it and then WRITES the completions it
+        # matched, so a blip degraded to `[]` would report every historic PM as
+        # "unmatched equipment" and import nothing, about machines that exist.
+        with _doing("read the machine list"):
+            listed = rows(res)
         machines = []
-        for row in res.get("rows") or []:
+        for row in listed:
             status = str(row.get("status") or "UNKNOWN")
             machines.append({
                 "machine_uid": row.get("machine_uid"),
@@ -187,12 +304,18 @@ class MachineStateReader:
         without it a stopped module looks exactly like an idle bench."""
         res = self.gateway.read_sql(
             "SELECT machine_uid, last_poll, watching FROM lem_machine_heartbeat")
-        if res.get("error"):
-            return {}
+        # MISSING TABLE MAY DEGRADE TO EMPTY: the modules create and own this
+        # table, so no table means no module has ever run and nothing is live.
+        # ANYTHING ELSE RAISES, because this answer GUARDS A DELETE: the config
+        # picker marks a row `in_use` from a fresh beat, and an empty map during
+        # a blip would say "no parser is live on any bench" and clear the way to
+        # delete the configuration of a machine that is running right now.
+        with _doing("read the module heartbeats"):
+            beats = rows(res)
         return {str(r.get("machine_uid")): {
                     "last_poll": str(r.get("last_poll") or "") or None,
                     "watching": str(r.get("watching") or "")}
-                for r in res.get("rows") or []}
+                for r in beats}
 
     def last_activity(self) -> Dict[str, str]:
         """Newest log entry per machine. The status row is only rewritten
@@ -200,20 +323,30 @@ class MachineStateReader:
         res = self.gateway.read_sql(
             "SELECT machine_uid, MAX(ts) AS ts FROM lem_machine_log "
             "GROUP BY machine_uid")
-        if res.get("error"):
-            return {}
+        # MISSING TABLE MAY DEGRADE TO EMPTY: nothing has ever been logged, so
+        # "no activity" is the truth rather than a shrug.
+        # ANYTHING ELSE RAISES: this is a liveness signal, and an empty map reads
+        # as "every bench has gone quiet" — the lab-wide alarm state, invented
+        # out of one timed-out read.
+        with _doing("read the last activity per machine"):
+            latest = rows(res)
         return {str(r.get("machine_uid")): str(r.get("ts") or "")
-                for r in res.get("rows") or [] if r.get("ts")}
+                for r in latest if r.get("ts")}
 
     def sub_statuses(self) -> Dict[str, dict]:
         """QC / PM / CAL per machine, as the station modules publish them.
         Machines that haven't reported the breakdown read UNKNOWN."""
         res = self.gateway.read_sql(
             "SELECT machine_uid, qc, pm, calibration FROM lem_machine_substatus")
-        if res.get("error"):
-            return {}
+        # MISSING TABLE MAY DEGRADE TO EMPTY: no module has published a
+        # breakdown, which the caller already renders as UNKNOWN.
+        # ANYTHING ELSE RAISES: UNKNOWN across the whole floor is indistinguishable
+        # from a lab where every module has stopped publishing, and this read is
+        # cheap to retry.
+        with _doing("read the QC/PM/calibration breakdown"):
+            published = rows(res)
         out = {}
-        for row in res.get("rows") or []:
+        for row in published:
             out[str(row.get("machine_uid"))] = {
                 "qc": str(row.get("qc") or "UNKNOWN"),
                 "pm": str(row.get("pm") or "UNKNOWN"),
@@ -226,17 +359,24 @@ class MachineStateReader:
             "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
             "FROM lem_machine_log WHERE machine_uid = ? "
             "ORDER BY ts DESC LIMIT ?", [machine_uid, int(limit)])
-        if res.get("error"):
-            return []
-        return [dict(row) for row in res.get("rows") or []]
+        # MISSING TABLE MAY DEGRADE TO EMPTY: no module has ever written a log
+        # row, so this machine has no history.
+        # ANYTHING ELSE RAISES. An empty history panel for an instrument with
+        # months of runs behind it is a claim, and one an operator acts on —
+        # "this bench has never reported" is the reason people go and touch it.
+        with _doing("read the history for {}".format(machine_uid)):
+            return [dict(row) for row in rows(res)]
 
     def recent_events(self, limit: int = 50) -> List[dict]:
         res = self.gateway.read_sql(
             "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
             "FROM lem_machine_log ORDER BY ts DESC LIMIT ?", [int(limit)])
-        if res.get("error"):
-            return []
-        return [dict(row) for row in res.get("rows") or []]
+        # MISSING TABLE MAY DEGRADE TO EMPTY: nothing has ever been logged.
+        # ANYTHING ELSE RAISES — same reason as `events`, and this is the deep
+        # request the log viewer makes, where a silently truncated (here: empty)
+        # answer reads as a quiet lab.
+        with _doing("read the recent activity"):
+            return [dict(row) for row in rows(res)]
 
     def set_override(self, machine_uid: str, override: str,
                      comment: str = "") -> None:
@@ -246,11 +386,19 @@ class MachineStateReader:
                 f"Override must be one of {VALID_OVERRIDES!r}, got {override!r}")
         from datetime import datetime
 
-        self.gateway.sql(CONTROL_DDL)
-        self.gateway.sql(
-            "INSERT INTO lem_machine_control (machine_uid, manual_override, "
-            "comment, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(machine_uid) DO UPDATE SET "
-            "manual_override=excluded.manual_override, "
-            "comment=excluded.comment, updated_at=excluded.updated_at",
-            [machine_uid, override, comment, datetime.now().isoformat()])
+        # Both writes are confirmed. This is a command TO a bench: the module
+        # polls `lem_machine_control` and takes itself to SERVICE / DEAD-LINE.
+        # Dropped silently, the floor shows an instrument as out of service
+        # while the bench keeps running samples on it — and the reverse, an
+        # unheard "clear", leaves a healthy machine locked out.
+        with _doing("create lem_machine_control"):
+            confirm_write(self.gateway.sql(CONTROL_DDL))
+        with _doing("set the override for {}".format(machine_uid)):
+            confirm_write(self.gateway.sql(
+                "INSERT INTO lem_machine_control (machine_uid, "
+                "manual_override, comment, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(machine_uid) DO UPDATE SET "
+                "manual_override=excluded.manual_override, "
+                "comment=excluded.comment, updated_at=excluded.updated_at",
+                [machine_uid, override, comment,
+                 datetime.now().isoformat()]))

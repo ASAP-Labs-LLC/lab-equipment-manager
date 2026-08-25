@@ -15,6 +15,19 @@ Two differences from V4, both deliberate:
 * Each day stands alone (`lem_checklist_state` is keyed by day), so yesterday's
   round can never look like today's — V4 had the same intent but the file made
   it easy to get wrong.
+
+Every answer LabCore gives goes through `labcore_result` (2026-08-24). This file
+had three separate versions of the mistake: `except Exception: pass` around the
+schema, `if not res.get("error")` in `import_state`, and reads that turned an
+outage into `[]`. LabCore's write queue serialises at roughly 1.5 writes a
+second and refuses past ~100 pending BY ANSWERING — no exception, and not
+necessarily an "error" key — so `import_state` counted refusals as rows
+imported, and a tick could be reported saved and never stored.
+
+What that costs on a checklist specifically: the tick IS the record that the
+round was done. A dropped tick is not a stale screen, it is an audit saying
+nobody checked the nitrogen. And a read that degrades to `[]` shows an empty
+round, which tells the lab there is nothing to do today.
 """
 
 from __future__ import annotations
@@ -25,6 +38,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+from labcore_result import (LabCoreRefused, LabCoreUnavailable, confirm_write,
+                            wrote_rows)
+from labcore_result import rows as read_rows
 
 # NOT `lem_checklists` — that name is already taken by db_config_store, which
 # holds V4's AppConfig.checklists as (uid, data) blobs AND rewrites the whole
@@ -55,6 +72,34 @@ STATE_MIGRATIONS = (
 ENTRY_TYPES = ("none", "number", "text")
 
 SLOTS = ("opening", "closing", "other")
+
+
+class ChecklistWriteError(LabCoreRefused):
+    """A checklist write LabCore did not acknowledge, so it did not happen.
+
+    A subclass of `LabCoreRefused` so a route can catch this by name, or
+    `LabCoreRefused`, or `LabCoreError` for every store at once.
+    """
+
+
+def _retry_after(res, default: float = 2.0) -> float:
+    """The queue's own "come back in N seconds", if the answer carries one.
+
+    Defensive about the shape because a refusal is whatever LabCore's queue felt
+    like sending — including `None`, which is why this cannot just index it.
+    """
+    if not isinstance(res, dict):
+        return default
+    hint = res.get("retry_after")
+    if hint is None:
+        return default
+    try:
+        wait = float(hint)
+    except (TypeError, ValueError):
+        return default
+    # A queue that says 0 means "come straight back", so 0 is an answer rather
+    # than a falsy blank. The old `or 2` turned it into a two-second wait.
+    return wait if wait >= 0 else default
 
 
 def _hhmm(raw: str) -> str:
@@ -176,46 +221,104 @@ def completion(items: Sequence[ChecklistItem],
 class ChecklistStore:
     """Owns `lem_checklist_defs` + `lem_checklist_state`.
 
-    Reads never raise: a lab that can't reach LabCore should see an empty round
-    and a warning, not a stack trace on the wall display.
+    The old docstring said "Reads never raise: a lab that can't reach LabCore
+    should see an empty round and a warning, not a stack trace on the wall
+    display." The warning never existed — the empty round did. An operator
+    looking at a round with no items does not conclude LabCore is down, they
+    conclude the round is done or was never set up, and the closing checks do
+    not get run. `get()` is also built on `all()`, and `get()` is what the tick
+    and value routes use to answer "no such checklist": a read that decides a
+    write, which must never be served from "could not ask".
+
+    So reads raise `LabCoreUnavailable` and writes raise `ChecklistWriteError`.
+    Turning that into a page with a banner is the route's job, where there is
+    something to put the banner on.
     """
 
     def __init__(self, gateway) -> None:
         self.gateway = gateway
         self._ready = False
 
+    # ── talking to LabCore ────────────────────────────────────────────
+    def _write(self, sql: str, args: Optional[list] = None) -> dict:
+        try:
+            res = self.gateway.sql(sql, args or [])
+        except Exception as exc:                     # transport, not logic
+            raise ChecklistWriteError(
+                f"LabCore could not be written to ({type(exc).__name__}: "
+                f"{exc})") from exc
+        try:
+            confirm_write(res)
+        except LabCoreRefused as exc:
+            raise ChecklistWriteError(str(exc)) from exc
+        return res
+
+    def _write_rows(self, sql: str, args: Optional[list] = None) -> int:
+        """A confirmed write's row count. 0 is an acknowledgement: deleting a
+        checklist somebody else deleted first happened, it matched nothing."""
+        return wrote_rows(self._write(sql, args))
+
+    def _read(self, sql: str, args: Optional[list] = None) -> List[dict]:
+        try:
+            res = self.gateway.read_sql(sql, args or [])
+        except Exception as exc:
+            raise LabCoreUnavailable(
+                f"LabCore could not be read ({type(exc).__name__}: "
+                f"{exc})") from exc
+        # missing_ok=False on every read in this file: `ensure_schema` runs
+        # first and now CONFIRMS both CREATEs, so the tables provably exist by
+        # the time anything is selected. "No such table" after that contradicts
+        # an acknowledged write rather than meaning "not created yet", and
+        # swallowing it would reinstate exactly the blank-round bug above.
+        return read_rows(res, missing_ok=False)
+
     def ensure_schema(self) -> None:
+        """Declare both tables and apply the column migration.
+
+        The old body was `except Exception: pass` with "retried on the next
+        call" — but `_ready` was set inside the try, so a refused CREATE meant
+        three more writes shovelled into the refusing queue on every subsequent
+        call, while `save()` INSERTed into a table that might not exist and
+        reported success. `_ready` is now set only once everything is
+        acknowledged.
+        """
         if self._ready:
             return
-        try:
-            self.gateway.sql(CHECKLIST_DDL)
-            self.gateway.sql(STATE_DDL)
-            for migration in STATE_MIGRATIONS:
-                try:
-                    self.gateway.sql(migration)
-                except Exception:
-                    pass               # already applied
-            self._ready = True
-        except Exception:
-            pass                       # retried on the next call
+        self._write(CHECKLIST_DDL)
+        self._write(STATE_DDL)
+        for migration in STATE_MIGRATIONS:
+            # THE ONE DELIBERATE SWALLOW IN THIS FILE, and it is narrow.
+            # Re-running `ADD COLUMN value` on a table that already has it is
+            # the normal case — every boot after the first — and SQLite answers
+            # "duplicate column name: value". That one message, and nothing
+            # else, means the migration is already applied. A queue refusal, a
+            # timeout, or any other complaint still raises: then whether the
+            # column exists is UNKNOWN, and `set_value` would be writing a
+            # reading into a column that may not be there.
+            try:
+                self._write(migration)
+            except ChecklistWriteError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        self._ready = True
 
     # ── definitions ────────────────────────────────────────────────────
     def all(self) -> List[Checklist]:
+        """Every round. Raises rather than reporting a lab with no checklists."""
         self.ensure_schema()
-        try:
-            res = self.gateway.read_sql(
-                "SELECT uid, name, slot, due_time, items FROM lem_checklist_defs "
-                "ORDER BY slot, name")
-        except Exception:
-            return []
         out = []
-        for row in ([] if res.get("error") else (res.get("rows") or [])):
+        for row in self._read(
+                "SELECT uid, name, slot, due_time, items FROM "
+                "lem_checklist_defs ORDER BY slot, name"):
             try:
                 items = json.loads(row.get("items") or "[]")
                 if not isinstance(items, list):
                     items = []
             except (TypeError, ValueError):
-                items = []             # a hand-edited blob must not 500
+                # Kept: this is bad DATA, not an unreachable LabCore. LabCore
+                # answered and the blob is unreadable, so one hand-edited row
+                # must not 500 the whole page.
+                items = []
             out.append(Checklist(
                 uid=str(row.get("uid") or ""),
                 name=str(row.get("name") or ""),
@@ -225,6 +328,12 @@ class ChecklistStore:
         return out
 
     def get(self, uid: str) -> Optional[Checklist]:
+        """The checklist, or None if there genuinely isn't one.
+
+        A READ THAT DECIDES A WRITE: the tick and value routes answer 404 from
+        `None` here. Because `all()` raises, the only way to reach None is an
+        answered read that listed no such uid.
+        """
         for cl in self.all():
             if cl.uid == uid:
                 return cl
@@ -240,7 +349,7 @@ class ChecklistStore:
         for item in checklist.items:
             item.uid = item.uid or uuid.uuid4().hex[:12]
         self.ensure_schema()
-        self.gateway.sql(
+        self._write(
             "INSERT INTO lem_checklist_defs (uid, name, slot, due_time, items) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET "
             "name=excluded.name, slot=excluded.slot, "
@@ -248,25 +357,39 @@ class ChecklistStore:
             [checklist.uid, checklist.name.strip(), checklist.slot,
              checklist.due_time,
              json.dumps([i.to_dict() for i in checklist.items])])
+        # Handed back only once the row is acknowledged: the caller audits it
+        # and tells the operator it saved.
         return checklist
 
-    def delete(self, uid: str) -> None:
+    def delete(self, uid: str) -> int:
+        """Remove a round and the ticks that belong to it.
+
+        Two statements, and LabCore's queue has no transaction across them, so
+        the definition goes first ON PURPOSE: if the second is refused this
+        raises with orphan state rows, which are invisible and cleaned up by
+        re-running the delete. The other order would leave a round on the page
+        with its history gone.
+        """
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_checklist_defs WHERE uid = ?", [uid])
-        self.gateway.sql("DELETE FROM lem_checklist_state "
-                         "WHERE checklist_uid = ?", [uid])
+        removed = self._write_rows(
+            "DELETE FROM lem_checklist_defs WHERE uid = ?", [uid])
+        self._write("DELETE FROM lem_checklist_state WHERE checklist_uid = ?",
+                    [uid])
+        return removed
 
     # ── one day's ticks ────────────────────────────────────────────────
     def state(self, day: str) -> Dict[str, Dict[str, dict]]:
+        """One day's ticks. Raises rather than showing an untouched round.
+
+        An empty answer during a blip shows every item unticked; whoever is on
+        shift re-runs the round or re-ticks it, and `set_tick` then overwrites
+        the real record's name and time with theirs.
+        """
         self.ensure_schema()
-        try:
-            res = self.gateway.read_sql(
-                "SELECT checklist_uid, item_uid, checked, user, at, value "
-                "FROM lem_checklist_state WHERE day = ?", [day])
-        except Exception:
-            return {}
         out: Dict[str, Dict[str, dict]] = {}
-        for row in ([] if res.get("error") else (res.get("rows") or [])):
+        for row in self._read(
+                "SELECT checklist_uid, item_uid, checked, user, at, value "
+                "FROM lem_checklist_state WHERE day = ?", [day]):
             out.setdefault(str(row.get("checklist_uid")), {})[
                 str(row.get("item_uid"))] = {
                     "checked": bool(row.get("checked")),
@@ -277,9 +400,11 @@ class ChecklistStore:
 
     def set_tick(self, checklist_uid: str, item_uid: str, checked: bool,
                  day: str, user: str, now: Optional[datetime] = None) -> None:
+        """Record a tick. The tick IS the evidence the job was done, so a write
+        LabCore refused must never come back as `ok`."""
         self.ensure_schema()
         stamp = (now or datetime.now()).isoformat(timespec="seconds")
-        self.gateway.sql(
+        self._write(
             "INSERT INTO lem_checklist_state (day, checklist_uid, item_uid, "
             "checked, user, at, value) VALUES (?, ?, ?, ?, ?, ?, "
             "COALESCE((SELECT value FROM lem_checklist_state WHERE day = ? "
@@ -298,7 +423,7 @@ class ChecklistStore:
         self.ensure_schema()
         stamp = (now or datetime.now()).isoformat(timespec="seconds")
         text = (value or "").strip()
-        self.gateway.sql(
+        self._write(
             "INSERT INTO lem_checklist_state (day, checklist_uid, item_uid, "
             "checked, user, at, value) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(day, checklist_uid, item_uid) DO UPDATE SET "
@@ -310,23 +435,23 @@ class ChecklistStore:
                limit: int = 180) -> List[dict]:
         """A numeric item's readings over time, oldest first — the reason
         `number` exists. Unreadable entries are left out: a trend built from
-        "about half" is not a trend."""
+        "about half" is not a trend.
+
+        Raises on an outage rather than drawing a flat empty chart, which reads
+        as "this cylinder has never been measured".
+        """
         self.ensure_schema()
-        try:
-            res = self.gateway.read_sql(
+        out = []
+        for row in self._read(
                 "SELECT day, value, user FROM lem_checklist_state "
                 "WHERE checklist_uid = ? AND item_uid = ? "
                 "AND value IS NOT NULL AND TRIM(value) != '' "
                 "ORDER BY day DESC LIMIT ?",
-                [checklist_uid, item_uid, int(limit)])
-        except Exception:
-            return []
-        out = []
-        for row in ([] if res.get("error") else (res.get("rows") or [])):
+                [checklist_uid, item_uid, int(limit)]):
             try:
                 number = float(str(row.get("value")).strip())
             except (TypeError, ValueError):
-                continue
+                continue               # bad data in an answered read, skip it
             out.append({"day": str(row.get("day") or ""), "value": number,
                         "user": str(row.get("user") or "")})
         out.sort(key=lambda p: p["day"])
@@ -334,7 +459,14 @@ class ChecklistStore:
 
     def toggle(self, checklist: Checklist, item_uid: str, checked: bool,
                day: str, user: str) -> List[str]:
-        """Tick an item, and its children if it has any. Returns what changed."""
+        """Tick an item, and its children if it has any. Returns what changed.
+
+        No transaction spans these writes, so a refusal part-way leaves the
+        parent ticked and some children not. That is unchanged — what changed is
+        that it now RAISES instead of returning the full `touched` list, so the
+        operator is told to tick again rather than shown a parent whose children
+        LabCore never recorded.
+        """
         touched = [item_uid]
         for item in checklist.items:
             if item.parent_uid and item.parent_uid == item_uid:
@@ -348,12 +480,20 @@ class ChecklistStore:
         """Bulk-load historical ticks. Returns how many actually landed.
 
         LabCore serialises its write queue at roughly 1.5 operations a second
-        and rejects new work once ~100 are pending, with
-        ``{"busy": true, "retry_after": n}``. It reports that as an error *dict*
-        rather than raising — so a naive loop both floods the queue and counts
-        the rejections as successes. Hence: multi-row inserts to keep the op
-        count down, a pause between them, and a real back-off that re-tries a
-        rejected batch instead of losing it.
+        and rejects new work once ~100 are pending. It reports that by
+        ANSWERING — `{"busy": true, "retry_after": n}`, or a bare
+        `{"queued": false, "pending": 137}` with no "error" key at all — so the
+        old `if not res.get("error")` counted rejected batches as imported and
+        told the operator 3,096 rows had arrived when hundreds had not. Hence:
+        multi-row inserts to keep the op count down, a pause between them, a
+        real back-off that re-tries a rejected batch, and `confirm_write` so
+        only an acknowledged batch is counted.
+
+        After `attempts` escalating waits the queue is not busy, it is saying
+        no. Raising there is deliberate: continuing to shovel the remaining
+        batches into a queue that just refused six times makes it worse, and a
+        silently short return value is indistinguishable from "the file only
+        had that many rows".
         """
         if not rows:
             return 0
@@ -371,34 +511,47 @@ class ChecklistStore:
                    "ON CONFLICT(day, checklist_uid, item_uid) DO UPDATE SET "
                    "checked=excluded.checked, user=excluded.user, "
                    "at=excluded.at")
+            landed = False
+            refusal = ""
             for attempt in range(attempts):
                 try:
-                    res = self.gateway.sql(sql, args) or {}
-                except Exception:
-                    res = {"error": "raised"}
-                if not res.get("error"):
+                    res = self.gateway.sql(sql, args)
+                except Exception as exc:
+                    res = {"error": f"{type(exc).__name__}: {exc}"}
+                try:
+                    confirm_write(res)
+                except LabCoreRefused as exc:
+                    refusal = str(exc)
+                else:
                     done += len(chunk)
+                    landed = True
                     break
                 # Busy is temporary; wait the queue's own suggestion, backing
-                # off if it keeps saying no.
-                wait = float(res.get("retry_after") or 2) * (attempt + 1)
-                time.sleep(min(wait, 15))
+                # off if it keeps saying no. No wait after the last try — there
+                # is nothing left to wait for.
+                if attempt + 1 < attempts:
+                    time.sleep(min(_retry_after(res) * (attempt + 1), 15))
+            if not landed:
+                raise ChecklistWriteError(
+                    f"LabCore refused a batch of {len(chunk)} historical ticks "
+                    f"after {attempts} attempts; {done} rows landed before it. "
+                    f"Last answer: {refusal}")
             time.sleep(pause)
         return done
 
     def history(self, limit: int = 60) -> List[dict]:
-        """Per-day tick counts, newest first — the "did we do the rounds?" view."""
+        """Per-day tick counts, newest first — the "did we do the rounds?" view.
+
+        Raises rather than answering "no days": this is the archive an auditor
+        reads, and an empty one during an outage says the rounds were never run.
+        """
         self.ensure_schema()
-        try:
-            res = self.gateway.read_sql(
+        out = []
+        for row in self._read(
                 "SELECT day, COUNT(*) AS total, "
                 "SUM(CASE WHEN checked THEN 1 ELSE 0 END) AS checked "
                 "FROM lem_checklist_state GROUP BY day "
-                "ORDER BY day DESC LIMIT ?", [int(limit)])
-        except Exception:
-            return []
-        out = []
-        for row in ([] if res.get("error") else (res.get("rows") or [])):
+                "ORDER BY day DESC LIMIT ?", [int(limit)]):
             total = int(row.get("total") or 0)
             checked = int(row.get("checked") or 0)
             out.append({"day": str(row.get("day") or ""), "total": total,

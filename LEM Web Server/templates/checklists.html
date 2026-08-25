@@ -506,10 +506,19 @@ document.addEventListener('change', async e => {
 document.addEventListener('click', async e => {
   const t = e.target.closest('[data-trend]');
   if (!t) return;
-  const b = await fetch(`/api/checklists/${encodeURIComponent(t.dataset.cl)}`
-    + `/values?item=${encodeURIComponent(t.dataset.trend)}`)
-    .then(r => r.json()).catch(() => null);
+  const res = await fetch(`/api/checklists/${encodeURIComponent(t.dataset.cl)}`
+    + `/values?item=${encodeURIComponent(t.dataset.trend)}`).catch(() => null);
+  if (!res) return;
+  const b = await res.json().catch(() => null);
   if (!b) return;
+  if (!res.ok) {
+    // A flat, empty trend is a claim about a cylinder nobody has been reading.
+    $('#trendTitle').textContent = 'Readings';
+    $('#trendBody').innerHTML = `<p class="empty">${esc(b.error
+      || 'LabCore did not answer, so these readings could not be read.')}</p>`;
+    $('#trendDlg').showModal();
+    return;
+  }
   const s = b.series || [];
   $('#trendTitle').textContent = b.text || 'Readings';
   $('#trendBody').innerHTML = s.length ? (() => {
@@ -857,8 +866,15 @@ $('#edDelete').addEventListener('click', async () => {
   if (!EDIT || !EDIT.uid) return;
   if (!confirm(`Delete “${EDIT.name}”? Its recorded ticks and readings go too.`))
     return;
-  await fetch(`/api/checklists/${encodeURIComponent(EDIT.uid)}`,
-              {method: 'DELETE'});
+  const r = await fetch(`/api/checklists/${encodeURIComponent(EDIT.uid)}`,
+                        {method: 'DELETE'});
+  if (!r.ok) {
+    // The dialog stays open. Closing it on a refused delete is how a round
+    // reappears tomorrow and everyone assumes the button is broken.
+    const b = await r.json().catch(() => ({}));
+    $('#edErr').textContent = b.error || 'Could not delete that.';
+    return;
+  }
   $('#editDlg').close(); load();
 });
 
@@ -879,7 +895,17 @@ async function runImport(dry) {
      body: JSON.stringify({json: text,
                            state: $('#impState').value.trim() || undefined})});
   const b = await r.json().catch(() => ({}));
-  if (!r.ok) { $('#impErr').textContent = b.error || 'Import failed.'; return; }
+  if (!r.ok) {
+    $('#impErr').textContent = b.error || 'Import failed.';
+    // An import is many writes into a queue that refuses past 100 pending, so
+    // stopping part-way is ordinary here. Show what DID land — the numbers are
+    // of acknowledged writes, and re-running skips them.
+    $('#impOut').innerHTML = b.incomplete
+      ? `<p class="sub"><b>Partly imported.</b> ${b.count} rounds${
+          b.history_rows ? `, ${b.history_rows} historic ticks` : ''}.
+         Run it again to finish — nothing is duplicated.</p>` : '';
+    return;
+  }
   $('#impErr').textContent = '';
   const hist = b.history_rows
     ? ` · history: <b>${b.history_rows}</b> ticks across
@@ -911,7 +937,16 @@ $('#btnArchive').addEventListener('click', async () => {
   $('#arcGrid').innerHTML = '<p class="empty">Loading…</p>';
   $('#arcDlg').showModal();
   const b = await (FIRST_PAINT ? LEM.get : LEM.fresh)('/api/checklists/history');
-  if (!b || !(b.days || []).length) {
+  if (!b) {
+    // `LEM` answers null when the fetch failed and nothing was cached. This is
+    // the archive an auditor asks for, so "no rounds recorded yet" about three
+    // years of ticks is the one thing it must not say.
+    $('#arcGrid').innerHTML = `<p class="empty">LabCore did not answer, so the
+      archive could not be read. This is not an empty archive — try again in a
+      moment.</p>`;
+    return;
+  }
+  if (!(b.days || []).length) {
     $('#arcGrid').innerHTML = `<p class="empty">No rounds recorded yet. If the
       old LEM has history, bring it across with <b>Import from old LEM</b>.</p>`;
     return;
@@ -979,9 +1014,17 @@ $('#arcGrid').addEventListener('click', async e => {
   $$('#arcGrid .sq b').forEach(b => b.classList.toggle('on', b === sq));
   const day = sq.dataset.day;
   $('#arcDay').innerHTML = '<p class="empty">Loading…</p>';
-  const b = await fetch(`/api/checklists?day=${encodeURIComponent(day)}`)
-    .then(r => r.json()).catch(() => null);
-  if (!b) { $('#arcDay').innerHTML = '<p class="empty">Could not read that day.</p>'; return; }
+  const res = await fetch(`/api/checklists?day=${encodeURIComponent(day)}`)
+    .catch(() => null);
+  // A 503 carries a JSON body too, so `!b` was never true for a failed read and
+  // the day rendered as one on which nobody ticked anything.
+  const b = res && res.ok ? await res.json().catch(() => null) : null;
+  if (!b) {
+    const e = res ? await res.json().catch(() => ({})) : {};
+    $('#arcDay').innerHTML = `<p class="empty">${esc(e.error
+      || 'Could not read that day.')}</p>`;
+    return;
+  }
   const lists = (b.checklists || []).filter(c => c.total || c.items.length);
   $('#arcDay').innerHTML = `<div class="arcday">
     <h3 class="sign">${esc(day)}</h3>` + (lists.length ? lists.map(cl => {

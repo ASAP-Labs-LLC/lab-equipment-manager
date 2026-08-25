@@ -77,8 +77,24 @@ class TestBootsWithoutLabCore:
         assert client.get("/api/test-names").get_json()["tests"] == []
 
     def test_map_lock_defaults_to_locked_when_unknown(self, client):
-        # Can't read the setting → don't invite edits that will fail.
-        assert client.get("/api/map").get_json()["locked"] is False
+        """Can't read the setting → don't invite edits that will fail.
+
+        This test asserted `False` while its own name and comment argued for
+        `True`, and it could: the store swallowed the failure and answered
+        "unlocked" as if it had read it. Now the store raises, so the route has
+        to CHOOSE — and unlocked is the wrong choice. It puts drag handles on
+        every floor screen, and every drag would be refused by the same LabCore
+        that just failed to answer this, so the operator rearranges the lab and
+        keeps none of it.
+        """
+        r = client.get("/api/map")
+        # Still 200: this is polled every 2s by every wall display, and the
+        # answer given is usable. `known: false` is what says it is a fallback.
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body["locked"] is True
+        assert body["known"] is False
+        assert body["error"]
 
     def test_login_says_labcore_is_down(self, client):
         r = client.post("/api/login", json={"username": "k", "password": "p"})

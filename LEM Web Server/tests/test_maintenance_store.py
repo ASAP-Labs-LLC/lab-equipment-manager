@@ -190,3 +190,179 @@ class TestMaintenanceApi:
                ["m1", "X", "UNKNOWN", "r", "2026-07-31T12:00:00"])
         client.delete("/api/machines/m1")
         assert MaintenanceStore(gw).for_machine("m1") == []
+
+
+# ── the write queue says no, and the store must not say yes ─────────────────
+#
+# LabCore's HTTP write queue serialises at roughly 1.5 writes a second and
+# refuses past ~100 pending BY ANSWERING. No exception is raised, and the answer
+# does not necessarily carry an "error" key. Every test below refuses in that
+# real shape, because {"error": ...} is the one shape the old code already
+# handled and proving anything with it would be arranging the case the bug
+# cannot occur in.
+
+from labcore_result import LabCoreError, LabCoreUnavailable
+from maintenance_store import MaintenanceWriteError
+
+
+REFUSAL = {"queued": False, "pending": 137}
+
+
+class QueueFull:
+    """A real gateway until it refuses — then LabCore's actual refusal shape.
+
+    Reads keep working on purpose: a test that a WRITE raised is only worth
+    anything if it can then look at the stored state and show nothing changed.
+    """
+
+    def __init__(self, refuse_after=None):
+        self.real = FakeLabCoreGateway()
+        self.refusing = False
+        self.refuse_after = refuse_after
+        self.writes = 0
+
+    def refuse(self):
+        self.refusing = True
+
+    def allow(self):
+        self.refusing = False
+        self.refuse_after = None
+
+    def sql(self, sql, args=None, **kw):
+        self.writes += 1
+        if self.refusing or (self.refuse_after is not None
+                             and self.writes > self.refuse_after):
+            return dict(REFUSAL)
+        return self.real.sql(sql, args)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.real.read_sql(sql, args)
+
+
+class Unreadable:
+    """LabCore is up enough to be asked and not up enough to answer.
+
+    The routine 8s read timeout this repo documents, not a missing table.
+    """
+
+    def __init__(self):
+        self.real = FakeLabCoreGateway()
+
+    def sql(self, sql, args=None, **kw):
+        return self.real.sql(sql, args)
+
+    def read_sql(self, sql, args=None, **kw):
+        return {"error": "HTTPSConnectionPool(...): Read timed out"}
+
+
+@pytest.fixture
+def queue_full():
+    return QueueFull()
+
+
+def warm(gw):
+    """A store with its schema declared and one saved task, then refusing."""
+    store = MaintenanceStore(gw)
+    store.save(task())
+    gw.refuse()
+    return store
+
+
+class TestARefusedWriteIsNeverReportedAsSaved:
+    def test_save_raises_and_writes_nothing(self, queue_full):
+        store = warm(queue_full)
+        with pytest.raises(MaintenanceWriteError):
+            store.save(task(uid="t2", name="Monthly PM", kind="pm",
+                            interval_days=30))
+        queue_full.allow()
+        assert [t.uid for t in store.for_machine("m1")] == ["t1"]
+
+    def test_editing_an_existing_task_raises_and_leaves_it_alone(self,
+                                                                queue_full):
+        store = warm(queue_full)
+        with pytest.raises(MaintenanceWriteError):
+            store.save(task(interval_days=7))
+        queue_full.allow()
+        assert store.for_machine("m1")[0].interval_days == 365
+
+    def test_complete_raises_and_the_calibration_is_still_outstanding(self):
+        """The most expensive write in this file to lose: an annual calibration
+        ticked off on the floor that LabCore never recorded stays overdue in the
+        record every station module reads."""
+        gw = QueueFull()
+        store = MaintenanceStore(gw)
+        store.save(task(last_done=""))
+        gw.refuse()
+        with pytest.raises(MaintenanceWriteError):
+            store.complete("t1", "2026-07-31", "filters swapped")
+        gw.allow()
+        t = store.for_machine("m1")[0]
+        assert t.last_done == "" and t.note == ""
+
+    def test_delete_raises_and_the_task_is_still_there(self, queue_full):
+        store = warm(queue_full)
+        with pytest.raises(MaintenanceWriteError):
+            store.delete("t1")
+        queue_full.allow()
+        assert [t.uid for t in store.for_machine("m1")] == ["t1"]
+
+    def test_forget_raises_and_the_retired_machine_keeps_its_rows(self,
+                                                                  queue_full):
+        """Silently orphaned PM rows re-attach if that uid is ever registered
+        again, and show up on "what is overdue anywhere" for a machine nobody
+        can find."""
+        store = warm(queue_full)
+        with pytest.raises(MaintenanceWriteError):
+            store.forget("m1")
+        queue_full.allow()
+        assert len(store.for_machine("m1")) == 1
+
+    def test_a_refused_create_table_raises_rather_than_latching_ready(self):
+        """`_ready` used to be set whatever LabCore answered, so one refused
+        CREATE meant every INSERT for the rest of the process aimed at a table
+        that did not exist — and reported success."""
+        gw = QueueFull()
+        gw.refuse()
+        store = MaintenanceStore(gw)
+        with pytest.raises(MaintenanceWriteError):
+            store.ensure_schema()
+        assert store._ready is False
+
+    def test_the_store_recovers_once_the_queue_drains(self):
+        """The consequence of not latching: the next call re-declares and
+        works, instead of failing forever with a "ready" flag."""
+        gw = QueueFull()
+        gw.refuse()
+        store = MaintenanceStore(gw)
+        with pytest.raises(MaintenanceWriteError):
+            store.save(task())
+        gw.allow()
+        store.save(task())
+        assert [t.uid for t in store.for_machine("m1")] == ["t1"]
+
+    def test_the_refusal_is_catchable_as_one_labcore_error(self):
+        gw = QueueFull()
+        gw.refuse()
+        with pytest.raises(LabCoreError):
+            MaintenanceStore(gw).save(task())
+
+
+class TestCouldNotAskIsNotDoesNotExist:
+    def test_get_raises_rather_than_answering_none(self):
+        """`None` here is a 404 from the completion route. A task that exists,
+        reported as "no such task", is a save turned into a lie about the data."""
+        store = MaintenanceStore(Unreadable())
+        with pytest.raises(LabCoreUnavailable):
+            store.get("t1")
+
+    def test_for_machine_does_not_report_an_empty_schedule(self):
+        store = MaintenanceStore(Unreadable())
+        with pytest.raises(LabCoreUnavailable):
+            store.for_machine("m1")
+
+    def test_all_does_not_hand_the_csv_importer_an_empty_lab(self):
+        """`plan_import` diffs the CSV against this. An empty answer during a
+        blip plans a fresh duplicate of every task in the building."""
+        store = MaintenanceStore(Unreadable())
+        with pytest.raises(LabCoreUnavailable):
+            store.all()

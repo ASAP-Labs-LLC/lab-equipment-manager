@@ -247,3 +247,265 @@ class TestQcApi:
         gw.write("add_test", {"lab_id": "L1", "test_name": "Cloud Point"})
         body = client.get("/api/test-names").get_json()
         assert "Cloud Point" in body["tests"]
+
+
+# ── The refusal that answers ────────────────────────────────────────────────
+#
+# LabCore's write queue serialises at ~1.5 writes/sec and refuses past 100
+# pending BY ANSWERING: no exception, no "error" key, no "ok". Every test below
+# uses that exact shape, because `{"error": ...}` is the ONE shape the old
+# `if not res.get("error")` code already handled — a suite that only refuses
+# that way proves nothing about the bug being fixed here.
+
+from labcore_result import LabCoreError, LabCoreRefused, LabCoreUnavailable
+from qc_specs import (
+    QcSpecRefused,
+    QcSpecStoreError,
+    QcSpecUnavailable,
+)
+
+QUEUE_FULL = {"queued": False, "pending": 137}
+READ_BLIP = {"error": "HTTPSConnectionPool(host='labvision'): Read timed out"}
+
+
+class QueueFullGateway:
+    """A LabCore whose write queue is past its limit.
+
+    Writes matching `refuse` are ANSWERED with the queue's refusal and never
+    reach the database, so "did it raise" and "did the row change" are two
+    separate assertions rather than one. Everything else passes through to a
+    real fake, so state can be seeded truthfully first.
+    """
+
+    def __init__(self, real=None, refuse=lambda sql: True, answer=QUEUE_FULL):
+        self.real = real if real is not None else FakeLabCoreGateway()
+        self.refuse = refuse
+        self.answer = answer
+        self.refused = []
+
+    def sql(self, sql, args=None, **kw):
+        if self.refuse(sql):
+            self.refused.append(sql)
+            return dict(self.answer) if isinstance(self.answer, dict) \
+                else self.answer
+        return self.real.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.real.read_sql(sql, args, **kw)
+
+    def write(self, operation, params, **kw):
+        return self.real.write(operation, params, **kw)
+
+    def get_test_names(self):
+        return self.real.get_test_names()
+
+
+class BlipGateway:
+    """LabCore cannot be asked. Reads matching `fail` time out."""
+
+    def __init__(self, real=None, fail=lambda sql: True):
+        self.real = real if real is not None else FakeLabCoreGateway()
+        self.fail = fail
+
+    def sql(self, sql, args=None, **kw):
+        return self.real.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        if self.fail(sql):
+            return dict(READ_BLIP)
+        return self.real.read_sql(sql, args, **kw)
+
+    def write(self, operation, params, **kw):
+        return self.real.write(operation, params, **kw)
+
+
+def specs_in(gw):
+    """Read the table directly, past the store, so the assertion is about
+    what LabCore holds and not about what the store believes."""
+    res = gw.read_sql("SELECT machine_uid, test_name, expected FROM "
+                      "lem_qc_specs ORDER BY test_name")
+    return res.get("rows") or []
+
+
+class TestARefusedWriteIsNeverReportedAsSaved:
+    """One test per mutating method: it raises, and nothing changed."""
+
+    def test_ensure_schema_refused_raises_and_does_not_remember_success(self):
+        gw = QueueFullGateway()
+        store = QcSpecStore(gw)
+        with pytest.raises(QcSpecRefused):
+            store.ensure_schema()
+        # The flag is the second half of the bug: cached on an unread answer,
+        # a refused CREATE is remembered as done for the life of the process.
+        assert store._schema_ready is False
+        assert not gw.real.read_sql(
+            "SELECT name FROM sqlite_master WHERE name='lem_qc_specs'"
+        ).get("rows")
+
+    def test_save_refused_raises(self):
+        # Only the row write is refused. Refusing the CREATE as well would make
+        # this pass on `ensure_schema` raising, and it would still pass with
+        # `save`'s own confirmation removed — a test arranged so the bug it is
+        # named for cannot be observed.
+        store = QcSpecStore(QueueFullGateway(
+            refuse=lambda s: not s.startswith("CREATE")))
+        with pytest.raises(QcSpecRefused):
+            store.save(QcSpec("m1", "Cloud Point", "QC-CP-1", -9.0, 0.5))
+
+    def test_save_refused_leaves_the_previous_band_in_place(self):
+        """The dangerous case: an EDIT that is dropped. The operator is told
+        the band moved to -8.0 and the bench keeps judging against -9.0."""
+        real = FakeLabCoreGateway()
+        QcSpecStore(real).save(QcSpec("m1", "Cloud Point", "QC-CP-1", -9.0, 0.5))
+        gw = QueueFullGateway(real, refuse=lambda s: s.startswith("INSERT"))
+        with pytest.raises(QcSpecRefused):
+            QcSpecStore(gw).save(QcSpec("m1", "Cloud Point", "QC-CP-1",
+                                        -8.0, 0.5))
+        assert [r["expected"] for r in specs_in(real)] == [-9.0]
+
+    def test_delete_refused_raises_and_the_band_is_still_there(self):
+        real = FakeLabCoreGateway()
+        QcSpecStore(real).save(QcSpec("m1", "Cloud Point", "QC-CP-1", -9.0, 0.5))
+        gw = QueueFullGateway(real, refuse=lambda s: s.startswith("DELETE"))
+        with pytest.raises(QcSpecRefused):
+            QcSpecStore(gw).delete("m1", "Cloud Point")
+        assert len(specs_in(real)) == 1
+
+    def test_set_override_refused_raises(self):
+        gw = QueueFullGateway(refuse=lambda s: not s.startswith("CREATE"))
+        with pytest.raises(QcSpecRefused):
+            MachineStateReader(gw).set_override("m1", "SERVICE", "pump")
+
+    def test_set_override_refused_leaves_the_machine_as_it_was(self):
+        """A command TO a bench. Dropped, the floor shows an instrument out of
+        service while it keeps running samples — or keeps a healthy one locked
+        out when the 'clear' is the write that goes missing."""
+        real = FakeLabCoreGateway()
+        MachineStateReader(real).set_override("m1", "SERVICE", "pump")
+        gw = QueueFullGateway(real, refuse=lambda s: s.startswith("INSERT"))
+        with pytest.raises(QcSpecRefused):
+            MachineStateReader(gw).set_override("m1", "", "back in service")
+        rows_now = real.read_sql(
+            "SELECT manual_override FROM lem_machine_control")["rows"]
+        assert rows_now == [{"manual_override": "SERVICE"}]
+
+    def test_the_control_table_create_is_confirmed_too(self):
+        """The table is made to EXIST first, so the refused CREATE is the only
+        thing that can raise.
+
+        Without that the test passes for the wrong reason: an unconfirmed CREATE
+        leaves no table, the INSERT then fails with "no such table", and the
+        exception looks like the one being asserted. Seeded this way, dropping
+        `confirm_write` from the CREATE lets the override write straight through
+        and the test fails — which is what a test of that line has to do.
+        """
+        real = FakeLabCoreGateway()
+        MachineStateReader(real).set_override("m1", "SERVICE", "pump")
+        gw = QueueFullGateway(real, refuse=lambda s: s.startswith("CREATE"))
+        with pytest.raises(QcSpecRefused):
+            MachineStateReader(gw).set_override("m1", "", "back in service")
+        # and the command itself was never issued
+        assert real.read_sql("SELECT manual_override FROM lem_machine_control"
+                             )["rows"] == [{"manual_override": "SERVICE"}]
+
+
+class TestSilenceIsNotSuccessEither:
+    """`None` and `{}` are what a gateway returns when it has stopped
+    answering. Both used to pass the `"error" in res` test."""
+
+    NOT_CREATE = staticmethod(lambda s: not s.startswith("CREATE"))
+
+    @pytest.mark.parametrize("answer", [None, {"ok": False}, "done"])
+    def test_save(self, answer):
+        store = QcSpecStore(QueueFullGateway(refuse=self.NOT_CREATE,
+                                             answer=answer))
+        with pytest.raises(QcSpecRefused):
+            store.save(QcSpec("m1", "Cloud Point", "QC-CP-1", -9.0, 0.5))
+
+    @pytest.mark.parametrize("answer", [None, {"ok": False}])
+    def test_set_override(self, answer):
+        gw = QueueFullGateway(refuse=self.NOT_CREATE, answer=answer)
+        with pytest.raises(QcSpecRefused):
+            MachineStateReader(gw).set_override("m1", "SERVICE", "x")
+
+
+class TestReadsDoNotInventEmpty:
+    """"Could not ask" served as "there is nothing" is the other half of the
+    same bug: the floor reporting no QC, no machines and no history about a
+    lab that has all three."""
+
+    def test_list_specs_raises_on_a_blip(self):
+        with pytest.raises(QcSpecUnavailable):
+            QcSpecStore(BlipGateway()).list_specs()
+
+    def test_list_specs_still_reads_a_missing_table_as_no_qc_assigned(self, gw):
+        """The one honest empty: nothing has ever saved a band."""
+        store = QcSpecStore(gw)
+        store._schema_ready = True          # pretend the CREATE never ran
+        assert store.list_specs() == []
+
+    def test_a_write_path_can_refuse_even_that(self, gw):
+        store = QcSpecStore(gw)
+        store._schema_ready = True
+        with pytest.raises(QcSpecUnavailable):
+            store.list_specs(missing_ok=False)
+
+    def test_machines_raises_rather_than_reporting_an_empty_lab(self):
+        with pytest.raises(QcSpecUnavailable):
+            MachineStateReader(BlipGateway()).machines()
+
+    def test_heartbeats_raises_rather_than_clearing_the_delete_guard(self):
+        """`in_use` is read off these beats. An empty map during a blip says
+        no parser is live anywhere and opens every config up to deletion."""
+        with pytest.raises(QcSpecUnavailable):
+            MachineStateReader(BlipGateway()).heartbeats()
+
+    def test_events_raises_rather_than_showing_a_blank_history(self):
+        with pytest.raises(QcSpecUnavailable):
+            MachineStateReader(BlipGateway()).events("m1")
+
+    def test_recent_events_raises(self):
+        with pytest.raises(QcSpecUnavailable):
+            MachineStateReader(BlipGateway()).recent_events(500)
+
+    def test_sub_statuses_raises(self):
+        with pytest.raises(QcSpecUnavailable):
+            MachineStateReader(BlipGateway()).sub_statuses()
+
+    def test_last_activity_raises(self):
+        with pytest.raises(QcSpecUnavailable):
+            MachineStateReader(BlipGateway()).last_activity()
+
+    def test_every_missing_table_read_is_still_empty(self, gw):
+        """Each of these tables is created by someone else — the modules, or
+        the boot-time schema — so "not there yet" is a real answer."""
+        reader = MachineStateReader(gw)
+        assert reader.machines() == []
+        assert reader.heartbeats() == {}
+        assert reader.sub_statuses() == {}
+        assert reader.last_activity() == {}
+        assert reader.events("m1") == []
+        assert reader.recent_events() == []
+
+
+class TestTheExceptionsRoutesWillCatch:
+    def test_a_route_can_catch_the_store_or_the_rule(self):
+        assert issubclass(QcSpecRefused, QcSpecStoreError)
+        assert issubclass(QcSpecRefused, LabCoreRefused)
+        assert issubclass(QcSpecUnavailable, QcSpecStoreError)
+        assert issubclass(QcSpecUnavailable, LabCoreUnavailable)
+        assert issubclass(QcSpecStoreError, LabCoreError)
+
+    def test_retryable_and_refused_stay_distinguishable(self):
+        """A route answers 503 for one and 502 for the other; collapsing them
+        is how "try again in a moment" becomes "your band is invalid"."""
+        assert not issubclass(QcSpecRefused, LabCoreUnavailable)
+        assert not issubclass(QcSpecUnavailable, LabCoreRefused)
+
+    def test_the_message_says_what_failed_not_just_that_it_did(self):
+        store = QcSpecStore(QueueFullGateway(
+            refuse=lambda s: s.startswith("INSERT")))
+        with pytest.raises(QcSpecRefused) as caught:
+            store.save(QcSpec("m1", "Cloud Point", "QC-CP-1", -9.0, 0.5))
+        assert "Cloud Point" in str(caught.value)
+        assert "137" in str(caught.value)      # the queue depth survives

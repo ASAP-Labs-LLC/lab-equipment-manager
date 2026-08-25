@@ -115,15 +115,31 @@ class TestWritesMustBeAcknowledged:
         with pytest.raises(LabCoreRefused):
             confirm_write({"ok": False, "status": "rejected", "pending": 100})
 
-    def test_silence_is_not_success(self):
-        for answer in (None, {}, [], "done", 1):
+    def test_a_non_answer_is_not_success(self):
+        """Not an answer at all — a dead gateway, or a transport handing back
+        something that is not a response document.
+
+        `{}` used to be in this list. It was removed deliberately, not loosened:
+        an empty dict carries no failure signal, and this module's first rule
+        (demand a truthy `ok`) was never checked against what real LabCore
+        answers to a write that WORKS. See TestAgainstWhatLabCoreActuallySends —
+        refusing an unrecorded success shape would have failed every write in the
+        lab with /healthz still green."""
+        for answer in (None, [], "done", 1):
             with pytest.raises(LabCoreRefused):
                 confirm_write(answer)
 
     def test_the_refusal_says_what_happened(self):
+        """The message has to name the signal it refused on, because the operator
+        reading it needs to know whether to press Save again or go and look."""
         with pytest.raises(LabCoreRefused) as caught:
-            confirm_write({"ok": False, "status": "rejected", "pending": 100})
-        assert "rejected" in str(caught.value) or "pending" in str(caught.value)
+            confirm_write({"error": "LabCore is busy, try again",
+                           "busy": True, "retry_after": 4})
+        assert "busy" in str(caught.value).lower()
+
+        with pytest.raises(LabCoreRefused) as caught:
+            confirm_write({"ok": False, "status": "rejected"})
+        assert "ok" in str(caught.value)
 
     def test_rows_affected_zero_is_still_an_acknowledgement(self):
         """DELETE of something already gone did happen. It changed nothing, which
@@ -144,3 +160,75 @@ class TestTheTwoFailuresAreDistinguishable:
         from labcore_result import LabCoreError
         assert issubclass(LabCoreUnavailable, LabCoreError)
         assert issubclass(LabCoreRefused, LabCoreError)
+
+
+class TestAgainstWhatLabCoreActuallySends:
+    """The evidenced protocol, not an invented one.
+
+    `confirm_write` was first written to demand a truthy `ok`, on the principle
+    that silence is not success. The principle is sound and the application of it
+    was not: NOTHING in this repo, this lab's notes, or the station module records
+    what real LabCore answers to a write that SUCCEEDS. Every `{"ok": True}` in
+    the tree is this repo's own sqlite fake. If the real service answers
+    `{"rows_affected": 1}`, or `{}`, that rule fails every write in the lab — and
+    /healthz would stay green while nothing could be saved, which RELEASING.md §5
+    says nothing in the deploy pipeline catches.
+
+    What IS evidenced, in notes.md and again in lem_station_module.py:495:
+
+        {"error": "LabCore is busy…", "busy": true, "retry_after": n}
+
+    an error DICT, returned normally rather than raised. The station module —
+    the half that has actually run against production LabCore — judges a write by
+    `result.get("error")`, and it is right to.
+
+    So the rule is inverted: refuse on a POSITIVE failure signal, accept
+    otherwise. That cannot break a write that worked, and it still catches the
+    refusal that caused "imported 3094" while nothing landed.
+    """
+
+    def test_the_measured_refusal_is_refused(self):
+        with pytest.raises(LabCoreRefused):
+            confirm_write({"error": "LabCore is busy, try again",
+                           "busy": True, "retry_after": 4})
+
+    def test_a_busy_flag_alone_is_refused(self):
+        """Belt and braces: `busy` is the field that means it."""
+        with pytest.raises(LabCoreRefused):
+            confirm_write({"busy": True})
+
+    def test_an_explicit_negative_is_refused(self):
+        for answer in ({"ok": False}, {"queued": False}):
+            with pytest.raises(LabCoreRefused):
+                confirm_write(answer)
+
+    def test_an_answer_with_no_verdict_is_ACCEPTED(self):
+        """The one that matters. An unknown-but-not-failing shape must pass, or a
+        protocol we have never recorded takes the whole lab down."""
+        for answer in ({"rows_affected": 1}, {}, {"status": "done"}):
+            confirm_write(answer)
+
+    def test_the_sqlite_fake_still_passes(self):
+        confirm_write({"ok": True, "rows_affected": 1})
+
+    def test_silence_is_still_not_success(self):
+        """`None` is not an answer at all — that is a dead gateway, not a
+        protocol we have not seen."""
+        with pytest.raises(LabCoreRefused):
+            confirm_write(None)
+
+    def test_a_busy_read_is_unavailable_not_empty(self):
+        """Reads come back through the same endpoint and can be refused the same
+        way. Answering `[]` to a busy queue is how a full write queue empties the
+        floor."""
+        with pytest.raises(LabCoreUnavailable):
+            rows({"error": "LabCore is busy…", "busy": True, "retry_after": 4})
+        with pytest.raises(LabCoreUnavailable):
+            rows({"busy": True})
+
+    def test_retry_after_is_reported(self):
+        """notes.md requires honouring it; a caller cannot honour what it cannot
+        read."""
+        from labcore_result import retry_after
+        assert retry_after({"busy": True, "retry_after": 7}) == 7.0
+        assert retry_after({"error": "busy"}) is None

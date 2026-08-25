@@ -280,3 +280,236 @@ class TestChangeoverApi:
             "old_name": "Nope", "new_name": "New", "new_id_val": "N"})
         assert r.status_code == 400
         assert "not found" in r.get_json()["error"]
+
+
+# ── The refusal that answers ────────────────────────────────────────────────
+#
+# LabCore's write queue refuses past 100 pending BY ANSWERING — no exception, no
+# "error" key, no "ok". That is the shape every test below uses. Refusing with
+# `{"error": ...}` instead would prove almost nothing: that is the one shape the
+# old `if res.get("error")` code already coped with.
+
+from labcore_result import LabCoreError, LabCoreRefused, LabCoreUnavailable
+from qc_samples import (
+    QcSampleRefused,
+    QcSampleStoreError,
+    QcSampleUnavailable,
+)
+
+QUEUE_FULL = {"queued": False, "pending": 137}
+READ_BLIP = {"error": "HTTPSConnectionPool(host='labvision'): Read timed out"}
+
+
+class QueueFullGateway:
+    """A LabCore past its write-queue limit.
+
+    Writes matching `refuse` are answered with the refusal and never reach the
+    database, so "it raised" and "nothing changed" are separate assertions.
+    Everything else goes through to a real fake, so the before-state is true.
+    """
+
+    def __init__(self, real=None, refuse=lambda sql: True, answer=QUEUE_FULL):
+        self.real = real if real is not None else FakeLabCoreGateway()
+        self.refuse = refuse
+        self.answer = answer
+        self.refused = []
+
+    def sql(self, sql, args=None, **kw):
+        if self.refuse(sql):
+            self.refused.append(sql)
+            return dict(self.answer) if isinstance(self.answer, dict) \
+                else self.answer
+        return self.real.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        return self.real.read_sql(sql, args, **kw)
+
+    def write(self, operation, params, **kw):
+        return self.real.write(operation, params, **kw)
+
+
+class BlipGateway:
+    """LabCore cannot be asked. Reads matching `fail` time out."""
+
+    def __init__(self, real=None, fail=lambda sql: True):
+        self.real = real if real is not None else FakeLabCoreGateway()
+        self.fail = fail
+
+    def sql(self, sql, args=None, **kw):
+        return self.real.sql(sql, args, **kw)
+
+    def read_sql(self, sql, args=None, **kw):
+        if self.fail(sql):
+            return dict(READ_BLIP)
+        return self.real.read_sql(sql, args, **kw)
+
+    def write(self, operation, params, **kw):
+        return self.real.write(operation, params, **kw)
+
+
+def library_in(gw):
+    """Read the table directly, past the store."""
+    res = gw.read_sql("SELECT name, sample_id_val FROM lem_qc_samples "
+                      "ORDER BY name")
+    return res.get("rows") or []
+
+
+def refuse_sample_writes(sql):
+    return "lem_qc_samples" in sql and not sql.startswith("CREATE")
+
+
+class TestARefusedWriteIsNeverReportedAsSaved:
+    """One test per mutating method: it raises, and nothing changed.
+
+    A standard is shared by every machine that runs it, so one dropped write
+    here is not one instrument mis-judged — it is all of them.
+    """
+
+    def test_ensure_schema_refused_raises_and_does_not_remember_success(self):
+        gw = QueueFullGateway()
+        store = QcSampleStore(gw)
+        with pytest.raises(QcSampleRefused):
+            store.ensure_schema()
+        assert store._schema_ready is False
+        assert not gw.real.read_sql(
+            "SELECT name FROM sqlite_master WHERE name='lem_qc_samples'"
+        ).get("rows")
+
+    def test_save_refused_raises(self):
+        # Only the row write is refused. Refusing the CREATE too would make this
+        # pass on `ensure_schema` raising, and it would go on passing with
+        # `save`'s own confirmation deleted.
+        store = QcSampleStore(QueueFullGateway(refuse=refuse_sample_writes))
+        with pytest.raises(QcSampleRefused):
+            store.save(QcSample("Cloud CRM", "CP", []))
+
+    def test_save_refused_leaves_the_previous_definition_in_place(self):
+        """The dangerous case: editing a band on a live standard. Dropped, the
+        lab believes it widened a limit that every bench still judges by."""
+        real = FakeLabCoreGateway()
+        QcSampleStore(real).save(QcSample("Cloud CRM", "CP", [
+            QcSampleTest("Cloud - D7689", "Cloud Point", -7.4, 2.8, 1.0)]))
+        gw = QueueFullGateway(real, refuse=refuse_sample_writes)
+        with pytest.raises(QcSampleRefused):
+            QcSampleStore(gw).save(QcSample("Cloud CRM", "CP-2", []))
+        assert library_in(real) == [{"name": "Cloud CRM",
+                                     "sample_id_val": "CP"}]
+
+    def test_delete_refused_raises_and_the_standard_is_still_listed(self):
+        real = FakeLabCoreGateway()
+        QcSampleStore(real).save(QcSample("Cloud CRM", "CP", []))
+        gw = QueueFullGateway(real, refuse=refuse_sample_writes)
+        with pytest.raises(QcSampleRefused):
+            QcSampleStore(gw).delete("Cloud CRM")
+        assert len(library_in(real)) == 1
+
+    def test_import_does_not_swallow_a_refusal_as_a_bad_row(self):
+        """`except ValueError` is for a half-defined V4 row. A row LabCore
+        did not store is a different fact, and "imported 2" over an empty
+        library is how a lab believes its standards came across."""
+        gw = QueueFullGateway(refuse=refuse_sample_writes)
+        with pytest.raises(QcSampleRefused):
+            import_v4_samples(V4_CONFIG, QcSampleStore(gw))
+        assert library_in(gw.real) == []
+
+
+class TestChangeoverRefusesToReportAMoveItDidNotMake:
+    """Changeover exists to stop a lot change silently ending QC. Reporting a
+    turnover that did not happen is that failure wearing a success message."""
+
+    def setup_lab(self, gw):
+        from machine_map import QcTargetStore, WatchedTarget
+        QcSampleStore(gw).save(QcSample("Cloud CRM", "CP", [
+            QcSampleTest("Cloud Point", "Cloud Point", -7.4, 2.8, 1.0, "C")]))
+        QcTargetStore(gw).assign("m1", [WatchedTarget("Cloud CRM",
+                                                      "Cloud Point")])
+
+    def test_a_refused_new_lot_raises_and_moves_nobody(self):
+        from machine_map import QcTargetStore
+        from qc_samples import changeover
+        real = FakeLabCoreGateway()
+        self.setup_lab(real)
+        gw = QueueFullGateway(real, refuse=refuse_sample_writes)
+        with pytest.raises(QcSampleRefused):
+            changeover(gw, "Cloud CRM", "Cloud CRM AB26", "CP26")
+        assert [r["name"] for r in library_in(real)] == ["Cloud CRM"]
+        assert QcTargetStore(real).targets("m1")[0].sample == "Cloud CRM"
+
+    def test_a_read_it_could_not_make_is_not_reported_as_not_found(self):
+        """The read that DECIDES the write. Degraded to empty, a blip tells
+        the operator their real lot does not exist — a 404 about something
+        that is sitting on the bench — and would let a duplicate lot be
+        created over a library it could not see."""
+        real = FakeLabCoreGateway()
+        self.setup_lab(real)
+        gw = BlipGateway(real, fail=lambda s: "lem_qc_samples" in s)
+        from qc_samples import changeover
+        with pytest.raises(QcSampleUnavailable):
+            changeover(gw, "Cloud CRM", "Cloud CRM AB26", "CP26")
+        # and specifically NOT the "not found" it would have raised before
+        with pytest.raises(QcSampleUnavailable):
+            changeover(gw, "Cloud CRM", "Cloud CRM AB26", "CP26")
+
+
+class TestSilenceIsNotSuccessEither:
+    @pytest.mark.parametrize("answer", [None, {"ok": False}, "done"])
+    def test_save(self, answer):
+        store = QcSampleStore(QueueFullGateway(refuse=refuse_sample_writes,
+                                               answer=answer))
+        with pytest.raises(QcSampleRefused):
+            store.save(QcSample("Cloud CRM", "CP", []))
+
+    @pytest.mark.parametrize("answer", [None, {"ok": False}])
+    def test_delete(self, answer):
+        real = FakeLabCoreGateway()
+        QcSampleStore(real).save(QcSample("Cloud CRM", "CP", []))
+        gw = QueueFullGateway(real, refuse=refuse_sample_writes, answer=answer)
+        with pytest.raises(QcSampleRefused):
+            QcSampleStore(gw).delete("Cloud CRM")
+        assert len(library_in(real)) == 1
+
+
+class TestReadsDoNotInventAnEmptyLibrary:
+    def test_list_samples_raises_on_a_blip(self):
+        with pytest.raises(QcSampleUnavailable):
+            QcSampleStore(BlipGateway()).list_samples()
+
+    def test_the_payload_the_modules_pull_raises_too(self):
+        """`/api/qc-samples` answering "this lab certifies nothing" is how a
+        bench stops recognising its own standard's Lab ID and files a QC run
+        as an ordinary customer sample."""
+        with pytest.raises(QcSampleUnavailable):
+            QcSampleStore(BlipGateway()).as_payload()
+        with pytest.raises(QcSampleUnavailable):
+            QcSampleStore(BlipGateway()).by_lab_id()
+
+    def test_a_missing_table_is_still_an_empty_library(self, gw):
+        store = QcSampleStore(gw)
+        store._schema_ready = True          # pretend the CREATE never ran
+        assert store.list_samples() == []
+
+    def test_a_write_path_can_refuse_even_that(self, gw):
+        store = QcSampleStore(gw)
+        store._schema_ready = True
+        with pytest.raises(QcSampleUnavailable):
+            store.list_samples(missing_ok=False)
+
+
+class TestTheExceptionsRoutesWillCatch:
+    def test_a_route_can_catch_the_store_or_the_rule(self):
+        assert issubclass(QcSampleRefused, QcSampleStoreError)
+        assert issubclass(QcSampleRefused, LabCoreRefused)
+        assert issubclass(QcSampleUnavailable, QcSampleStoreError)
+        assert issubclass(QcSampleUnavailable, LabCoreUnavailable)
+        assert issubclass(QcSampleStoreError, LabCoreError)
+
+    def test_retryable_and_refused_stay_distinguishable(self):
+        assert not issubclass(QcSampleRefused, LabCoreUnavailable)
+        assert not issubclass(QcSampleUnavailable, LabCoreRefused)
+
+    def test_the_message_names_the_standard(self):
+        gw = QueueFullGateway(refuse=refuse_sample_writes)
+        with pytest.raises(QcSampleRefused) as caught:
+            QcSampleStore(gw).save(QcSample("Cloud CRM", "CP", []))
+        assert "Cloud CRM" in str(caught.value)
+        assert "137" in str(caught.value)

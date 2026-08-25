@@ -21,7 +21,7 @@ from datetime import date
 import pytest
 
 from checklists import (Checklist, ChecklistItem, ChecklistStore,
-                        import_v4_checklists)
+                        ChecklistWriteError, import_v4_checklists)
 from labcore_gateway import FakeLabCoreGateway
 
 V4_JSON = json.dumps({"checklists": [
@@ -514,18 +514,32 @@ class TestArchive:
 
 class TestBulkImportIsHonest:
     """LabCore reports a full write queue as an error DICT, not an exception —
-    counting those as successes is how 3094 ticks 'imported' and none landed."""
+    counting those as successes is how 3094 ticks 'imported' and none landed.
+
+    Updated 2026-08-24 with `labcore_result`. Two things changed:
+
+    * The refusal used below carries an "error" key, which is the ONE shape the
+      old `if not res.get("error")` already handled. Past ~100 pending the real
+      queue answers `{"queued": false, "pending": 137}` with no "error" key at
+      all, so the class now refuses in that shape too — otherwise it is testing
+      the case the bug cannot occur in.
+    * An exhausted batch RAISES instead of returning a short count. Re-running
+      the import is an upsert keyed on (day, checklist_uid, item_uid) and is
+      therefore safe, whereas a smaller number in a JSON payload is not how you
+      tell someone half their history never arrived.
+    """
 
     class Busy:
-        def __init__(self, fail_times=0):
+        def __init__(self, fail_times=0, refusal=None):
             self.fail_times = fail_times
             self.calls = 0
+            self.refusal = refusal or {"error": "LabCore is busy",
+                                       "busy": True, "retry_after": 0}
 
         def sql(self, sql, args=None, **kw):
             self.calls += 1
             if self.calls <= self.fail_times:
-                return {"error": "LabCore is busy", "busy": True,
-                        "retry_after": 0}
+                return dict(self.refusal)
             return {"ok": True}
 
         def read_sql(self, sql, args=None, **kw):
@@ -537,13 +551,22 @@ class TestBulkImportIsHonest:
                  "at": "2026-01-01T09:00:00", "value": ""} for i in range(n)]
 
     def test_a_rejected_batch_is_not_counted_as_imported(self):
-        gw = self.Busy(fail_times=99)
+        """Refused in the queue's real shape: no exception, no "error" key."""
+        gw = self.Busy(refusal={"queued": False, "pending": 137})
         store = ChecklistStore(gw)
-        assert store.import_state(self.rows(), pause=0, attempts=2) == 0
+        store.ensure_schema()                 # declared while LabCore is well
+        gw.fail_times = gw.calls + 99
+        with pytest.raises(ChecklistWriteError) as caught:
+            store.import_state(self.rows(), pause=0, attempts=2)
+        assert "0 rows landed" in str(caught.value)
 
     def test_a_busy_queue_is_retried_then_succeeds(self):
-        gw = self.Busy(fail_times=2)          # DDL calls count too
+        """The back-off stays: busy is temporary, and losing a retryable batch
+        would be the opposite mistake."""
+        gw = self.Busy()
         store = ChecklistStore(gw)
+        store.ensure_schema()                 # the DDL is not what is under test
+        gw.fail_times = gw.calls + 2          # the next two writes are refused
         assert store.import_state(self.rows(), pause=0, attempts=5) == 3
 
     def test_rows_go_up_in_batches_not_one_at_a_time(self):
