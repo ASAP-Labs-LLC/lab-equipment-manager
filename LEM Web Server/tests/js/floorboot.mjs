@@ -1163,16 +1163,28 @@ if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
   claim('the viewBox is the stage\'s shape at every viewport, with levels and '
         + 'without, so `meet` has nothing left to letterbox',
         both.every(f => Math.abs(f.viewBox / f.stage - 1) < 0.02));
-  /* NOTHING IS LETTERBOXED, on either axis. This is the defect stated in its
-   * own terms: `meet` used to fit the drawing to the WIDTH and throw about
-   * 40% of the height away. Both axes are now within the drawing's own
-   * margin. */
-  /* And it fills it to within its own gutter. The margin is a SHARE of the
-   * drawing now rather than a flat 18 units, so it is the same slim band at
-   * every fleet size and every tilt instead of 6% of each axis on a small
-   * one — which is 12% of the stage given away to nothing. */
-  claim('the drawing fills the canvas on BOTH axes — nothing is letterboxed',
-        both.every(f => f.fitX > 0.955 && f.fitY > 0.955));
+  /* THE DRAWING FILLS THE AXIS IT CAN, AND THE OTHER ONE IS GEOMETRY.
+   *
+   * An earlier version claimed both axes above 95.5% and got there by SOLVING
+   * THE CAMERA TILT per draw so the drawing came out the shape of the stage.
+   * On our nearly-square stage that pinned the tilt to its ceiling — 68
+   * degrees, sin 0.93 — and the depth axis stopped being foreshortened at all.
+   * Ryan: "you have the 3/4ths angle but not the perspective, its top down at
+   * an angle instead of isometric." The coverage was real and the drawing was
+   * wrong, and every test here passed throughout, because they all measured
+   * coverage and none measured the projection.
+   *
+   * With the tilt fixed at a true 2:1 isometric the drawing's aspect is fixed
+   * too, so on a stage of any other shape ONE axis fills and the other cannot.
+   * That band is the price of an isometric view and it is not a defect to be
+   * tested away. What is still a defect — the original one — is failing to
+   * fill the axis that CAN be filled: `meet` used to fit to the width and
+   * throw the rest away while the drawing sat small in the middle. */
+  claim('the drawing fills its more demanding axis to within its own gutter',
+        both.every(f => Math.max(f.fitX, f.fitY) > 0.955));
+  claim('…and the axis it cannot fill is the projection, not slack — the '
+        + 'drawing is still as large as an isometric can be here',
+        both.every(f => Math.min(f.fitX, f.fitY) > 0.5));
 
   /* THE EQUIPMENT, WHICH IS A DIFFERENT MEASUREMENT FROM THE DECK.
    *
@@ -1203,8 +1215,15 @@ if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
    * here and 15.2% of the stage in a real browser: specks. One floor at a
    * time is what buys it back, and this is the claim that fails the moment
    * canvas starts going to floors nobody is reading. */
+  /* Re-set when the camera was fixed. A true isometric on a squarish stage
+   * cannot reach what the flattened one did — measured 34.3% in a browser at
+   * 68 degrees against 24.0% at 30 — because the drawing no longer stretches
+   * to the stage's shape. The threshold is the WORST viewport measured on the
+   * shipped projection with a little room under it, not a number that seemed
+   * like it ought to be reachable; demanding the flattened figure would make a
+   * correct drawing unreportable, which has its own heading in CLAUDE.md. */
   claim('…and the equipment on the floor in view owns a real share of the '
-        + 'canvas, not a corner of it', FILL.every(f => f.equipment > 0.25));
+        + 'canvas, not a corner of it', FILL.every(f => f.equipment > 0.15));
   claim('…and the map draws exactly what stands on the level in view — all '
         + 'of it, and nothing from any other floor',
         FILL.every(f => f.units === 4));
@@ -1213,7 +1232,7 @@ if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
    * state, and it is also the bar the stack is measured against. */
   claim('a lab with no levels spends the whole canvas on its one floor',
         FLAT_FILL.every(f => f.units === REAL_FLEET.length
-                             && f.onPlane > 0.35 && f.inView > 0.30));
+                             && f.onPlane > 0.35 && f.inView > 0.20));
 
   PAYLOADS['/api/machines'] = keptFleet;
   await sandbox.load();
@@ -1354,8 +1373,18 @@ if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
           return p && (h.x1 - h.x0) >= (p.x1 - p.x0) - 0.5
                    && (h.y1 - h.y0) >= (p.y1 - p.y0) - 0.5;
         }));
+  /* Measured against the DECK, not the viewBox.
+   *
+   * The viewBox is padded out to the stage's shape, and with the camera fixed
+   * at a true isometric that padding is a real band — so a viewBox-relative
+   * threshold moves when the stage changes shape, which says nothing about
+   * whether a finger can land on an instrument. The deck is the floor the
+   * target sits on and it is the same drawing whatever the stage does. */
+  const deckBox = byClass(planes[0], 'deck').map(absBox).filter(Boolean)[0]
+    || {x0: hvx, y0: hvy, x1: hvx + hvw, y1: hvy + hvh};
   claim('…and big enough on screen that a person can land on it',
-        coverage(hits, hvx, hvy, hvw, hvh) > 0.20);
+        coverage(hits, deckBox.x0, deckBox.y0,
+                 deckBox.x1 - deckBox.x0, deckBox.y1 - deckBox.y0) > 0.20);
 
   /* SWITCHING FLOOR IS A NEW DRAWING, AND COSTS NOTHING. Redrawn from the
      payload the floor is already polling; there is no per-level fetch here and
@@ -1564,8 +1593,15 @@ if (!failed && typeof sandbox.applyLevels === 'function') {
       .trim().split(/\s+/).map(Number);
     const bb = svg.getBBox();
     worstFit = Math.min(worstFit, bb.width / vw, bb.height / vh);
-    claim(`a six-storey lab still fills a ${w}x${h} stage on both axes`,
-          bb.width / vw > 0.955 && bb.height / vh > 0.955
+    /* Same correction as the fit block above: with the camera fixed at a true
+     * isometric the drawing has ONE aspect, so it fills the more demanding
+     * axis and the other is the projection. What must still hold at six
+     * storeys is that the viewBox is the stage's shape — that is what stops
+     * `meet` throwing an axis away — and that the drawing is not sitting small
+     * inside it. */
+    claim(`a six-storey lab fills a ${w}x${h} stage as far as an isometric can`,
+          Math.max(bb.width / vw, bb.height / vh) > 0.955
+          && Math.min(bb.width / vw, bb.height / vh) > 0.5
           && Math.abs((vw / vh) / (w / h) - 1) < 0.02);
   }
   stage.getBoundingClientRect = realRect;
@@ -2858,6 +2894,78 @@ if (!failed) {
   claim('…and never NaN when only a per-machine override exists',
         !/NaN/.test(el('#tip').innerHTML));
 }
+
+
+/* ---- THE PROJECTION IS ISOMETRIC, AND STAYS ISOMETRIC -------------------
+ *
+ * This is the test whose absence let a rotated plan ship as an isometric.
+ *
+ * `planFitTilt` used to SOLVE the camera angle per draw so the drawing came out
+ * the shape of the stage, and on a nearly-square stage it pinned the tilt to
+ * its own ceiling — 68 degrees, sin 0.93, a depth axis with almost no
+ * foreshortening. Every fit claim in this file passed the whole time, because
+ * they all measured how much CANVAS was covered and not one of them measured
+ * what the drawing looked like. Coverage was 97% and the floor was a square
+ * rotated 45 degrees.
+ *
+ * At yaw 45 the projected deck is a diamond whose width:height is exactly
+ * 1/sin(tilt), independent of how the bays are laid out — so the deck's own
+ * box IS the tilt, and asserting on it needs no access to the camera. A true
+ * 2:1 isometric is 2.0. The flattened one measured 1.08.
+ *
+ * Asserted at every viewport the fit tests use, because "fits the stage" is
+ * precisely the pressure that bent it last time.
+ */
+async function checkIsometric() {
+  const svg = el('#floorSimple');
+  const stage = el('#stage');
+  const realRect = stage.getBoundingClientRect;
+  const ratios = [];
+  for (const [w, h] of [[1600, 1400], [1400, 900], [1100, 960], [2400, 700]]) {
+    stage.getBoundingClientRect = () => ({left: 0, top: 0, width: w, height: h,
+                                          right: w, bottom: h, x: 0, y: 0});
+    sandbox.PLAN_SIG = '';
+    sandbox.drawSimpleFloor(false);
+    const planes = planesOf();
+    const deck = planes.length
+      ? byClass(planes[0], 'deck').map(absBox).filter(Boolean)[0] : null;
+    if (deck) {
+      ratios.push([`${w}x${h}`,
+                   (deck.x1 - deck.x0) / Math.max(1e-6, deck.y1 - deck.y0)]);
+    }
+  }
+  stage.getBoundingClientRect = realRect;
+  sandbox.PLAN_SIG = '';
+  sandbox.drawSimpleFloor(false);
+
+  ratios.forEach(([at, r]) => console.log(
+    `  ..   deck at ${at}: ${r.toFixed(2)}:1  (2:1 is isometric)`));
+  claim('the deck is drawn 2:1 — the projection is isometric, not a rotated '
+        + 'plan', ratios.length === 4
+        && ratios.every(([, r]) => Math.abs(r - 2) < 0.25));
+  claim('…and it is the SAME projection at every stage shape, so no viewport '
+        + 'can bend the camera to fill itself',
+        ratios.length === 4
+        && Math.max(...ratios.map(([, r]) => r))
+           - Math.min(...ratios.map(([, r]) => r)) < 0.02);
+  /* And the mechanism is gone, not merely unused.
+   *
+   * `PLAN_TILT` and `PLAN_CAM` are top-level `const`s, which in this sandbox
+   * are script-scoped and never become properties of the context — so they
+   * cannot be read from here, and an assertion that appeared to check them
+   * would be checking `undefined === undefined`. `planFitTilt` was a function
+   * DECLARATION and would be on the context if it still existed, so its
+   * absence is real. The rest is asserted against the source: exactly one
+   * assignment to the camera's tilt, and it takes the constant rather than
+   * anything derived from the stage. */
+  const tiltWrites = [...src.matchAll(/PLAN_CAM\s*\.\s*tilt\s*=/g)].length;
+  claim('the tilt solver is gone, not just unused',
+        typeof sandbox.planFitTilt === 'undefined');
+  claim('…and exactly one line sets the camera, from the constant',
+        tiltWrites === 1 && /PLAN_CAM\s*\.\s*tilt\s*=\s*PLAN_TILT\b/.test(src));
+}
+
+if (!failed) await checkIsometric();
 
 console.log(failed ? '\nthe floor does not boot' : '\nthe floor boots');
 process.exit(failed ? 1 : 0);

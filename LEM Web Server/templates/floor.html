@@ -3485,38 +3485,48 @@ const PLAN_TILE = 128;                    // one bay, in drawing units
 const PLAN_NS = 'http://www.w3.org/2000/svg';
 // The old floor's 3/4 view, frozen. The original could tilt to a true overhead
 // plan; there is no camera here to move, so it keeps the angle the instruments
-// were drawn to look best at.
+// were drawn to look best at. `tilt` is assigned once, from PLAN_TILT below,
+// and nothing else may write it — see the note there.
 const PLAN_CAM = {tilt: 30, yaw: 45}, PLAN_RAD = Math.PI / 180;
 
-/* The TILT IS NOT FIXED. It is solved, per draw, from the shape of the stage.
+/* THE TILT IS FIXED, AND IT IS NOT A LAYOUT LEVER.
  *
- * At yaw 45 the projected deck is a diamond whose aspect is exactly 1/sin(tilt)
- * and — this is the part that made the old drawing small — that ratio does NOT
- * depend on how the bays are laid out: a 1x8 rank and a 3x3 block both project
- * to 2:1 at tilt 30. The stage is nothing like 2:1 (about 1.14:1 at 1600px once
- * the two rails have taken their share), so `preserveAspectRatio="meet"` fitted
- * the drawing to the width and threw the rest of the height away — the floor
- * sat in the middle of a mostly empty rectangle at every viewport and on every
- * level. Measured before this: 53% of the stage in use at 1600px, 43% at 1280.
+ * At yaw 45 the projected deck is a diamond whose aspect is exactly 1/sin(tilt),
+ * and that ratio does not depend on how the bays are laid out: a 1x8 rank and a
+ * 3x3 block both project to 2:1 at tilt 30. A previous version exploited that —
+ * it SOLVED the tilt per draw so the drawing came out the shape of the stage,
+ * and reported 97% of the canvas in use.
  *
- * So: pick the tilt that makes the drawing the shape of the box it is drawn in.
- * A wide short stage gets a shallow, more side-on floor; a tall narrow one gets
- * a steeper, more overhead floor. Clamped at both ends, because past about 60
- * degrees the deck stops being a floor at all and below about 22 it reads as a
- * line. The upper clamp is generous because the record rail is wide enough to
- * hold a corrective action now, which leaves the stage nearly square — and a
- * square stage genuinely wants a near-overhead floor. The walls do not suffer
- * for it: their screen height is frozen (PLAN_H_UNIT, below).
+ * That number was bought by destroying the projection. Our stage is nearly
+ * square (784x802 once both rails have taken their share), so the solve pinned
+ * the tilt to its own ceiling: 68 degrees, where sin(t) is 0.93 and the depth
+ * axis is barely foreshortened at all. Ryan, on the result: "you have the 3/4ths
+ * angle but not the perspective, its top down at an angle instead of
+ * isometric." He was right — it was a plan rotated 45 degrees, not a space.
+ *
+ * Every fit test passed throughout, because they all measured COVERAGE and none
+ * measured whether the drawing still looked isometric. `test_the_projection_
+ * stays_isometric` in floorboot.mjs is that missing test.
+ *
+ * So the camera is a constant. A fixed projection means a fixed drawing aspect
+ * (~2:1) which will NOT match a squarish stage, and the band above and below is
+ * the honest price of an isometric view — the viewBox solve below pads to the
+ * stage's aspect and centres, which is what a viewBox is for. Coverage is lower
+ * than 97% and that is the correct outcome, not a regression.
+ *
+ * 30 degrees is the classic 2:1 isometric and is what `PLAN_H_UNIT` below was
+ * already written against.
  */
-const PLAN_TILT_MIN = 22, PLAN_TILT_MAX = 68;
+const PLAN_TILT = 30;
 
-/* Walls keep their SCREEN height whatever the tilt is.
+/* The wall height, consistent with the tilt above.
  *
- * A true projection scales height by cos(tilt), so solving the tilt upwards
- * would flatten every instrument to a lid at exactly the angle that uses the
- * stage best. The vertical unit is frozen at the old camera's instead, which
- * costs nothing that can be seen — the plan has no camera to move and no second
- * angle to be consistent with — and keeps an instrument reading as a block.
+ * This used to be a workaround: a true projection scales height by cos(tilt),
+ * and while the tilt was being solved upwards to fill the stage that would have
+ * flattened every instrument to a lid at exactly the angle the solve preferred.
+ * Freezing it kept a block looking like a block. With the tilt now a constant
+ * there is nothing to compensate for — cos(30) IS the projection's own vertical
+ * unit, so this is simply correct rather than a hedge.
  */
 const PLAN_H_UNIT = Math.cos(30 * PLAN_RAD);
 
@@ -3535,73 +3545,6 @@ function planStageAspect() {
   const r = st ? st.getBoundingClientRect() : null;
   if (!r || r.width < 2 || r.height < 2) return 16 / 9;
   return r.width / r.height;
-}
-
-/* How much bigger the finished drawing is than the concrete it stands on,
- * measured on the last draw and reused on the next.
- *
- * The name plates hang above the instruments and stick out past the deck at
- * both sides, and their size is a function of the LABELS, not of the camera —
- * so it cannot be derived, only measured. Carrying it forward is what lets the
- * solve below aim at the whole drawing instead of at the concrete, and it is
- * why the first draw of a level is followed by at most one corrected redraw
- * rather than converging over several frames. */
-let PLAN_OVER = {dw: 0, dh: 0};
-
-/* The tilt that makes the drawing the shape of the stage.
- *
- *   deck width  = span * cos(45) * TILE          (independent of tilt)
- *   deck height = deck width * sin(tilt)
- *
- * so, with the measured overshoot folded in and A the stage's aspect:
- *
- *   (deckW + dw) / (deckW * sin t + dh) = A   ->   sin t = ((deckW+dw)/A - dh)
- *                                                         / deckW
- */
-/* THE MAP IS ONE FLOOR.
- *
- * It was briefly a stack — every level as its own plane, exploded up and to
- * the right. The geometry worked and the building read as a building, and it
- * was still the wrong drawing: measured in the browser, the equipment on the
- * floor you were actually working on covered 15.2% of the stage, because two
- * thirds of the canvas was spent on floors whose equipment was too small to
- * read. Ryan: "the levels take way too much space, whats the point of having
- * them inactive, just go back to 1 floor visible and put a little UI element
- * on the side to show what floor out of what floor they are on."
- *
- * So: one deck, the whole stage, and the building is SAID rather than drawn —
- * see renderLevelNav(), which names the floor, gives its place in the ladder,
- * and switches to any other one. What is gone is gone: there is no stack
- * behind a flag. A second dormant renderer in this file would be a second
- * thing to keep working, and the 3D world is already the one deliberately
- * severed thing here.
- *
- * What SURVIVED the stack, because it was never about the stack:
- *   - `claimPlanBays`, the per-level bay spill. OptiMPP 2 and PAC Flash 2 are
- *     both saved on bay 4.1,0 and `world/index.js`, which used to fix that, no
- *     longer loads.
- *   - the solved tilt and the measured overshoot below, which is what stopped
- *     the lone deck letterboxing in the first place.
- */
-
-/* The tilt that makes the drawing the shape of the stage. Solved, not fixed —
- * see the note above `PLAN_TILT_MIN`.
- *
- *   (deckW + dw) / (deckW * sin t + dh) = A
- *   ->  sin t = ((deckW + dw) / A - dh) / deckW
- *
- * `dw`/`dh` are PLAN_OVER: what the name plates and the prisms add on top of
- * the concrete, measured on the last draw. Without them the solve aims at the
- * decks and the finished drawing overshoots the stage, which `meet` then pays
- * for out of the other axis. */
-function planFitTilt(spanTiles) {
-  const A = planStageAspect();
-  const deckW = spanTiles * Math.cos(PLAN_CAM.yaw * PLAN_RAD) * PLAN_TILE;
-  if (!(deckW > 1) || !(A > 0)) return 30;
-  const want = ((deckW + PLAN_OVER.dw) / A - PLAN_OVER.dh) / deckW;
-  const lo = Math.sin(PLAN_TILT_MIN * PLAN_RAD);
-  const hi = Math.sin(PLAN_TILT_MAX * PLAN_RAD);
-  return Math.asin(Math.min(hi, Math.max(lo, want))) / PLAN_RAD;
 }
 
 function planEl(tag, attrs, parent) {
@@ -4067,8 +4010,9 @@ function drawSimpleFloor(refit) {
   // the instruments down to the size of buttons.
   const m0 = minX - .55, n0 = minY - .6, mx = maxX + .55, my = maxY + 1.05;
   const span = (mx - m0) + (my - n0);
-  const tiltWanted = planFitTilt(span);
-  PLAN_CAM.tilt = tiltWanted;
+  // Stated, not solved. See PLAN_TILT: bending the camera to fill the stage is
+  // what turned this drawing into a rotated plan.
+  PLAN_CAM.tilt = PLAN_TILT;
 
   const geom = {m0, n0, mx, my};
 
@@ -4168,15 +4112,6 @@ function drawSimpleFloor(refit) {
    * way — but "very nearly" left a few per cent of aspect error on the
    * drawing's own box, and that error is spent as exactly the empty band this
    * work exists to remove. */
-  const deckW = Math.max(...dxs) - Math.min(...dxs);
-  const deckH = Math.max(...dys) - Math.min(...dys);
-  PLAN_OVER = {dw: Math.max(0, bb.width - deckW),
-               dh: Math.max(0, bb.height - deckH)};
-  const pass = (refit | 0);
-  if (pass < 2 && Math.abs(planFitTilt(span) - tiltWanted) > .2) {
-    drawSimpleFloor(pass + 1);
-    return;
-  }
 
   /* Pad the box out to the STAGE's aspect, never crop to it. `meet` fits the
    * more demanding axis and centres the other, so a viewBox already the shape
