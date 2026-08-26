@@ -157,6 +157,11 @@ class TestSpec:
     units: str = ""
     sample_id: str = ""  # Lab ID of the QC sample; "" matches every row
     qc_expire_hours: float = 0.0  # per-test QC window; 0 = machine default
+    # WHICH level put that number here: "mapping" (the operator, on this bench)
+    # or "standard" (the shared library's own window). "" means nobody did, or
+    # that this spec was persisted before the standard could speak. It is
+    # carried so a person can be told what to change; `qc_window_for` reads it.
+    qc_expire_source: str = ""
     # Additive offset applied to the RAW reading before it is judged:
     # corrected = raw + correction. Default 0.0 = no correction. V4 stored a
     # number of this shape and never applied it to anything; this one decides
@@ -179,6 +184,7 @@ class TestSpec:
             "units": self.units,
             "sample_id": self.sample_id,
             "qc_expire_hours": self.qc_expire_hours,
+            "qc_expire_source": self.qc_expire_source,
             "last_qc_at": self.last_qc_at,
             "last_qc_value": self.last_qc_value,
             "last_qc_in_spec": self.last_qc_in_spec,
@@ -194,7 +200,12 @@ class TestSpec:
             k=float(data.get("k", 2.0)),
             units=str(data.get("units", "")),
             sample_id=str(data.get("sample_id", "")),
-            qc_expire_hours=float(data.get("qc_expire_hours", 0.0)),
+            # `_window_hours`, not `float(...)`: an absent key, a blank, text,
+            # NaN and a negative all have to land on the SAME 0.0 that means
+            # "fall through". A saved config from an older build has none of
+            # this, and it must load, not crash and not go instantly stale.
+            qc_expire_hours=_window_hours(data.get("qc_expire_hours")),
+            qc_expire_source=str(data.get("qc_expire_source", "") or ""),
             last_qc_at=str(data.get("last_qc_at", "") or ""),
             last_qc_value=(None if data.get("last_qc_value") is None
                            else float(data.get("last_qc_value"))),
@@ -672,11 +683,17 @@ def specs_for_machine(machine: "Machine",
             if lib is None or method in seen:
                 continue
             seen.add(method)
+            # `lem_qc_specs` rows carry no window of their own — they are a
+            # human's per-machine BAND override, not a statement about the
+            # material — so only the mapping can speak at this level. The
+            # standard's window still applies to specs resolved the other way,
+            # in `specs_from_qc_samples`.
+            hours, source = spec_qc_window(mapping.qc_expire_hours, 0.0)
             specs.append(TestSpec(
                 name=method, value_col=method,
                 expected=lib.expected, std_dev=lib.std_dev, k=lib.k,
                 units=lib.units, sample_id=mapping.qc_sample_id,
-                qc_expire_hours=mapping.qc_expire_hours))
+                qc_expire_hours=hours, qc_expire_source=source))
     return specs
 
 
@@ -1478,13 +1495,18 @@ def specs_from_qc_samples(machine: Machine, library: List[dict],
                 if not method or method in seen:
                     continue
                 seen.add(method)
+                # A manual bench has no mappings, so the standard is the only
+                # level below the machine that can say anything at all.
+                hours, source = spec_qc_window(
+                    0.0, test.get("qc_expire_hours"))
                 specs.append(TestSpec(
                     name=method, value_col=method,
                     expected=float(test.get("expected") or 0.0),
                     std_dev=float(test.get("std_dev") or 0.0),
                     k=float(test.get("k") or 2.0),
                     units=str(test.get("units") or ""),
-                    sample_id=lab_id))
+                    sample_id=lab_id,
+                    qc_expire_hours=hours, qc_expire_source=source))
         return specs
 
     for mapping in machine.mappings:
@@ -1507,6 +1529,13 @@ def specs_from_qc_samples(machine: Machine, library: List[dict],
                     if key not in names or not key:
                         continue
                     seen.add(method)
+                    # The mapping's override is an explicit human act on THIS
+                    # instrument, so it still wins; the standard's own window is
+                    # the level under it. `spec_qc_window` owns that order —
+                    # this used to be a bare `mapping.qc_expire_hours`, which
+                    # left the library nothing to say.
+                    hours, source = spec_qc_window(
+                        mapping.qc_expire_hours, test.get("qc_expire_hours"))
                     specs.append(TestSpec(
                         name=method, value_col=method,
                         expected=float(test.get("expected") or 0.0),
@@ -1516,11 +1545,112 @@ def specs_from_qc_samples(machine: Machine, library: List[dict],
                         # An explicit QC sample on the mapping wins — the
                         # machine runs its own standard under that Lab ID.
                         sample_id=mapping.qc_sample_id.strip() or lab_id,
-                        qc_expire_hours=mapping.qc_expire_hours))
+                        qc_expire_hours=hours, qc_expire_source=source))
                     break
                 if method in seen:
                     break
     return specs
+
+
+# ── How long a QC result stays good, and who gets to say ────────────────────
+#
+# `qc_is_stale` below is the rule; this is where the NUMBER comes from. Four
+# levels can supply it, and this block is the ONLY place in this file that
+# decides which one does:
+#
+#   1. MethodMapping.qc_expire_hours   — a human act on THIS instrument
+#   2. the standard's own window       — from `lem_qc_samples` (2026-08-26)
+#   3. Machine.qc_expire_hours         — this instrument's default
+#   4. QC_WINDOW_DEFAULT_HOURS
+#
+# Level 2 is the addition. A control's usable life is a property of the
+# MATERIAL — a working standard degrades, an ampoule opened this morning is not
+# good for a week — so it belongs on the standard, once, rather than being
+# re-typed on every bench that runs it and lost on the next lot change.
+#
+# **Zero means "fall through", never "expire immediately."** That is already how
+# `MethodMapping.qc_expire_hours` and `TestSpec.qc_expire_hours` read, and it is
+# what makes this safe to ship into a running lab: every row now in
+# `lem_qc_samples` carries no window, and a floor on an older build will not send
+# one either. Absence read as a zero-hour window would make every reading in the
+# building stale the moment it was taken.
+
+QC_WINDOW_DEFAULT_HOURS = 24.0
+
+
+def _window_hours(raw) -> float:
+    """A usable window in hours, or 0.0 meaning "this level said nothing".
+
+    Everything that is not a finite positive number is silence: None, "", text,
+    NaN, inf, negatives. NaN matters more than it looks — it compares False
+    against every bound, so an unguarded NaN sails past `if hours > 0` and then
+    makes `qc_is_stale` answer False forever, which is a window that never
+    expires rather than one that was never set.
+    """
+    try:
+        hours = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if hours != hours or hours in (float("inf"), float("-inf")):
+        return 0.0
+    return hours if hours > 0 else 0.0
+
+
+def resolve_qc_window(levels, default_hours: float = QC_WINDOW_DEFAULT_HOURS):
+    """The QC staleness window, and WHICH level supplied it.
+
+    `levels` is an ordered sequence of `(source, hours)`, most specific first.
+    The first level with something to say wins; everything else is silence.
+
+    The source travels with the number on purpose. With four levels able to
+    supply it, "24 hours" alone stopped being an answer anybody can act on —
+    the operator needs to know whether to change the standard, the mapping or
+    the machine. The floor reports the same pair as `qc_expire_source`.
+
+    A caller that has not reached the bottom of the chain passes
+    `default_hours=0.0`: `spec_qc_window` knows the mapping and the standard but
+    not the instrument, and answering 24.0 there would silently override every
+    machine default in the lab.
+
+    Mirrors `qc_samples.resolve_qc_window` in the web server, which cannot be
+    imported here — LabStation loads this file on its own.
+    """
+    for source, raw in levels or ():
+        hours = _window_hours(raw)
+        if hours:
+            return hours, str(source)
+    return float(default_hours), "default"
+
+
+def spec_qc_window(mapping_hours, standard_hours):
+    """What a SPEC asserts about its own life: the mapping, then the standard.
+
+    `(0.0, "")` means neither said anything, which is the spec staying silent so
+    the machine default can decide later — see `qc_window_for`.
+    """
+    hours, source = resolve_qc_window(
+        (("mapping", mapping_hours), ("standard", standard_hours)),
+        default_hours=0.0)
+    return (hours, source) if hours else (0.0, "")
+
+
+def qc_window_for(spec, machine):
+    """The window actually applied to one test, and the level it came from.
+
+    The bottom half of the chain: whatever the spec asserts (already resolved
+    between the mapping and the standard), then the machine, then the shared
+    default. Called wherever a window is needed — the verdict, the battery — so
+    no call site re-implements the order.
+
+    A spec carrying a window but no recorded level is reported as `"spec"`: that
+    is a `Machine` persisted before the standard's window existed, and its
+    number is honoured without claiming a provenance nobody recorded.
+    """
+    return resolve_qc_window((
+        (getattr(spec, "qc_expire_source", "") or "spec",
+         getattr(spec, "qc_expire_hours", 0.0) if spec is not None else 0.0),
+        ("machine", getattr(machine, "qc_expire_hours", 0.0)),
+    ))
 
 
 def qc_is_stale(result_time: Optional[datetime], now: datetime,
@@ -1549,11 +1679,18 @@ def qc_freshness(machine: Machine, test_result: Optional[TestResult],
 
     Mirrors the rolling staleness rule in evaluate_machine: an in-spec result
     decays over `expire_hours` from when it was run; no/out-of-spec data = 0.
-    expire_hours overrides the machine default (per-test QC windows).
+    `expire_hours` is the window the SPEC asserts (the mapping override or the
+    standard's own); it falls through to the machine and then to the shared
+    default through `resolve_qc_window`, so the battery and the verdict cannot
+    disagree about how long a result lasts.
     """
     if test_result is None or not test_result.in_spec or test_result.time is None:
         return 0.0
-    hours = expire_hours or machine.qc_expire_hours
+    # `expire_hours or machine.qc_expire_hours` left 0 when both were 0, which
+    # made the window 1e-9 seconds and the battery permanently empty on a
+    # machine saved without a default.
+    hours, _source = resolve_qc_window(
+        (("spec", expire_hours), ("machine", machine.qc_expire_hours)))
     window = max(1e-9, hours * 3600.0)
     elapsed = (now - test_result.time).total_seconds()
     return max(0.0, min(1.0, (window - elapsed) / window))
@@ -1751,8 +1888,10 @@ def evaluate_machine(machine: Machine, rows: List[dict],
         if not (r.in_spec and r.time):
             continue
         spec = spec_by_name.get(r.name)
-        hours = (spec.qc_expire_hours if spec and spec.qc_expire_hours
-                 else machine.qc_expire_hours)
+        # One resolver, not the chain retyped here. It used to end at
+        # `machine.qc_expire_hours`, so a machine saved with 0 got a zero-hour
+        # window and every reading on it was instantly stale.
+        hours, _source = qc_window_for(spec, machine)
         if qc_is_stale(r.time, now, hours):
             stale.append(r.name)
     if failed:
@@ -8341,7 +8480,12 @@ class _QCRow(QtWidgets.QWidget):
             color = STATUS_COLORS[STATUS_UNKNOWN]
             self._value.setText("⚡ —")
         self._value.setStyleSheet(f"color: {color};")
-        self._battery.set_fraction(qc_freshness(machine, result, now), color)
+        # The spec's own window, not just the machine default. Without it a card
+        # showed a half-full battery for a test the verdict had already called
+        # stale — two answers to "how long does this last" on the same screen.
+        self._battery.set_fraction(
+            qc_freshness(machine, result, now, self._spec.qc_expire_hours),
+            color)
 
 
 class _MachineCard(QtWidgets.QWidget):
@@ -9233,9 +9377,15 @@ class _MachineDialog(QtWidgets.QDialog):
             table.setItem(0, col, item)
         for i, mapping in enumerate(self._mappings):
             if mapping.qc_sample_id:
-                hours = mapping.qc_expire_hours or 0
+                hours = _window_hours(mapping.qc_expire_hours)
+                # "default" here means "not overridden on this bench" — the
+                # standard's own window, or failing that the machine's. The
+                # standard is not resolved at setup time (the library is not
+                # loaded in this dialog), so this deliberately does not claim a
+                # number it has not looked up.
                 qc_text = (f"{mapping.qc_sample_id}"
-                           + (f" · {hours:g} h" if hours else " · default"))
+                           + (f" · {hours:g} h" if hours
+                              else " · standard/machine"))
             else:
                 qc_text = "—"
             for col, text in enumerate((
@@ -9497,7 +9647,11 @@ class _MachineDialog(QtWidgets.QDialog):
 
     def _set_mapping_qc(self) -> None:
         """Mark the selected mapping as QC-checked: which QC sample runs it,
-        and how long a passing QC lasts (0 = machine default)."""
+        and how long a passing QC lasts.
+
+        0 is not "expires now" — it is this bench declining to override, so the
+        standard's own window decides, and the machine default after that.
+        """
         mapping = self._selected_mapping()
         if mapping is None:
             return
@@ -9511,7 +9665,8 @@ class _MachineDialog(QtWidgets.QDialog):
         if mapping.qc_sample_id:
             hours, ok = QtWidgets.QInputDialog.getDouble(
                 self, "QC expires",
-                "QC window in hours (0 = machine default):",
+                "QC window in hours "
+                "(0 = use the standard's own, then the machine default):",
                 mapping.qc_expire_hours, 0, 8760, 1)
             if ok:
                 mapping.qc_expire_hours = hours

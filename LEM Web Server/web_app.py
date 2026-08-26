@@ -29,7 +29,7 @@ from typing import Dict, List, Optional
 from flask import (Flask, Response, g, jsonify, redirect, render_template,
                    request, session, url_for)
 
-from data_source import build_sample_index, evaluate_box
+from data_source import build_sample_index, evaluate_box, qc_is_stale
 from db_config_store import DbConfigStore
 from labcore_result import (LabCoreError, LabCoreRefused, LabCoreUnavailable,
                             confirm_write, is_missing_table,
@@ -360,6 +360,189 @@ def _beat_is_fresh(last_poll: Optional[str]) -> bool:
         return False
     return 0 <= (_now() - seen).total_seconds() <= \
         MachineStateReader.HEARTBEAT_GRACE
+
+
+# ── the status gutter: what state was this instrument in WHILE that ran? ────
+#
+# Ryan's whiteboard: an events list with a colour band down the left. GREEN over
+# four sample runs, then a QC event, then YELLOW, then RED at a QC that read 500
+# against a band of about 7.8. The QC events are the TRANSITIONS; the band says
+# what the instrument's state was while each sample ran.
+#
+# That is ISO/IEC 17025's question — "was this equipment in control when this
+# result was produced?" — answered in the record rather than by an assessor
+# cross-referencing a run report against a QC report on timestamps.
+#
+# THE RULE IS THE ENGINE'S OWN RULE, READ BACKWARDS THROUGH TIME.
+# `data_source.evaluate_box` decides a machine's QC status right now from the
+# verdicts standing right now: any assigned test out of spec is RED, otherwise
+# the oldest standing PASS is GREEN until `qc_is_stale` says the rolling window
+# has closed on it, and then YELLOW. Everything below is that same rule
+# evaluated at the timestamp of each EVENT instead of at `now`. Inventing a
+# second rule here is how the gutter would come to disagree with the dot on the
+# floor about the same instrument.
+#
+# Four consequences worth keeping:
+#
+#   * BEFORE THE FIRST QC IN THE WINDOW THE ANSWER IS UNKNOWN. Not GREEN. A
+#     bench with no QC yet is exactly the grey state "QC is assigned, never
+#     detected" already refuses to colour in, and assuming GREEN would report
+#     every run made before the first standard as made under control.
+#   * A FAIL DOES NOT DECAY TO YELLOW. YELLOW is a PASS that aged out; RED is a
+#     fail and it stands until another QC says otherwise. Running staleness over
+#     every verdict downgrades "out of spec" to "a bit old", which is the softer
+#     sentence and the wrong one.
+#   * `in_spec` IS TRI-STATE, here as everywhere else in this tree. A row whose
+#     detail will not parse leaves the instrument UNKNOWN — never a pass.
+#   * SERVICE AND DEAD-LINE ARE NEVER EMITTED. They come from
+#     `lem_machine_control`, which holds only what is in force NOW; nothing in
+#     the record says WHEN an override was applied or lifted, so a gutter
+#     painting them onto past events would be guessing. The set stays inside the
+#     station module's vocabulary; this derivation uses four of the six.
+GUTTER_DEFAULT_QC_HOURS = 24.0
+
+
+def _finite(raw) -> Optional[float]:
+    """A number, or None. NaN and inf are not readings — same rule as
+    `qc_series._float`, which is where a NaN on a chart was stopped."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return None if value != value or value in (float("inf"),
+                                               float("-inf")) else value
+
+
+def _detail_dict(raw) -> dict:
+    """`detail` is a JSON TEXT column; a fake gateway can hand back a dict.
+
+    A detail that will not parse is an EMPTY detail, never an exception — the
+    event still happened, and dropping a row over a formatting problem takes a
+    real excursion off the record.
+    """
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _gutter_band(detail: dict) -> Optional[dict]:
+    """The band THIS verdict was judged against, off THIS row.
+
+    Deliberately per row rather than "the newest band this series has": a
+    standard gets re-certified and the limits move, and a historic verdict
+    redrawn against today's band is a record that disagrees with the verdict
+    written beside it (17025 7.11.3 — a reported result is not restated).
+
+    None when the row carries no band, so the UI can say "judged against
+    nothing recorded" instead of drawing a line at zero.
+    """
+    low, high = _finite(detail.get("low")), _finite(detail.get("high"))
+    if low is None or high is None:
+        return None
+    return {"low": low, "high": high,
+            "expected": _finite(detail.get("expected"))}
+
+
+def _gutter_state(standing: dict, at: Optional[datetime], hours: float):
+    """`(status, reason, since)` for the verdicts standing at `at`.
+
+    `standing` is test_name -> {"in_spec", "ts", "at"}: the most recent QC
+    verdict for each test, which is what the engine judges. `since` is the ts of
+    the verdict that DECIDED the answer, so a UI can send someone from a sample
+    run straight to the QC that says whether it was any good.
+    """
+    if not standing:
+        return STATUS_UNKNOWN, "No valid QC data found.", None
+    failed = [v for v in standing.values() if v["in_spec"] is False]
+    if failed:
+        # The one that put it out of spec first, and is still standing.
+        first = min(failed, key=lambda v: v["ts"])
+        return STATUS_RED, "QC Out of Spec", first["ts"]
+    unread = [v for v in standing.values() if v["in_spec"] is None]
+    if unread:
+        first = min(unread, key=lambda v: v["ts"])
+        return (STATUS_UNKNOWN,
+                "The QC verdict on this instrument could not be read.",
+                first["ts"])
+    # Every standing verdict passed. The OLDEST of them is the binding one: it
+    # is the first that will age out, and the window has to close on all of them.
+    oldest = min(standing.values(), key=lambda v: v["ts"])
+    if at is None or oldest["at"] is None:
+        # A timestamp that will not parse cannot be placed against a window, and
+        # "fresh" is a claim about elapsed time. Say unknown rather than assume.
+        return (STATUS_UNKNOWN,
+                "This event could not be placed in time, so the QC in force "
+                "when it happened is unknown.", oldest["ts"])
+    if qc_is_stale(oldest["at"], at, hours):
+        return (STATUS_YELLOW,
+                "QC stale (Last valid: {0})".format(
+                    oldest["at"].strftime("%Y-%m-%d %H:%M")),
+                oldest["ts"])
+    return STATUS_GREEN, "QC Fresh", oldest["ts"]
+
+
+def gutter_events(rows, hours: float = GUTTER_DEFAULT_QC_HOURS) -> List[dict]:
+    """`lem_machine_log` rows for ONE instrument -> the gutter, newest first.
+
+    Pure: no clock, no gateway, no Flask. The status of an event is a function
+    of the verdicts recorded BEFORE it (and, for a QC row, of its own verdict),
+    never of what time it is now — so the same window answers the same way
+    tomorrow, which is what makes it a record rather than a dashboard.
+
+    Walked oldest-first because a status is established by the EARLIER verdict,
+    and reversed at the end because the whiteboard reads newest at the top.
+    """
+    ordered = sorted(rows or (), key=lambda r: str(r.get("ts") or ""))
+    standing: Dict[str, dict] = {}
+    out: List[dict] = []
+    for row in ordered:
+        ts = str(row.get("ts") or "")
+        try:
+            at = datetime.fromisoformat(ts)
+        except (TypeError, ValueError):
+            at = None
+        kind = str(row.get("kind") or "").strip()
+        detail = _detail_dict(row.get("detail"))
+        event = {
+            "machine_uid": str(row.get("machine_uid") or ""),
+            "ts": ts,
+            "kind": kind,
+            "lab_id": str(row.get("lab_id") or ""),
+            "test_name": str(row.get("test_name") or "").strip(),
+            # The value as RECORDED. `lem_machine_log.value` is a TEXT column
+            # and a run's is often blank (its readings are in `detail.values`),
+            # so this is not coerced; the QC row's number is parsed on the
+            # transition below, where it is compared against a band.
+            "value": str(row.get("value") or ""),
+            "qc": kind == "qc",
+        }
+        if kind == "qc":
+            # ONLY kind='qc'. A PM completion sharing the machine and the test
+            # name once overwrote a certificate's band with its own (0 - 0.001)
+            # and put every result out of spec — the same lesson `_is_qc_row`
+            # exists for, on the other side of the seam.
+            before, _reason, _since = _gutter_state(standing, at, hours)
+            in_spec = detail.get("in_spec")
+            in_spec = None if in_spec is None else bool(in_spec)
+            standing[event["test_name"]] = {"in_spec": in_spec, "ts": ts,
+                                            "at": at}
+            status, reason, since = _gutter_state(standing, at, hours)
+            event["transition"] = {
+                "from": before, "to": status, "in_spec": in_spec,
+                "value": _finite(row.get("value")),
+                "band": _gutter_band(detail),
+            }
+        else:
+            status, reason, since = _gutter_state(standing, at, hours)
+        event.update({"status": status, "reason": reason,
+                      "status_since": since})
+        out.append(event)
+    out.reverse()
+    return out
 
 
 # A correction is typed by a human and often pasted. `float()` refuses a Unicode
@@ -3146,46 +3329,250 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # logged anything.
         return labcore_rows(res)
 
+    # How many results a control chart shows. The analysis runs on exactly
+    # these points, never on the whole history — see `_chart_series`.
+    CHART_POINTS = 60
+
+    def _zone(limits, k: float):
+        pair = limits.zone(k) if limits is not None else None
+        return None if pair is None else {"low": pair[0], "high": pair[1]}
+
+    def _chart_series(analysis, points) -> dict:
+        """One `SeriesAnalysis` as the floor's chart payload.
+
+        TWO KINDS OF LIMIT LIVE ON ONE CHART AND THEY ARE NOT THE SAME THING,
+        so they are two named blocks here and never one "limits" field:
+
+          `pass_band` — the SPECIFICATION. `expected +/- k*std_dev` off the
+            standard's certificate, read straight out of the detail the bench
+            wrote. It says nothing about this instrument; the same band judges
+            every bench running that standard.
+          `observed`  — the OBSERVATION. `mean +/- k*s` from THESE results, the
+            n-1 divisor, and the zones a Shewhart chart is drawn with. It moves
+            as the instrument moves.
+
+        A wide certificate over a drifting instrument gives narrow zones inside
+        a wide band — in control of nothing, passing everything — and a tight
+        certificate over a stable one gives the reverse. A chart that draws one
+        and labels it the other says the opposite of what the process is doing.
+        `zones_within_band` is that comparison already made.
+
+        `failures` (results the bench judged outside the certificate) and
+        `violations` (ways the process is out of control) are likewise two
+        counts and neither substitutes for the other.
+
+        `low`/`high`/`expected` stay at the top level because the floor already
+        reads them there and they ARE the pass band. They are the same three
+        numbers as `pass_band`, not a fourth quantity.
+        """
+        band, limits, cov = analysis.pass_band, analysis.limits, analysis.coverage
+        return {
+            "test_name": analysis.test_name,
+            "sample_id": analysis.sample_id,
+            "points": [{"ts": p.ts, "value": p.value, "in_spec": p.in_spec}
+                       for p in points],
+            "runs": analysis.n,
+            "failures": analysis.failures,
+            # A verdict the log does not carry is UNJUDGED. Counting it as a
+            # failure invents an excursion that never happened; counting it as a
+            # pass hides one that did.
+            "unjudged": analysis.unjudged,
+
+            # ── the specification ──
+            "low": band.low if band else None,
+            "high": band.high if band else None,
+            "expected": band.expected if band else None,
+            "pass_band": None if band is None else {
+                "low": band.low, "high": band.high, "expected": band.expected},
+
+            # ── the observation ──
+            "observed": {
+                "mean": analysis.mean,
+                "s": analysis.s,
+                # `n` here is what `s` was computed FROM and `df` its degrees of
+                # freedom — the pair a later uncertainty module reads beside
+                # `s`. Equal to `runs` only because nothing supplies
+                # qualification limits yet, which is exactly what
+                # `self_fitted` is saying.
+                "n": analysis.s_n,
+                "df": analysis.s_df,
+                "self_fitted": analysis.self_fitted,
+                "zones": {"1s": _zone(limits, 1), "2s": _zone(limits, 2),
+                          "3s": _zone(limits, 3)},
+            },
+            "zones_within_band": analysis.zones_within_band,
+
+            # ── the chart is grading itself, and has to say so ──
+            # With no qualification period the limits are fitted to the very
+            # points they judge. The UI must be able to print that rather than
+            # present a self-fitted alarm as fact.
+            "self_fitted": analysis.self_fitted,
+            "in_control": analysis.in_control,
+            "violations": [{"rule": v.rule, "indices": list(v.indices),
+                            "side": v.side, "message": v.message,
+                            "provisional": v.provisional}
+                           for v in analysis.violations],
+            "firm_violations": len(analysis.firm_violations),
+
+            # ── what the spread may be CALLED ──
+            # A spread that does not span analysts, calendar days AND
+            # calibrations is not within-laboratory reproducibility, and the
+            # caveat is the sentence that goes beside the chart.
+            "spread_basis": analysis.spread_basis,
+            "coverage": {
+                "basis": cov.basis,
+                "caveat": cov.caveat(),
+                "n": cov.n,
+                "operators": list(cov.operators),
+                "n_operators": cov.n_operators,
+                "n_unknown_operator": cov.n_unknown_operator,
+                "n_days": cov.n_days,
+                "n_undated": cov.n_undated,
+                "calibrations": list(cov.calibrations),
+                "n_calibrations": cov.n_calibrations,
+                "n_unknown_calibration": cov.n_unknown_calibration,
+                "supports_repeatability": cov.supports_repeatability(),
+                "supports_reproducibility": cov.supports_reproducibility(),
+            },
+        }
+
     @app.route("/api/machines/<machine_uid>/qc-trend")
     def api_qc_trend(machine_uid):
-        """One series per test: the last results with the pass band, so the
-        floor can draw a control chart rather than just a colour."""
-        series = {}
+        """The control chart: is this instrument IN CONTROL, and what does its
+        spread mean?
+
+        The arithmetic is `qc_series`'s, not this route's. What used to be here
+        parsed `detail` inline and answered "how many results fell outside the
+        band", which is a pass rate — and a run of results every one of them
+        inside the band and every one above the mean is an instrument that has
+        moved, reported as perfect.
+        """
+        import qc_series
         try:
             events = _qc_events(machine_uid)
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "this equipment's QC history")
-        for row in events:
-            name = str(row.get("test_name") or "").strip()
-            if not name:
-                continue
-            try:
-                detail = json.loads(row.get("detail") or "{}")
-            except (TypeError, ValueError):
-                detail = {}
-            try:
-                value = float(row.get("value"))
-            except (TypeError, ValueError):
-                continue
-            s = series.setdefault(name, {
-                "test_name": name, "points": [], "failures": 0,
-                "low": detail.get("low"), "high": detail.get("high"),
-                "expected": detail.get("expected"),
-                "sample_id": row.get("lab_id") or ""})
-            in_spec = bool(detail.get("in_spec"))
-            s["points"].append({"ts": row.get("ts"), "value": value,
-                                "in_spec": in_spec})
-            if not in_spec:
-                s["failures"] += 1
-            for k in ("low", "high", "expected"):      # keep the latest band
-                if detail.get(k) is not None:
-                    s[k] = detail[k]
         out = []
-        for s in series.values():
-            s["points"] = s["points"][-60:]
-            s["runs"] = len(s["points"])
-            out.append(s)
+        for (uid, _name), series in qc_series.series_from_rows(events).items():
+            if uid != machine_uid:
+                continue                       # already filtered in SQL; cheap
+            # TRUNCATE, THEN ANALYSE. A violation's `indices` are positions in
+            # the series it was found in, so analysing the whole history and
+            # then trimming the points would leave every index off by the
+            # number dropped and the UI circling the wrong readings.
+            shown = qc_series.QcSeries(
+                machine_uid=series.machine_uid, test_name=series.test_name,
+                points=series.points[-CHART_POINTS:],
+                pass_band=series.pass_band, sample_id=series.sample_id)
+            out.append(_chart_series(qc_series.analyse(shown), shown.points))
         return jsonify({"series": sorted(out, key=lambda s: s["test_name"])})
+
+    # ── the status gutter ─────────────────────────────────────────────
+    # The events list with a colour band down its left: for each event, what
+    # state the instrument was in while it happened. The derivation is
+    # `gutter_events` — pure, and documented at its definition.
+
+    @app.route("/api/machines/<machine_uid>/status-timeline")
+    def api_status_timeline(machine_uid):
+        """This instrument's recent events, each with the status in force then.
+
+        SERVED FROM THE SNAPSHOT, AT ZERO LabCore OPS. This is a panel the floor
+        opens beside a chart that already polls every two seconds, and the rule
+        here is that a request never talks to LabCore and LabCore load does not
+        depend on how many people are looking. The snapshot reads
+        `lem_machine_log` every cycle anyway.
+
+        What that costs, stated in the payload rather than hidden: the snapshot
+        holds the newest `EVENT_LIMIT` rows for the WHOLE lab, so a quiet
+        instrument's gutter can be clipped by a busy neighbour. `complete` and
+        `covers_from` say whether it was, because "nothing else happened" and
+        "nothing else is in this answer" are different sentences and only one of
+        them is a statement about the record.
+
+        The live read is the cold path only — the snapshot has never built.
+        """
+        from snapshot_service import EVENT_LIMIT, events_from_tables
+
+        from qc_samples import resolve_qc_window, window_from_standards
+
+        tables = _snapshot_tables()
+
+        # The QC window, and which level supplied it.
+        #
+        # This used to be the 24h default, always, reported as `"default"`
+        # because the server genuinely held no per-machine window: that is the
+        # module's `Machine.qc_expire_hours` and it is in no snapshot arm. It
+        # still is not — but a STANDARD's own window now is, in the `qcsample`
+        # arm the benches already read, so the guess can stop.
+        #
+        # The chain here is shorter than the bench's on purpose. A mapping
+        # override lives on the instrument's parser and never reaches this
+        # server, and the machine default is not in the snapshot either; adding
+        # a read for them would cost one LabCore op on a panel the floor opens
+        # beside a chart that polls every two seconds. Both missing levels are
+        # LESS specific than the standard and more specific than 24, so the
+        # answer is the right one wherever they are silent — and `qc_expire_from`
+        # names the standard, so a person can see what it was resolved from
+        # instead of taking the number on trust.
+        standard_hours, standard_from = 0.0, ""
+        if tables is not None:
+            from snapshot_service import bench_config_from_tables
+            config = bench_config_from_tables(tables, machine_uid)
+            standard_hours, standard_from = window_from_standards(
+                config["qc_samples"], config["qc_targets"])
+
+        asked = _finite(normalise_number_text(
+            request.args.get("qc_expire_hours") or ""))
+        hours, hours_source = resolve_qc_window(
+            (("request", asked), ("standard", standard_hours)),
+            default_hours=GUTTER_DEFAULT_QC_HOURS)
+        if hours_source != "standard":
+            standard_from = ""
+
+        if tables is not None:
+            # The snapshot tolerates one failed arm — right for the floor, where
+            # a missing row costs one pill. Not right here, where the arm IS the
+            # answer: an empty gutter says this instrument has done nothing,
+            # which on a 17025 panel is a statement about the record.
+            unread = snapshots.table_error("event")
+            if unread:
+                return _labcore_unreadable(
+                    LabCoreUnavailable(unread),
+                    "this equipment's recent activity")
+            everything = events_from_tables(tables, EVENT_LIMIT)
+            rows = [e for e in everything
+                    if e["machine_uid"] == machine_uid]
+            complete = len(everything) < EVENT_LIMIT
+            source = "snapshot"
+            age = snapshots.get().get("age_seconds")
+        else:
+            try:
+                res = gateway.read_sql(
+                    "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                    "detail FROM lem_machine_log WHERE machine_uid = ? "
+                    "ORDER BY ts DESC LIMIT ?", [machine_uid, EVENT_LIMIT])
+                rows = [dict(r) for r in labcore_rows(res)]
+            except LabCoreError as exc:
+                return _labcore_unreadable(
+                    exc, "this equipment's recent activity")
+            complete = len(rows) < EVENT_LIMIT
+            source, age = "labcore", None
+
+        events = gutter_events(rows, hours)
+        return jsonify({
+            "machine_uid": machine_uid,
+            "events": events,
+            "qc_expire_hours": hours,
+            "qc_expire_source": hours_source,
+            # Which standard said so, when one did. Empty for every other
+            # source — naming a standard the number did NOT come from is worse
+            # than naming none.
+            "qc_expire_from": standard_from,
+            "source": source,
+            "snapshot_age_seconds": age,
+            "complete": complete,
+            "covers_from": events[-1]["ts"] if events else None,
+        })
 
     NAMES_UNREAD = ("# NOTE: the equipment names could not be read from LabCore "
                     "when this file was made, so the machine column shows "
@@ -4474,6 +4861,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         return jsonify({"ok": True})
 
     # ── QC samples: the V4 model, central and shared ──────────────────
+    import qc_samples as qc_samples_mod
     from qc_samples import QcSample, QcSampleStore
 
     sample_store = QcSampleStore(gateway)
@@ -4489,7 +4877,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # duplicate check, so a second lot can be created over a real one.
             data, status = _labcore_unreadable(exc, "the QC sample library")
             body_json = data.get_json()
-            body_json.update({"samples": [], "labcore_online": False})
+            body_json.update({"samples": [], "labcore_online": False,
+                              "default_qc_expire_hours":
+                                  qc_samples_mod.QC_WINDOW_DEFAULT_HOURS})
             return jsonify(body_json), status
         payload = []
         for sample in samples:
@@ -4499,7 +4889,15 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 test["low"] = low
                 test["high"] = high
             payload.append(data)
-        return jsonify({"samples": payload})
+        # A test's `qc_expire_hours` of 0 means "fall through", so the editor
+        # would otherwise draw an empty box with nothing to say what leaving it
+        # empty gets you. The library states the bottom of the chain here rather
+        # than the page hard-coding a 24 that could drift away from
+        # `resolve_qc_window`.
+        return jsonify({
+            "samples": payload,
+            "default_qc_expire_hours": qc_samples_mod.QC_WINDOW_DEFAULT_HOURS,
+        })
 
     @app.route("/api/qc-samples", methods=["POST"])
     def api_save_qc_sample():

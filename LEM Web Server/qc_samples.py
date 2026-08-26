@@ -108,6 +108,147 @@ QC_SAMPLES_DDL = (
 )
 
 
+# ── How long a QC result stays good, and who gets to say ─────────────────────
+#
+# QC expiry is a ROLLING window (`data_source.qc_is_stale`, duplicated on purpose
+# in the station module). Four levels can supply the number; the chain below is
+# the ONLY place in this tree that decides which one does.
+#
+#   1. MethodMapping.qc_expire_hours   — a human act on THIS instrument
+#   2. the standard's own window       — NEW; a property of the MATERIAL
+#   3. BoxConfig/Machine.qc_expire_hours — this instrument's default
+#   4. QC_WINDOW_DEFAULT_HOURS
+#
+# Level 2 is the addition. A control's usable life belongs to the material — a
+# working standard degrades, an ampoule opened this morning is not good for a
+# week — so it belongs on the standard, once, instead of being re-typed on every
+# bench that runs it and lost on the next lot change.
+#
+# **Zero means "fall through", never "expire immediately."** That is how
+# `MethodMapping.qc_expire_hours` and `TestSpec.qc_expire_hours` already read,
+# and it is the rule that makes this safe to ship: the rows already in
+# `lem_qc_samples` carry no window at all, and neither will a bench on an older
+# build. If absence read as a zero-hour window, every reading in the lab would be
+# stale the moment it was taken.
+
+QC_WINDOW_DEFAULT_HOURS = 24.0
+
+
+def _window_hours(raw) -> float:
+    """A usable window in hours, or 0.0 meaning "this level said nothing".
+
+    Everything that is not a finite positive number is silence: None, "", text,
+    NaN, inf and negatives. NaN matters more than it looks — it compares False
+    against every bound, so an unguarded NaN sails past `if hours > 0` and then
+    makes `qc_is_stale` answer False forever, which is a window that never
+    expires rather than one that was never set.
+    """
+    try:
+        hours = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if hours != hours or hours in (float("inf"), float("-inf")):
+        return 0.0
+    return hours if hours > 0 else 0.0
+
+
+def resolve_qc_window(levels, default_hours: float = QC_WINDOW_DEFAULT_HOURS
+                      ) -> Tuple[float, str]:
+    """The QC staleness window, and WHICH level supplied it.
+
+    `levels` is an ordered sequence of `(source, hours)`, most specific first.
+    The first level with something to say wins; every other level is silence.
+
+    The source travels with the number on purpose. `/api/machines/<uid>/
+    status-timeline` already reports `qc_expire_source` for exactly this reason —
+    a window silently assumed is a colour nobody can check — and now that four
+    levels can supply it, "24 hours" alone stopped being an answer a person can
+    act on.
+
+    A caller that has not reached the bottom of the chain passes
+    `default_hours=0.0`: spec-building knows the mapping and the standard but not
+    the instrument, and answering 24.0 there would silently override every
+    machine default in the lab.
+    """
+    for source, raw in levels or ():
+        hours = _window_hours(raw)
+        if hours:
+            return hours, str(source)
+    return float(default_hours), "default"
+
+
+def _tests_of(sample) -> List[dict]:
+    """The tests on one library row, however that row reached us.
+
+    `QcSampleStore.as_payload` hands back parsed lists; the bench config road
+    (`snapshot_service.bench_config_from_tables`) deliberately hands the JSON
+    TEXT exactly as LabCore stores it, because the module's
+    `parse_qc_sample_rows` calls `json.loads` on it. One reader for both, so the
+    floor and the bench cannot reach different conclusions about the same
+    library. Unparseable is EMPTY, never an exception: a standard whose blob is
+    corrupt must not take the whole resolution down with it.
+    """
+    raw = (sample or {}).get("tests")
+    if isinstance(raw, list):
+        listed = raw
+    else:
+        try:
+            listed = json.loads(raw or "[]")
+        except (TypeError, ValueError):
+            return []
+    return [t for t in listed if isinstance(t, dict)]
+
+
+def window_from_standards(library, targets) -> Tuple[float, str]:
+    """What the standards THIS machine is assigned say about their own life.
+
+    Returns `(hours, what)`. `(0.0, "")` means no assigned standard stated a
+    window — silence, which the caller falls through on.
+
+    **Only assigned standards count.** QC here is assignment-only (2026-08-03),
+    and without that filter one tight control anywhere in the shared library
+    would shorten the window of every instrument in the lab.
+
+    **The tightest assigned window decides.** A single window colours a whole
+    instrument, and its QC is only as fresh as its shortest-lived control — the
+    same "any stale test" rule `evaluate_machine` applies to go YELLOW.
+
+    A target matches a test on its measurement column OR its own name, exactly as
+    `specs_from_qc_samples` matches, so both roads read one assignment the same
+    way.
+    """
+    wanted = set()
+    for target in targets or ():
+        if not isinstance(target, dict):
+            continue
+        sample = str(target.get("sample_name", target.get("sample", "")) or "")
+        test = str(target.get("test_name", target.get("test", "")) or "")
+        if sample.strip() and test.strip():
+            wanted.add((sample.strip(), test.strip().lower()))
+    if not wanted:
+        return 0.0, ""
+
+    best = 0.0
+    what = ""
+    for sample in library or ():
+        if not isinstance(sample, dict):
+            continue
+        sample_name = str(sample.get("name") or "").strip()
+        for test in _tests_of(sample):
+            value_col = str(test.get("value_col") or "").strip().lower()
+            test_name = str(test.get("name") or "").strip().lower()
+            if not any((sample_name, n) in wanted
+                       for n in (value_col, test_name) if n):
+                continue
+            hours = _window_hours(test.get("qc_expire_hours"))
+            if hours and (not best or hours < best):
+                best = hours
+                what = "{0} · {1}".format(
+                    sample_name, str(test.get("name")
+                                     or test.get("value_col") or "").strip())
+    return best, what
+
+
 @dataclass
 class QcSampleTest:
     """One test on a QC standard: pass when expected ± k·std_dev.
@@ -116,6 +257,13 @@ class QcSampleTest:
     "Cloud - D7689"); `value_col` is the measurement it reads — a LabCore
     test method in the new world, a CSV column in V4. Modules match on
     either, so V4 definitions keep working.
+
+    `qc_expire_hours` is how long a passing result on THIS control stays good —
+    a property of the material, stated once here instead of on every bench that
+    runs it. **0.0 means "no opinion"**, and the instrument's own default
+    decides; see `resolve_qc_window` for the full chain. It is stored inside the
+    `tests` JSON TEXT column, so nothing about `lem_qc_samples`' three columns
+    changes and no bench needs the field to exist.
     """
 
     name: str
@@ -124,11 +272,13 @@ class QcSampleTest:
     std_dev: float = 0.0
     k: float = 2.0
     units: str = ""
+    qc_expire_hours: float = 0.0
 
     def to_dict(self) -> dict:
         return {"name": self.name, "value_col": self.value_col,
                 "expected": self.expected, "std_dev": self.std_dev,
-                "k": self.k, "units": self.units}
+                "k": self.k, "units": self.units,
+                "qc_expire_hours": self.qc_expire_hours}
 
     @classmethod
     def from_dict(cls, data: dict) -> "QcSampleTest":
@@ -139,6 +289,12 @@ class QcSampleTest:
             std_dev=float(data.get("std_dev") or 0.0),
             k=float(data.get("k") or 2.0),
             units=str(data.get("units", "")),
+            # `_window_hours`, not `float(... or 0.0)`: an absent key, a blank
+            # box, text, NaN and a negative all have to land on the SAME 0.0
+            # that means "fall through". Every row already in LabCore is missing
+            # this key, and a crash — or worse, a zero-hour window — on the rows
+            # the lab already has is not a launch this feature survives.
+            qc_expire_hours=_window_hours(data.get("qc_expire_hours")),
         )
 
     def limits(self) -> Tuple[float, float]:
@@ -205,6 +361,15 @@ class QcSampleStore:
                 raise ValueError("Standard deviation cannot be negative.")
             if test.k <= 0:
                 raise ValueError("k must be greater than zero.")
+            # Refused, not silently normalised. A negative window would be read
+            # as 0.0 = "fall through" everywhere downstream, so storing it would
+            # throw away what the operator typed and show them the machine
+            # default back — the same reason `std_dev < 0` is refused here
+            # rather than clamped.
+            if test.qc_expire_hours < 0:
+                raise ValueError(
+                    "A QC window cannot be negative. Leave it blank (or 0) to "
+                    "use the instrument's own default.")
         self.ensure_schema()
         with _doing("save the QC standard {!r}".format(sample.name.strip())):
             confirm_write(_sql(

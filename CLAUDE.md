@@ -184,6 +184,45 @@ LabCore once.
 Tests: `tests/test_live_notes.py`, `tests/test_floor_config.py`,
 `tests/test_queue_economy.py`, `tests/test_write_economy.py`.
 
+## A QC standard states its own staleness window (2026-08-26)
+
+Ryan: *"make the QC staleness adjustable in the QC sample library."*
+
+A control's usable life belongs to the MATERIAL, not the instrument, so
+`lem_qc_samples` can now say how long a passing result on it lasts. Four levels
+can supply that number and **one function decides which**
+(`resolve_qc_window`, beside `qc_is_stale`); **zero means fall through at every
+level**, exactly as `MethodMapping.qc_expire_hours` already did:
+
+```
+MethodMapping override → the standard's own window → Machine.qc_expire_hours → 24.0
+```
+
+Asked in two directions, and never inline: `spec_qc_window` (mapping vs standard,
+when `specs_from_qc_samples` / `specs_for_machine` build a spec — with
+`default_hours=0.0`, so it cannot pre-empt the machine) and `qc_window_for` (spec
+vs machine, at the point of use: `evaluate_machine`'s staleness check and
+`qc_freshness`' battery, which used to be handed no window at all and could show
+a half-full card for a test the verdict had already called stale).
+
+`TestSpec` carries `qc_expire_source` beside the number so a person can be told
+WHICH level to change. `"spec"` is the honest label for a window on a config
+persisted before this existed.
+
+**`qc_is_stale` is untouched** — this changes where the number comes from, not how
+it is applied, and `LEM Web Server/tests/test_qc_window.py` still holds both
+copies together.
+
+**Nothing new is read.** The window rides inside the `tests` JSON TEXT the config
+road already ships verbatim, so it arrives through `/api/bench/<uid>/config` at
+zero extra LabCore ops, and `parse_qc_sample_rows` needs no change. **A bench on
+an older build, or an older floor, simply sees no key — which is fall-through, not
+a zero-hour window.** That distinction is what makes this safe to roll out in
+either order, and `_window_hours` is where it is enforced (absent, blank, text,
+NaN, inf and negative all become the same 0.0).
+
+Tests: `LEM Station Module/tests/test_qc_standard_window.py` (34).
+
 ## Mappings are editable after they are made (2026-08-06)
 
 Ryan: "like raw density to API is different math than raw density to kg/cm so i

@@ -63,7 +63,7 @@
   .dlg-scroll{padding:10px 16px 6px;max-height:66vh;overflow:auto}
   .two-up{display:grid;grid-template-columns:1fr 1fr;gap:12px}
   label.fl{color:var(--ink2);font-size:11px;display:block;margin-bottom:4px}
-  .tgrid{display:grid;grid-template-columns:2.6fr 1fr 1fr .7fr 1fr 34px;
+  .tgrid{display:grid;grid-template-columns:2.4fr 1fr 1fr .7fr 1fr .9fr 34px;
          gap:6px;align-items:center}
   .tgrid.thead{color:#6e7480;font-size:9.5px;letter-spacing:.8px;
                text-transform:uppercase;margin-bottom:5px}
@@ -119,11 +119,12 @@
     </div>
     <p class="hint" style="margin:8px 0 4px">The Sample ID is the Lab ID the standard runs
     under — station modules detect QC by matching it against the print's Lab ID.</p>
+    <p class="hint" id="winHint" style="margin:2px 0 4px"></p>
 
     <label class="fl" style="margin-top:12px;display:block">Tests Configuration</label>
     <div class="tgrid thead">
       <div>Assay (LabCore method)</div><div>Expected</div><div>StdDev</div>
-      <div>k</div><div>Units</div><div></div>
+      <div>k</div><div>Units</div><div id="winHead">Expires (h)</div><div></div>
     </div>
     <div id="sampleTests"></div>
     <button id="addTests" style="margin-top:8px">+ Add assays…</button>
@@ -194,6 +195,12 @@
 <script>
 const $ = s => document.querySelector(s);
 let MACHINES = [], TESTS = [], SAMPLES = [], AUTHED = false, current = null;
+// The bottom of the precedence chain, taken from `/api/qc-samples` rather than
+// typed here — a 24 hard-coded into a template is a number that drifts away
+// from `qc_samples.resolve_qc_window` and then lies to an operator about what
+// leaving the box empty will do. 24 is only the value used before the first
+// answer arrives.
+let DEFAULT_QC_HOURS = 24;
 
 async function api(url, opts) {
   const r = await fetch(url, opts);
@@ -210,6 +217,15 @@ async function load() {
   MACHINES = m.body.machines || [];
   TESTS = t.body.tests || [];
   SAMPLES = (s.body && s.body.samples) || [];
+  if (s.body && Number(s.body.default_qc_expire_hours) > 0) {
+    DEFAULT_QC_HOURS = Number(s.body.default_qc_expire_hours);
+  }
+  $('#winHint').textContent =
+    'Expires (h) is how long a passing result on this standard stays good — a ' +
+    'property of the material, so it is set here once instead of on every ' +
+    'bench. Leave it blank to use the instrument\u2019s own default (' +
+    DEFAULT_QC_HOURS + ' h unless that bench overrides it). A mapping set on ' +
+    'the bench itself still wins over this.';
   AUTHED = !!(me.body && me.body.authenticated);
   $('#online').textContent = m.body.labcore_online ? 'LabCore online' : 'LabCore offline';
   $('#online').className = 'pill ' + (m.body.labcore_online ? 'on' : 'off');
@@ -223,6 +239,14 @@ function esc(s) {
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 }
 
+// What this standard says about how long its results last. A standard that
+// says nothing is not "0 h" — it defers, and the row says which level answers
+// instead so nobody reads a blank as an expiry of zero.
+function windowText(t) {
+  const h = Number(t && t.qc_expire_hours);
+  return h > 0 ? `${h}\u2009h` : `default (${DEFAULT_QC_HOURS}\u2009h)`;
+}
+
 function renderSamples() {
   const box = $('#samples');
   if (!SAMPLES.length) {
@@ -234,14 +258,15 @@ function renderSamples() {
     <table>
       <thead><tr>
         <th style="width:26%">${esc(s.name)} <span style="color:var(--accent)">· ${esc(s.sample_id_val)}</span></th>
-        <th>Measures</th><th>Pass band</th>
+        <th>Measures</th><th>Pass band</th><th>QC expires</th>
         <th style="width:1%"><button data-editsample="${esc(s.name)}">Edit</button></th>
       </tr></thead>
       <tbody>${(s.tests || []).map(t => `
         <tr><td>${esc(t.name)}</td><td class="mono">${esc(t.value_col)}</td>
         <td class="mono">${Number(t.low).toFixed(2)} … ${Number(t.high).toFixed(2)} ${esc(t.units || '')}</td>
+        <td class="mono">${windowText(t)}</td>
         <td></td></tr>`).join('') ||
-        '<tr><td colspan="4" class="none">No tests on this sample.</td></tr>'}
+        '<tr><td colspan="5" class="none">No tests on this sample.</td></tr>'}
       </tbody>
     </table>`).join('');
 }
@@ -370,12 +395,20 @@ function addTestRow(t) {
   const row = document.createElement('div');
   row.className = 'tgrid trow';
   const assay = (t && (t.value_col || t.name)) || '';
+  // 0 is "this standard has no opinion" — the same fall-through the bench and
+  // the machine default use — so it is drawn as an EMPTY box, never as "0".
+  // A literal 0 in the box reads as "expires immediately", which is the one
+  // thing it never means.
+  const win = (t && Number(t.qc_expire_hours) > 0) ? Number(t.qc_expire_hours) : '';
   row.innerHTML = `
     <div class="assay" title="${esc(assay)}" data-assay="${esc(assay)}">${esc(assay)}</div>
     <input class="c-exp" type="number" step="any" value="${t ? t.expected : 0}">
     <input class="c-sd"  type="number" step="any" min="0" value="${t ? t.std_dev : 0.5}">
     <input class="c-k"   type="number" step="any" min="0.1" value="${t ? t.k : 2}">
     <input class="c-un"  value="${t ? esc(t.units || '') : ''}" placeholder="°C">
+    <input class="c-win" type="number" step="any" min="0"
+           value="${win || ''}" placeholder="${esc(DEFAULT_QC_HOURS)}"
+           title="How long a passing result on this standard stays good. Leave blank to use the instrument&#39;s own default (${esc(DEFAULT_QC_HOURS)} h unless that bench overrides it).">
     <button class="danger" data-rmrow>✕</button>`;
   $('#sampleTests').appendChild(row);
 }
@@ -387,7 +420,12 @@ function collectTests() {
             expected: parseFloat(r.querySelector('.c-exp').value || '0'),
             std_dev: parseFloat(r.querySelector('.c-sd').value || '0'),
             k: parseFloat(r.querySelector('.c-k').value || '2'),
-            units: r.querySelector('.c-un').value};
+            units: r.querySelector('.c-un').value,
+            // Blank and 0 are the same answer: "use the default". Sent as 0
+            // rather than omitted, so the value is explicit in the record
+            // instead of being inferred from a missing key.
+            qc_expire_hours: Math.max(
+              0, parseFloat(r.querySelector('.c-win').value || '0') || 0)};
   }).filter(t => t.name);
 }
 

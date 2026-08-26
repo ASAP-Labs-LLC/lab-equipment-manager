@@ -154,6 +154,82 @@ timestamp on the verdict, and that verdict is read back from `lem_machine_log`
 keyed on `machine_uid` — nothing is measured from process start or from local disk.
 See `LEM Station Module/tests/test_restart_keeps_status.py::TestSurvivesAMove`.
 
+## A QC standard states its own staleness window (2026-08-26)
+
+Ryan: *"make the QC staleness adjustable in the QC sample library."*
+
+A control's usable life is a property of the **material** — a working standard
+degrades, an ampoule opened this morning is not good for a week. Until now the
+only levels that could say so were per-INSTRUMENT (the machine default and the
+bench mapping), so the same fact had to be re-typed on every bench running the
+standard and was lost on the next lot change. `QcSampleTest.qc_expire_hours` is
+that fact, stated once, where the standard is.
+
+**The chain, most specific first, and zero means FALL THROUGH at every level:**
+
+```
+MethodMapping.qc_expire_hours   an explicit human act on this instrument
+  → the standard's own window   ← new; a property of the material
+    → Machine/BoxConfig.qc_expire_hours
+      → 24.0
+```
+
+Decided in exactly one function per tree — `qc_samples.resolve_qc_window` here,
+`lem_station_module.resolve_qc_window` there (it cannot import from this
+package). Both take an ordered `(source, hours)` sequence and answer with the
+number **and the level that supplied it**, because with four levels able to
+speak, "24 hours" alone stopped being an answer anybody can act on. The module
+asks it in two directions — `spec_qc_window` (mapping vs standard, at spec-build
+time, `default_hours=0.0` so it cannot pre-empt the machine) and `qc_window_for`
+(spec vs machine, at the point of use). No call site resolves the order inline.
+
+**`qc_is_stale` is untouched.** This changes where the NUMBER comes from, not how
+it is applied; `tests/test_qc_window.py` still holds the two copies together.
+
+**No migration, and this was checked rather than assumed.** `lem_qc_samples.tests`
+is a JSON TEXT column, so the window rides inside it: no `lem_*` column added or
+renamed, `SCHEMA_MIGRATIONS` untouched, the `qcsample` arm unchanged, and the
+bench config road carries it for free because that arm already ships `tests`
+verbatim. Zero extra LabCore ops, proven with `CountingGateway`.
+
+**Absence may never read as zero.** Every row now in `lem_qc_samples` has no such
+key, and an older floor will not send one. Read as a zero-hour window that would
+make every reading in the building instantly stale the moment this shipped.
+`_window_hours` maps absent / blank / text / NaN / inf / negative onto the same
+0.0 that means "no opinion" — NaN specifically, because it compares False against
+every bound and would otherwise give a window that never expires.
+
+**The status gutter stopped guessing.** `/api/machines/<uid>/status-timeline`
+reported `qc_expire_source: "default"` because this server held no per-machine
+window. The standard's is in the snapshot it already reads, so it resolves
+`request → standard → 24.0` and adds `qc_expire_from` naming the standard. The
+chain is deliberately shorter than the bench's: the mapping override and the
+machine default are on the instrument and in no arm, and buying them would cost a
+LabCore op on a panel the floor opens beside a 2s-polling chart. Both are LESS
+specific than the standard, so the answer is right wherever they are silent.
+Where several assigned standards state windows the **tightest** one wins — QC is
+only as fresh as the shortest-lived control, the same rule `evaluate_machine`
+uses to go YELLOW.
+
+⚠ **`templates/floor.html` has not caught up.** Its QC-standard dialog builds each
+test row by hand and sends no `qc_expire_hours`, so **saving a standard from the
+floor clears a window somebody set**. It was left alone because the floor renderer
+was being rewritten in parallel. This is deliberately NOT worked around on the
+server: making an omitted key inherit the stored value would mean no client could
+ever clear a window, and would hide the gap. `templates/stations.html` (the
+retired `/stations` page, still the editor of record in this tree) has the field;
+`tests/test_qc_standard_window.py::TestTheLiveFloorEditorStillHasToCatchUp` is a
+tripwire plus a `strict` xfail that both fire when the floor gains it.
+
+**MAJOR, not MINOR.** No `lem_*` column moved, but a QC verdict rule changed: the
+same standard, the same reading and the same clock can now produce a different
+colour, and the bench decides it. Benches and floor can be upgraded in any order
+(absence falls through on both sides), but the bench side has to move for the
+feature to do anything.
+
+Tests: `tests/test_qc_standard_window.py` (49),
+`LEM Station Module/tests/test_qc_standard_window.py` (34).
+
 ## The live road: benches push, LabCore records (2026-08-05)
 
 Two roads carrying **different facts**, not the same fact at two speeds.

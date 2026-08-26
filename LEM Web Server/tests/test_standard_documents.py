@@ -1894,12 +1894,31 @@ class TestTheCertificateIsNotBoundToTheStandardsNumbers:
         assert not any(f.startswith("cert_")
                        for f in StandardCertificate.__dataclass_fields__)
 
+    # Every field `QcSampleTest` is allowed to have, named one at a time.
+    #
+    # The list is the tripwire: a field added without a line here fails this
+    # test, which is the point — "helpfully added the obvious next field" is the
+    # change this class exists to catch. Adding one is a deliberate act with a
+    # reason attached, not a quiet edit.
+    #
+    #   name/value_col/expected/std_dev/k/units — the V4 model, from the start.
+    #   qc_expire_hours (2026-08-26) — how long a passing result on this control
+    #     stays good. NOT a certificate binding: it is a property of the
+    #     material's usable life, not a value read off a COA, and it is stored
+    #     inside the existing `tests` JSON TEXT column so no `lem_*` column
+    #     moved. The certified value, its uncertainty and its coverage factor
+    #     are still unclaimed, which is what the sibling test checks by name.
+    ALLOWED_FIELDS = {"name", "value_col", "expected", "std_dev", "k", "units",
+                      "qc_expire_hours"}
+
     def test_the_qc_sample_model_did_not_grow_them(self):
-        """The binding would land on `QcSampleTest`, and this phase does not
-        touch `qc_samples.py` at all."""
-        fields = qc_samples.QcSampleTest.__dataclass_fields__
-        assert set(fields) == {"name", "value_col", "expected", "std_dev",
-                               "k", "units"}
+        """The binding would land on `QcSampleTest`. Nothing on it may be one
+        of the certificate's numbers, and nothing may appear unannounced."""
+        fields = set(qc_samples.QcSampleTest.__dataclass_fields__)
+        assert fields == self.ALLOWED_FIELDS
+        for banned in ("cert_value", "cert_uncertainty", "cert_k",
+                       "certified_value", "certificate"):
+            assert not any(banned in f for f in fields), banned
         assert "lem_standard_documents" not in qc_samples.QC_SAMPLES_DDL
 
     def test_nothing_here_reads_a_number_out_of_a_pdf(self):
