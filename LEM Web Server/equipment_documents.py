@@ -515,6 +515,25 @@ def resolve_content_type(filename: str, data: bytes,
     return content_type
 
 
+def _is_file(path) -> bool:
+    """`path.is_file()`, but never raising on a path we cannot look at.
+
+    `Path.is_file()` stats, and what it does when the stat FAILS depends on the
+    interpreter: 3.14 swallows the OSError and answers False, 3.12 raises. Both
+    sweeps below already treated an unreadable file as "leave it alone" — the
+    guard was on the `_settled` call and not on the `is_file()` immediately
+    beside it, so on 3.12 the sweep raised instead of reporting.
+
+    It passed everywhere it was run because the newer interpreter hides it. The
+    lab does not run the newer interpreter: the station module pins PySide6,
+    which has no 3.14 wheels, so the version that breaks is the deployed one.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 class EquipmentDocumentStore:
     """Save, list, fetch and delete the documents attached to one instrument.
 
@@ -594,7 +613,7 @@ class EquipmentDocumentStore:
             return []      # see _SAFE_UID: a `*` here would match the neighbour
         try:
             return sorted(p for p in canonical.parent.glob(f"{doc.uid}.*")
-                          if p.is_file() and p.stem == doc.uid)
+                          if _is_file(p) and p.stem == doc.uid)
         except OSError:
             return []
 
@@ -787,7 +806,7 @@ class EquipmentDocumentStore:
         cutoff = time.time() - max(0, PART_FILE_GRACE_SECONDS)
         found = []
         for path in self.root.rglob("*"):
-            if not path.is_file() or str(path) in known:
+            if not _is_file(path) or str(path) in known:
                 continue
             if path.name.endswith(PART_SUFFIX) and not self._settled(path, cutoff):
                 continue        # a save in flight, not a leftover

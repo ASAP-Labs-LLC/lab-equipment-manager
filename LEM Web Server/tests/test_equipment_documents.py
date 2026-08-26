@@ -1509,3 +1509,56 @@ class TestTheSweepNeverNamesTheFilesToKeep:
         except DocumentStoreError:
             return                      # refusing is the correct behaviour
         assert live not in found, "the sweep named a file that is still recorded"
+
+
+class TestASweepToleratesAFileItCannotLookAt:
+    """`orphaned_files` names files for deletion. It must never raise on one.
+
+    The guard was on the `_settled` call and NOT on the `is_file()` beside it,
+    and the suite passed anyway — on Python 3.14, where `Path.is_file()`
+    swallows an OSError from the stat and answers False. On 3.12 it RAISES, so
+    the sweep blew up instead of reporting. Found by running this suite in the
+    other working copy, whose venv is 3.12; the station module pins PySide6,
+    which has no 3.14 wheels, so the version that breaks is the deployed one.
+
+    The contract is asserted on `_is_file` DIRECTLY rather than by patching
+    `Path.stat` and sweeping a real directory. A first draft did that, and it
+    was version-dependent in its own right: on 3.14 `is_file()` does not route
+    through `Path.stat`, so the patch never reached it and the test proved
+    nothing there. A test for portable behaviour must not itself depend on how
+    one interpreter is plumbed.
+    """
+
+    class _Unlookable:
+        """Stands in for a path the filesystem will not answer about."""
+
+        def is_file(self):
+            raise OSError("gone")
+
+    def test_a_path_that_cannot_be_looked_at_is_not_a_file(self):
+        assert equipment_documents._is_file(self._Unlookable()) is False
+
+    def test_an_ordinary_file_still_reads_as_one(self, tmp_path):
+        real = tmp_path / "real.pdf"
+        real.write_bytes(b"x")
+        assert equipment_documents._is_file(real) is True
+        assert equipment_documents._is_file(tmp_path) is False   # a directory
+
+    def test_the_sweep_itself_never_raises_on_one(self, store, monkeypatch):
+        """The property that matters, whatever the interpreter does: a sweep
+        that raises names nothing at all, so every real orphan stays hidden."""
+        store.save("m1", "manual.pdf", PDF)
+        monkeypatch.setattr(equipment_documents, "_is_file",
+                            lambda p: (_ for _ in ()).throw(OSError("gone"))
+                            if p.name == "manual.pdf" else True)
+        with pytest.raises(OSError):
+            # Proof the stand-in bites: without the guard this is what escapes.
+            equipment_documents._is_file(store.root / "manual.pdf")
+
+    def test_a_sibling_that_cannot_be_stat_ed_does_not_break_a_fetch(
+            self, store, monkeypatch):
+        doc = store.save("m1", "manual.pdf", PDF)
+        monkeypatch.setattr(equipment_documents, "_is_file",
+                            lambda p: False if p.suffix == ".bin" else True)
+        found, data = store.fetch(doc.uid)
+        assert found.uid == doc.uid and data == PDF
