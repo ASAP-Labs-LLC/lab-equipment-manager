@@ -403,21 +403,99 @@ def _seed_history(write, rng, now, bench, specs, status) -> None:
                     test_name=(specs[0]["name"] if specs else "Density 15C"),
                     value="{0}".format(round(rng.uniform(0.82, 0.86), 4))))
 
+    # A QC SERIES, not a single verdict. One point is not a control chart: the
+    # SD is undefined at n=1 (correctly `None`, not 0.0), so the zones, the run
+    # rules and the coverage all come back empty and the chart demonstrates
+    # nothing it exists to show. `QC_HISTORY_RUNS` readings across as many days
+    # gives it a spread to draw.
+    #
+    # Operators and calibration epochs VARY across the series on purpose. That
+    # is what decides whether the spread may be called within-laboratory
+    # reproducibility rather than repeatability — a demo where one analyst runs
+    # everything against one calibration would only ever show `partial`, which
+    # is the honest answer to the wrong question.
     for spec in specs:
         if spec["value"] is None:
             continue
-        write(*_log(bench.uid, "qc", now - timedelta(minutes=rng.randint(12, 240)),
-                    lab_id=STANDARD_LAB_ID, test_name=spec["name"],
-                    value=str(spec["value"]),
-                    detail={"low": spec["low"], "high": spec["high"],
-                            "in_spec": bool(spec["in_spec"]),
-                            "raw_value": spec["value"] - spec["correction"],
-                            "correction": spec["correction"]}))
+        history = _qc_history(rng, now, spec)
+        for point in history:
+            write(*_log(bench.uid, "qc", point["ts"],
+                        lab_id=STANDARD_LAB_ID, test_name=spec["name"],
+                        value=str(point["value"]),
+                        detail={"low": spec["low"], "high": spec["high"],
+                                "expected": spec["expected"],
+                                "in_spec": bool(point["in_spec"]),
+                                "operator": point["operator"],
+                                "calibration_id": point["calibration_id"],
+                                "raw_value": round(
+                                    point["value"] - spec["correction"], 6),
+                                "correction": spec["correction"]}))
 
     if status == "RED":
         write(*_log(bench.uid, "status_change",
                     now - timedelta(minutes=rng.randint(5, 200)),
                     value="RED", detail={"from": "GREEN", "to": "RED"}))
+
+
+
+# Enough readings for a spread, over enough days for an axis.
+QC_HISTORY_RUNS = 28
+
+# The analysts who run controls here, and the calibrations they ran them under.
+# Both vary across a series so the coverage can legitimately read `intermediate`
+# — see `_qc_history`.
+OPERATORS = ("ryan", "sam", "dana")
+CALIBRATIONS = ("2026-06-02", "2026-07-14", "2026-08-11")
+
+
+def _qc_history(rng, now, spec) -> List[dict]:
+    """One instrument's QC series for one test, oldest first.
+
+    The LAST point is the one already published to `lem_machine_specs` as
+    `last_qc_value` / `last_qc_in_spec`, so the card, the badge and the right-
+    hand end of the chart cannot disagree — `test_demo_floor` asserts that
+    agreement and this is what keeps it true.
+
+    Everything before it is in-band scatter. A demo series peppered with
+    failures would light up every run rule at once and teach nothing about
+    which rule means what; the interesting instrument is the one whose LAST
+    reading went out, which is exactly what `story` already decides.
+    """
+    out = []
+    low, high = spec["low"], spec["high"]
+    centre = (low + high) / 2.0
+    # A quarter of the band as 1s puts 3s a little inside the limits, so the
+    # zones are visible without manufacturing violations.
+    sigma = (high - low) / 8.0
+    places = len(str(spec["expected"]).partition(".")[2]) or 1
+    for n in range(QC_HISTORY_RUNS - 1, 0, -1):
+        ts = (now - timedelta(days=n, hours=rng.randint(0, 6),
+                              minutes=rng.randint(0, 59)))
+        value = round(rng.gauss(centre, sigma), places)
+        value = min(max(value, low), high)
+        out.append({
+            "ts": ts, "value": value, "in_spec": True,
+            # Not round-robin: a rota that repeats every three runs is a pattern
+            # the run rules would find, and it would be an artefact of the demo.
+            "operator": rng.choice(OPERATORS),
+            "calibration_id": CALIBRATIONS[min(len(CALIBRATIONS) - 1,
+                                               (QC_HISTORY_RUNS - n) * len(CALIBRATIONS)
+                                               // QC_HISTORY_RUNS)],
+        })
+    out.append({"ts": _stamp_of(spec, now), "value": spec["value"],
+                "in_spec": bool(spec["in_spec"]),
+                "operator": rng.choice(OPERATORS),
+                "calibration_id": CALIBRATIONS[-1]})
+    return out
+
+
+def _stamp_of(spec, now) -> datetime:
+    """The published `last_qc_at`, so the series ends where the card says."""
+    at = spec.get("at") or ""
+    try:
+        return datetime.fromisoformat(at)
+    except (TypeError, ValueError):
+        return now
 
 
 def _log(machine_uid, kind, ts, lab_id="", test_name="", value="",
