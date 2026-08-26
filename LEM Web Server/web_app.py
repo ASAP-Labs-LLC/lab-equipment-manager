@@ -1362,8 +1362,16 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                    EquipmentHistory)
     from levels import LevelStore
 
+    from standard_documents import (CertificateRejected, CertificateStoreError,
+                                    StandardCertificateStore,
+                                    content_disposition, expiry_report)
+
     level_store = LevelStore(gateway)
     document_store = EquipmentDocumentStore(gateway, root=documents_root)
+    # The certificate a QC standard's values rest on. Same root as the
+    # equipment documents — one place a deploy has to preserve, not two — and
+    # the store keeps them apart underneath by its own folder scheme.
+    certificate_store = StandardCertificateStore(gateway, root=documents_root)
     equipment_history = EquipmentHistory(gateway)
     correction_audit = CorrectionAuditStore(gateway)
 
@@ -4553,6 +4561,165 @@ def create_app(gateway, admin_password: Optional[str] = None,
                              if _corpus["at"] else ""),
         }
         return jsonify(answer)
+
+
+    # ── the certificate a QC standard's values rest on ──────────────────
+    #
+    # `standard_documents.py` shipped fully tested and reachable by nothing —
+    # the same "declared but inert" state `levels.py`, `equipment_documents.py`
+    # and `equipment_history.py` were found in, where wired and unwired look
+    # identical from the outside. `tests/test_certificate_routes.py` is the
+    # standing gate.
+    #
+    # THE STANDARD'S NAME IS NEVER A PATH SEGMENT. It is a human string chosen
+    # by whoever created the standard — "Diesel - AO25" — and nothing stops one
+    # containing a slash, which as a path segment either 404s or addresses a
+    # different rule. `<path:...>` would then sit at the same depth as the
+    # by-uid routes and Werkzeug would have to be reasoned about, which is the
+    # trap `equipment_documents` had to write a paragraph about. Keeping the
+    # name in the query string or the form is that problem not existing.
+
+    def _named_standard():
+        """The standard this request is about, or the answer to send instead.
+
+        A missing name is a 400, never an empty list: an empty list reads as
+        "this standard has no certificate on file", and that is a sentence
+        about a standard nobody named.
+        """
+        name = (request.args.get("standard")
+                or request.form.get("standard") or "").strip()
+        if not name:
+            return None, (jsonify({
+                "error": "Name the QC standard whose certificates you want."}),
+                400)
+        return name, None
+
+    @app.route("/api/qc-standards/certificates")
+    def api_list_certificates():
+        name, refusal = _named_standard()
+        if refusal is not None:
+            return refusal
+        try:
+            certs = certificate_store.certificates(name)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this standard's certificates")
+        now = _now()
+        return jsonify({
+            "standard": name,
+            "certificates": [c.to_dict() for c in certs],
+            # Which one the standard is actually RESTING on, as opposed to
+            # every one ever filed against it. The report and this answer come
+            # through the same function so they cannot disagree.
+            "current": (certificate_store.current(name, now=now) or None)
+                       and certificate_store.current(name, now=now).to_dict(),
+        })
+
+    @app.route("/api/qc-standards/certificates", methods=["POST"])
+    def api_upload_certificate():
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        name, refusal = _named_standard()
+        if refusal is not None:
+            return refusal
+        upload = request.files.get("file")
+        if upload is None or not str(upload.filename or "").strip():
+            return jsonify({"error": "No file was sent."}), 400
+        try:
+            data = read_upload(upload.stream)
+            cert = certificate_store.save(
+                name, upload.filename, data,
+                uploaded_by=session.get("user", ""),
+                content_type=upload.mimetype or "",
+                expires_at=request.form.get("expires_at"),
+                issued_at=request.form.get("issued_at"))
+        except CertificateRejected as exc:
+            # A decision about the FILE — the wrong kind, an empty one, a date
+            # that is not a date. Nothing to retry; pick a different file or
+            # fix the date. Kept apart from a refusal on purpose: "the queue is
+            # deep, try again" and "that is not a PDF" are opposite
+            # instructions to the person holding the certificate.
+            return jsonify({"error": str(exc), "saved": False,
+                            "retry": False}), 400
+        except CertificateStoreError as exc:
+            return _document_failed(exc, "this certificate")
+        _audit("certificate uploaded", "",
+               {"standard": name, "certificate": cert.uid,
+                "filename": cert.filename, "bytes": cert.size_bytes,
+                "expires_at": cert.expires_at})
+        return jsonify({"ok": True, "certificate": cert.to_dict()})
+
+    @app.route("/api/qc-standards/certificates/<uid>/download")
+    def api_download_certificate(uid):
+        try:
+            cert, data = certificate_store.fetch(uid)
+        except CertificateRejected as exc:
+            return jsonify({"error": str(exc)}), 404
+        except CertificateStoreError as exc:
+            return _document_failed(exc, "this certificate")
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this certificate")
+        return Response(data, mimetype=cert.content_type or "application/pdf",
+                        headers={"Content-Disposition":
+                                 content_disposition(cert.filename)})
+
+    @app.route("/api/qc-standards/certificates/<uid>", methods=["DELETE"])
+    def api_delete_certificate(uid):
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        try:
+            cert = certificate_store.get(uid)
+            gone = certificate_store.delete(uid)
+        except CertificateStoreError as exc:
+            return _document_failed(exc, "this certificate")
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this certificate")
+        if not gone:
+            return jsonify({"error": "No such certificate."}), 404
+        _audit("certificate deleted", "",
+               {"standard": getattr(cert, "standard_name", ""),
+                "certificate": uid,
+                "filename": getattr(cert, "filename", "")})
+        return jsonify({"ok": True})
+
+    @app.route("/api/qc-standards/certificate-expiry")
+    def api_certificate_expiry():
+        """What is out of date and what is about to be, across the library.
+
+        The one report here whose entire purpose is being produced during an
+        assessment, which is why it RAISES rather than degrading: "nothing is
+        out of date" must be impossible to produce from an outage.
+        """
+        within = request.args.get("within_days", type=int)
+        try:
+            report = expiry_report(certificate_store, now=_now(),
+                                   within_days=within)
+        except CertificateRejected as exc:
+            # A bad `within_days` or `as_of` — a decision about the REQUEST.
+            return jsonify({"error": str(exc)}), 400
+        except CertificateStoreError as exc:
+            # The store's own wrapper around an unreadable LabCore. Caught
+            # BEFORE LabCoreError because it is not one — it wraps the cause —
+            # and letting it fall through reached the browser as a bare 500,
+            # which is the one shape this report may never take: a page that
+            # errors is at least honest, but nothing here may ever answer
+            # "nothing is out of date" because LabCore could not be read.
+            return _document_failed(exc, "the certificate expiry report")
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the certificate expiry report")
+
+        def rows(certs):
+            return [{"standard": c.standard_name, "uid": c.uid,
+                     "filename": c.filename, "expires_at": c.expires_at,
+                     "issued_at": c.issued_at} for c in certs]
+
+        return jsonify({
+            "as_of": report.get("as_of"),
+            "within_days": report.get("within_days"),
+            "expired": rows(report.get("expired") or []),
+            "expiring": rows(report.get("expiring") or []),
+            "superseded": rows(report.get("superseded") or []),
+            "covered": list(report.get("covered") or []),
+        })
 
     @app.route("/api/equipment/register")
     def api_action_register():
