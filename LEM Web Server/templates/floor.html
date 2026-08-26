@@ -19,8 +19,18 @@
      The rails used to cost 612px of a 1366px laptop, leaving the map — the
      point of the page — less than half the width. Slimmer now, and the nav
      rail lives outside this grid. */
-  .shell{display:grid;grid-template-columns:248px 1fr 252px;flex:1;
-         min-height:0}
+  /* THE RECORD RAIL WAS 248px AND COULD NOT HOLD ITS OWN CONTENT: a corrective
+     action's title, its three badges, an owner, a due date and an opened date,
+     in a column narrower than the sentence. Dates broke mid-token ("2026-08-
+     22") and the most important card on the History tab was unreadable.
+     Both rails are fluid now, with a floor under them so they never squeeze
+     back to that, and a ceiling so a wide screen spends the extra width on the
+     floor plan rather than on two columns of whitespace. The plan itself no
+     longer needs a wide box — it is fitted to whatever shape it is given. */
+  .shell{display:grid;
+         grid-template-columns:clamp(296px,21vw,356px) minmax(0,1fr)
+                               clamp(244px,17vw,300px);
+         flex:1;min-height:0}
   .bar h1{font-size:12.5px;flex:none}
   .vt,.simbanner,.offline{white-space:nowrap;flex:none}
   .bar h1 b{color:var(--amber)}
@@ -32,8 +42,11 @@
   .tally .t{display:flex;align-items:center;gap:5px;font-size:11px;
             color:var(--ink2);white-space:nowrap}
   .tally .d{width:8px;height:8px;border-radius:50%;flex:none}
+  /* `flex:none` like every other item in this bar. The bar scrolls rather than
+     clipping, and a shrinkable item whose text cannot wrap does not shorten —
+     it overflows its own box onto its neighbour. */
   .clock{font-family:var(--mono);font-size:12px;color:var(--ink2);
-         letter-spacing:.06em}
+         letter-spacing:.06em;flex:none;white-space:nowrap}
 
   /* ── rails ── */
   /* min-height:0 is what makes overflow-y:auto actually work. A grid item's
@@ -65,9 +78,44 @@
             transparent,rgba(33,192,113,.55),transparent)}
   .qc .mark{position:absolute;top:-3px;width:2px;height:12px;background:var(--amber);
             box-shadow:0 0 6px var(--amber)}
-  .qc .lim{display:flex;justify-content:space-between;font-size:9.5px;
-           color:var(--ink3);font-family:var(--mono)}
+  /* Wraps rather than crushes, and no item may break inside a token — a date
+     is one word, and "2026-08-\A 22" is not a date. Same rule as `.attnmeta`
+     below, which was written for exactly this failure on the attention card. */
+  .qc .lim{display:flex;align-items:center;justify-content:space-between;
+           gap:4px 8px;flex-wrap:wrap;font-size:9.5px;color:var(--ink3);
+           font-family:var(--mono)}
+  .qc .lim > span{white-space:nowrap;min-width:0;overflow:hidden;
+                  text-overflow:ellipsis}
   .qc .val{float:right;font-family:var(--mono);font-size:12px}
+
+  /* ── one flagged piece of equipment in the rail ──
+     This card used to put the reason, the level name and the corrective-action
+     badge into a single `.lim` flex row. In a 220px rail that is three flex
+     items fighting for the width, one of them (`.badge`) carrying
+     `white-space:nowrap` so it cannot give any back — the two text items were
+     squeezed to their min-content width and wrapped a word per line, and the
+     badge, a flex item under the default `align-items:stretch`, grew to the
+     full height of the wreckage and painted an 80px red block across it.
+     "Multitek NS" was the most prominent card on the page and unreadable; its
+     sibling looked fine only because its reason was short enough to fit.
+
+     So: the reason takes the whole width on a line of its own, and the level
+     and the badge share a row under it that is allowed to WRAP rather than
+     crush. Nothing here can squeeze anything else to 40px again. */
+  .qc .why{font-size:11px;line-height:1.45;color:var(--ink2);margin-bottom:7px;
+           overflow-wrap:anywhere}
+  .qc .attnmeta{display:flex;align-items:center;justify-content:space-between;
+                gap:6px 8px;flex-wrap:wrap;font-size:9.5px;color:var(--ink3);
+                font-family:var(--mono)}
+  /* The one item allowed to give way, and it ellipses instead of wrapping —
+     a level called "Second Floor" must not become two lines of one word. */
+  .qc .attnmeta .lvl{min-width:0;overflow:hidden;text-overflow:ellipsis;
+                     white-space:nowrap}
+  .qc .attnmeta .badge{flex:none}
+  .qc .attnmeta > span{white-space:nowrap}
+  .qc .attnmeta .badges{display:flex;gap:4px;flex-wrap:wrap;flex:none}
+  .qc.actcard{cursor:pointer}
+  .qc.actcard:hover{border-color:var(--amber)}
 
   .ev{display:grid;grid-template-columns:64px 1fr auto;gap:8px;padding:6px 0;
       border-bottom:1px solid #161a21;font-size:11.5px;align-items:baseline}
@@ -285,6 +333,190 @@
   .trow .assay:empty::before{content:"choose an assay…";color:var(--ink3)}
   .sheet .sub{color:var(--ink2);font-size:12px;line-height:1.55;margin:6px 0 12px}
 
+  /* ── levels: the picker, its steppers, and the plane it names ──
+     The picker BUTTON is the current-level readout — one control, two jobs, so
+     there is never a "you are on Level 2" caption that can disagree with it.
+     The steppers sit either side of it because this lab has about three
+     levels, where one press beats open-and-pick; the picker is what still
+     works when a lab has eight. See levels.cycle()'s docstring: the stepper
+     must never ship on its own. */
+  .levelbar{display:flex;align-items:center;gap:0;flex:none}
+  .levelbar .tool{border-radius:0;margin-left:-1px}
+  .levelbar .tool:first-child{border-radius:9px 0 0 9px;margin-left:0}
+  .levelbar .tool:last-child{border-radius:0 9px 9px 0}
+  .lvlstep{padding:6px 9px;font-size:13px;line-height:1}
+  .lvlpick{min-width:132px;justify-content:space-between;color:var(--ink);
+           background:#1a1f28}
+  .lvlpick .lvlname{text-transform:none;letter-spacing:.04em;font-weight:700}
+  .lvlpick .chev{color:var(--ink3);font-size:9px}
+  /* The list. `.menu` already styles a floating panel on this page, so this
+     inherits it and only adds what a level row needs. */
+  .levelmenu{position:fixed;min-width:288px;max-width:min(420px,calc(100vw - 24px));
+             max-height:64vh;overflow-y:auto}
+  .lvlrow{display:grid;grid-template-columns:12px 1fr;gap:2px 9px;width:100%;
+          text-align:left;background:none;border:none;color:var(--ink);
+          font:12px var(--ui);padding:7px 10px;border-radius:6px;cursor:pointer}
+  .lvlrow:hover,.lvlrow.cursor{background:#1e2431}
+  .lvlrow .tick{color:var(--amber);font-size:11px}
+  .lvlrow .top{display:flex;align-items:center;gap:8px;min-width:0}
+  .lvlrow .nm{flex:1;min-width:0;overflow-wrap:anywhere}
+  .lvlrow.here{color:var(--amber);font-weight:800}
+  /* THE DEFAULT, IN ONE SHAPE. The picker drew a styled chip and the Levels
+     dialog drew the same word as bare lowercase text glued to the name —
+     "Ground Floor default", which reads as the level's name. One rule, both
+     places, so the two cannot disagree about a fact they both state. */
+  .dflt{display:inline-flex;align-items:center;padding:1px 7px;
+        border-radius:20px;font-size:9px;font-weight:800;letter-spacing:.14em;
+        text-transform:uppercase;color:var(--brass);border:1px solid #6b4f14;
+        background:#1a1410;flex:none;margin-left:6px;white-space:nowrap}
+  .lvlrow .dflt{margin-left:0}
+  /* A per-level status roll-up. Neither floor-plan product in the captured
+     reference puts a count on a floor row, so this is a deliberate exceeding
+     of that bar rather than an oversight: "which level has a RED instrument"
+     is the whole reason a lab switches level, where an office is only ever
+     asking where a desk is. */
+  /* THE ROLL-UP SAYS THE STATUS IN WORDS. It used to be a coloured dot and a
+     number and nothing else — which is the one accessibility weakness the
+     reference flags as cheap to beat, on the row a lab reads to decide which
+     level to walk to. The dot stays, because colour is faster for everyone who
+     can see it; the word is what makes it readable without it. */
+  .lvlroll{display:flex;gap:4px 9px;align-items:center;flex-wrap:wrap;
+           grid-column:2}
+  .lvlroll span{display:inline-flex;align-items:center;gap:4px;font-size:10px;
+                color:var(--ink2);font-family:var(--mono);white-space:nowrap}
+  .lvlroll span b{font-weight:700}
+  .lvlroll span em{font-style:normal;font-family:var(--ui);color:var(--ink3);
+                   letter-spacing:.04em}
+  .lvlroll i{width:7px;height:7px;border-radius:50%;display:inline-block;
+             flex:none}
+  .lvlroll .none{color:var(--ink3);font-style:italic;font-family:var(--ui)}
+
+  /* An empty level is a designed state, never a blank canvas: a heading, a
+     sentence of orientation, a sentence of instruction, one primary action —
+     and the chrome around it stays exactly where it was. */
+  /* Shown and hidden by the `hidden` ATTRIBUTE, not a class — the same reason
+     the maximal-map exit button is: a browser holding a stylesheet from before
+     this rule existed would otherwise leave the panel permanently across the
+     floor. */
+  .levelempty{position:absolute;inset:0;display:flex;flex-direction:column;
+              align-items:center;justify-content:center;text-align:center;
+              padding:26px;z-index:4}
+  .levelempty[hidden]{display:none}
+  .levelempty h3{font-size:16px;letter-spacing:.1em;margin-bottom:10px}
+  .levelempty p{color:var(--ink2);font-size:12.5px;line-height:1.65;
+                max-width:46ch;margin-bottom:8px}
+  .levelempty .tool.live{margin-top:12px}
+  /* The plan says which level it is even with the tool row gone — a wall
+     display on the maximal view has no picker to read. */
+  /* THE FALLBACK READOUT, AND IT MUST NOT TRUNCATE. It is what names the level
+     when the tool row has scrolled the picker off-screen or the maximal view
+     has taken the whole row away — so "GROUND F…" fails on exactly the
+     viewport it exists for. It scales with the stage and wraps instead. */
+  .levelmark{position:absolute;right:16px;top:12px;
+             font-size:clamp(12px,2.1vw,22px);font-weight:800;
+             letter-spacing:clamp(.08em,.32vw,.3em);text-transform:uppercase;
+             color:var(--ink3);opacity:.32;pointer-events:none;
+             font-stretch:condensed;max-width:calc(100% - 32px);
+             text-align:right;line-height:1.25;overflow-wrap:anywhere}
+
+  /* ── the equipment record: documents and history ── */
+  .doc{display:flex;align-items:center;gap:8px;padding:7px 0;
+       border-bottom:1px solid #161a21;font-size:12px}
+  .doc .nm{flex:1;min-width:0;overflow-wrap:anywhere}
+  /* A stamp is one token to a reader even though it has a space in it. */
+  .doc .nm .t{white-space:nowrap}
+  .doc .sz{color:var(--ink3);font-family:var(--mono);font-size:10px;flex:none}
+  .doc a.tool,.doc button.tool{padding:4px 7px;font-size:9.5px}
+  .limits{color:var(--ink3);font-size:11px;line-height:1.5;margin:6px 0 8px}
+
+  /* A file input, dressed. The control shipped raw: every browser draws its own
+     grey "Choose File" button, in its own system font, and none of them can be
+     styled — so the one control on this page nobody designed sat in the middle
+     of a page where everything else was. The input is still THE input (it is
+     what the upload reads, it still takes keyboard focus, and `accept` still
+     filters the picker); it is moved off-screen and driven by its own <label>,
+     which is a real activator for it and needs no script. */
+  .filepick{display:flex;align-items:center;gap:9px;flex-wrap:wrap;
+            margin-bottom:8px}
+  .filepick input[type=file]{position:absolute;width:1px;height:1px;padding:0;
+            margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;
+            border:0}
+  /* The label IS the button, so it has to show keyboard focus on the input it
+     is standing in for — the input itself is the thing that is focused. */
+  .filepick input[type=file]:focus-visible + label.tool{outline:2px solid
+            var(--amber);outline-offset:2px}
+  .filepick .chosen{font-size:11px;color:var(--ink3);min-width:0;flex:1;
+            overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+            font-family:var(--mono)}
+  .filepick .chosen.has{color:var(--ink2)}
+
+  /* ── the per-equipment history's own filters ──
+     The lab-wide Logs page has filters and says its order; this tab had
+     neither, so "what happened to this instrument" was a scroll. Same controls,
+     scaled to a rail: what kind of thing, and a search across the sentences. */
+  .histbar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+           margin-bottom:8px}
+  .histbar select,.histbar input{font-size:11px;padding:5px 8px}
+  .histbar select{flex:1 1 46%;min-width:0}
+  .histbar input{flex:1 1 46%;min-width:0}
+  .histbar select{padding-right:24px}
+  .ordernote{color:var(--ink3);font-size:10px;letter-spacing:.04em;
+             margin:0 0 6px}
+  .tl{display:grid;grid-template-columns:auto 1fr;gap:8px;padding:7px 0;
+      border-bottom:1px solid #161a21;font-size:11.5px;align-items:baseline}
+  .tl .k{font-size:9px;letter-spacing:.1em;text-transform:uppercase;
+         font-weight:800;white-space:nowrap}
+  .tl .who{border:none;padding:0;color:var(--ink3);font-size:10px;
+           text-transform:none;letter-spacing:0}
+  .tl .t{color:var(--ink3);font-family:var(--mono);font-size:9.5px;
+         white-space:nowrap}
+  .tl .who{white-space:nowrap}
+  .tl > span:last-child{min-width:0;overflow-wrap:anywhere}
+  .k-opened{color:var(--red)} .k-actioned{color:var(--brass)}
+  .k-verified{color:var(--green)} .k-closed{color:var(--ink2)}
+  .k-withdrawn{color:var(--ink3)} .k-changed{color:var(--service)}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:2px 7px;
+         border-radius:20px;font-size:9px;font-weight:800;letter-spacing:.12em;
+         text-transform:uppercase;white-space:nowrap}
+  .badge.over{background:rgba(248,91,91,.16);color:var(--red);
+              border:1px solid rgba(248,91,91,.45)}
+  .badge.pri{background:#1c2230;color:var(--ink2);border:1px solid var(--edge)}
+  .badge.pri.high{color:var(--brass);border-color:#6b4f14}
+  .badge.pri.critical{color:var(--red);border-color:rgba(248,91,91,.45)}
+  .badge.state{background:#1c2230;color:var(--ink2);border:1px solid var(--edge)}
+
+  /* ── the dialog that replaced every prompt() and confirm() on this page ──
+     A native prompt cannot show the record it is about, cannot show a refusal
+     without throwing the typed text away, and chains into a second box for the
+     next field — which is the fault this page's own sign-in was reported for
+     off the bench. This is the same sheet the QC and correction dialogs use, so
+     an operator meets one shape of question everywhere on the floor. */
+  #askDlg{width:min(540px,94vw)}
+  .askwhat{border:1px solid var(--edge);border-left:2px solid var(--brass);
+           border-radius:8px;background:#0f1218;padding:9px 11px;
+           margin-bottom:11px}
+  .askwhat .cap{margin-bottom:3px}
+  .askwhat p{font-size:12.5px;line-height:1.5;color:var(--ink);
+             overflow-wrap:anywhere}
+  .askwhat .meta{margin-top:5px}
+  /* The rule the server enforces, said before the button is pressed. It is
+     quoted from the lifecycle, never invented here — the store is the
+     authority and refuses regardless of what this box says. */
+  .askrule{color:var(--ink2);font-size:11.5px;line-height:1.6;
+           margin:0 0 12px;padding-left:11px;border-left:1px solid var(--edge)}
+  #askDlg textarea{width:100%;min-height:88px;resize:vertical;
+                   font:12.5px/1.6 var(--ui)}
+  #askDlg .opt{color:var(--ink3);font-size:10.5px;margin-top:5px}
+  .lockico{flex:none}
+  .askcheck{display:flex;gap:9px;align-items:flex-start;font-size:12px;
+            line-height:1.5;color:var(--ink2);cursor:pointer;margin-top:4px}
+  /* An author `display` rule beats the UA's `[hidden]{display:none}` at equal
+     specificity, so this has to say so itself — the same trap `.tool[hidden]`
+     and `.levelempty[hidden]` are already here for. Without it the retire
+     sheet's tick sat, unlabelled, in every other question the page asks. */
+  .askcheck[hidden]{display:none}
+  .askcheck input{width:auto;flex:none;margin-top:2px}
+
   /* ── maximal map: the floor, and only the floor ──
      The tally stays: hiding how many instruments need attention would make this
      a screensaver rather than a view. The stage keeps min-height:0 so it still
@@ -292,7 +524,10 @@
   :root.maxmap .rail{display:none}
   :root.maxmap .tools{display:none}
   :root.maxmap .shell{grid-template-columns:1fr}
-  :root.maxmap .bar{padding:6px 12px}
+  /* Right padding, not 12px: the exit button is `position:fixed` at the top
+     right and therefore out of flow, so without a reserved lane it lands on
+     the last thing in the bar — the clock — and clips it to "202". */
+  :root.maxmap .bar{padding:6px var(--maxexit-lane) 6px 12px}
   :root.maxmap .bar h1{font-size:11px}
   :root.maxmap .hint{display:none}
 
@@ -348,6 +583,30 @@
           title="Leave the maximal map view (Esc)">✕ Exit max map</button>
 
   <div class="tools">
+    <!-- Where you are, first in the row and before anything about time or
+         mode: scope reads outward-in. Both controls ship together — the
+         picker's own label is the current-level readout, and the two steppers
+         are the one-press path a three-level lab actually wants. -->
+    <div class="levelbar" id="levelBar" role="group" aria-label="Level">
+      <button class="tool lvlstep" id="btnLevelDown"
+              title="The level below — [" aria-label="Go down a level">▾</button>
+      <button class="tool lvlpick" id="btnLevel" aria-haspopup="menu"
+              aria-expanded="false" aria-controls="levelMenu"
+              title="Choose which level the plan is showing">
+        <span class="lvlname" id="levelName">Floor</span><span class="chev">▼</span>
+      </button>
+      <button class="tool lvlstep" id="btnLevelUp"
+              title="The level above — ]" aria-label="Go up a level">▴</button>
+    </div>
+    <!-- Outside the group on purpose. Navigating between levels and rebuilding
+         the ladder are different jobs, and this one stays reachable on a flat
+         lab — where the picker and the steppers are hidden, because there is
+         nothing to pick and nowhere to step, and this is the only way to make
+         the first level. -->
+    <button class="tool" id="btnLevels"
+            title="Create, rename and delete levels, and choose the one the
+floor opens on">Levels…</button>
+    <span class="sep"></span>
     <button id="btnQc" class="tool">QC samples</button>
     <button id="btnHours" class="tool"
             title="Working days and holidays — when silence is expected">Lab hours</button>
@@ -357,9 +616,10 @@
     <button id="btnMax" class="tool"
             title="Maximal map — hide the side panels (Esc to leave)"
             aria-label="Maximal map view">⤢ Max map</button>
-    <button id="btnLock" class="tool" title="Lock or unlock the floor layout">🔒 Locked</button>
+    <button id="btnLock" class="tool"
+            title="Lock or unlock the floor layout">Locked</button>
     <button id="btnArrange" class="tool"
-            title="Move instruments around the site, or lay the whole floor out at once">⇄ Arrange</button>
+            title="Move equipment around the site, or lay the whole floor out at once">⇄ Arrange</button>
     <button id="btnView" class="tool"
             title="Switch between the 3D site and the plain floor plan. The plain
 view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦ View</button>
@@ -369,10 +629,16 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
     <button id="btnDebug" class="tool" title="Simulate states and traffic">Debug</button>
   </div>
 
+  <!-- The open list. `position:fixed`, so it lives outside .stage and can hang
+       below the tool row without being clipped by it. -->
+  <div class="menu levelmenu" id="levelMenu" role="menu"
+       aria-labelledby="btnLevel"></div>
+
   <div class="shell">
 
   <aside class="rail l" id="railL">
-    <div class="empty">Pick an instrument on the floor to open its record.</div>
+    <div class="empty">Pick a piece of equipment on the floor to open its
+      record.</div>
   </aside>
 
   <main class="stage" id="stage">
@@ -385,11 +651,29 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
     <svg id="floorSimple" preserveAspectRatio="xMidYMid meet"
          aria-label="Lab floor — plain floor plan" hidden></svg>
     <noscript><p class="empty" style="padding:20px">The floor needs
-      JavaScript and WebGL. Every instrument is still listed on the
+      JavaScript and WebGL. Every piece of equipment is still listed on the
       <a class="link" href="/stations">Stations</a> page.</p></noscript>
+    <!-- Which level this plan is. The picker is the primary readout, but the
+         maximal view hides the whole tool row, and a wall display showing one
+         level of three with nothing naming it is worse than no levels at
+         all. -->
+    <div class="levelmark" id="levelMark" aria-hidden="true"></div>
+
+    <!-- An empty level: a heading, orientation, instruction, one primary
+         action. The tally, the legend, the level picker and the tool row all
+         stay exactly where they were — an empty level is still a level, still
+         identified, still leaveable. -->
+    <div class="levelempty" id="levelEmpty" hidden>
+      <h3 class="sign" id="levelEmptyHead">Nothing on this level</h3>
+      <p id="levelEmptyBody"></p>
+      <p class="empty" id="levelEmptyWhere"></p>
+      <button class="tool live" id="levelEmptyMove">Move equipment here…</button>
+    </div>
+
     <div class="tip" id="tip"></div>
     <div class="legend" id="legend"></div>
-    <div class="hint" id="hint">click an instrument · right-click for actions</div>
+    <div class="hint" id="hint">click a piece of equipment · right-click for
+      actions</div>
     <div class="menu" id="menu"></div>
 
     <!-- Arrange mode. Dragging an instrument always worked, but only if you
@@ -399,7 +683,8 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
          actually wants. -->
     <div class="arrangebar" id="arrangeBar" hidden>
       <span class="cap">Arranging</span>
-      <span class="arrhint">drag an instrument to move it · it snaps to a bay</span>
+      <span class="arrhint">drag a piece of equipment to move it · it snaps to a
+         bay</span>
       <span class="sep"></span>
       <button class="tool" id="arrGrid" title="Roomy grid with an aisle between ranks">Grid</button>
       <button class="tool" id="arrCompact" title="As square as the fleet allows — shortest rail runs">Compact</button>
@@ -415,12 +700,12 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
       </div>
       <p class="dbgnote">Nothing here is written to LabCore. Simulated states
       live in this tab only and clear on reload.</p>
-      <button id="dbgTraffic">Send one result from every instrument</button>
+      <button id="dbgTraffic">Send one result from every piece</button>
       <button id="dbgStorm">Flood the pipes (4 each)</button>
       <button id="dbgRandom">Randomise every status</button>
       <button id="dbgAllGreen">Set everything GREEN</button>
       <button id="dbgClear" class="warn">Clear all simulation</button>
-      <p class="dbgnote">Per-instrument: right-click it on the floor.</p>
+      <p class="dbgnote">One piece at a time: right-click it on the floor.</p>
     </div>
   </main>
 
@@ -476,9 +761,11 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
         <h3 class="sign">QC samples</h3>
         <button class="tool" id="qcNew">New standard</button>
       </div>
-      <p class="sub">A standard is defined once and shared by every instrument.
+      <p class="sub">A standard is defined once and shared by every piece of
+       equipment.
       When a lot runs out, use <b>Changeover</b> — the new lot inherits these
-      specs and every machine checked against the old lot moves with it.</p>
+      specs and every piece of equipment checked against the old lot moves with
+      it.</p>
       <div id="qcLibList"></div>
     </div>
     <div class="sheetfoot"><button class="tool" id="qcLibClose">Close</button></div>
@@ -491,7 +778,7 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
         <div><label class="fl">Name</label><input id="sName" placeholder="Cloud CRM"></div>
         <div><label class="fl">Sample ID (Lab ID)</label><input id="sLabId" placeholder="CP"></div>
       </div>
-      <p class="sub" style="margin:8px 0 4px">Instruments detect QC by matching
+      <p class="sub" style="margin:8px 0 4px">Equipment detects QC by matching
       this Lab ID against the print.</p>
       <label class="fl" style="margin-top:10px;display:block">Tests</label>
       <div class="tgrid thead"><div>Assay</div><div>Expected</div><div>Std dev</div>
@@ -526,7 +813,7 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
       <h3 class="sign">Lab hours</h3>
       <p class="sub">When the lab is shut, a module that stops checking in is
       <b>idle</b>, not stopped. Without this every Monday opened on a wall of
-      red for instruments that behaved perfectly all weekend.</p>
+      red for equipment that behaved perfectly all weekend.</p>
       <label class="fl">Working days</label>
       <div class="days" id="schedDays"></div>
       <div class="two-up" style="margin-top:12px">
@@ -578,8 +865,8 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
   <dialog id="coDlg">
     <div class="sheet">
       <h3 class="sign">Changeover — <span id="coOld"></span></h3>
-      <p class="sub">The new lot inherits every test spec, and machines
-      checked against the old lot move to it.</p>
+      <p class="sub">The new lot inherits every test spec, and every piece of
+      equipment checked against the old lot moves to it.</p>
       <label class="fl">New lot name</label><input id="coName">
       <label class="fl" style="margin-top:8px">New Sample ID (Lab ID)</label>
       <input id="coId">
@@ -602,7 +889,7 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
     <div class="sheet">
       <h3 class="sign">Correction factors — <span id="corrTitle"></span></h3>
       <p class="sub">Added to the raw reading of <b>every measurement</b> this
-      instrument reports — customer samples as well as QC:
+      piece of equipment reports — customer samples as well as QC:
       <b>corrected = raw + correction</b>. The corrected value is what gets
       reported; the raw reading is kept in the record. Leave at 0 for no
       correction. The bench picks the change up on its next poll.</p>
@@ -617,8 +904,8 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
   <dialog id="maintDlg" class="wide">
     <div class="sheet">
       <h3 class="sign">PM &amp; calibration — <span id="maintTitle"></span></h3>
-      <p class="sub">Scheduled here, evaluated on the instrument. An overdue
-      task turns its pill red and pulls the machine down with it.</p>
+      <p class="sub">Scheduled here, evaluated on the equipment. An overdue
+      task turns its pill red and pulls the equipment down with it.</p>
       <div id="maintList"></div>
       <div class="tgrid" style="grid-template-columns:2.2fr 1fr 1fr auto;
            margin-top:12px">
@@ -636,7 +923,7 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
   <dialog id="simSheet">
     <div class="sheet">
       <h3 class="sign">Simulate status — <span id="simTitle"></span></h3>
-      <p class="sub">Changes how this instrument looks on the floor. LabCore
+      <p class="sub">Changes how this equipment looks on the floor. LabCore
       keeps reporting its real state underneath.</p>
       <div class="tgt" id="simList"></div>
     </div>
@@ -649,7 +936,7 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
   <dialog id="qcSheet">
     <div class="sheet">
       <h3 class="sign">QC for <span id="qcTitle"></span></h3>
-      <p class="sub">Tick the standards this instrument is checked against. With
+      <p class="sub">Tick the standards this equipment is checked against. With
       nothing ticked it falls back to detecting any standard it happens to run.</p>
       <div class="tgt" id="qcList"></div>
     </div>
@@ -657,6 +944,176 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
       <button class="tool" id="qcCancel">Cancel</button>
       <button class="tool live" id="qcSave">Save assignment</button>
     </div>
+  </dialog>
+
+  <!-- ── levels: create, rename, delete, and the one the floor opens on ──
+       Structural work, deliberately behind its own button at the far side of
+       the picker rather than inside it: navigating between levels and
+       rebuilding the ladder are different jobs and a misclick between them is
+       expensive. -->
+  <dialog id="levelsDlg">
+    <div class="sheet">
+      <h3 class="sign">Levels</h3>
+      <p class="sub">Vertical planes of this lab. Equipment stands on one of
+      them; the plan draws one at a time. Renaming or deleting a level never
+      deletes equipment — see each row.</p>
+      <div id="levelsList"></div>
+
+      <label class="fl" style="margin-top:14px;display:block"
+             for="lvlNew">New level</label>
+      <div class="tgrid" style="grid-template-columns:1fr auto">
+        <input id="lvlNew" placeholder="For example, Mezzanine"
+               autocomplete="off">
+        <button class="tool live" id="lvlAdd" disabled>Create level</button>
+      </div>
+      <p class="limits">The name is yours — “Ground”, “Mezzanine”, “Level 2”.
+      New levels go on top of the ladder and hold nothing until you move
+      equipment onto them.</p>
+      <p class="err" id="levelsErr"></p>
+    </div>
+    <div class="sheetfoot"><button class="tool" id="levelsClose">Done</button></div>
+  </dialog>
+
+  <!-- Moving equipment between levels. Up and down are one press on the
+       record and in the right-click menu; this is the "straight to that one"
+       path, and the only way to place several pieces at once. -->
+  <dialog id="moveDlg">
+    <div class="sheet">
+      <h3 class="sign" id="moveHead">Move to a level</h3>
+      <p class="sub" id="moveSub"></p>
+      <label class="fl" id="moveWhoLabel">Equipment</label>
+      <div class="tgt" id="moveWho"></div>
+      <label class="fl" style="margin-top:12px">Level</label>
+      <div class="tgt" id="moveLevels"></div>
+      <p class="err" id="moveErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="moveCancel">Cancel</button>
+      <button class="tool live" id="moveGo">Move</button>
+    </div>
+  </dialog>
+
+  <!-- ── corrective actions (ISO/IEC 17025 §8.7) ── -->
+  <dialog id="openActionDlg">
+    <div class="sheet">
+      <h3 class="sign">Open a corrective action — <span id="oaTitle"></span></h3>
+      <p class="sub">What went wrong, on the record. Recording what was done
+      and verifying that it worked come later, on the action itself.</p>
+      <label class="fl" for="oaWhat">What happened</label>
+      <input id="oaWhat" placeholder="e.g. Cloud Point QC failed twice running">
+      <div class="two-up" style="margin-top:10px">
+        <div><label class="fl" for="oaKind">Triggered by</label>
+          <select id="oaKind">
+            <option value="qc_fail">QC failure</option>
+            <option value="red_status">RED status</option>
+            <option value="maintenance">Maintenance</option>
+            <option value="audit">Audit</option>
+            <option value="other" selected>Other</option>
+          </select></div>
+        <div><label class="fl" for="oaPriority">Priority</label>
+          <select id="oaPriority">
+            <option value="low">Low</option>
+            <option value="normal" selected>Normal</option>
+            <option value="high">High</option>
+            <option value="critical">Critical</option>
+          </select></div>
+      </div>
+      <div class="two-up" style="margin-top:10px">
+        <div><label class="fl" for="oaWho">Assigned to</label>
+          <input id="oaWho" placeholder="LabCore username — optional"></div>
+        <div><label class="fl" for="oaDue">Due</label>
+          <input id="oaDue" type="date"></div>
+      </div>
+      <p class="err" id="oaErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="oaCancel">Cancel</button>
+      <button class="tool live" id="oaGo">Open action</button>
+    </div>
+  </dialog>
+
+  <!-- Who owns it, by when, and how urgent. A dialog and not three chained
+       prompt() boxes: chained prompts were one of the four faults reported off
+       the bench about this page's sign-in, and three of them for one save is
+       the same mistake with a different subject. -->
+  <dialog id="assignDlg">
+    <div class="sheet">
+      <h3 class="sign">Assign this corrective action</h3>
+      <p class="sub">Who owns it, by when, and how urgent — and the change is
+      recorded against the action with who made it. Clear the name to leave it
+      unassigned; an overdue action is one with a due date that has passed and
+      nothing closed against it.</p>
+      <div class="two-up">
+        <div><label class="fl" for="asWho">Assigned to</label>
+          <input id="asWho" placeholder="LabCore username"></div>
+        <div><label class="fl" for="asDue">Due</label>
+          <input id="asDue" type="date"></div>
+      </div>
+      <label class="fl" style="margin-top:10px" for="asPriority">Priority</label>
+      <select id="asPriority">
+        <option value="low">Low</option>
+        <option value="normal">Normal</option>
+        <option value="high">High</option>
+        <option value="critical">Critical</option>
+      </select>
+      <p class="err" id="asErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="asCancel">Cancel</button>
+      <button class="tool live" id="asGo">Save</button>
+    </div>
+  </dialog>
+
+  <!-- Every question this page asks that used to be a native prompt() or
+       confirm(). ONE dialog, filled in by `ask()`: the thing being changed is
+       shown, the rule that governs the change is stated, the answer is typed
+       into a real textarea, and a refusal is rendered INSIDE the sheet with the
+       sheet still open and the text still in it.
+
+       The rules printed here are the ones `equipment_history.LIFECYCLE`
+       enforces. This dialog never decides anything: the buttons that would be
+       refused are already disabled from the same table, the server refuses
+       again on its own authority, and its refusal is what lands in #askErr. -->
+  <dialog id="askDlg">
+    <div class="sheet">
+      <h3 class="sign" id="askTitle"></h3>
+      <div class="askwhat" id="askWhat" hidden>
+        <div class="cap" id="askWhatCap">Corrective action</div>
+        <p id="askWhatText"></p>
+        <div class="meta" id="askWhatMeta"></div>
+      </div>
+      <p class="askrule" id="askRule" hidden></p>
+      <div id="askField" hidden>
+        <label class="fl" for="askText" id="askLabel"></label>
+        <textarea id="askText"></textarea>
+        <p class="opt" id="askOpt" hidden></p>
+      </div>
+      <div id="askLineField" hidden>
+        <label class="fl" for="askLine" id="askLineLabel"></label>
+        <input id="askLine">
+      </div>
+      <!-- The second question, when a destructive action genuinely has one.
+           Retiring equipment used to ask it as a SECOND confirm() whose
+           answer was OK-means-erase — a dialog where Cancel does not cancel. -->
+      <label class="askcheck" id="askCheckWrap" hidden>
+        <input type="checkbox" id="askCheck">
+        <span id="askCheckLabel"></span>
+      </label>
+      <p class="err" id="askErr"></p>
+    </div>
+    <div class="sheetfoot">
+      <button class="tool" id="askCancel">Cancel</button>
+      <button class="tool live" id="askGo">OK</button>
+    </div>
+  </dialog>
+
+  <dialog id="actionDlg" class="wide">
+    <div class="sheet">
+      <h3 class="sign">Corrective action</h3>
+      <div id="actionBody"><p class="empty">Loading…</p></div>
+      <p class="err" id="actionErr"></p>
+    </div>
+    <div class="sheetfoot"><button class="tool" id="actionClose">Close</button></div>
   </dialog>
 
   <aside class="rail r" id="railR">
@@ -731,11 +1188,329 @@ const SITE_VIEW = false;
 // ReferenceError rather than an undefined.
 let VIEW = 'site';
 
+/* ── levels: vertical planes of the lab ──────────────────────────────────
+ *
+ * Ryan: "I want vertical layers like levels if you will. These 'Levels' can be
+ * renamed, in the UI you can cycle through them."
+ *
+ * THE ONE RULE THAT SHAPES ALL OF THIS: switching level must fire NO REQUEST.
+ * The ladder, the floor-wide default, the ground and every instrument's
+ * `level_uid` all ride the `/api/machines` payload the floor is already
+ * polling — `build_machines` places the whole fleet out of rows the snapshot
+ * already holds, so a floor poll still costs LabCore nothing and a level
+ * switch costs it less than that. Anything here that reached for
+ * `/api/equipment/levels` on a switch would put a LabCore read behind a
+ * gesture people make all day, from every screen in the lab.
+ *
+ * The level a screen is looking at is remembered in localStorage, per screen,
+ * like the view and the quality tier: a wall display is set up once and left,
+ * and the floor-wide default is where a screen STARTS, not a cage.
+ */
+const LEVEL_KEY = 'lem.floor.level';
+let LEVELS = [], DEFAULT_LEVEL = '', GROUND_LEVEL = '', LEVEL_VIEW = '';
+// Whether this screen has resolved a level yet. Without it, every poll would
+// re-read localStorage and drag the viewer back off the level they just
+// stepped to.
+let LEVEL_PICKED = false;
+
+/* Rank, then name, then uid — the same key as `levels._sort_key`, and for the
+ * same reason: nothing in LabCore stops two levels sharing a rank, and leaving
+ * the order to however the rows arrived is "everytime this thing refreshes it
+ * changes layout" all over again. */
+function sortedLevels(levels) {
+  return (Array.isArray(levels) ? levels.slice() : []).sort((a, b) =>
+    (Number(a.rank) || 0) - (Number(b.rank) || 0)
+    || String(a.name || '').toLowerCase()
+         .localeCompare(String(b.name || '').toLowerCase())
+    || String(a.uid || '').localeCompare(String(b.uid || '')));
+}
+
+function levelByUid(uid) {
+  return LEVELS.find(l => l.uid === uid) || null;
+}
+
+/* A level's name, for a picker row, a plate, or a sentence in a dialog. Every
+ * place this page names a level goes through here, so a level that has been
+ * deleted under someone reads as one thing everywhere rather than as a raw
+ * uid in some places and nothing in others. */
+function levelName(uid) {
+  const l = levelByUid(uid);
+  if (l) return l.name || 'Unnamed level';
+  return uid ? 'a level that is no longer there' : 'the floor';
+}
+
+/* Which level a screen should be looking at.
+ *
+ * Never returns a uid that is not in the ladder: the stored choice wins, then
+ * the floor-wide default, then the bottom of the ladder. A lab with no levels
+ * answers '' — a real state meaning "this lab is flat", not an error, and the
+ * value `machinesOnLevel` reads as "everything". */
+function resolveLevelView(levels, stored, fallback) {
+  const ordered = sortedLevels(levels);
+  if (!ordered.length) return '';
+  const uids = ordered.map(l => l.uid);
+  const want = String(stored || '').trim();
+  if (uids.includes(want)) return want;
+  const back = String(fallback || '').trim();
+  if (uids.includes(back)) return back;
+  return uids[0];
+}
+
+/* One press up or down the ladder, and it WRAPS — the viewer's gesture, not
+ * the equipment's. `levels.cycle` on the server does exactly this and says
+ * why: pressing past the top floor as a viewer should show the ground again;
+ * pressing past the top floor with an instrument selected must not drop it
+ * into the basement, which is why MOVING clamps (the route does that). */
+function cycleLevel(uid, levels, delta) {
+  const ordered = sortedLevels(levels);
+  if (!ordered.length) return '';
+  const uids = ordered.map(l => l.uid);
+  const at = uids.indexOf(String(uid || '').trim());
+  if (at < 0) return uids[0];
+  const step = Number(delta) || 0;
+  return uids[((at + step) % uids.length + uids.length) % uids.length];
+}
+
+/* Where one instrument stands. An instrument with no placement stands on the
+ * GROUND, exactly as `levels.placements` puts it — the server already resolves
+ * this, and repeating the rule here means a payload from before levels shipped
+ * (a cached one, a fallback read) draws a full floor rather than an empty
+ * level with every instrument invisible. */
+function levelOfMachine(m) {
+  return String((m && m.level_uid) || '').trim() || GROUND_LEVEL;
+}
+
+/* The instruments on one level. A blank uid means every instrument, which is
+ * both "all levels" and the honest answer for a lab that has no levels — where
+ * filtering at all would empty the map. */
+function machinesOnLevel(list, uid) {
+  const want = String(uid || '').trim();
+  const all = Array.isArray(list) ? list : [];
+  if (!want) return all.slice();
+  return all.filter(m => levelOfMachine(m) === want);
+}
+
+function visibleMachines() {
+  return machinesOnLevel(MACHINES, LEVEL_VIEW);
+}
+
+/* A per-level status roll-up, for the picker's rows.
+ *
+ * Neither floor-plan product in the captured reference puts any count on a
+ * floor row — so this is a deliberate exceeding of that bar, and the argument
+ * is that an office picker is answering "where is that desk" while a lab's is
+ * answering "which level has something red on it". That is the question the
+ * switch exists to serve, and making someone visit three levels to find the
+ * answer is the whole cost this removes. */
+function levelRollup(list, uid) {
+  const here = machinesOnLevel(list, uid);
+  const counts = {};
+  here.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
+  return ['RED', 'YELLOW', 'GREEN', 'SERVICE', 'DEAD-LINE', 'UNKNOWN']
+    .filter(s => counts[s]).map(s => [s, counts[s]]);
+}
+
+function storedLevel() {
+  try { return localStorage.getItem(LEVEL_KEY) || ''; } catch (_) { return ''; }
+}
+
+/* Take the ladder out of a payload the floor was polling anyway. No fetch. */
+function applyLevels(payload) {
+  if (payload && Array.isArray(payload.levels)) LEVELS = payload.levels;
+  if (payload && typeof payload.default_level === 'string') {
+    DEFAULT_LEVEL = payload.default_level;
+  }
+  if (payload && typeof payload.ground_level === 'string') {
+    GROUND_LEVEL = payload.ground_level;
+  }
+  // The screen's own choice outranks the stored one after the first resolve,
+  // or every two-second poll would yank the viewer back.
+  const want = LEVEL_PICKED ? LEVEL_VIEW : storedLevel();
+  LEVEL_VIEW = resolveLevelView(LEVELS, want, DEFAULT_LEVEL);
+  LEVEL_PICKED = true;
+  renderLevelBar();
+}
+
+/* Look at another level. NO FETCH — see the block comment above. */
+function setLevelView(uid, opts) {
+  const o = opts || {};
+  LEVEL_VIEW = resolveLevelView(LEVELS, uid, DEFAULT_LEVEL);
+  LEVEL_PICKED = true;
+  if (o.remember !== false) {
+    try { localStorage.setItem(LEVEL_KEY, LEVEL_VIEW); } catch (_) {}
+  }
+  closeLevelMenu();
+  renderLevelBar();
+  drawFloor();
+  if (selected) updatePanelLevelNote();
+  else renderOverview();
+}
+
+function stepLevel(delta) {
+  if (LEVELS.length < 2) return;
+  setLevelView(cycleLevel(LEVEL_VIEW, LEVELS, delta));
+}
+
+/* The button's label IS the current-level readout — one control, two jobs, so
+ * there is no second caption anywhere that can disagree with it. */
+function levelButtonLabel() {
+  if (!LEVELS.length) return 'All levels';
+  return levelName(LEVEL_VIEW);
+}
+
+function renderLevelBar() {
+  const name = $('#levelName');
+  if (name) name.textContent = levelButtonLabel();
+  const flat = LEVELS.length === 0;
+  // A lab with no levels has nothing to pick and nowhere to step, but must
+  // still be able to MAKE one — so the picker and the steppers go and
+  // "Levels…" stays.
+  ['#btnLevel', '#btnLevelUp', '#btnLevelDown'].forEach(sel => {
+    const b = $(sel);
+    if (b) b.hidden = flat;
+  });
+  [['#btnLevelUp', 1], ['#btnLevelDown', -1]].forEach(([sel, delta]) => {
+    const b = $(sel);
+    if (!b) return;
+    b.disabled = LEVELS.length < 2;
+    b.title = LEVELS.length < 2 ? 'This lab has only one level.'
+      : (delta > 0 ? 'Up to ' : 'Down to ')
+        + levelName(cycleLevel(LEVEL_VIEW, LEVELS, delta))
+        + (delta > 0 ? ' — ]' : ' — [');
+  });
+  const mark = $('#levelMark');
+  if (mark) mark.textContent = flat ? '' : levelButtonLabel();
+  const pick = $('#btnLevel');
+  if (pick) {
+    pick.title = 'Showing ' + levelButtonLabel()
+      + ' — click to choose another level';
+  }
+}
+
+/* The open list. The current level is marked with a TICK as well as colour:
+ * the reference's own picker distinguishes the current floor by blue text
+ * alone, which is a bar worth beating rather than copying — colour alone is
+ * invisible to a red-green operator and to a wall display someone has turned
+ * the saturation down on. */
+function levelMenuHtml() {
+  const ordered = sortedLevels(LEVELS);
+  if (!ordered.length) {
+    return '<div class="mt">Levels</div><p class="empty" style="padding:8px">'
+      + 'This lab is flat — no levels have been created. Use <b>Levels…</b> '
+      + 'to add one.</p>';
+  }
+  return '<div class="mt">Level</div>' + ordered.map(l => {
+    const here = l.uid === LEVEL_VIEW;
+    const roll = levelRollup(MACHINES, l.uid);
+    /* THE STATUS IS SAID, NOT ONLY COLOURED. A dot and a number is the whole
+     * roll-up an operator uses to decide which level to walk to, and a dot is
+     * nothing at all to a red-green operator or to a wall display somebody has
+     * turned the saturation down on. Each entry now carries its status as a
+     * word; the row as a whole carries the same thing as its accessible name,
+     * so it is announced without having to be walked through span by span. */
+    const counts = roll.length
+      ? roll.map(([st, k]) =>
+          `<span><i style="background:${col(st)}"></i><b>${k}</b>` +
+          `<em>${esc(st.toLowerCase())}</em></span>`).join('')
+      : '<span class="none">no equipment on this level</span>';
+    const spoken = roll.length
+      ? roll.map(([st, k]) => `${k} ${st.toLowerCase()}`).join(', ')
+      : 'no equipment';
+    const name = l.name || 'Unnamed level';
+    return `<button class="lvlrow${here ? ' here' : ''}" role="menuitemradio"
+        aria-checked="${here}" data-level="${esc(l.uid)}"
+        title="${esc(name)} — ${esc(spoken)}"
+        aria-label="${esc(name)}${l.uid === DEFAULT_LEVEL ? ', default level'
+          : ''} — ${esc(spoken)}">
+      <span class="tick">${here ? '✓' : ''}</span>
+      <span class="top"><span class="nm">${esc(name)}</span>
+      ${l.uid === DEFAULT_LEVEL ? '<span class="dflt">default</span>' : ''}
+      </span>
+      <span class="lvlroll" aria-hidden="true">${counts}</span></button>`;
+  }).join('');
+}
+
+let LEVEL_MENU_OPEN = false;
+
+function closeLevelMenu() {
+  LEVEL_MENU_OPEN = false;
+  const menu = $('#levelMenu');
+  if (menu) menu.classList.remove('on');
+  const btn = $('#btnLevel');
+  if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
+function openLevelMenu() {
+  const menu = $('#levelMenu'), btn = $('#btnLevel');
+  if (!menu || !btn) return;
+  menu.innerHTML = levelMenuHtml();
+  const r = btn.getBoundingClientRect();
+  menu.style.left = r.left + 'px';
+  menu.style.top = (r.bottom + 6) + 'px';
+  menu.classList.add('on');
+  LEVEL_MENU_OPEN = true;
+  btn.setAttribute('aria-expanded', 'true');
+  menu.querySelectorAll('.lvlrow').forEach(row => {
+    row.addEventListener('click', () => setLevelView(row.dataset.level));
+  });
+  const first = menu.querySelector('.lvlrow.here') || menu.querySelector('.lvlrow');
+  if (first && first.focus) first.focus();
+}
+
+/* Which levels the equipment that is NOT here is standing on, named. Zero is
+ * printed rather than implied, and a level is named rather than counted at,
+ * so "move it here" has somewhere to be moved from. */
+function elsewhereText() {
+  const others = MACHINES.filter(m => levelOfMachine(m) !== LEVEL_VIEW);
+  if (!others.length) return '';
+  const by = {};
+  others.forEach(m => {
+    const uid = levelOfMachine(m);
+    by[uid] = (by[uid] || 0) + 1;
+  });
+  const parts = sortedLevels(LEVELS).filter(l => by[l.uid])
+    .map(l => `${by[l.uid]} on ${l.name || 'Unnamed level'}`);
+  return parts.length ? parts.join(' · ') : '';
+}
+
+/* An empty level, drawn as a designed state: a heading that names it, a
+ * sentence of orientation, a sentence saying where everything else is, and one
+ * primary action. The tally, the legend, the picker and the whole tool row
+ * stay exactly where they were — an empty level is still a level. */
+/* Only meaningful once there is a fleet: a lab that has reported nothing at all
+ * is a different state and the left rail already says so plainly. Pulled out of
+ * `paintLevelEmpty` because the floor HINT has to ask the same question — a
+ * hint telling somebody to drag equipment on a level with none is two
+ * instructions that cannot be followed. */
+function levelIsEmpty() {
+  return MACHINES.length > 0 && visibleMachines().length === 0
+    && LEVELS.length > 0;
+}
+
+function paintLevelEmpty() {
+  const box = $('#levelEmpty');
+  if (!box) return false;
+  const empty = levelIsEmpty();
+  box.hidden = !empty;
+  paintHint();
+  if (!empty) return false;
+  $('#levelEmptyHead').textContent = 'Nothing on ' + levelButtonLabel();
+  $('#levelEmptyBody').textContent =
+    'This level exists and no equipment stands on it. Equipment is placed on '
+    + 'a level from its record, from the right-click menu, or here.';
+  const where = elsewhereText();
+  $('#levelEmptyWhere').textContent = where
+    ? 'Elsewhere in the lab: ' + where + '.'
+    : 'Nothing is placed on any other level either.';
+  return true;
+}
+
 function drawFloor() {
   // The plan is a drawing, not a renderer: it holds whatever it was last built
   // from, so a status that changed while it is showing has to rebuild it. Cheap
   // — about two hundred nodes for the whole floor — and it only runs while the
   // plan is the visible view.
+  paintLevelEmpty();
   if (VIEW === 'plan') drawSimpleFloor();
   // The world module is deferred, so the first `load()` can easily land before
   // it exists. Nothing is lost: `attach()` pushes the current state the moment
@@ -851,7 +1626,25 @@ function panelSignature(m) {
 function showTip(m, at) {
   const stage = $('#stage').getBoundingClientRect();
   const px = at.x - stage.left, py = at.y - stage.top;
-  const spec = (m.qc_specs || [])[0];
+  /* `effective_specs` FIRST, and it is the only list that can supply a band.
+   *
+   * The two lists are different shapes and this line used to read the wrong
+   * one. `qc_specs` is a human's per-machine override out of lem_qc_specs and
+   * carries expected/std_dev/k; the band is on `effective_specs`, published by
+   * the module as expected ± k·std_dev (spec_band) into lem_machine_specs.
+   * Reading `.low` off a qc_specs row is `undefined`, and `Number(undefined)
+   * .toFixed(1)` is the string "NaN" — which is what every instrument with a
+   * standard drew in this tip.
+   *
+   * The band is not recomputed here from expected/std_dev/k when only the
+   * override exists. That arithmetic is the module's, it is the number the
+   * pass/fail boundary is drawn at, and a second copy of it on the floor is
+   * exactly the drift `spec_band`'s own docstring exists to prevent. A row
+   * with no published band shows its name and no numbers. */
+  const spec = (m.effective_specs || [])[0] || (m.qc_specs || [])[0];
+  const band = spec && Number.isFinite(Number(spec.low))
+                    && Number.isFinite(Number(spec.high))
+    ? `${Number(spec.low).toFixed(1)}…${Number(spec.high).toFixed(1)}` : '—';
   $('#tip').innerHTML = `
     <div class="hd">${esc(m.title)}</div>
     <div class="bd">
@@ -867,8 +1660,8 @@ function showTip(m, at) {
       <div class="row"><span>Last data</span><b>${esc(ago(m.last_activity))}</b></div>
       <div class="row"><span>Last QC</span><b>${
         lastQcAt(m) ? esc(ago(lastQcAt(m))) : '—'}</b></div>
-      ${spec ? `<div class="row"><span>${esc(spec.test_name.slice(0, 16))}</span>
-        <b>${Number(spec.low).toFixed(1)}…${Number(spec.high).toFixed(1)}</b></div>` : ''}
+      ${spec ? `<div class="row"><span>${esc(String(spec.test_name || '').slice(0, 16))}</span>
+        <b>${band}</b></div>` : ''}
     </div>`;
   const tip = $('#tip');
   tip.style.left = px + 'px'; tip.style.top = py + 'px';
@@ -1021,11 +1814,27 @@ function diagnosis(m) {
     return warn('yellow',
       `Module is running but has parsed nothing for ${Math.floor(silentFor(m))} h. ` +
       `Check its source${m.watching ? ` (${esc(m.watching)})` : ''} — the ` +
-      `instrument may simply be idle.`);
+      `equipment may simply be idle.`);
   }
-  if (!(m.qc_targets || []).length) {
-    return warn('ink2', `Parsing fine, but no QC standard is assigned — ` +
-      `that is why it reads UNKNOWN. Right-click → Assign QC samples.`);
+  /* NEVER STATE A CONCLUSION THE BADGE CONTRADICTS. This said "that is why it
+   * reads UNKNOWN" without ever looking at the status — so an instrument
+   * reporting GREEN off its own module, with no standard assigned here, was
+   * told in the same panel that it read UNKNOWN, three lines under a badge
+   * saying GREEN. The missing QC is still worth saying; what it explains
+   * depends on what the badge says.
+   *
+   * All three tables count as assigned QC, for the reason `qcChecksHtml`
+   * spells out below: most QC here is resolved from the shared standards at
+   * runtime, so `qc_targets` alone is empty on benches being actively judged. */
+  const checked = (m.qc_targets || []).length || (m.effective_specs || []).length
+    || (m.qc_specs || []).length;
+  if (!checked) {
+    return warn('ink2', m.status === 'UNKNOWN'
+      ? 'Parsing fine, but no QC standard is assigned — that is why it reads '
+        + 'UNKNOWN. Right-click → Assign QC samples.'
+      : `Parsing fine, and it reports ${esc(m.status)} for itself — but no QC `
+        + `standard is assigned here, so nothing is being checked against a `
+        + `band. Right-click → Assign QC samples.`);
   }
   return '';
 }
@@ -1113,9 +1922,9 @@ function qcChecksHtml(m) {
         <div class="lim"><span>limits come from the standard</span></div>
       </div>`).join('')
       + `<p class="empty" style="padding-top:6px">Checked whenever that
-         standard's Lab ID runs on this instrument.</p>`;
+         standard's Lab ID runs on this equipment.</p>`;
   }
-  return `<p class="empty">No QC assigned. Right-click the instrument, or use
+  return `<p class="empty">No QC assigned. Right-click the equipment, or use
           <b>Assign QC samples</b>, to check it against a standard.</p>`;
 }
 
@@ -1139,8 +1948,8 @@ async function select(m) {
   $('#railL').innerHTML = `
     <div class="railhead">
       <button class="railx" id="railClose" title="Back to the whole floor"
-              aria-label="Close this instrument">✕</button>
-      <div class="cap">Instrument</div>
+              aria-label="Close this equipment">✕</button>
+      <div class="cap">Equipment</div>
       <h2 class="sign">${esc(m.title)}</h2>
       <div class="statechip" style="background:${c}22;color:${c}">
         <span style="width:8px;height:8px;border-radius:50%;background:${c};
@@ -1150,19 +1959,26 @@ async function select(m) {
       <div class="meta num">last data ${esc(ago(m.last_activity))}</div>
       <div class="meta num">module ${moduleStateText(m)}</div>
       ${m.watching ? `<div class="meta num" style="opacity:.75">watching ${esc(m.watching)}</div>` : ''}
+      <!-- Every named piece of equipment carries its level, everywhere it is
+           named. It is the most consistently applied rule in both of the
+           floor-plan products the reference captured, and the cheapest to
+           copy: equipment that names its level can be talked about across a
+           level boundary without anybody having to ask which one. -->
+      <div class="meta" id="panelLevel"></div>
       <div class="meta num" style="opacity:.5">${esc(m.machine_uid)}</div>
       ${diagnosis(m)}
     </div>
     <div class="tabs" role="tablist">
       <button class="tab on" data-tab="qc" role="tab">QC</button>
       <button class="tab" data-tab="maint" role="tab">PM &amp; CAL</button>
-      <button class="tab" data-tab="sop" role="tab">SOPs</button>
+      <button class="tab" data-tab="docs" role="tab">Docs</button>
+      <button class="tab" data-tab="hist" role="tab">History</button>
     </div>
 
     <div class="tabpane" id="tab-qc">
       <div class="cap sect">QC control chart</div>
       <div id="trend"><p class="empty">Loading…</p></div>
-      <div class="cap sect">QC checks on this instrument</div>
+      <div class="cap sect">QC checks on this equipment</div>
       ${qcChecksHtml(m)}
       <div class="railact">
         <button class="tool" id="actQc">Assign QC samples…</button>
@@ -1181,10 +1997,50 @@ async function select(m) {
       <div class="scroller" id="maintDone"><p class="empty">Loading…</p></div>
     </div>
 
-    <div class="tabpane" id="tab-sop" hidden>
-      <div class="cap sect">Standard operating procedures</div>
-      <p class="empty">No SOPs attached to this instrument yet. This tab is a
-      placeholder — nothing is stored or uploaded here.</p>
+    <!-- Documents. Ryan: "I want a documents tab as well per equipment for
+         adding documents like PDF's that have data on them." The limits are
+         printed before anything is chosen, not after a failed upload. -->
+    <div class="tabpane" id="tab-docs" hidden>
+      <div class="cap sect">Documents</div>
+      <p class="limits">${esc(DOC_LIMITS)} Certificates, manuals and
+      calibration reports live with the equipment, not in a shared drive
+      somebody has to be told about.</p>
+      <div class="filepick">
+        <input type="file" id="docFile" accept=".pdf,.png,.jpg,.jpeg">
+        <label class="tool" for="docFile">Choose a file…</label>
+        <span class="chosen" id="docChosen">No file chosen</span>
+      </div>
+      <div class="railact">
+        <button class="tool live" id="docUpload">Upload</button>
+      </div>
+      <p class="err" id="docErr"></p>
+      <div id="docList"><p class="empty">Loading…</p></div>
+    </div>
+
+    <!-- History. Corrective actions and correction-factor changes in ONE
+         ordered list with everything else that happened to this equipment —
+         the question is "what happened to this equipment", never "what
+         happened in each of six tables". -->
+    <div class="tabpane" id="tab-hist" hidden>
+      <div class="cap sect">Open corrective actions</div>
+      <div id="actOpen"><p class="empty">Loading…</p></div>
+      <div class="railact">
+        <button class="tool" id="actNew">Open a corrective action…</button>
+      </div>
+      <div class="cap sect">Everything that happened</div>
+      <!-- The lab-wide Logs page has a kind filter, a search box and a stated
+           order. This is the same question asked about one instrument, so it
+           gets the same two controls — and says its order, because a list that
+           does not is read in whichever direction the reader assumes. -->
+      <div class="histbar">
+        <select id="histKind" aria-label="Filter this history by kind">
+          <option value="">Everything</option>
+        </select>
+        <input id="histQ" placeholder="Search this history…"
+               aria-label="Search this equipment's history">
+      </div>
+      <p class="ordernote" id="histOrder">Newest first.</p>
+      <div class="scroller" id="tlList"><p class="empty">Loading…</p></div>
     </div>`;
 
   $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
@@ -1196,12 +2052,37 @@ async function select(m) {
   $('#actQcLib').addEventListener('click', () => $('#btnQc').click());
   $('#actAddPm').addEventListener('click', () => openMaint(m, 'pm'));
   $('#actAddCal').addEventListener('click', () => openMaint(m, 'calibration'));
+  $('#docUpload').addEventListener('click', () => uploadDocument(m));
+  // Say a file is wrong the moment it is chosen. Uploading 40 MB over lab wifi
+  // to be told it was too big is the whole thing this avoids.
+  $('#docFile').addEventListener('change', () => {
+    const f = $('#docFile').files[0] || null;
+    const shown = $('#docChosen');
+    if (shown) {
+      shown.textContent = f ? f.name : 'No file chosen';
+      shown.classList.toggle('has', !!f);
+      shown.title = f ? f.name : '';
+    }
+    $('#docErr').textContent = f ? (docLimitProblem(f) || '') : '';
+  });
+  // Typing in either control re-renders what is already loaded — no refetch,
+  // because a filter is a question about the list on screen.
+  $('#histKind').addEventListener('change', paintTimeline);
+  $('#histQ').addEventListener('input', paintTimeline);
+  $('#actNew').addEventListener('click', () => openNewAction(m));
+  updatePanelLevelNote();
+  /* The record's tabs. Documents and History are read WHEN THE TAB IS OPENED,
+   * never on the floor's poll — a per-equipment fetch on a two-second timer
+   * from every screen in the lab is the N+1 this whole design is built to
+   * avoid. */
   $$('#railL .tab').forEach(t => t.addEventListener('click', () => {
     $$('#railL .tab').forEach(x => x.classList.toggle('on', x === t));
-    ['qc', 'maint', 'sop'].forEach(name => {
+    ['qc', 'maint', 'docs', 'hist'].forEach(name => {
       $(`#tab-${name}`).hidden = name !== t.dataset.tab;
     });
     if (t.dataset.tab === 'maint') loadMaintPanel(m);
+    if (t.dataset.tab === 'docs') loadDocuments(m);
+    if (t.dataset.tab === 'hist') loadHistory(m);
   }));
 
   drawTrend(m);
@@ -1217,15 +2098,53 @@ async function select(m) {
     return;
   }
   const evs = body.events || [];
+  /* `test_label` for a config row, whose `test_name` is a stored constant like
+   * `level_move`; `test_name` for everything else, where it IS the LabCore
+   * method and must read exactly as LabCore has it. (Not an HTML comment
+   * inside the literal below — a backtick in there ends the template.) */
   $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
     <h2 class="sign">Recent activity</h2></div>` + (evs.length ? evs.map(e => `
     <div class="ev">
       <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
-      <span>${esc(e.lab_id || '')} ${esc((e.test_name || '').slice(0, 22))}
+      <span>${esc(e.lab_id || '')} ${esc((e.test_label || e.test_name || '')
+        .slice(0, 22))}
         ${e.value ? `<b class="num">${esc(e.value)}</b>` : ''}</span>
       <span class="t">${esc((e.ts || '').slice(11, 16))}</span>
     </div>`).join('')
-    : '<p class="empty">Nothing logged yet for this instrument.</p>');
+    : '<p class="empty">Nothing logged yet for this equipment.</p>');
+}
+
+/* Where the open equipment stands, and — when that is not the level being
+ * looked at — one press to go there.
+ *
+ * Text only, on purpose. It is called from `select()` and again on every level
+ * switch, and rebuilding the whole record on a switch would refetch this
+ * equipment's events: a level switch has to cost NO request. */
+function updatePanelLevelNote() {
+  const box = $('#panelLevel');
+  if (!box || !selected) return;
+  if (!LEVELS.length) { box.innerHTML = ''; return; }
+  const on = levelOfMachine(selected);
+  const moved = selected.level_moved_at
+    ? ` · placed ${esc(ago(selected.level_moved_at))}`
+      + (selected.level_moved_by ? ' by ' + esc(selected.level_moved_by) : '')
+    : '';
+  box.innerHTML = `on <b>${esc(levelName(on))}</b>${moved}`
+    + (on === LEVEL_VIEW ? ''
+      : ' <button class="tool" data-goto style="padding:2px 7px;font-size:9px">'
+        + 'Show that level</button>');
+  const go = box.querySelector('[data-goto]');
+  if (go) go.addEventListener('click', () => setLevelView(on));
+}
+
+/* Open the record on the tab that answers the question. The right-click menu
+ * reaches Documents and History through here rather than through dialogs of
+ * their own — two places showing one instrument's certificates is two places
+ * that can disagree about them. */
+async function openRecordTab(m, tab) {
+  await select(m);
+  const btn = $$('#railL .tab').find(t => t.dataset.tab === tab);
+  if (btn) btn.click();
 }
 
 function renderTally() {
@@ -1287,6 +2206,11 @@ async function load() {
   $('#offline').classList.toggle('on', !LABCORE_UP);
   showStaleness(m);
   MACHINES = applySim(fresh);
+  // The ladder, the floor-wide default and the ground all ride THIS payload —
+  // `build_machines` places the whole fleet out of rows the snapshot already
+  // holds. Nothing here asks LabCore anything, which is what keeps a floor
+  // poll at zero operations with levels on it.
+  applyLevels(m);
   SAMPLES = (s && s.samples) || SAMPLES;
   const [me, mp] = await Promise.all([
     fetch('/api/me').then(r => r.json()).catch(() => null),
@@ -1360,26 +2284,57 @@ async function renderFeed() {
         } else if (d.to) { extra = esc(d.to); }
         else if (d.comment || d.note) { extra = esc((d.comment || d.note).slice(0, 26)); }
       } catch (_) {}
+      /* A LAB-WIDE EVENT NAMES NO EQUIPMENT, and a blank where a name goes
+       * reads as a row whose equipment nobody recorded. "level created"
+       * happens to the lab; say so. Same fix as the Logs table's EQUIPMENT
+       * column. */
+      const who = e.machine_uid
+        ? esc(titles[e.machine_uid] || e.machine_uid.slice(0, 8))
+        : '<span style="color:var(--ink3)">Lab-wide</span>';
       return `<div class="ev">
         <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
-        <span>${esc(titles[e.machine_uid] || e.machine_uid.slice(0, 8))}
+        <span>${who}
           <span style="color:var(--ink3)">${esc(e.lab_id || '')}</span> ${extra}</span>
         <span class="t">${esc(ago(e.ts))}</span></div>`;
     }).join('')
     : '<p class="empty">Nothing has happened yet today.</p>');
 }
 
+/* How many of them there are, in English.
+ *
+ * "Equipment" is UNCOUNTABLE, so the count can never attach to it directly:
+ * "4 equipments" and "4 equipment" are both wrong, and a floor reading
+ * "8 equipment in the lab across 3 levels" looks like a translation error. The
+ * count attaches to `piece`, which is countable, and every place on this page
+ * that prints a number of them comes through here so they cannot drift apart. */
+function equipmentCount(n) {
+  const k = Number(n) || 0;
+  return `${k} ${k === 1 ? 'piece' : 'pieces'} of equipment`;
+}
+
+/* The reason a flagged piece of equipment is flagged, trimmed to fit its card.
+ *
+ * It gets a full-width line of its own now, so it can afford far more than the
+ * 44 characters it had when it was sharing a flex row with two other items —
+ * and when it IS cut, it says so, because a QC band silently losing its upper
+ * limit reads as a complete sentence that means something else. */
+function attentionReason(m) {
+  const why = String((m && m.reason) || '').trim();
+  if (why.length <= 96) return why;
+  return why.slice(0, 95).replace(/\s+\S*$/, '') + '…';
+}
+
 function renderOverview() {
   if (!MACHINES.length) {
     $('#railL').innerHTML = LABCORE_UP
       ? `<div class="railhead"><div class="cap">Floor</div>
-         <h2 class="sign">No instruments</h2></div>
-         <p class="empty">Nothing has reported yet. Add the LEM module to a
-         machine's LabStation and let it poll once.</p>`
+         <h2 class="sign">No equipment</h2></div>
+         <p class="empty">Nothing has reported yet. Add the LEM module to the
+         equipment's LabStation and let it poll once.</p>`
       : `<div class="railhead"><div class="cap">Floor</div>
          <h2 class="sign" style="color:var(--red)">LabCore offline</h2></div>
          <p class="empty">Can't reach LabCore, so there is nothing to show.
-         Instruments keep parsing and queue their results locally — this
+         Equipment keeps parsing and queues its results locally — this
          view fills back in when LabCore is up.</p>`;
     return;
   }
@@ -1387,21 +2342,66 @@ function renderOverview() {
   const unset = MACHINES.filter(m => !(m.qc_specs || []).length
     && !(m.effective_specs || []).length
     && !(m.qc_targets || []).length);
+  const here = visibleMachines();
+  // Equipment nobody has placed yet. This is where "decide the level when it
+  // is created" actually lands on this page: equipment is not created here —
+  // it registers itself the first time its LabStation module polls — so the
+  // moment it can be given a level is the moment it first appears, standing on
+  // the ground with nothing recorded about how it got there.
+  const unplaced = LEVELS.length
+    ? MACHINES.filter(m => !String(m.level_moved_at || '').trim()) : [];
+  const openTotal = OPEN_ACTIONS ? Number(OPEN_ACTIONS.total) || 0 : null;
   $('#railL').innerHTML = `
     <div class="railhead">
-      <div class="cap">Floor</div>
-      <h2 class="sign">${MACHINES.length} instruments</h2>
-      <div class="reason">${attention.length
+      <div class="cap">${LEVELS.length ? esc(levelButtonLabel()) : 'Floor'}</div>
+      <h2 class="sign">${esc(equipmentCount(here.length))}</h2>
+      <div class="reason">${LEVELS.length && MACHINES.length !== here.length
+        ? `${MACHINES.length} ${MACHINES.length === 1 ? 'piece' : 'pieces'} in
+           the lab across ${LEVELS.length} levels. `
+        : ''}${attention.length
         ? `<b style="color:var(--amber)">${attention.length}</b> need attention.`
-        : 'None flagged. Pick an instrument for its record.'}</div>
+        : 'None flagged. Pick a piece of equipment for its record.'}</div>
     </div>
     ${attention.length ? `<div class="cap sect">Needs attention</div>` +
-      attention.map(m => `
+      attention.map(m => {
+        // Whether somebody is already ON this. RED equipment with an open
+        // corrective action against it is a different situation from RED
+        // equipment nobody has looked at, and walking over to find out is the
+        // cost this badge removes. `null` means the fleet read failed — no
+        // badge rather than a confident zero.
+        const open = openActionsFor(m.machine_uid);
+        const late = open ? open.filter(a => a.overdue).length : 0;
+        const badge = open && open.length
+          ? `<span class="badge ${late ? 'over' : 'state'}">${
+              open.length} open${late ? ` · ${late} overdue` : ''}</span>`
+          : '';
+        const lvl = LEVELS.length
+          ? `<span class="lvl">${esc(levelName(levelOfMachine(m)))}</span>` : '';
+        const why = attentionReason(m);
+        // The reason on its own full-width line; the level and the badge on a
+        // wrapping row beneath it. Emitted only when there is something to put
+        // in them, so an empty row never leaves a gap under the title.
+        return `
       <div class="qc" style="cursor:pointer" data-pick="${esc(m.machine_uid)}">
         <div class="n">${esc(m.title)}
           <span class="val" style="color:${col(m.status)}">${esc(m.status)}</span></div>
-        <div class="lim"><span>${esc(m.reason.slice(0, 44))}</span></div>
-      </div>`).join('') : ''}
+        ${why ? `<div class="why">${esc(why)}</div>` : ''}
+        ${lvl || badge ? `<div class="attnmeta">${lvl}${badge}</div>` : ''}
+      </div>`;
+      }).join('') : ''}
+    ${openTotal ? `<div class="cap sect">Corrective actions</div>
+      <p class="empty"><b style="color:var(--amber)">${openTotal}</b> open
+      across the lab${(() => {
+        const late = Object.values((OPEN_ACTIONS && OPEN_ACTIONS.overdue) || {})
+          .reduce((a, b) => a + (Number(b) || 0), 0);
+        return late ? `, <b style="color:var(--red)">${late} overdue</b>` : '';
+      })()}. Open the equipment's <b>History</b> tab to work one.</p>` : ''}
+    ${unplaced.length ? `<div class="cap sect">Not placed on a level</div>
+      <p class="empty">${unplaced.map(m => esc(m.title)).join(' · ')} —
+      standing on ${esc(levelName(GROUND_LEVEL))} because nobody has said
+      otherwise.</p>
+      <div class="railact"><button class="tool" id="placeUnplaced">Choose
+        their level…</button></div>` : ''}
     ${(() => {
       const dead = MACHINES.filter(m => m.module_state === 'stopped');
       const quiet = MACHINES.filter(m => m.module_state === 'unknown');
@@ -1419,10 +2419,43 @@ function renderOverview() {
         module alive, no prints parsed.</p>` : '');
     })()}
     ${unset.length ? `<div class="cap sect">Awaiting QC setup</div>
-      <p class="empty">${unset.map(m => esc(m.title)).join(' · ')} — no QC checks
-      configured, so they read UNKNOWN.</p>` : ''}`;
+      <p class="empty">${unset.map(m => esc(m.title)).join(' · ')} — no QC
+      checks configured${(() => {
+        /* THE SAME RULE AS `diagnosis()`: never state a conclusion the dots
+         * above contradict. This said "so they read UNKNOWN" about whatever
+         * was in the list, and the list is "has no QC assigned" — which a
+         * bench reporting GREEN off its own module can perfectly well be. It
+         * read "OptiMPP 2 · Multitek S — no QC checks configured, so they read
+         * UNKNOWN" beside two green dots. */
+        const grey = unset.filter(m => m.status === 'UNKNOWN').length;
+        if (grey === unset.length) {
+          return unset.length === 1 ? ', which is why it reads UNKNOWN'
+                                    : ', which is why they read UNKNOWN';
+        }
+        return grey
+          ? `. ${equipmentCount(grey)} reads UNKNOWN for that reason; the rest `
+            + `report a state of their own that nothing here is checking`
+          : ', so nothing here is checking the state they report';
+      })()}.</p>` : ''}`;
   document.querySelectorAll('[data-pick]').forEach(n => n.addEventListener('click',
-    () => select(MACHINES.find(m => m.machine_uid === n.dataset.pick))));
+    () => {
+      const m = MACHINES.find(x => x.machine_uid === n.dataset.pick);
+      if (!m) return;
+      // Picking something that is on another level takes you to it. Selecting
+      // equipment the plan is not drawing would leave the record open beside a
+      // floor that does not contain it — which is the confusion a level
+      // boundary is supposed to remove, not create.
+      if (LEVELS.length && levelOfMachine(m) !== LEVEL_VIEW) {
+        setLevelView(levelOfMachine(m));
+      }
+      select(m);
+    }));
+  const place = $('#placeUnplaced');
+  if (place) {
+    place.addEventListener('click', () => openMove(
+      MACHINES.filter(m => !String(m.level_moved_at || '').trim())
+        .map(m => m.machine_uid), LEVEL_VIEW));
+  }
 }
 
 // ── QC standards library (was the Stations page) ────────────────────────
@@ -1458,7 +2491,8 @@ function renderQcLib() {
         <span>${Number(t.low).toFixed(2)} … ${Number(t.high).toFixed(2)} ${esc(t.units || '')}</span>
       </div>`).join('') || '<div class="lim"><span>No tests yet.</span></div>'}
     </div>`).join('')
-    : '<p class="empty">No standards yet. Add one, then assign it to instruments.</p>';
+    : '<p class="empty">No standards yet. Add one, then assign it to '
+      + 'equipment.</p>';
 }
 
 $('#btnQc').addEventListener('click', async () => {
@@ -1613,16 +2647,25 @@ $('#sampleSave').addEventListener('click', async () => {
   $('#sampleDlg').close(); await load(); renderQcLib();
 });
 
-$('#sampleDelete').addEventListener('click', async () => {
+$('#sampleDelete').addEventListener('click', () => {
   if (!editingSample) return;
   if (!requireAuth()) return;
-  if (!confirm(`Delete “${editingSample}”? Instruments relying on it go UNKNOWN.`)) return;
-  const r = await fetch('/api/qc-samples', {method: 'DELETE',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({name: editingSample})});
-  const bad = await failure(r);
-  if (bad) { $('#sampleErr').textContent = bad; return; }
-  $('#sampleDlg').close(); await load(); renderQcLib();
+  const name = editingSample;
+  askConfirm({
+    title: 'Delete this QC standard',
+    what: {cap: 'QC standard', text: name},
+    body: `Delete “${name}”? Equipment relying on it goes UNKNOWN.`,
+    submit: 'Delete the standard',
+    onSubmit: async () => {
+      const r = await fetch('/api/qc-samples', {method: 'DELETE',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({name})}).catch(() => null);
+      const bad = r ? await failure(r) : 'The server could not be reached.';
+      if (bad) return bad;
+      $('#sampleDlg').close(); await load(); renderQcLib();
+      return '';
+    },
+  });
 });
 
 $('#coCancel').addEventListener('click', () => $('#coDlg').close());
@@ -1638,7 +2681,7 @@ $('#coGo').addEventListener('click', async () => {
   if (!r.ok) { $('#coErr').textContent = b.error || 'Changeover failed.'; return; }
   $('#coDlg').close();
   await load(); renderQcLib();
-  alert(`Changed over. ${b.moved} instrument${b.moved === 1 ? '' : 's'} moved to the new lot.`);
+  alert(`Changed over. ${equipmentCount(b.moved)} moved to the new lot.`);
 });
 
 // ── PM & calibration ────────────────────────────────────────────────────
@@ -1681,13 +2724,14 @@ async function loadMaintPanel(m) {
     <div class="qc" style="margin-bottom:8px">
       <div class="n"><span style="color:${col(t.status)}">●</span> ${esc(t.name)}
         <span class="val">
-          <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
+          <button class="tool" data-done="${esc(t.uid)}"
+                  data-done-name="${esc(t.name)}">Mark done</button>
         </span></div>
       <div class="lim"><span>${t.kind === 'calibration' ? 'CAL' : 'PM'}
         · every ${t.interval_days} d</span>
         <span>${esc(t.reason)}</span></div>
     </div>`).join('')
-    : '<p class="empty">Nothing scheduled on this instrument.</p>';
+    : '<p class="empty">Nothing scheduled on this equipment.</p>';
 
   const hist = done.history || [];
   $('#maintDone').innerHTML = hist.length ? hist.map(h => `
@@ -1698,7 +2742,7 @@ async function loadMaintPanel(m) {
         ${h.by ? `<b>${esc(h.by)}</b>` : ''}</span>
       <span class="t num">${esc(h.completed)}</span>
     </div>`).join('')
-    : '<p class="empty">Nothing completed yet on this instrument.</p>';
+    : '<p class="empty">Nothing completed yet on this equipment.</p>';
 }
 $('#maintClose').addEventListener('click', () => $('#maintDlg').close());
 
@@ -1720,8 +2764,11 @@ async function refreshMaint() {
         <span style="color:var(--ink3)">· ${t.kind === 'calibration' ? 'CAL' : 'PM'}
           · every ${t.interval_days} d</span>
         <span class="val">
-          <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
-          <button class="tool warn" data-delmaint="${esc(t.uid)}">✕</button>
+          <button class="tool" data-done="${esc(t.uid)}"
+                  data-done-name="${esc(t.name)}">Mark done</button>
+          <button class="tool warn" data-delmaint="${esc(t.uid)}"
+                  data-delmaint-name="${esc(t.name)}"
+                  aria-label="Remove ${esc(t.name)}">✕</button>
         </span></div>
       <div class="lim"><span>${esc(t.reason)}</span>
         <span>${t.last_done ? 'last ' + esc(t.last_done) : 'never done'}</span></div>
@@ -1746,33 +2793,59 @@ document.addEventListener('click', async e => {
   const done = e.target.closest('[data-done]');
   if (done) {
     if (!requireAuth()) return;
-    const note = prompt('Note for this completion (optional):') ?? '';
-    const r = await fetch(
-      `/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
-      {method: 'POST', headers: {'Content-Type': 'application/json'},
-       body: JSON.stringify({note})});
-    const bad = await failure(r);
-    if (bad) { sayMaint(bad); return; }
-    // 200 does not always mean the whole thing landed: the reschedule and the
-    // history line are two writes, and the second can be refused on its own.
-    const out = await r.json().catch(() => ({}));
-    sayMaint(out.logged === false ? (out.warning || '') : '');
-    // Completable from either place: the dialog or the instrument's PM tab.
-    if ($('#maintDlg').open && maintFor) await refreshMaint();
-    if (selected) await loadMaintPanel(selected);
-    load();
+    const uid = done.dataset.done;
+    ask({
+      title: 'Record this as done',
+      what: {cap: 'Scheduled task', text: done.dataset.doneName || ''},
+      rule: 'The task is stamped with your name and the time, and the next due '
+          + 'date is counted from today. It is written to this equipment\u2019s '
+          + 'maintenance history, where it stays.',
+      label: 'Note for this completion',
+      placeholder: 'e.g. New cell fitted; certificate filed under Documents.',
+      optional: 'Optional.',
+      submit: 'Mark it done',
+      onSubmit: async note => {
+        const r = await fetch(
+          `/api/maintenance/${encodeURIComponent(uid)}/complete`,
+          {method: 'POST', headers: {'Content-Type': 'application/json'},
+           body: JSON.stringify({note})}).catch(() => null);
+        const bad = r ? await failure(r) : 'The server could not be reached.';
+        if (bad) return bad;
+        // 200 does not always mean the whole thing landed: the reschedule and
+        // the history line are two writes, and the second can be refused on
+        // its own.
+        const out = await r.json().catch(() => ({}));
+        sayMaint(out.logged === false ? (out.warning || '') : '');
+        // Completable from either place: the dialog or the equipment's PM tab.
+        if ($('#maintDlg').open && maintFor) await refreshMaint();
+        if (selected) await loadMaintPanel(selected);
+        load();
+        return '';
+      },
+    });
   }
   const dm = e.target.closest('[data-delmaint]');
   if (dm) {
     if (!requireAuth()) return;
-    if (!confirm('Remove this scheduled task?')) return;
-    const r = await fetch(
-      `/api/maintenance/${encodeURIComponent(dm.dataset.delmaint)}`,
-      {method: 'DELETE'});
-    const bad = await failure(r);
-    if (bad) { sayMaint(bad); return; }
-    sayMaint('');
-    await refreshMaint(); load();
+    const uid = dm.dataset.delmaint;
+    askConfirm({
+      title: 'Remove this scheduled task',
+      what: {cap: 'Scheduled task', text: dm.dataset.delmaintName || ''},
+      body: 'Remove this scheduled task? It stops being scheduled and stops '
+          + 'counting towards this equipment\u2019s PM state. Completions '
+          + 'already recorded against it stay in the history.',
+      submit: 'Remove it',
+      onSubmit: async () => {
+        const r = await fetch(
+          `/api/maintenance/${encodeURIComponent(uid)}`,
+          {method: 'DELETE'}).catch(() => null);
+        const bad = r ? await failure(r) : 'The server could not be reached.';
+        if (bad) return bad;
+        sayMaint('');
+        await refreshMaint(); load();
+        return '';
+      },
+    });
   }
 });
 
@@ -1803,7 +2876,7 @@ function paintDebug() {
   const on = simOn();
   $('#simBanner').classList.toggle('on', on);
   const n = Object.keys(SIM.status).length;
-  $('#simCount').textContent = n ? `${n} instrument${n > 1 ? 's' : ''} faked` : '';
+  $('#simCount').textContent = n ? `${equipmentCount(n)} faked` : '';
   $('#btnDebug').classList.toggle('live', $('#debug').classList.contains('on'));
 }
 
@@ -2033,8 +3106,15 @@ try {
 
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-  // Escape means "back out one step": drop the selected instrument first, then
-  // leave the maximal view. Doing both at once would feel like a glitch.
+  // Escape means "back out one step": close the level list, drop the selected
+  // instrument, then leave the maximal view. Doing two at once would feel like
+  // a glitch.
+  if (LEVEL_MENU_OPEN) {
+    closeLevelMenu();
+    const b = $('#btnLevel');
+    if (b && b.focus) b.focus();
+    return;
+  }
   if (ARRANGING) return setArrange(false);
   if (selected) return deselect();
   if (document.documentElement.classList.contains('maxmap')) setMaxMap(false);
@@ -2148,12 +3228,84 @@ const PLAN_NS = 'http://www.w3.org/2000/svg';
 // were drawn to look best at.
 const PLAN_CAM = {tilt: 30, yaw: 45}, PLAN_RAD = Math.PI / 180;
 
+/* The TILT IS NOT FIXED. It is solved, per draw, from the shape of the stage.
+ *
+ * At yaw 45 the projected deck is a diamond whose aspect is exactly 1/sin(tilt)
+ * and — this is the part that made the old drawing small — that ratio does NOT
+ * depend on how the bays are laid out: a 1x8 rank and a 3x3 block both project
+ * to 2:1 at tilt 30. The stage is nothing like 2:1 (about 1.14:1 at 1600px once
+ * the two rails have taken their share), so `preserveAspectRatio="meet"` fitted
+ * the drawing to the width and threw the rest of the height away — the floor
+ * sat in the middle of a mostly empty rectangle at every viewport and on every
+ * level. Measured before this: 53% of the stage in use at 1600px, 43% at 1280.
+ *
+ * So: pick the tilt that makes the drawing the shape of the box it is drawn in.
+ * A wide short stage gets a shallow, more side-on floor; a tall narrow one gets
+ * a steeper, more overhead floor. Clamped at both ends, because past about 60
+ * degrees the deck stops being a floor at all and below about 22 it reads as a
+ * line. The upper clamp is generous because the record rail is wide enough to
+ * hold a corrective action now, which leaves the stage nearly square — and a
+ * square stage genuinely wants a near-overhead floor. The walls do not suffer
+ * for it: their screen height is frozen (PLAN_H_UNIT, below).
+ */
+const PLAN_TILT_MIN = 22, PLAN_TILT_MAX = 68;
+
+/* Walls keep their SCREEN height whatever the tilt is.
+ *
+ * A true projection scales height by cos(tilt), so solving the tilt upwards
+ * would flatten every instrument to a lid at exactly the angle that uses the
+ * stage best. The vertical unit is frozen at the old camera's instead, which
+ * costs nothing that can be seen — the plan has no camera to move and no second
+ * angle to be consistent with — and keeps an instrument reading as a block.
+ */
+const PLAN_H_UNIT = Math.cos(30 * PLAN_RAD);
+
 function planIso(gx, gy, h = 0) {
   const a = PLAN_CAM.yaw * PLAN_RAD, t = PLAN_CAM.tilt * PLAN_RAD;
   const wx = gx * PLAN_TILE, wy = gy * PLAN_TILE;
   const rx = wx * Math.cos(a) - wy * Math.sin(a);
   const ry = wx * Math.sin(a) + wy * Math.cos(a);
-  return [rx, ry * Math.sin(t) - h * Math.cos(t)];
+  return [rx, ry * Math.sin(t) - h * PLAN_H_UNIT];
+}
+
+/* The stage, as a width:height ratio. The drawing is fitted to THIS, not to
+ * its own content — fitting content to content is what letterboxed it. */
+function planStageAspect() {
+  const st = $('#stage');
+  const r = st ? st.getBoundingClientRect() : null;
+  if (!r || r.width < 2 || r.height < 2) return 16 / 9;
+  return r.width / r.height;
+}
+
+/* How much bigger the finished drawing is than the concrete it stands on,
+ * measured on the last draw and reused on the next.
+ *
+ * The name plates hang above the instruments and stick out past the deck at
+ * both sides, and their size is a function of the LABELS, not of the camera —
+ * so it cannot be derived, only measured. Carrying it forward is what lets the
+ * solve below aim at the whole drawing instead of at the concrete, and it is
+ * why the first draw of a level is followed by at most one corrected redraw
+ * rather than converging over several frames. */
+let PLAN_OVER = {dw: 0, dh: 0};
+
+/* The tilt that makes the drawing the shape of the stage.
+ *
+ *   deck width  = span * cos(45) * TILE          (independent of tilt)
+ *   deck height = deck width * sin(tilt)
+ *
+ * so, with the measured overshoot folded in and A the stage's aspect:
+ *
+ *   (deckW + dw) / (deckW * sin t + dh) = A   ->   sin t = ((deckW+dw)/A - dh)
+ *                                                         / deckW
+ */
+function planFitTilt(spanTiles) {
+  const A = planStageAspect();
+  const deckW = spanTiles * Math.cos(PLAN_CAM.yaw * PLAN_RAD) * PLAN_TILE;
+  if (!(deckW > 1) || !(A > 0)) return 30;
+  const want = ((deckW + PLAN_OVER.dw) / A - PLAN_OVER.dh) / deckW;
+  const lo = Math.sin(PLAN_TILT_MIN * PLAN_RAD);
+  const hi = Math.sin(PLAN_TILT_MAX * PLAN_RAD);
+  return Math.asin(Math.min(hi, Math.max(lo, want))) / PLAN_RAD;
 }
 
 function planEl(tag, attrs, parent) {
@@ -2208,7 +3360,11 @@ function planPrism(g, gx, gy, w, d, h, z, shades) {
  * `m.pos` is the fallback for a dragged instrument, and a bay of our own the
  * last resort — a fleet piled on the origin would read as one instrument. */
 function planStations() {
-  const list = Array.isArray(MACHINES) ? MACHINES : [];
+  /* ONE LEVEL AT A TIME. The plan is scoped to the level the picker names, and
+   * the filter is the only thing that makes it so — `visibleMachines()` reads
+   * `level_uid` off the payload the floor already has, so switching costs no
+   * request at all. A lab with no levels answers with the whole fleet. */
+  const list = visibleMachines();
   const byUid = WORLD && WORLD.plan && WORLD.plan.byUid ? WORLD.plan.byUid : null;
   // The world's own canonical order, so a fallback bay is at least stable:
   // title first so it reads sensibly, uid as the tiebreak because titles are
@@ -2425,17 +3581,40 @@ function planSignature(placed) {
     const s = m.sub_statuses || {};
     return [m.machine_uid, gx, gy, m.title, m.status, s.qc, s.pm, s.calibration,
             m.module_state, m.module_running].join('~');
-  }).join('|') + '#' + (selected ? selected.machine_uid : '');
+  }).join('|') + '#' + (selected ? selected.machine_uid : '')
+    // The level is part of what the drawing IS, not only of what it contains:
+    // two levels holding the same instruments cannot happen, but a level
+    // switch that changed nothing else must still repaint the plate and the
+    // deck rather than being skipped as "no change".
+    + '@' + LEVEL_VIEW
+    // The stage's SHAPE is part of what the drawing is: the tilt is solved
+    // from it, so a window resized from wide-and-short to tall-and-narrow
+    // changes the projection even though nothing about the fleet moved.
+    + '~' + Math.round(planStageAspect() * 50);
 }
 
 /* Draw the plain floor plan into #floorSimple. */
-function drawSimpleFloor() {
+function drawSimpleFloor(refit) {
   const svg = $('#floorSimple');
   if (!svg) return;
   const placed = planStations();
   const sig = planSignature(placed);
-  if (sig === PLAN_SIG && svg.firstChild) return;
+  if (sig === PLAN_SIG && svg.firstChild && !refit) return;
   PLAN_SIG = sig;
+
+  /* Solve the camera BEFORE anything is projected. The deck's extent in bays is
+   * all the solve needs, and every planIso() below reads PLAN_CAM.tilt. */
+  const minX = Math.min(0, ...placed.map(p => p.gx));
+  const minY = Math.min(0, ...placed.map(p => p.gy));
+  const maxX = Math.max(1, ...placed.map(p => p.gx)) + 1;
+  const maxY = Math.max(1, ...placed.map(p => p.gy)) + 1;
+  // Tighter than the original's .85 all round: the stage here is a box the
+  // rails have already taken their share of, and empty concrete is what pushes
+  // the instruments down to the size of buttons.
+  const m0 = minX - .55, n0 = minY - .6, mx = maxX + .55, my = maxY + 1.05;
+  const tiltWanted = planFitTilt((mx - m0) + (my - n0));
+  PLAN_CAM.tilt = tiltWanted;
+
   svg.innerHTML = '';
   hideTip();
   const defs = planEl('defs', {}, svg);
@@ -2484,15 +3663,8 @@ function drawSimpleFloor() {
     });
   }
 
-  // Deck sized to the instruments it holds — no dead concrete.
-  const minX = Math.min(0, ...placed.map(p => p.gx));
-  const minY = Math.min(0, ...placed.map(p => p.gy));
-  const maxX = Math.max(1, ...placed.map(p => p.gx)) + 1;
-  const maxY = Math.max(1, ...placed.map(p => p.gy)) + 1;
-  // Tighter than the original's .85 all round: the stage here is a box the
-  // rails have already taken their share of, and empty concrete is what pushes
-  // the instruments down to the size of buttons.
-  const m0 = minX - .55, n0 = minY - .6, mx = maxX + .55, my = maxY + 1.05;
+  // Deck sized to the instruments it holds — no dead concrete. Its extent was
+  // measured at the top of this function, because the tilt is solved from it.
   const D = [planIso(m0, n0), planIso(mx, n0), planIso(mx, my), planIso(m0, my)];
   const deck = planPts(D);
   const drop = 16;                     // the deck reads as a raised plate
@@ -2565,15 +3737,39 @@ function drawSimpleFloor() {
   const pad = 18;
   let bb = null;
   try { bb = root.getBBox(); } catch (_) {}
-  if (bb && bb.width > 1 && bb.height > 1) {
-    svg.setAttribute('viewBox',
-      `${bb.x - pad} ${bb.y - pad} ${bb.width + pad * 2} ${bb.height + pad * 2}`);
-  } else {
-    const xs = D.map(p => p[0]), ys = D.map(p => p[1]);
-    const x0 = Math.min(...xs) - 40, y0 = Math.min(...ys) - 70;
-    svg.setAttribute('viewBox', `${x0} ${y0} ${Math.max(...xs) - x0 + 60} ` +
-                                `${Math.max(...ys) - y0 + 70}`);
+  const dxs = D.map(p => p[0]), dys = D.map(p => p[1]);
+  if (!(bb && bb.width > 1 && bb.height > 1)) {
+    const x0 = Math.min(...dxs) - 40, y0 = Math.min(...dys) - 70;
+    svg.setAttribute('viewBox', `${x0} ${y0} ${Math.max(...dxs) - x0 + 60} ` +
+                                `${Math.max(...dys) - y0 + 70}`);
+    return;
   }
+
+  /* What the plates and the prisms added on top of the concrete. Fed back into
+   * the solve so the NEXT draw aims the whole drawing at the stage rather than
+   * only the deck — and, when that moves the tilt by more than about half a
+   * degree, redrawn once now so the operator never sees the uncorrected frame.
+   * Once: `refit` blocks any further recursion, and the correction converges in
+   * one step because the overshoot does not depend on the tilt. */
+  const deckW = Math.max(...dxs) - Math.min(...dxs);
+  const deckH = Math.max(...dys) - Math.min(...dys);
+  PLAN_OVER = {dw: Math.max(0, bb.width - deckW),
+               dh: Math.max(0, bb.height - deckH)};
+  if (!refit && Math.abs(planFitTilt((mx - m0) + (my - n0)) - tiltWanted) > .5) {
+    drawSimpleFloor(true);
+    return;
+  }
+
+  /* Pad the box out to the STAGE's aspect, never crop to it. `meet` fits the
+   * more demanding axis and centres the other, so a viewBox already the shape
+   * of the stage has nothing left to letterbox: the whole floor stays visible
+   * and it is as large as the space allows. */
+  let x = bb.x - pad, y = bb.y - pad;
+  let w = bb.width + pad * 2, h = bb.height + pad * 2;
+  const A = planStageAspect();
+  if (w / h > A) { const nh = w / A; y -= (nh - h) / 2; h = nh; }
+  else           { const nw = h * A; x -= (nw - w) / 2; w = nw; }
+  svg.setAttribute('viewBox', `${x} ${y} ${w} ${h}`);
 }
 
 function storedView() {
@@ -2752,17 +3948,51 @@ function paintTools() {
       ? `◐ Auto · ${WORLD.engine.tier.name}` : `◐ ${mode}`;
     q.classList.toggle('live', mode !== 'auto');
   }
-  $('#btnLock').textContent = LOCKED ? '🔒 Locked' : '🔓 Unlocked';
+  $('#btnLock').innerHTML = lockGlyph(!LOCKED)
+    + (LOCKED ? 'Locked' : 'Unlocked');
   $('#btnLock').classList.toggle('live', !LOCKED);
   $('#btnLock').title = LOCK_KNOWN
-    ? 'Lock or unlock the floor layout'
+    ? (LOCKED ? 'The floor layout is locked — click to unlock it.'
+              : 'The floor layout is unlocked — click to lock it.')
     : 'LabCore did not answer, so the floor is held locked until it does — '
       + 'a drag saved now would be dropped.';
-  $('#hint').textContent = ARRANGING
-    ? 'drag an instrument onto a bay'
+  paintHint();
+}
+
+/* A padlock that agrees with the word next to it.
+ *
+ * This was the emoji pair 🔒 / 🔓, and at 11px in the fonts this page actually
+ * gets, U+1F513 OPEN LOCK draws a shut shackle: the button read "UNLOCKED"
+ * beside a closed padlock. Drawn here instead, so the open one is open — the
+ * shackle is hinged on the left and swung clear of the body, and there is no
+ * font on any bench that can render that as shut. */
+function lockGlyph(open) {
+  const shackle = open
+    ? 'M4.4 7.4V4.9a2.6 2.6 0 0 1 5.05-.9'
+    : 'M4.4 7.4V4.9a2.6 2.6 0 0 1 5.2 0v2.5';
+  return `<svg class="lockico" viewBox="0 0 14 15.5" width="11" height="12"
+     aria-hidden="true" focusable="false"><path d="${shackle}" fill="none"
+     stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+     <rect x="1.9" y="7.1" width="10.2" height="7.4" rx="1.7"
+     fill="currentColor"/></svg>`;
+}
+
+/* The hint under the floor. It is instructions, so it must not name an action
+ * that cannot be taken here — on an EMPTY level it read "drag to rearrange ·
+ * right-click for actions", both of which need a piece of equipment. */
+function paintHint() {
+  const hint = $('#hint');
+  if (!hint) return;
+  if (levelIsEmpty()) {
+    hint.textContent = 'nothing on this level to click — move equipment here, '
+      + 'or switch level';
+    return;
+  }
+  hint.textContent = ARRANGING
+    ? 'drag a piece of equipment onto a bay'
     : (!LOCKED && AUTHED)
       ? 'drag to rearrange · right-click for actions'
-      : 'click an instrument · right-click for actions';
+      : 'click a piece of equipment · right-click for actions';
 }
 
 // ── correction factors ──────────────────────────────────────────────────
@@ -2812,7 +4042,7 @@ async function renderCorrections() {
                              ...specs.map(s => s.test_name), ...assigned,
                              ...Object.keys(by)])].sort();
   if (!names.length) {
-    body.innerHTML = `<p class="empty">This instrument reports no methods yet —
+    body.innerHTML = `<p class="empty">This equipment reports no methods yet —
       configure its parser in the LabStation module, and every method it reports
       can be corrected here.</p>`;
     return;
@@ -2886,6 +4116,1067 @@ async function deleteCorrection(btn) {
   load();
 }
 
+// ── the level picker, its steppers, and the ladder behind them ──────────
+
+$('#btnLevel').addEventListener('click', e => {
+  e.stopPropagation();
+  if (LEVEL_MENU_OPEN) closeLevelMenu(); else openLevelMenu();
+});
+$('#btnLevelUp').addEventListener('click', () => stepLevel(1));
+$('#btnLevelDown').addEventListener('click', () => stepLevel(-1));
+document.addEventListener('click', e => {
+  if (!e.target.closest('#levelMenu') && !e.target.closest('#btnLevel')) {
+    closeLevelMenu();
+  }
+});
+/* Keyboard, and not only inside the list: a supervisor walking the floor on a
+ * shared screen steps levels far more often than they open a dialog. Ignored
+ * while a dialog is open or while something is being typed into, so `[` in a
+ * level name is a bracket and not a navigation. */
+document.addEventListener('keydown', e => {
+  if (e.key !== '[' && e.key !== ']') return;
+  if (document.querySelector('dialog[open]')) return;
+  const t = e.target;
+  const tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  e.preventDefault();
+  stepLevel(e.key === ']' ? 1 : -1);
+});
+/* Inside the open list: up and down walk it, Escape closes it, Enter picks.
+ * The rows are real <button>s, so Enter and Space already activate them and
+ * Tab already reaches them — this only adds the two keys a menu is expected to
+ * answer. */
+$('#levelMenu').addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    e.preventDefault(); closeLevelMenu();
+    const b = $('#btnLevel'); if (b && b.focus) b.focus();
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const rows = [...$('#levelMenu').querySelectorAll('.lvlrow')];
+  if (!rows.length) return;
+  const at = rows.indexOf(e.target.closest('.lvlrow'));
+  const next = rows[(at + (e.key === 'ArrowDown' ? 1 : -1) + rows.length)
+                    % rows.length];
+  if (next && next.focus) next.focus();
+});
+
+/* ── creating, renaming, deleting, and the level the floor opens on ──
+ *
+ * Read LIVE, not out of the floor's payload: this is a page a person has just
+ * opened and a level created a second ago has to be in it. It is not polled,
+ * so it costs LabCore nothing when nobody is looking — which is the same rule
+ * the snapshot exists to keep, applied the other way round. */
+async function openLevels() {
+  $('#levelsErr').textContent = '';
+  $('#lvlNew').value = '';
+  $('#lvlAdd').disabled = true;
+  $('#levelsList').innerHTML = '<p class="empty">Loading…</p>';
+  if (!$('#levelsDlg').open) $('#levelsDlg').showModal();
+  await refreshLevels();
+}
+
+/* What deleting a level does to the equipment standing on it, in words, before
+ * anyone presses anything. `LevelStore.delete` drops the level and its
+ * placements; `levels.placements` then stands everything unplaced on the
+ * ground — so nothing is ever deleted with a level, and the operator has to be
+ * able to see that from the confirm box rather than from a docstring. */
+function deleteConsequence(uid) {
+  const here = machinesOnLevel(MACHINES, uid).length;
+  const rest = sortedLevels(LEVELS.filter(l => l.uid !== uid));
+  const dest = rest.length ? (rest[0].name || 'Unnamed level') : 'the flat floor';
+  const head = `Delete “${levelName(uid)}”?`;
+  if (!here) return head + '\n\nNothing stands on it.';
+  return head + `\n\n${here} piece${here === 1 ? '' : 's'} of equipment `
+    + `stand${here === 1 ? 's' : ''} on it. That equipment is not deleted — it `
+    + `falls to ${dest}, and you can move it back up from there.`;
+}
+
+function levelsListHtml() {
+  const ordered = sortedLevels(LEVELS);
+  if (!ordered.length) {
+    return '<p class="empty">This lab is flat — no levels yet. Create the '
+      + 'first one below; everything already on the floor stands on it.</p>';
+  }
+  return ordered.map(l => {
+    const here = machinesOnLevel(MACHINES, l.uid).length;
+    const isDefault = l.uid === DEFAULT_LEVEL;
+    return `
+      <div class="qc" style="margin-bottom:8px" data-lvl="${esc(l.uid)}">
+        <div class="n">${esc(l.name || 'Unnamed level')}
+          ${isDefault ? '<span class="dflt">default</span>' : ''}
+          <span class="val">
+            <button class="tool" data-lvlrename>Rename</button>
+            ${isDefault ? ''
+              : '<button class="tool" data-lvldefault>Make default</button>'}
+            <button class="tool warn" data-lvldelete>Delete</button>
+          </span></div>
+        <div class="lim"><span>${here} piece${here === 1 ? '' : 's'} of
+          equipment</span>
+          <span>${l.uid === GROUND_LEVEL ? 'the ground — where unplaced '
+            + 'equipment stands' : ''}</span></div>
+      </div>`;
+  }).join('');
+}
+
+/* The ladder, from the live route, plus everything that follows from it. The
+ * floor's own copy is refreshed here too: the dialog is the one place a level
+ * is created or destroyed, and waiting up to two seconds for the poll to
+ * notice is how a picker ends up naming a level that is gone. */
+async function refreshLevels() {
+  const res = await fetch('/api/equipment/levels').catch(() => null);
+  if (!res || !res.ok) {
+    const b = res ? await res.json().catch(() => ({})) : {};
+    // NEVER an empty ladder here. "This lab is flat" is a real state a lot of
+    // labs are in, so degrading to it would be indistinguishable from the
+    // truth and would report every level as deleted.
+    $('#levelsList').innerHTML = `<p class="empty">${esc(b.error
+      || 'LabCore did not answer, so the levels could not be read.')}
+      This is not a lab with no levels — they could not be asked for.</p>`;
+    return false;
+  }
+  const b = await res.json();
+  LEVELS = b.levels || [];
+  DEFAULT_LEVEL = b.default_level || '';
+  GROUND_LEVEL = b.ground_level || '';
+  LEVEL_VIEW = resolveLevelView(LEVELS, LEVEL_VIEW, DEFAULT_LEVEL);
+  renderLevelBar();
+  drawFloor();
+  $('#levelsList').innerHTML = levelsListHtml();
+  const list = $('#levelsList');
+  list.querySelectorAll('[data-lvl]').forEach(row => {
+    const uid = row.dataset.lvl;
+    const on = (sel, fn) => {
+      const b2 = row.querySelector(sel);
+      if (b2) b2.addEventListener('click', fn);
+    };
+    on('[data-lvlrename]', () => renameLevel(uid));
+    on('[data-lvldefault]', () => makeDefaultLevel(uid));
+    on('[data-lvldelete]', () => deleteLevel(uid));
+  });
+  return true;
+}
+
+/* Every write below reports through `failure()` and leaves the dialog OPEN on
+ * a refusal. A 502 that closes on "Saved" is the exact failure this page has
+ * been burned by before: the queue refuses by answering, so nothing throws. */
+/* The write, and its refusal RETURNED rather than painted. The rename and the
+ * delete now happen inside a dialog of their own, and a refusal has to land in
+ * the sheet the operator is looking at — not behind it, in the levels list. */
+async function levelWriteError(url, opts, what) {
+  if (!requireAuth()) return 'Sign in to make changes.';
+  const r = await fetch(url, opts).catch(() => null);
+  if (!r) {
+    return `${what} was NOT saved — the server could not be reached.`;
+  }
+  const bad = await failure(r);
+  if (bad) return bad;
+  // The floor's own cached payload still holds the ladder as it was. Dropping
+  // it here is the same rule the correction editor follows: after a write, the
+  // next paint must not be able to show the state before the change.
+  LEM.bust('/api/machines');
+  return '';
+}
+
+async function levelWrite(url, opts, what) {
+  const bad = await levelWriteError(url, opts, what);
+  if (bad) { $('#levelsErr').textContent = bad; return false; }
+  $('#levelsErr').textContent = '';
+  return true;
+}
+
+const jsonPost = body => ({method: 'POST',
+  headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+
+$('#lvlNew').addEventListener('input', e => {
+  // Commit stays disabled until the form is valid, rather than accepting a
+  // blank and answering with an error.
+  $('#lvlAdd').disabled = !e.target.value.trim();
+});
+$('#lvlAdd').addEventListener('click', async () => {
+  const name = $('#lvlNew').value.trim();
+  if (!name) return;
+  if (await levelWrite('/api/equipment/levels', jsonPost({name}),
+                       'The new level')) {
+    $('#lvlNew').value = '';
+    $('#lvlAdd').disabled = true;
+    await refreshLevels();
+    load();
+  }
+});
+
+function renameLevel(uid) {
+  const now = levelByUid(uid);
+  ask({
+    title: 'Rename this level',
+    what: {cap: 'Level', text: (now && now.name) || 'Unnamed level'},
+    rule: 'The name is what every screen calls this level; nothing moves and '
+        + 'no equipment is reassigned. Equipment records already showing the '
+        + 'old name pick the new one up on the next refresh.',
+    label: 'New name for this level',
+    line: true,
+    value: now ? now.name : '',
+    placeholder: 'e.g. Second Floor',
+    required: 'A level needs a name.',
+    submit: 'Rename it',
+    onSubmit: async name => {
+      const bad = await levelWriteError(
+        `/api/equipment/levels/${encodeURIComponent(uid)}/rename`,
+        jsonPost({name}), 'The level’s name');
+      if (bad) return bad;
+      await refreshLevels();
+      load();
+      return '';
+    },
+  });
+}
+
+async function makeDefaultLevel(uid) {
+  if (await levelWrite('/api/equipment/default-level',
+                       jsonPost({level_uid: uid}), 'The default level')) {
+    await refreshLevels();
+    load();
+  }
+}
+
+function deleteLevel(uid) {
+  const now = levelByUid(uid);
+  askConfirm({
+    title: 'Delete this level',
+    what: {cap: 'Level', text: (now && now.name) || 'Unnamed level'},
+    body: deleteConsequence(uid),
+    submit: 'Delete the level',
+    onSubmit: async () => {
+      const bad = await levelWriteError(
+        `/api/equipment/levels/${encodeURIComponent(uid)}`,
+        {method: 'DELETE'}, 'The level');
+      if (bad) return bad;
+      await refreshLevels();
+      load();
+      return '';
+    },
+  });
+}
+
+$('#btnLevels').addEventListener('click', openLevels);
+$('#levelsClose').addEventListener('click', () => $('#levelsDlg').close());
+
+// ── moving equipment between levels ─────────────────────────────────────
+// Up and down are one press, on the record and in the right-click menu, and
+// they CLAMP — the route refuses to wrap, because a wrap looks to the person
+// holding the mouse exactly like the instrument falling into the basement.
+// This dialog is the "straight to that one" path and the only way to place
+// several pieces at once.
+let MOVE_PICKED = new Set();
+
+function moveCandidates(scope) {
+  if (scope && scope.length) {
+    return MACHINES.filter(m => scope.includes(m.machine_uid));
+  }
+  // Bringing equipment ONTO the level being looked at: everything that is not
+  // already here.
+  return MACHINES.filter(m => levelOfMachine(m) !== LEVEL_VIEW);
+}
+
+function openMove(scope, levelUid) {
+  if (!requireAuth()) return;
+  if (!LEVELS.length) {
+    alert('This lab has no levels yet. Use Levels… to create one first.');
+    return;
+  }
+  const list = moveCandidates(scope);
+  MOVE_PICKED = new Set(scope && scope.length ? scope : []);
+  const target = levelUid || LEVEL_VIEW;
+  $('#moveHead').textContent = scope && scope.length === 1
+    ? 'Move ' + (list[0] ? list[0].title : 'this equipment')
+    : 'Move equipment to a level';
+  $('#moveSub').textContent = 'Moving equipment changes which level draws it. '
+    + 'Nothing about its data, its QC or its history changes, and the move is '
+    + 'recorded with who made it.';
+  $('#moveErr').textContent = '';
+  $('#moveWho').innerHTML = list.length ? list.map(m => `
+    <label><input type="checkbox" value="${esc(m.machine_uid)}"
+      ${MOVE_PICKED.has(m.machine_uid) ? 'checked' : ''}>
+      <span>${esc(m.title)}</span>
+      <span style="margin-left:auto;color:var(--ink3);font-size:10.5px">
+        ${esc(levelName(levelOfMachine(m)))}</span></label>`).join('')
+    : '<p class="empty" style="padding:8px">Every piece of equipment in the '
+      + 'lab is already on this level.</p>';
+  $('#moveLevels').innerHTML = sortedLevels(LEVELS).map(l => `
+    <label><input type="radio" name="movelvl" value="${esc(l.uid)}"
+      ${l.uid === target ? 'checked' : ''}>
+      <span>${esc(l.name || 'Unnamed level')}</span></label>`).join('');
+  $('#moveDlg').showModal();
+}
+
+$('#moveCancel').addEventListener('click', () => $('#moveDlg').close());
+$('#levelEmptyMove').addEventListener('click', () => openMove(null, LEVEL_VIEW));
+
+$('#moveGo').addEventListener('click', async () => {
+  if (!requireAuth()) return;
+  const picked = [...document.querySelectorAll('#moveWho input:checked')]
+    .map(cb => cb.value);
+  const lvl = document.querySelector('#moveLevels input:checked');
+  if (!picked.length) {
+    $('#moveErr').textContent = 'Tick the equipment to move.'; return;
+  }
+  if (!lvl) { $('#moveErr').textContent = 'Choose a level.'; return; }
+  const failures = [];
+  for (const uid of picked) {
+    const r = await fetch(`/api/equipment/${encodeURIComponent(uid)}/level`,
+                          jsonPost({level_uid: lvl.value})).catch(() => null);
+    const bad = r ? await failure(r) : 'The server could not be reached.';
+    if (bad) failures.push(bad);
+  }
+  LEM.bust('/api/machines');
+  if (failures.length) {
+    // Some of them may have landed. Saying "moved" over a partial result is
+    // how a piece of equipment ends up on a level nobody put it on.
+    $('#moveErr').textContent = failures[0]
+      + (failures.length > 1 ? ` (${failures.length} did not move)` : '');
+    await load();
+    return;
+  }
+  $('#moveDlg').close();
+  await load();
+});
+
+/* One press up or down for one piece of equipment. The route clamps at both
+ * ends of the ladder. */
+async function moveEquipmentLevel(m, delta) {
+  if (!requireAuth()) return;
+  const way = delta > 0 ? 'up' : 'down';
+  const r = await fetch(
+    `/api/equipment/${encodeURIComponent(m.machine_uid)}/level/${way}`,
+    {method: 'POST'}).catch(() => null);
+  const bad = r ? await failure(r) : 'The server could not be reached.';
+  if (bad) { alert(bad); return; }
+  LEM.bust('/api/machines');
+  await load();
+}
+
+// ── documents: the certificates and manuals that live with the equipment ──
+//
+// The limits are on screen BEFORE a file is picked, and checked again the
+// moment one is, because the alternative is uploading 40 MB over lab wifi to
+// be told it was too big. The server still decides — it reads the leading
+// bytes, which is the only part of an upload that cannot be renamed — so this
+// is a courtesy, never the gate.
+const DOC_MAX_BYTES = 25 * 1024 * 1024;
+const DOC_KINDS = [['application/pdf', '.pdf'], ['image/png', '.png'],
+                   ['image/jpeg', '.jpg'], ['image/jpeg', '.jpeg']];
+const DOC_LIMITS = 'PDF, PNG or JPEG · up to 25 MB each.';
+
+function humanBytes(n) {
+  const b = Number(n);
+  if (!isFinite(b) || b < 0) return '—';
+  if (b < 1024) return b + ' B';
+  if (b < 1024 * 1024) return (b / 1024).toFixed(0) + ' KB';
+  return (b / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+/* Why this file cannot be uploaded, or null if it can. Said in the same words
+ * the server would use, so the two never contradict each other. */
+function docLimitProblem(file) {
+  if (!file) return 'Choose a file first.';
+  const name = String(file.name || '');
+  const dot = name.lastIndexOf('.');
+  const ext = dot >= 0 ? name.slice(dot).toLowerCase() : '';
+  const okExt = DOC_KINDS.some(([, e]) => e === ext);
+  const okType = DOC_KINDS.some(([t]) => t === String(file.type || ''));
+  if (!okExt && !okType) {
+    return `“${name}” is not a kind of document this holds. ${DOC_LIMITS}`;
+  }
+  if (Number(file.size) > DOC_MAX_BYTES) {
+    return `“${name}” is ${humanBytes(file.size)} — over the 25 MB limit. `
+      + 'A scanned certificate is normally well under 10 MB.';
+  }
+  if (Number(file.size) === 0) return `“${name}” is empty.`;
+  return null;
+}
+
+function documentsHtml(docs) {
+  if (!docs.length) {
+    return '<p class="empty">No documents on this equipment yet. Certificates, '
+      + 'manuals and calibration reports belong here.</p>';
+  }
+  return docs.map(d => `
+    <div class="doc" data-doc="${esc(d.uid)}">
+      <span class="nm">${esc(d.filename)}
+        <span class="t" style="color:var(--ink3);font-size:10px">
+          ${esc((d.uploaded_at || '').slice(0, 16).replace('T', ' '))}
+          ${d.uploaded_by ? '· ' + esc(d.uploaded_by) : ''}</span></span>
+      <span class="sz">${humanBytes(d.size_bytes)}</span>
+      <a class="tool" target="_blank" rel="noopener"
+         href="/api/equipment/documents/${encodeURIComponent(d.uid)}/download"
+         >Open</a>
+      <button class="tool warn" data-docdel="${esc(d.uid)}"
+              data-docname="${esc(d.filename)}"
+              aria-label="Delete ${esc(d.filename)}">✕</button>
+    </div>`).join('');
+}
+
+async function loadDocuments(m) {
+  const box = $('#docList');
+  if (!box) return;
+  const uid = encodeURIComponent(m.machine_uid);
+  const res = await fetch(`/api/equipment/${uid}/documents`).catch(() => null);
+  if (!res || !res.ok) {
+    // An empty tab during a blip is a claim that this instrument has no
+    // certificate, which is exactly the sentence somebody quotes at an
+    // assessor. The store raises rather than degrading; say which it is.
+    const b = res ? await res.json().catch(() => ({})) : {};
+    box.innerHTML = `<p class="empty">${esc(b.error
+      || 'LabCore did not answer, so the documents could not be read.')}
+      This is not an equipment record with no documents.</p>`;
+    return;
+  }
+  const b = await res.json();
+  box.innerHTML = documentsHtml(b.documents || []);
+  box.querySelectorAll('[data-docdel]').forEach(btn =>
+    btn.addEventListener('click',
+      () => deleteDocument(m, btn.dataset.docdel, btn.dataset.docname)));
+}
+
+function deleteDocument(m, uid, name) {
+  if (!requireAuth()) return;
+  askConfirm({
+    title: 'Delete this document',
+    what: {cap: 'Document', text: name || ''},
+    body: 'Delete this document? The file is removed from the server. Its '
+        + 'upload and its deletion both stay in the equipment log.',
+    submit: 'Delete it',
+    onSubmit: async () => {
+      const r = await fetch(`/api/equipment/documents/${encodeURIComponent(uid)}`,
+                            {method: 'DELETE'}).catch(() => null);
+      const bad = r ? await failure(r) : 'The server could not be reached.';
+      if (bad) return bad;
+      const say = $('#docErr');
+      if (say) say.textContent = '';
+      await loadDocuments(m);
+      return '';
+    },
+  });
+}
+
+async function uploadDocument(m) {
+  if (!requireAuth()) return;
+  const input = $('#docFile'), say = $('#docErr');
+  const file = (input && input.files && input.files[0]) || null;
+  const problem = docLimitProblem(file);
+  if (problem) { if (say) say.textContent = problem; return; }
+  if (say) say.textContent = 'Uploading…';
+  const form = new FormData();
+  form.append('file', file);
+  const r = await fetch(
+    `/api/equipment/${encodeURIComponent(m.machine_uid)}/documents`,
+    {method: 'POST', body: form}).catch(() => null);
+  const bad = r ? await failure(r) : 'The server could not be reached.';
+  if (bad) { if (say) say.textContent = bad; return; }
+  if (say) say.textContent = '';
+  if (input) input.value = '';
+  await loadDocuments(m);
+}
+
+// ── history: everything that happened to this equipment, in one order ────
+//
+// Runs, QC verdicts, config changes, correction factors, PM completions and
+// corrective actions, merged and ordered by `EquipmentHistory.timeline` — one
+// list, because the question an assessor asks is "what happened to this
+// instrument", not "what happened in each of six tables".
+const ACTION_KINDS = ['opened', 'actioned', 'verified', 'closed', 'withdrawn'];
+
+/* The history as it was READ, kept so the two filters can re-ask the question
+ * without re-asking LabCore. A filter is a question about the list already on
+ * screen; refetching per keystroke from a rail is the N+1 this whole page is
+ * built to avoid. */
+let HISTORY_NOW = null;
+
+const HIST_KIND_WORDS = {
+  run: 'Runs', qc: 'QC verdicts', config: 'Configuration changes',
+  status_change: 'Status changes', override: 'Overrides', comment: 'Comments',
+  pm: 'PM completions', calibration: 'Calibrations', changed: 'Correction factors',
+  opened: 'Actions opened', actioned: 'Actions recorded',
+  verified: 'Actions verified', closed: 'Actions closed',
+  withdrawn: 'Actions withdrawn', note: 'Notes', assigned: 'Reassignments',
+};
+
+/* Filter, then draw. Both controls narrow what is shown and NEITHER changes
+ * what was read, so the count says how much of the read is on screen — a
+ * filtered list that does not say it is filtered reads as the whole history. */
+function paintTimeline() {
+  const tl = $('#tlList');
+  if (!tl || !HISTORY_NOW) return;
+  const kind = ($('#histKind') && $('#histKind').value) || '';
+  const q = (($('#histQ') && $('#histQ').value) || '').trim().toLowerCase();
+  const all = HISTORY_NOW.entries || [];
+  const shown = all.filter(e =>
+    (!kind || e.kind === kind)
+    && (!q || `${e.summary || ''} ${e.who || ''} ${e.kind || ''}`
+              .toLowerCase().includes(q)));
+  const note = $('#histOrder');
+  if (note) {
+    note.textContent = (kind || q)
+      ? `Newest first — showing ${shown.length} of ${all.length} entries.`
+      : 'Newest first.';
+  }
+  tl.innerHTML = (kind || q) && !shown.length
+    ? '<p class="empty">Nothing in this history matches that.</p>'
+    : timelineHtml({...HISTORY_NOW, entries: shown});
+  tl.querySelectorAll('[data-action]').forEach(nd =>
+    nd.addEventListener('click', () => openAction(nd.dataset.action)));
+}
+
+/* The kinds actually present, so the filter can never offer one this equipment
+ * has never had — the same rule the Logs page's kind drop-down follows. */
+function fillHistoryKinds(entries) {
+  const sel = $('#histKind');
+  if (!sel) return;
+  const was = sel.value;
+  const kinds = [...new Set(entries.map(e => e.kind).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">Everything</option>'
+    + kinds.map(k => `<option value="${esc(k)}"${k === was ? ' selected' : ''}>${
+        esc(HIST_KIND_WORDS[k] || k.replace(/_/g, ' '))}</option>`).join('');
+}
+
+function timelineHtml(body) {
+  const entries = (body && body.entries) || [];
+  if (!entries.length) {
+    return '<p class="empty">Nothing recorded against this equipment yet.</p>';
+  }
+  const rows = entries.map(e => {
+    const act = e.source === 'corrective_action'
+      && ACTION_KINDS.includes(e.kind);
+    return `
+    <div class="tl"${act ? ` data-action="${esc(e.uid.split(':')[0] || e.uid)}"
+         style="cursor:pointer"` : ''}>
+      <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
+      <span>${esc(e.summary)}
+        ${e.who ? `<span class="who">${esc(e.who)}</span>` : ''}
+        <span class="t">${esc((e.at || '').slice(0, 16).replace('T', ' '))}</span>
+      </span>
+    </div>`;
+  }).join('');
+  // `truncated` is a claim about completeness, and a history that quietly
+  // stops is read as "that is everything that happened".
+  return rows + (body.truncated
+    ? `<p class="empty" style="padding-top:8px">${esc(body.note
+        || 'Older entries are not shown.')}</p>` : '');
+}
+
+/* One open corrective action, in the rail.
+ *
+ * This used to put the title and three badges in one `.n` with the badges
+ * FLOATED RIGHT, and the owner, the due date and the opened date in a single
+ * no-wrap flex row under it. In the record rail that is the identical failure
+ * the attention card above was rebuilt to fix: the sentence squeezed to
+ * min-content behind the float, and dates broken mid-token. So it uses the
+ * shape that was already proven — the sentence on its own full-width line, the
+ * facts in rows that WRAP, and nothing allowed to break inside a date. */
+function actionsHtml(actions) {
+  if (!actions.length) {
+    return '<p class="empty">Nothing open against this equipment.</p>';
+  }
+  return actions.map(a => `
+    <div class="qc actcard" style="margin-bottom:8px" role="button" tabindex="0"
+         data-action="${esc(a.uid)}">
+      <div class="why">${esc(a.what_happened || 'Corrective action')}</div>
+      <div class="attnmeta">
+        <span class="lvl">${a.assigned_to ? 'with ' + esc(a.assigned_to)
+                                          : 'unassigned'}</span>
+        <span class="badges">
+          ${a.overdue ? '<span class="badge over">overdue</span>' : ''}
+          <span class="badge pri ${esc(a.priority)}">${esc(a.priority)}</span>
+          <span class="badge state">${esc(a.state)}</span>
+        </span>
+      </div>
+      <div class="attnmeta">
+        <span>${a.due_at ? 'due ' + esc(a.due_at) : 'no due date'}</span>
+        <span>opened ${esc((a.opened_at || '').slice(0, 10))}</span>
+      </div>
+    </div>`).join('');
+}
+
+async function loadHistory(m) {
+  const tl = $('#tlList'), open = $('#actOpen');
+  if (!tl) return;
+  const uid = encodeURIComponent(m.machine_uid);
+  const read = url => fetch(url).then(async r =>
+    r.ok ? r.json() : {__err: (await r.json().catch(() => ({}))).error
+                             || 'LabCore did not answer.'})
+    .catch(() => ({__err: 'LabCore could not be reached.'}));
+  const [hist, acts] = await Promise.all([
+    read(`/api/equipment/${uid}/history?limit=200`),
+    read(`/api/equipment/${uid}/actions`),
+  ]);
+  if (open) {
+    open.innerHTML = acts.__err
+      ? `<p class="empty">${esc(acts.__err)} This is not an equipment record
+         with nothing open against it.</p>`
+      : actionsHtml(acts.actions || []);
+    open.querySelectorAll('[data-action]').forEach(n =>
+      n.addEventListener('click', () => openAction(n.dataset.action)));
+  }
+  if (hist.__err) {
+    HISTORY_NOW = null;
+    const bar = $('#histbar');
+    if (bar) bar.hidden = true;
+    tl.innerHTML = `<p class="empty">${esc(hist.__err)} This is not an empty
+       history — it could not be read.</p>`;
+    const note = $('#histOrder');
+    if (note) note.textContent = '';
+    return;
+  }
+  HISTORY_NOW = hist;
+  fillHistoryKinds(hist.entries || []);
+  paintTimeline();
+}
+
+/* The fleet's open corrective actions — ONE read for the whole lab, and
+ * DELIBERATELY NOT ON THE POLL. `/api/equipment/open-actions` is a LabCore
+ * read; the floor repaints every two seconds from every screen in the
+ * building, and hanging a read off that is precisely the load pattern the
+ * snapshot exists to prevent. So it is read once when the page settles and
+ * again after anything changes it. */
+let OPEN_ACTIONS = null;      // null = never successfully read
+
+async function loadOpenActions() {
+  const res = await fetch('/api/equipment/open-actions').catch(() => null);
+  if (!res || !res.ok) {
+    // Left as null rather than zeroed: "nothing is open in this lab" is a
+    // sentence a supervisor acts on, and inventing it out of a busy queue is
+    // the failure this whole boundary exists to stop.
+    OPEN_ACTIONS = null;
+  } else {
+    OPEN_ACTIONS = await res.json().catch(() => null);
+  }
+  if (!selected) renderOverview();
+}
+
+function openActionsFor(uid) {
+  // THREE ANSWERS, NOT TWO. `null` is "the fleet read failed, so nobody knows";
+  // `[]` is "asked, and this instrument has none open". Collapsing the first
+  // into the second is how a busy queue becomes a supervisor believing the lab
+  // is clear — the same conflation this whole boundary exists to stop, one
+  // layer up in the browser.
+  if (!OPEN_ACTIONS) return null;
+  return (OPEN_ACTIONS.by_machine && OPEN_ACTIONS.by_machine[uid]) || [];
+}
+
+async function openAction(uid) {
+  $('#actionErr').textContent = '';
+  $('#actionBody').innerHTML = '<p class="empty">Loading…</p>';
+  if (!$('#actionDlg').open) $('#actionDlg').showModal();
+  await renderAction(uid);
+}
+
+/* The action currently on screen. The assign dialog prefills from it, and a
+ * dialog that opens on blank fields is a dialog that silently clears an
+ * assignment the moment somebody presses Save to change only the due date. */
+let ACTION_NOW = null;
+
+async function renderAction(uid) {
+  const res = await fetch(`/api/equipment/actions/${encodeURIComponent(uid)}`)
+    .catch(() => null);
+  if (!res || !res.ok) {
+    const b = res ? await res.json().catch(() => ({})) : {};
+    $('#actionBody').innerHTML = `<p class="empty">${esc(b.error
+      || 'LabCore did not answer, so this action could not be read.')}</p>`;
+    return;
+  }
+  const b = await res.json();
+  const a = b.action || {};
+  ACTION_NOW = a;
+  const events = b.events || [];
+  const can = what => LIFECYCLE_NEXT[a.state] &&
+    LIFECYCLE_NEXT[a.state].includes(what);
+  $('#actionBody').innerHTML = `
+    <div class="railhead" style="border:none;margin:0;padding:0">
+      <h2 class="sign" style="font-size:14px">${esc(a.what_happened || '')}</h2>
+      <div class="meta">
+        ${a.overdue ? '<span class="badge over">overdue</span> ' : ''}
+        <span class="badge state">${esc(a.state)}</span>
+        <span class="badge pri ${esc(a.priority)}">${esc(a.priority)}</span>
+        ${a.due_at ? ' · due ' + esc(a.due_at) : ''}
+        ${a.assigned_to ? ' · with ' + esc(a.assigned_to) : ' · unassigned'}
+      </div>
+      <div class="meta">opened ${esc((a.opened_at || '').slice(0, 16)
+        .replace('T', ' '))} by ${esc(a.opened_by || 'unknown')}</div>
+    </div>
+    <div class="cap sect">What was done</div>
+    <p class="empty">${a.action_taken ? esc(a.action_taken)
+      : 'Nothing recorded yet.'}</p>
+    <div class="cap sect">Verification</div>
+    <p class="empty">${a.verified_at
+      ? esc(a.verification || 'Verified.') + ' — ' + esc(a.verified_by)
+      : 'Not verified.'}</p>
+    <div class="railact">
+      <button class="tool" data-do="record" ${can('actioned') ? ''
+        : 'disabled'}>Record what was done…</button>
+      <button class="tool" data-do="verify" ${can('verified') ? ''
+        : 'disabled'}>Verify…</button>
+      <button class="tool" data-do="close" ${can('closed') ? ''
+        : 'disabled'}>Close…</button>
+      <button class="tool" data-do="assign">Assign / due / priority…</button>
+      <button class="tool" data-do="note">Add a note…</button>
+      <button class="tool warn" data-do="withdraw" ${can('withdrawn') ? ''
+        : 'disabled'}>Withdraw…</button>
+    </div>
+    <div class="cap sect">Everything said about it</div>
+    <div class="scroller">${events.length ? events.map(e => `
+      <div class="tl"><span class="k k-${esc(e.kind || 'note')}">${
+        esc(e.kind || 'note')}</span>
+      <span>${esc(e.note || '')}
+        <span class="who">${esc(e.by || '')}</span>
+        <span class="t">${esc((e.at || '').slice(0, 16)
+          .replace('T', ' '))}</span></span></div>`).join('')
+      : '<p class="empty">Nothing yet.</p>'}</div>`;
+  $('#actionBody').querySelectorAll('[data-do]:not([disabled])').forEach(btn =>
+    btn.addEventListener('click', () => actOnAction(uid, btn.dataset.do)));
+}
+
+/* ── ask(): the one question this page asks ─────────────────────────────
+ *
+ * `window.prompt` and `window.confirm` are gone from this file. Both of them
+ * lie about the same three things:
+ *
+ *   - they cannot show WHAT is being changed, so "Why is this being
+ *     withdrawn?" floats free of the record it would withdraw;
+ *   - they cannot show a REFUSAL, so a 409 arrives after the box has closed
+ *     and taken the operator's sentence with it;
+ *   - they chain, and a page that asks three questions in three stacked native
+ *     boxes is the fault this floor's sign-in was reported for off the bench.
+ *
+ * One dialog, filled in per question, in the same sheet idiom as the QC,
+ * correction and assign dialogs. `onSubmit` returns a REFUSAL STRING (or '' for
+ * success): the sheet stays open, keeps the typed text and prints the refusal
+ * exactly as the server worded it.
+ *
+ * With no field at all (`label` omitted) it is the confirmation: same sheet,
+ * same consequence text, a real Cancel — used by every delete on this page.
+ */
+let ASK_NOW = null;
+
+function ask(spec) {
+  const dlg = $('#askDlg');
+  if (!dlg) return;
+  ASK_NOW = spec;
+  $('#askTitle').textContent = spec.title || '';
+
+  const what = $('#askWhat');
+  if (spec.what && (spec.what.text || spec.what.meta)) {
+    $('#askWhatCap').textContent = spec.what.cap || '';
+    $('#askWhatText').textContent = spec.what.text || '';
+    $('#askWhatMeta').innerHTML = spec.what.meta || '';
+    $('#askWhatMeta').hidden = !spec.what.meta;
+    what.hidden = false;
+  } else {
+    what.hidden = true;
+  }
+
+  const rule = $('#askRule');
+  rule.textContent = spec.rule || '';
+  rule.hidden = !spec.rule;
+
+  const area = $('#askField'), line = $('#askLineField');
+  area.hidden = !(spec.label && !spec.line);
+  line.hidden = !(spec.label && spec.line);
+  if (spec.label && spec.line) {
+    $('#askLineLabel').textContent = spec.label;
+    $('#askLine').placeholder = spec.placeholder || '';
+    $('#askLine').value = spec.value || '';
+  } else if (spec.label) {
+    $('#askLabel').textContent = spec.label;
+    $('#askText').placeholder = spec.placeholder || '';
+    $('#askText').value = spec.value || '';
+    const opt = $('#askOpt');
+    opt.textContent = spec.optional || '';
+    opt.hidden = !spec.optional;
+  }
+
+  const chk = $('#askCheckWrap');
+  chk.hidden = !spec.check;
+  if (spec.check) {
+    $('#askCheckLabel').textContent = spec.check;
+    $('#askCheck').checked = !!spec.checked;
+  }
+
+  const go = $('#askGo');
+  go.textContent = spec.submit || 'OK';
+  go.classList.toggle('warn', !!spec.danger);
+  go.classList.toggle('live', !spec.danger);
+  go.disabled = false;
+  $('#askErr').textContent = '';
+  if (!dlg.open) dlg.showModal();
+  const focus = spec.label ? (spec.line ? $('#askLine') : $('#askText')) : go;
+  if (focus && focus.focus) focus.focus();
+}
+
+function askValue() {
+  const spec = ASK_NOW || {};
+  if (!spec.label) return '';
+  return (spec.line ? $('#askLine').value : $('#askText').value).trim();
+}
+
+async function askSubmit() {
+  const spec = ASK_NOW;
+  if (!spec) return;
+  const text = askValue();
+  // The blank answer is refused HERE and said HERE, with the sheet open — the
+  // store refuses it too ("Say what was done."), and both saying it is the
+  // point: one is a round trip, the other is not.
+  if (spec.required && !text) { $('#askErr').textContent = spec.required; return; }
+  const go = $('#askGo');
+  go.disabled = true;
+  $('#askErr').textContent = '';
+  let bad = '';
+  try {
+    bad = (await spec.onSubmit(text, $('#askCheck').checked)) || '';
+  } catch (_) {
+    bad = 'That could not be sent. Nothing was changed.';
+  }
+  go.disabled = false;
+  if (bad) { $('#askErr').textContent = bad; return; }
+  ASK_NOW = null;
+  $('#askDlg').close();
+}
+
+$('#askCancel').addEventListener('click', () => {
+  ASK_NOW = null;
+  $('#askDlg').close();
+});
+$('#askGo').addEventListener('click', askSubmit);
+// Enter finishes a one-line answer; a textarea keeps Enter for paragraphs and
+// takes Ctrl/Cmd+Enter instead.
+$('#askLine').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); askSubmit(); }
+});
+$('#askText').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    e.preventDefault(); askSubmit();
+  }
+});
+$('#askDlg').addEventListener('close', () => { ASK_NOW = null; });
+
+/* A destructive confirmation, in the same sheet. The wording of each one is
+ * unchanged from the confirm() it replaces — those sentences say what is lost
+ * and they were right; what was wrong was the box they were shown in. */
+function askConfirm(spec) {
+  ask({
+    title: spec.title,
+    what: spec.what,
+    rule: spec.body,
+    check: spec.check,
+    submit: spec.submit || 'Delete',
+    danger: spec.danger !== false,
+    onSubmit: spec.onSubmit,
+  });
+}
+
+/* The lifecycle, as the store enforces it. Kept here so a button that would be
+ * refused is DISABLED rather than pressed and answered with a 409 — the server
+ * is still the authority and still refuses, but a UI that offers a move the
+ * record does not allow teaches people to ignore what it says. */
+const LIFECYCLE_NEXT = {
+  open: ['actioned', 'withdrawn'],
+  actioned: ['actioned', 'verified', 'withdrawn'],
+  verified: ['closed', 'withdrawn'],
+  closed: [],
+  withdrawn: [],
+};
+
+/* The five transitions, each as a question with its rule attached.
+ *
+ * WAS FIVE CHAINED prompt() BOXES. A prompt cannot show which action it is
+ * about, cannot state the rule the store is about to apply, and — the part
+ * that actually cost work — cannot render a refusal: a 409 came back after the
+ * box had already gone, taking the typed sentence with it. This page's own
+ * comment records chained prompts as a fault reported off the bench.
+ *
+ * THE RULES BELOW ARE QUOTED FROM THE STORE, NEVER INVENTED HERE.
+ * `equipment_history.LIFECYCLE` is the authority and refuses on its own; this
+ * text exists so the refusal is not the first time anybody hears the rule. Any
+ * change there has to be made here too, and `LIFECYCLE_NEXT` above — which
+ * disables the buttons — is the same table a third time.
+ */
+const LIFECYCLE_STEPS = {
+  record: {
+    title: 'Record what was done',
+    label: 'What was actually done',
+    placeholder: 'e.g. Replaced the cooling bath fluid and re-ran the standard.',
+    submit: 'Record it',
+    required: 'Say what was done — an empty record of the work is not a record.',
+    rule: 'Allowed while the action is open, and again afterwards to correct '
+        + 'or finish the account. Rewriting it keeps what it replaced, and who '
+        + 'wrote it, in this action\u2019s own history. It cannot be recorded '
+        + 'once the action is verified, closed or withdrawn.',
+    path: '/record', field: 'action_taken',
+  },
+  verify: {
+    title: 'Verify that this worked',
+    label: 'How it was verified',
+    placeholder: 'e.g. Two consecutive Cloud Point runs back inside the band.',
+    submit: 'Verify',
+    optional: 'Optional — the verification is recorded with your name and the '
+            + 'time either way.',
+    rule: 'Only an action that already says what was done can be verified, and '
+        + 'only once: a second verification would overwrite the name and date '
+        + 'of the person who did the checking.',
+    path: '/verify', field: 'note',
+  },
+  close: {
+    title: 'Close this corrective action',
+    label: 'Closing note',
+    placeholder: 'e.g. Back in service; monitoring for a week.',
+    submit: 'Close it',
+    optional: 'Optional.',
+    rule: 'Only a VERIFIED action can be closed. \u201cWas it effective?\u201d '
+        + 'is the question this record exists to answer, so a close that skips '
+        + 'verification is refused. An action opened by mistake is withdrawn '
+        + 'instead. Closing is final — if the problem returns, that is a new '
+        + 'action.',
+    path: '/close', field: 'note',
+  },
+  withdraw: {
+    title: 'Withdraw this corrective action',
+    label: 'Why it is being withdrawn',
+    placeholder: 'e.g. Filed twice — the other one is being worked.',
+    submit: 'Withdraw it',
+    danger: true,
+    required: 'Say why. A withdrawal with no reason is indistinguishable from '
+            + 'a mistake.',
+    rule: 'Withdrawing is how a record says it should not exist — opened on the '
+        + 'wrong equipment, or twice. The row stays and says it was withdrawn, '
+        + 'by whom and why, and it never fills in the verification. Allowed '
+        + 'from any state that is not already finished, and final once done.',
+    path: '/withdraw', field: 'reason',
+  },
+  note: {
+    title: 'Add a note to this action',
+    label: 'Note',
+    placeholder: 'e.g. Waiting on the second QC run before verifying.',
+    submit: 'Add the note',
+    required: 'Say something, or do not add a note.',
+    rule: 'Allowed in every state, finished ones included. A note is appended '
+        + 'and never rewrites a date, a name or an outcome — so a closed '
+        + 'action can carry a cross-reference without being reopened.',
+    path: '/note', field: 'note',
+  },
+};
+
+function actOnAction(uid, what) {
+  if (!requireAuth()) return;
+  if (what === 'assign') return openAssign(uid);
+  const step = LIFECYCLE_STEPS[what];
+  if (!step) return;
+  const a = ACTION_NOW || {};
+  const at = `/api/equipment/actions/${encodeURIComponent(uid)}`;
+  ask({
+    title: step.title,
+    // The action's own words, on screen while its fate is decided. A prompt
+    // could not do this, and "Why is this being withdrawn?" with nothing
+    // naming WHICH is how the wrong record gets withdrawn.
+    what: {cap: 'Corrective action', text: a.what_happened || '',
+           meta: `${esc(a.state || '')}`
+                 + (a.assigned_to ? ' \u00b7 with ' + esc(a.assigned_to)
+                                  : ' \u00b7 unassigned')
+                 + (a.due_at ? ' \u00b7 due ' + esc(a.due_at) : '')},
+    rule: step.rule,
+    label: step.label,
+    placeholder: step.placeholder,
+    required: step.required,
+    optional: step.optional,
+    submit: step.submit,
+    danger: step.danger,
+    onSubmit: async text => {
+      const r = await fetch(at + step.path,
+                            jsonPost({[step.field]: text})).catch(() => null);
+      // A REFUSAL KEEPS THE SHEET OPEN, with the typed text still in it. The
+      // store refuses a close that skipped verification, and the operator has
+      // to be able to read that without losing the sentence they wrote.
+      const bad = r ? await failure(r) : 'The server could not be reached.';
+      if (bad) return bad;
+      $('#actionErr').textContent = '';
+      await renderAction(uid);
+      await loadOpenActions();
+      if (selected) await loadHistory(selected);
+      return '';
+    },
+  });
+}
+
+$('#actionClose').addEventListener('click', () => $('#actionDlg').close());
+
+/* Prefilled from the action on screen, so saving one field cannot blank the
+ * other two. `assign` on the store rewrites all three together. */
+function openAssign(uid) {
+  if (!requireAuth()) return;
+  const a = ACTION_NOW || {};
+  $('#assignDlg').dataset.uid = uid;
+  $('#asWho').value = a.assigned_to || '';
+  $('#asDue').value = (a.due_at || '').slice(0, 10);
+  $('#asPriority').value = a.priority || 'normal';
+  $('#asErr').textContent = '';
+  $('#assignDlg').showModal();
+}
+
+async function saveAssignment() {
+  if (!requireAuth()) return false;
+  const uid = $('#assignDlg').dataset.uid;
+  const r = await fetch(
+    `/api/equipment/actions/${encodeURIComponent(uid)}/assign`,
+    jsonPost({assigned_to: $('#asWho').value.trim(),
+              due_at: $('#asDue').value,
+              priority: $('#asPriority').value})).catch(() => null);
+  // A refusal keeps the dialog OPEN. Closing on "Saved" over a 502 is how an
+  // action ends up owned by nobody while the screen says otherwise.
+  const bad = r ? await failure(r) : 'The server could not be reached.';
+  if (bad) { $('#asErr').textContent = bad; return false; }
+  $('#asErr').textContent = '';
+  $('#assignDlg').close();
+  await renderAction(uid);
+  await loadOpenActions();
+  if (selected) await loadHistory(selected);
+  return true;
+}
+
+$('#asCancel').addEventListener('click', () => $('#assignDlg').close());
+$('#asGo').addEventListener('click', saveAssignment);
+
+function openNewAction(m) {
+  if (!requireAuth()) return;
+  $('#oaTitle').textContent = m.title;
+  $('#oaWhat').value = '';
+  $('#oaWho').value = '';
+  $('#oaDue').value = '';
+  $('#oaErr').textContent = '';
+  $('#openActionDlg').dataset.uid = m.machine_uid;
+  $('#openActionDlg').showModal();
+}
+$('#oaCancel').addEventListener('click', () => $('#openActionDlg').close());
+$('#oaGo').addEventListener('click', async () => {
+  if (!requireAuth()) return;
+  const uid = $('#openActionDlg').dataset.uid;
+  const what = $('#oaWhat').value.trim();
+  if (!what) {
+    $('#oaErr').textContent = 'Say what happened — an action with no account '
+      + 'of what went wrong records nothing.';
+    return;
+  }
+  const r = await fetch(
+    `/api/equipment/${encodeURIComponent(uid)}/actions`,
+    jsonPost({what_happened: what, trigger_kind: $('#oaKind').value,
+              priority: $('#oaPriority').value,
+              assigned_to: $('#oaWho').value.trim(),
+              due_at: $('#oaDue').value})).catch(() => null);
+  const bad = r ? await failure(r) : 'The server could not be reached.';
+  if (bad) { $('#oaErr').textContent = bad; return; }
+  $('#openActionDlg').close();
+  await loadOpenActions();
+  if (selected && selected.machine_uid === uid) await loadHistory(selected);
+});
+
 // ── right-click actions ─────────────────────────────────────────────────
 function openMenu(m, evt) {
   const menu = $('#menu');
@@ -2896,21 +5187,30 @@ function openMenu(m, evt) {
     <button data-act="qc" ${AUTHED ? '' : 'disabled'}>Assign QC samples…</button>
     <button data-act="corr" ${AUTHED ? '' : 'disabled'}>Correction factors…</button>
     <button data-act="maint">PM &amp; calibration…</button>
+    <button data-act="docs">Documents…</button>
+    <button data-act="hist">History &amp; corrective actions…</button>
     <button data-act="export">Export history (CSV)</button>
     <button data-act="export-qc">Export QC only (CSV)</button>
+    ${LEVELS.length ? `<hr>
+    <div class="mt" style="border:none;margin:0">On ${esc(levelName(
+      levelOfMachine(m)))}</div>
+    <button data-act="lvl-up" ${AUTHED ? '' : 'disabled'}>Move up a level</button>
+    <button data-act="lvl-down" ${AUTHED ? '' : 'disabled'}>Move down a level</button>
+    <button data-act="lvl-pick" ${AUTHED ? '' : 'disabled'}>Move to a level…</button>`
+      : ''}
     <hr>
     <button data-act="service" ${AUTHED ? '' : 'disabled'}>Flag for service</button>
-    <button data-act="dead" ${AUTHED ? '' : 'disabled'}>Dead-line this instrument</button>
+    <button data-act="dead" ${AUTHED ? '' : 'disabled'}>Dead-line this equipment</button>
     <button data-act="clear" ${AUTHED ? '' : 'disabled'}>Clear override</button>
     <hr>
     <button data-act="reset" ${(AUTHED && !LOCKED) ? '' : 'disabled'}>Reset position</button>
-    <button class="warn" data-act="delete" ${AUTHED ? '' : 'disabled'}>Delete instrument…</button>
+    <button class="warn" data-act="delete" ${AUTHED ? '' : 'disabled'}>Delete equipment…</button>
     <hr>
     <div class="mt" style="border:none;margin:0;color:var(--brass)">Debug · test the UI</div>
     <button data-act="sim-parse">Simulate a parsed result</button>
     <button data-act="sim-burst">Simulate 6 results</button>
     <button data-act="sim-status">Simulate status…</button>
-    <button data-act="sim-clear">Clear this machine's simulation</button>
+    <button data-act="sim-clear">Clear this equipment's simulation</button>
     ${AUTHED ? '' : '<div class="mt" style="border:none;margin:0;padding-top:6px">sign in to make real changes</div>'}`;
   menu.style.left = Math.min(evt.clientX - rect.left, rect.width - 220) + 'px';
   menu.style.top = Math.min(evt.clientY - rect.top, rect.height - 260) + 'px';
@@ -2949,6 +5249,14 @@ async function act(what, m) {
   if (what === 'qc') return openQcSheet(m);
   if (what === 'corr') return openCorrections(m);
   if (what === 'maint') return openMaint(m);
+  // Both of these open the record on the tab that answers the question, rather
+  // than a fifth dialog saying the same things in a different place.
+  if (what === 'docs') return openRecordTab(m, 'docs');
+  if (what === 'hist') return openRecordTab(m, 'hist');
+  if (what === 'lvl-up') return moveEquipmentLevel(m, 1);
+  if (what === 'lvl-down') return moveEquipmentLevel(m, -1);
+  if (what === 'lvl-pick') return openMove([m.machine_uid],
+                                           levelOfMachine(m));
   if (what === 'export') return (location.href = `/api/machines/${uid}/export.csv`);
   if (what === 'export-qc')
     return (location.href = `/api/machines/${uid}/export.csv?kind=qc`);
@@ -2982,38 +5290,63 @@ async function act(what, m) {
   }
   if (['service', 'dead', 'clear'].includes(what)) {
     const mode = what === 'service' ? 'SERVICE' : what === 'dead' ? 'DEAD-LINE' : '';
-    const comment = prompt(mode
-      ? `A comment is required to set ${m.title} to ${mode}:`
-      : `A comment is required to clear ${m.title}'s override:`);
-    if (comment === null || !comment.trim()) return;
-    const r = await post(`/api/machines/${uid}/override`,
-                         {override: mode, comment: comment.trim()});
-    const bad = await failure(r);
-    // The bench reads lem_machine_control and takes ITSELF out of service. A
-    // dropped override means the floor would show it stopped while it keeps
-    // running samples, so this alert is the whole safety of the feature.
-    if (bad) alert(bad);
-    return load();
+    return ask({
+      title: mode ? `Put this equipment on ${mode}` : 'Clear this override',
+      what: {cap: 'Equipment', text: m.title,
+             meta: `now ${esc(m.status)}`},
+      rule: mode
+        ? `The bench reads this and takes ITSELF ${mode === 'SERVICE'
+            ? 'out of service' : 'off the line'} on its next poll, so the `
+          + 'comment is the only record of why. It stays until somebody clears '
+          + 'it.'
+        : 'The equipment goes back to reporting its own state on the next '
+          + 'poll. The override and this comment both stay in the log.',
+      label: 'Comment',
+      placeholder: mode ? 'e.g. Bench moved for recalibration.'
+                        : 'e.g. Recalibrated and back in service.',
+      required: 'A comment is required \u2014 this is the only record of why.',
+      submit: mode ? `Set ${mode}` : 'Clear the override',
+      danger: mode === 'DEAD-LINE',
+      onSubmit: async comment => {
+        const r = await post(`/api/machines/${uid}/override`,
+                             {override: mode, comment}).catch(() => null);
+        // The bench reads lem_machine_control and takes ITSELF out of service.
+        // A dropped override means the floor would show it stopped while it
+        // keeps running samples, so saying so is the whole safety of this.
+        const bad = r ? await failure(r) : 'The server could not be reached.';
+        if (bad) return bad;
+        load();
+        return '';
+      },
+    });
   }
   if (what === 'delete') {
-    if (!confirm(`Delete “${m.title}”?\n\nIts status and QC assignments are ` +
-                 `removed. If its station module is still running it will ` +
-                 `re-appear on the next poll.`)) return;
-    const purge = confirm('Also erase its history from the machine log?\n\n' +
-                          'OK = erase, Cancel = keep.');
-    const r = await fetch(`/api/machines/${uid}`, {method: 'DELETE',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({purge_history: purge})});
-    const bad = await failure(r);
-    if (bad) {
-      // Half-retired is a real state — the server says which parts went and
-      // stops rather than reporting a clean retirement over a machine that
-      // still has its configuration. Pressing Delete again finishes it.
-      alert(bad);
-      return load();
-    }
-    if (selected && selected.machine_uid === m.machine_uid) selected = null;
-    return load();
+    // ONE dialog with a tick, not two chained confirms. The second confirm
+    // read "OK = erase, Cancel = keep" — a box whose Cancel button did not
+    // cancel, on the irreversible half of a destructive action.
+    return askConfirm({
+      title: 'Retire this equipment',
+      what: {cap: 'Equipment', text: m.title, meta: esc(m.machine_uid)},
+      body: `Delete “${m.title}”? Its status and QC assignments are `
+          + 'removed. If its station module is still running it will re-appear '
+          + 'on the next poll.',
+      check: 'Also erase its history from the equipment log. Left unticked, '
+           + 'the history stays and stays readable on the Logs page.',
+      submit: 'Retire it',
+      onSubmit: async (_text, purge) => {
+        const r = await fetch(`/api/machines/${uid}`, {method: 'DELETE',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({purge_history: purge})}).catch(() => null);
+        // Half-retired is a real state — the server says which parts went and
+        // stops rather than reporting a clean retirement over equipment that
+        // still has its configuration. Pressing Retire again finishes it.
+        const bad = r ? await failure(r) : 'The server could not be reached.';
+        if (bad) { load(); return bad; }
+        if (selected && selected.machine_uid === m.machine_uid) selected = null;
+        load();
+        return '';
+      },
+    });
   }
 }
 
@@ -3130,6 +5463,12 @@ if (!SITE_VIEW) {
 }
 
 load();
+/* The lab's open corrective actions: ONE read, once, off the polled path
+ * entirely. `/api/equipment/open-actions` costs LabCore a read, and the floor
+ * repaints every two seconds from every screen in the building — so this is
+ * refreshed when something changes it (opening, recording, verifying, closing)
+ * and never on a timer. */
+loadOpenActions();
 setInterval(() => { if (!dragging) load(); }, FLOOR_REFRESH_MS);
 // Warm what the operator is most likely to open next.
 LEM.prefetch(['/api/checklists', '/api/maintenance', '/api/checklists/history']);
@@ -3179,7 +5518,7 @@ if (bridge.siteView) {
     note.className = 'empty';
     note.style.cssText = 'padding:28px;max-width:46ch;margin:auto;text-align:center';
     note.innerHTML = 'The floor view needs WebGL2, and this browser did not ' +
-      'give it. Every instrument and its status is still on the ' +
+      'give it. Every piece of equipment and its status is still on the ' +
       '<a class="link" href="/stations">Stations</a> page.';
     document.getElementById('stage').appendChild(note);
   }
