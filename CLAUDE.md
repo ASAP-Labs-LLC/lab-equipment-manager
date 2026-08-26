@@ -23,6 +23,9 @@ LEM merged) *and* the Flask web server that is the lab's master view.
 - `docs/superpowers/specs/2026-07-27-lem-station-module-design.md` — evolving
   design doc; v3 spec is authoritative (capture-and-map parsing, QC/PM/Cal,
   `lem_machine_log` universe container).
+- `docs/superpowers/specs/2026-08-25-measurement-uncertainty.md` — ISO 17025
+  measurement uncertainty from QC data. Read before touching `qc_samples.py`,
+  `qc_specs.py`, or anything writing `kind='qc'` rows.
 - `Data Handler/`, `LEM - Lab Equipment Manager/` — source apps being merged
   (**reference only, never edit**). `V4.0.3.1 - Beta Stable/` is the one worth
   reading: `maintenance.py` (PM/Cal + checklist model) and `web_server.pyw`
@@ -82,6 +85,104 @@ and a 12s snapshot.
   module, and that is when the floor most needs to hear from it.
 - The web server treats it as an accelerator only: the LabCore record is the
   failover and stays authoritative. See `LEM Web Server/CLAUDE.md`.
+
+## The bench stopped polling LabCore for its configuration (2026-08-26)
+
+**The problem was reads, not writes.** LabCore serialises reads AND writes through
+one queue, so a read costs a write slot and a slow read blocks every write in the
+lab. An idle bench made **6.2 LabCore reads/min** and 0.2 writes/min — the writes
+were already change-gated and fine. Two lines were 64% of the traffic:
+`refresh_corrections` (no gate of ANY kind — it fired every poll) and the
+`lem_machine_control` override read (deliberately ungated).
+
+That load was *per bench*, so it scaled with instrument count. That is why "more
+instances" crashed LabCore.
+
+**Why the database cannot simply move.** `read_sql` bypasses the write queue only
+when the DB is on a local drive (`LabCore.py:13180`). Ours is on the SMB share
+and stays there — it is shared across machines. On a share WAL is unusable, so a
+concurrent reader blocks the writer's commit; serialising reads is a correctness
+measure, not an oversight. See `docs/labcore-lem-tables-and-the-write-queue.md`
+for the full chain and what LabCore could do about it.
+
+**Three roads now carry what used to be six reads a poll.**
+
+1. **The note channel.** `POST /api/live` no longer answers `204`. It returns
+   `{"stale": ["corrections", "override"]}` — a note saying what changed, left by
+   the web server when somebody saves a correction or sets an override. `post_live`
+   returns the parsed body (`None` on failure) instead of a bool; **test
+   `is not None`, never truthiness** — a success with an empty body is `{}` and
+   falsy, and counting that as a failure walks `_live_failures` to the retry
+   threshold on a healthy floor. A note is delivered on the push that finds it AND
+   the next one, then retired: a response lost in flight then heals in one poll
+   instead of waiting out the backstop.
+2. **The config road.** `GET {live_url}/api/bench/{uid}/config` serves the bench
+   its override, corrections, QC samples/targets/specs and maintenance from the
+   web server's existing 12s snapshot — **zero LabCore ops**, because the snapshot
+   already runs at one op per cycle whatever the bench count. Rows arrive in the
+   exact shape `read_sql` returns, so they feed `parse_correction_rows`,
+   `parse_qc_specs`, `parse_maint_rows`, `extract_overrides` unchanged. The bench
+   refuses an answer whose `machine_uid` does not echo its own — a caching proxy
+   serving another bench's correction factors is the worst outcome on this road.
+3. **LabCore**, unchanged, as the fallback.
+
+**The windows, and why they are safe.** `CORRECTIONS_REFRESH_SECONDS` and
+`OVERRIDE_REFRESH_SECONDS` are 900s backstops, not the delivery mechanism — the
+note is. They apply **only while the note channel is proven healthy**; otherwise
+the override falls back to being read every poll exactly as before, and
+corrections to `CORRECTIONS_REFRESH_UNSIGNALLED_SECONDS` (120s). The override is
+the lever that takes a bench off line: a stale one is not acceptable, and the
+fallback is the whole reason a window is defensible at all.
+
+**Health must be EARNED by the protocol, not by a 2xx** (`speaks_live_notes`).
+An un-upgraded floor answers `204` with no body, which `post_live` reads as a
+successful push — so "the push landed" once meant "notes work", and a new module
+against an old server suppressed the override read for the full 900s while notes
+never arrived. Reproduced: `_override_due` False at 60s, 300s and 899s. The
+channel now counts as delivering only when the answer carries a `stale` list, so
+the benches and the server can be upgraded in **any order**. `parse_live_notes`
+routes through the same check, so the two cannot drift apart.
+
+**A read in flight is never believed about something else** (`_corrections_epoch`).
+The stamp is captured before the LabCore/floor read and re-checked on return; if
+`set_machine` or `_open_corrections` moved it, the answer is discarded rather than
+applied. Without this, two wrong-number windows were reproducible: a newly bound
+instrument reported RAW values for up to the whole window (`Machine.to_dict()`
+does not carry `corrections`, so a fresh machine starts `{}`), and an operator's
+own saved factor was reverted by a read that began before the save. Both bite
+exactly when LabCore is congested — the case this work exists for.
+
+**A refused declaration now backs off** (`DECLARE_RETRY_SECONDS` 5s → 60s,
+honouring LabCore's own `retry_after`). `_declare_tables` retried every DDL on
+every poll until LabCore accepted them all — a positive feedback loop aimed at
+the congestion being reported. Sustained congestion at a 12s poll: 300
+attempts/hour → ~65. It declares **nine** statements now: seven tables plus the
+two `lem_machine_log` indexes. It deliberately does NOT declare
+`idx_lem_maint_machine` — `lem_maintenance` is the web server's table, and
+`CREATE INDEX` on a table that does not exist yet is an *error*, which by this
+block's own rule would back the whole declaration off for the life of the
+process on a fresh LabCore.
+
+**`lem_machine_log` is indexed (2026-08-26).** It had no primary key and no
+index while being the container everything lands in, and two queries scan it
+every 12s. On 100k rows the snapshot's `event` arm went **23.99ms → 0.04ms**.
+LabCore interrupts any read over 8s and its comment names "an unindexed scan over
+the SMB share" as the hazard — so this was heading for a cliff, not a slope.
+Note `TRIM()` was never the problem: `test_name` is in neither index, so the
+predicate is a row filter either way. The index is what mattered. Adding it also
+changed same-second tie-break order (`_audit` stamps to whole seconds), which is
+why two reporting queries now say `ORDER BY ts, rowid`.
+
+Measured, idle bench at the 30s default: **6.2 → 0.9 reads/min**, and **0 config
+reads** from the second poll onward. With no floor at all the numbers are
+byte-identical to before. Config load no longer scales with bench count.
+
+Still open: the first poll of a module's life costs the full five LabCore reads,
+because health has to be earned — so a floor-wide LabStation restart stampedes
+LabCore once.
+
+Tests: `tests/test_live_notes.py`, `tests/test_floor_config.py`,
+`tests/test_queue_economy.py`, `tests/test_write_economy.py`.
 
 ## Mappings are editable after they are made (2026-08-06)
 

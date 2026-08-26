@@ -69,13 +69,17 @@ def push(client, **over):
 
 class TestThePushIsAccepted:
     def test_a_valid_push_is_taken(self, client, app):
-        assert push(client).status_code == 204
+        # 200 with a body since 2026-08-26, not the original `"", 204` — the
+        # response now carries the bench's stale notes. See
+        # test_stale_notes.py; a module built before that change ignores the
+        # body, which is what lets the two sides deploy in either order.
+        assert push(client).status_code == 200
         assert app.config["LIVE"].get("pac-flash-2")["status"] == "GREEN"
 
     def test_a_machine_the_floor_has_never_heard_of_is_still_taken(self, client):
         """The floor only draws machines it knows, so an unknown uid is inert
         rather than an error a bench has to handle."""
-        assert push(client, machine_uid="brand-new").status_code == 204
+        assert push(client, machine_uid="brand-new").status_code == 200
 
     def test_the_parse_details_come_through(self, client, app):
         push(client, last_parse_at="2026-08-05T14:02:10", lab_id="L-1234")
@@ -386,7 +390,7 @@ class TestTheTwoProgramsStillAgree:
         response = client.post("/api/live", json=body,
                                headers={"X-LEM-Token": "test-token"})
 
-        assert response.status_code == 204
+        assert response.status_code == 200
         machines = machines_of(client)
         assert machines["pac-flash-2"]["status"] == "GREEN"
         assert machines["pac-flash-2"]["live"] is True

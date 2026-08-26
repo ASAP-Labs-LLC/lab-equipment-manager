@@ -110,12 +110,31 @@ Two related items from the same report, deliberately NOT done:
   the SSLContext is built once per process, not per call — and changing certificate
   verification to save a one-off 20ms is a bad trade.
 - *Give reads their own LabCore endpoint.* `read_sql` POSTs to `/api/queue/write`,
-  so reads share the write path. Probed production: no read endpoint exists
-  (`/api/read`, `/api/query`, `/api/sql` all 404), so this needs a change inside
-  LabCore, not here. Measured caveat on the premise: reads are **not** actually
-  capped at the write queue's ~1.5 ops/sec — 10 sequential `read_sql` ran at ~102ms
-  each. The real risk is a write backlog blocking reads, which the snapshot makes
-  moot at 1 read per 12s.
+  so reads share the write path.
+
+  ⚠ **CORRECTED 2026-08-26 — the claim that used to sit here was wrong.** It said
+  "probed production: no read endpoint exists (`/api/read`, `/api/query`,
+  `/api/sql` all 404)". Those three guessed paths indeed 404, but **about twenty
+  GET endpoints do exist** and none of them goes through `_write_queue`
+  (`LabCore.py:11475`): `/api/samples`, `/api/sample`, `/api/results`,
+  `/api/results-multi`, `/api/limits`, `/api/test-names`, `/api/reruns`,
+  `/api/orders`, `/api/customers`, `/api/queue/status`, `/api/station/presence`
+  and more. The conclusion was reached by probing guessed paths instead of reading
+  the source. **Read the source.**
+
+  What is true: **none of them covers a `lem_*` table**, so LEM's own
+  configuration is reachable only through raw `read_sql`, which is a queue op.
+  That is the actual gap.
+
+  Also corrected: "reads are not capped at ~1.5 ops/sec — 10 sequential `read_sql`
+  ran at ~102ms each" is right but misleading. Reads are not rate-limited; they
+  are *blocked* behind write backlog. Same outcome under load, different
+  mechanism — and it only happens because the DB is on the share.
+  `read_sql` bypasses the queue entirely when the DB is on a local drive
+  (`LabCore.py:13180`); ours is on the share and cannot move, so it never does.
+
+  Full root-cause chain and the fixes proposed to the LabCore team:
+  `docs/labcore-lem-tables-and-the-write-queue.md`.
 
 ## QC expiry is a rolling window (2026-08-03)
 
@@ -187,6 +206,122 @@ free to remove because both endpoints are served from the snapshot in under 2ms
 at zero LabCore ops. `test_floor_poll_interval.py` stops it drifting back.
 
 Design: `docs/superpowers/specs/2026-08-05-live-push-channel-design.md`.
+
+## A refused write is not a success (2026-08-26)
+
+**LabCore refuses by RETURNING an error dict, not by raising.** When its queue is
+deep it answers `{"error": "LabCore is busy…", "busy": true, "retry_after": 5}`.
+Code that calls `gateway.sql(...)` and ignores the result therefore reports
+`{"ok": true}` for a write that never landed.
+
+This was systemic — roughly thirty write sites, including the correction-factor
+save (so a supervisor could set a calibration offset, see success, and have the
+lab keep reporting uncorrected results) and the manual override. **The
+maintenance import at `web_app.py` was `notes.md`'s "imported 3094 while nothing
+landed" written a second time**, four months after that lesson was learned.
+
+Why it came back: the 2026-08-03 fix grew a **private copy** of the check inside
+`ChecklistStore.import_state` and another inside `db_config_store`. Every site
+nobody touched that day still had none. A pattern you must remember to apply is a
+pattern that will be forgotten.
+
+**So it is a seam now, not a pattern.** In `labcore_gateway.py`:
+
+```python
+class LabCoreRefused(RuntimeError)   # .busy, .retry_after, .what, .extra
+def refusal_reason(result) -> str    # None is NOT a refusal
+def is_busy(result) -> bool
+def retry_after_seconds(result)      # None, never a default
+def check_write(result, what="", **extra)    # wraps the call so it can't be omitted
+```
+
+Stores **raise**; one `@app.errorhandler(LabCoreRefused)` turns it into a
+response. Nothing can become a `200` by omission — which a per-endpoint check
+cannot promise, and the endpoint nobody remembered is exactly where the
+correction was dropped.
+
+- **503 + `Retry-After` for busy** (`retryable: true`), **502 for permanent**. The
+  distinction matters: a client that retries a permanently-invalid write retries
+  forever.
+- **Multi-statement saves stop at the first refusal** — LabCore has just said its
+  queue is too deep, and pushing on aims more work at the congestion being
+  reported (the station module's `_drain_events` gives up its turn for the same
+  reason). They then report `landed` / `not_landed`. There is no transaction
+  across queue ops, so be honest about partial state rather than pretending
+  atomicity.
+- **A refused write leaves no stale note.** A note for a change that did not land
+  costs a pointless LabCore read on a bench.
+- **DDL is deliberately NOT guarded.** `CREATE TABLE IF NOT EXISTS` is a
+  declaration, retried on the next call, and a refusal surfaces on the data write
+  immediately after; guarding it turns a cold start into a hard failure.
+- `_audit` still never raises — an audit failure must not fail the operator's
+  change — but it is now *honest*: a refused correction is no longer audited as
+  "correction factor set".
+
+⚠ **The trap that nearly shipped:** `DELETE FROM lem_machine_control` on a table
+that does not exist yet returns an error dict **indistinguishable from a
+refusal**, so in a lab where nobody had ever set an override, a good retirement
+became a 502. Fixed by running `ensure_schema()` before the cascade, not by
+sniffing the message. Anyone extending the guard to another raw-SQL site should
+expect this.
+
+**The floor swallowed refusals too.** Seven handlers had no `r.ok` check at all;
+the override showed `alert('Could not apply the override.')`, which cannot tell
+someone whether to retry in five seconds or go find help. Nothing surfaced
+`retry_after`. `LEM.failure()` / `LEM.send()` in `static/lem.js` now format the
+server's message and append the retry hint only when `retryable`.
+`TestTheFloorDoesNotSwallowARefusal` scans the source with a named allow-list, so
+the next save handler written without an `r.ok` branch fails the suite.
+
+Tests: `tests/test_refused_writes.py` (88).
+
+## The floor now serves the benches too (2026-08-26)
+
+The rule was "a request never talks to LabCore, and LabCore load does not depend
+on how many people are looking." That rule now covers **benches**, not just
+screens — which matters far more, because a bench asks all day and a screen only
+while someone is watching.
+
+Each bench used to read its own configuration from LabCore, so LabCore paid a
+fixed cost per instrument and "more instruments" is what crashed it. Since this
+server is co-located with LabCore and already holds these tables in memory, the
+benches read from **us** instead.
+
+**Two additions, both zero-op:**
+
+- **Notes on `/api/live`.** It returns `{"stale": [...]}` instead of `204`.
+  `LivePresence.mark_stale()` is called when a correction is saved
+  (`api_save_correction`), an override is set (`api_machine_override`) or the
+  control row is deleted — each gated on the write actually succeeding, because a
+  note for a change that did not land buys a pointless LabCore read. Notes live
+  **outside** the TTL'd entries (a bench off over the weekend must still get its
+  note) and are retired only after a SECOND delivery, so a response lost in flight
+  heals in one poll rather than waiting out the bench's backstop.
+- **`GET /api/bench/<uid>/config`.** Override, corrections, QC samples/targets/
+  specs and maintenance, served from the snapshot with a real
+  `snapshot_age_seconds`. Same `hmac.compare_digest` token as `/api/live`; benches
+  do not log in. An unknown uid returns **empty lists, not 404** — a registered
+  machine with nothing configured is a normal state, and a 404 would push that
+  bench onto the LabCore fallback forever.
+
+`snapshot_age_seconds` is not decoration: the bench refuses an answer older than
+its bound and falls back to LabCore, so a wrong or missing age silently defeats
+that safety net. Take it from the snapshot's own age — never a second clock.
+
+**Three new arms** (`control`, `corr`, `qcsample`) joined the same `UNION ALL`, so
+this still costs **one LabCore op per cycle**. They deliberately select only the
+columns the module actually parses — not `corrections.units`, not
+`control.comment`, not the `updated_at`/`updated_by` pairs. A column LabCore does
+not have fails the *entire* statement and takes every table with it, which is
+exactly how the floor broke when `correction` was added. Fewer columns, fewer ways
+to take everything down.
+
+Measured: idle bench **6.2 → 0.9 LabCore reads/min**, and **0 config reads** from
+its second poll onward. Config load no longer scales with bench count.
+
+The bench treats all of this as best-effort: no floor, a stale snapshot, a bad
+token, a garbage body or a `machine_uid` that does not echo all fall back to
+reading LabCore exactly as before. See the root `CLAUDE.md`.
 
 ## Performance: how reads are served (2026-08-03)
 

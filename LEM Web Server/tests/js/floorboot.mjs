@@ -155,8 +155,31 @@ const sandbox = {
   /* lem.js's global. `bust` is here because the page drops the cached floor
    * after every write that changes it — a stub missing it turns a successful
    * save into a TypeError, which is the harness lying about the page. */
+  /* `failure` formats a refused write for a person: the server's own sentence,
+   * which statements of a multi-statement save landed, and — only when the
+   * refusal is worth retrying — how long to wait. This page's local `failure()`
+   * delegates to it, so a stub without it turns every refusal path into a
+   * TypeError. Modelled on the real one in static/lem.js rather than stubbed to
+   * a constant, because three of this file's own assertions read the sentence
+   * that comes back. */
   LEM: {get: () => Promise.resolve(null), fresh: () => Promise.resolve(null),
-        prefetch: noop, live: noop, bust: noop},
+        prefetch: noop, live: noop, bust: noop,
+        failure: (response, body, fallback) => {
+          body = body || {};
+          let text = body.error || fallback || 'That did not save.';
+          if (body.not_landed && body.not_landed.length) {
+            if (body.landed && body.landed.length) {
+              text += ' Saved: ' + body.landed.join(', ') + '.';
+            }
+            text += ' NOT saved: ' + body.not_landed.join(', ') + '.';
+          }
+          if (body.retryable && body.retry_after > 0) {
+            text += ' Try again in ' + Math.ceil(body.retry_after) + 's.';
+          } else if (body.retryable) {
+            text += ' Try again shortly.';
+          }
+          return text;
+        }},
   URLSearchParams, URL, JSON, Math, Date, Set, Map, WeakMap, Promise, Error,
   TypeError, RegExp, Intl, Array, Object, String, Number, Boolean, Symbol,
   parseInt, parseFloat, isNaN, isFinite, encodeURIComponent, decodeURIComponent,

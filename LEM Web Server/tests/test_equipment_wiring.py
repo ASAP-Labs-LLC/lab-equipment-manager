@@ -65,8 +65,24 @@ def gw():
 
 
 def _declared_tables():
+    """The TABLE names in the central DDL, parsed the way `ensure_schema` does.
+
+    `ensure_schema` has two parsers, not one. `CREATE INDEX x ON t(...)` is
+    matched against the index list by its OWN name, and everything else against
+    the table list by the word after IF NOT EXISTS. A helper carrying only the
+    second parser reads an index's `ON` clause as part of a table name, which
+    is a fact about the helper and not about the schema.
+    """
     return [ddl.split("IF NOT EXISTS", 1)[1].split("(", 1)[0].strip()
-            for ddl in snapshot_service.SCHEMA_DDL]
+            for ddl in snapshot_service.SCHEMA_DDL
+            if "CREATE INDEX" not in ddl.upper()]
+
+
+def _declared_indexes():
+    """The INDEX names, parsed the way `ensure_schema` parses them."""
+    return [ddl.split("IF NOT EXISTS", 1)[1].split(" ON ", 1)[0].strip()
+            for ddl in snapshot_service.SCHEMA_DDL
+            if "CREATE INDEX" in ddl.upper()]
 
 
 # ── 1. the schema ────────────────────────────────────────────────────────────
@@ -96,11 +112,20 @@ class TestEveryStoresTableIsDeclaredCentrally:
             assert names.count(table) == 1, table
 
     def test_the_ddl_still_parses_the_way_ensure_schema_parses_it(self):
-        """`ensure_schema` pulls the table name out by splitting on
-        "IF NOT EXISTS", so a DDL written any other way is declared on every
-        start instead of being skipped."""
+        """`ensure_schema` pulls the name out by splitting on "IF NOT EXISTS",
+        so a DDL written any other way is declared on every start instead of
+        being skipped.
+
+        Both halves are held, because there are two probes: a table is looked
+        up in the table list and an index in the index list, and a name that
+        parses into either the wrong shape or the wrong list is re-declared
+        forever — two writes into a ~1.5 ops/sec queue on every restart, and
+        the tray restarts this server on every code edit."""
         for name in _declared_tables():
             assert name.startswith("lem_"), name
+            assert " " not in name and "(" not in name, name
+        for name in _declared_indexes():
+            assert name.startswith("idx_"), name
             assert " " not in name and "(" not in name, name
 
     def test_nothing_new_went_into_schema_migrations(self):

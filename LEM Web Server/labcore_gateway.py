@@ -30,6 +30,8 @@ import sqlite3
 import threading
 from typing import Any, Dict, List, Optional
 
+import labcore_result as _result
+
 # The connection point shared across the LabLink suite: LabCore's HTTP queue is
 # reverse-proxied behind this hostname over HTTPS (port 443, no :8080). Override
 # per-machine with the LABCORE_URL env var, exactly like the other apps.
@@ -62,6 +64,191 @@ _CORE_SCHEMA = (
         source_workspace TEXT, PRIMARY KEY (lab_id, test_name))
     """,
 )
+
+
+# ── a refusal is not a write ─────────────────────────────────────────────────
+# THE SINGLE MOST EXPENSIVE MISTAKE ON THIS ROAD IS TREATING A REFUSAL AS A
+# WRITE. LabCore serialises its write queue at roughly 1.5 ops/sec and turns new
+# work away past ~100 pending with an error DICT, returned normally, never
+# raised:
+#
+#     {"error": "LabCore is busy — write queue is deep. Retry shortly.",
+#      "busy": true, "retry_after": 5}
+#
+# So `except Exception` catches nothing and `gateway.sql(...)` on its own line
+# looks exactly like a write that worked. notes.md records what that costs: a
+# bulk checklist import "reported 'imported 3094' while nothing landed" because
+# the loop counted the rejections as successes. Two places were fixed then —
+# `checklists.import_state` and `db_config_store._check` — each growing its own
+# private copy of the isinstance check, and every write site that was NOT
+# touched that day still had none.
+#
+# One seam, here, next to the gateway that produces these dicts, rather than an
+# ad-hoc `.get("error")` at each write site: a pattern has to be remembered, and
+# the site nobody remembered is precisely where a supervisor's correction factor
+# was dropped while the floor answered `200 {"ok": true}`. The station module
+# reached the same conclusion independently and has `refusal_reason` /
+# `retry_after_seconds` with these exact names and shapes; keeping them
+# identical is what lets the two halves of LEM be read as one system.
+
+
+class LabCoreRefused(_result.LabCoreRefused):
+    """LabCore turned a write away. Raised BY LEM, never by LabCore.
+
+    **It subclasses `labcore_result.LabCoreRefused`, and that is load-bearing.**
+    Two halves of this app grew a write-confirmation seam independently — this
+    one, and `labcore_result.confirm_write` — and both named their exception
+    `LabCoreRefused`. Two classes of the same name is worse than either: an
+    `except LabCoreRefused` written against one of them silently fails to catch
+    the other, so a refusal raised in a store reaches the browser as a 500 while
+    a handler that looks like it covers it sits three frames up. Subclassing
+    means every existing `except` on either side keeps working, and there is
+    exactly one type to catch.
+
+    The DECISION about what an answer means stays in `labcore_result` — that
+    file is the single authority per CLAUDE.md, and `refusal_reason` below
+    delegates to it rather than re-deriving the rule. What this class adds is
+    what the HTTP layer needs and that one does not carry: `what` to tell the
+    person who clicked Save, `busy` to decide whether retrying is worth it, and
+    `retry_after` to say how long.
+
+    The point of an exception here is that it cannot be ignored by omission.
+    A store method that returns its refusal relies on every caller remembering
+    to look, which is the failure this module exists to end; a store method
+    that raises is guarded at one place per app — see `web_app`'s error
+    handler — and a new write path is covered the day it is written.
+
+    Carries the whole answer, because the caller needs three different things
+    from it: whether it is worth retrying (`busy`), how long to wait
+    (`retry_after`), and what to tell the person who clicked Save (`what`).
+    """
+
+    def __init__(self, result, what: str = "", **extra) -> None:
+        # DELEGATE, do not assign-then-super. The base is no longer
+        # `RuntimeError`: `labcore_result.LabCoreRefused` now carries the answer
+        # itself, and its `__init__` sets `result`, `what` and `extra` from ITS
+        # arguments. Setting them here first and then calling
+        # `super().__init__(self.reason)` handed the base one argument, so it
+        # reset `result` to `{}` and `what` to `""` on the way back out — and a
+        # busy queue arrived at the browser as 502 "never retry this" with no
+        # Retry-After and no sentence about what was lost, which is the exact
+        # failure both halves of this seam were built to stop.
+        #
+        # The argument ORDER differs on purpose: this constructor is handed the
+        # ANSWER (callers write `LabCoreRefused(result, what)`), and the base is
+        # handed the SENTENCE first. Translating between the two is this
+        # class's job, and doing it here is what keeps every existing call site
+        # on either side working.
+        super().__init__(refusal_reason(result) or "LabCore refused the write",
+                         result, what, **extra)
+
+    @property
+    def busy(self) -> bool:
+        return is_busy(self.result)
+
+    @property
+    def retry_after(self):
+        return retry_after_seconds(self.result) if self.busy else None
+
+
+def refusal_reason(result) -> str:
+    """LabCore's refusal of an op, or "" if it went through.
+
+    `None` is deliberately not a refusal. A store method that returns nothing
+    has not been *told* it failed, and reading silence as failure would turn
+    every unguarded helper in the codebase into a permanent error. Note that
+    `labcore_result.refusal_of` takes the opposite view of `None` — there it is
+    a gateway that stopped talking, because it wraps the answer to a call that
+    was definitely made. Both are right about their own caller; that difference
+    is the reason this wrapper exists at all and is why it cannot simply be
+    deleted in favour of the other.
+
+    **The DECISION is delegated; the WORDING is not.** `labcore_result.refusal_of`
+    is the single authority on whether an answer means the work did not happen,
+    so the two halves of this app cannot drift into disagreeing about that. What
+    it must NOT do is supply the sentence: this one is read by a person through
+    `refusal_response`, and `test_refused_writes.py` pins the exact text against
+    the shapes LabCore is EVIDENCED to send. Appending the other module's
+    diagnostic tail here changed 28 of those assertions, which is how this split
+    was found.
+    """
+    if result is None:
+        return ""
+    verdict = _result.refusal_of(result)
+    if verdict is None:
+        return ""
+    if isinstance(result, dict) and result.get("error"):
+        return str(result["error"]) or "LabCore refused the write"
+    # A refusal this function has no sentence of its own for. It reaches here
+    # because `refusal_of` recognises MORE shapes than the `error` key —
+    # a truthy `busy`, and a present-but-falsy `ok`/`queued`. Returning "" here
+    # was the bug: the decision said "refused" and the wording said "fine", so
+    # `check_write` raised nothing and roughly a hundred writes reported 200 for
+    # work that never landed. The other module's sentence is the right fallback;
+    # it is only the EVIDENCED `error` shape whose exact wording is pinned.
+    return verdict
+
+
+def is_busy(result) -> bool:
+    """Whether this refusal is the transient kind — worth trying again.
+
+    "LabCore is busy" and "no such column" are both error dicts and they are
+    opposite instructions. A client that retries a permanently-bad write
+    forever is its own kind of bug, and one that gives up on a busy queue makes
+    a supervisor re-type a correction factor that would have landed a second
+    later.
+
+    The flag first, then the message — because `snapshot_service` already sniffs
+    the text for the same word, and a busy answer that arrived without the flag
+    (an older LabCore, a proxy, a timeout dressed up as an error) misread as
+    permanent is the more expensive of the two mistakes.
+    """
+    if not isinstance(result, dict):
+        return False
+    if result.get("busy") is True:
+        return True
+    return "busy" in str(result.get("error") or "").lower()
+
+
+def retry_after_seconds(result):
+    """How long LabCore asked to be left alone, or None if it did not say.
+
+    The half of a refusal every caller here used to throw away. A caller that
+    ignores it re-fires into the queue that has just reported it is too deep,
+    which is the load the refusal was asking to be spared.
+
+    None rather than a default, so the caller can fall back to its OWN schedule
+    — a wait this function invented would be indistinguishable from one LabCore
+    asked for, and the two mean different things.
+
+    Everything unusable reads as "it did not say". A server on another schedule
+    may answer with a string, a null, a bool, a negative number, a zero or a
+    NaN; none of those may be handed to a browser as a countdown. Note that
+    `nan > 0` is False, which is what excludes it, and that `True` is an `int`
+    in Python, which is what the explicit bool check excludes.
+    """
+    if not isinstance(result, dict):
+        return None
+    value = result.get("retry_after")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if not (value > 0) or value == float("inf"):
+        return None
+    return value
+
+
+def check_write(result, what: str = "", **extra):
+    """Pass a write's answer through, or raise `LabCoreRefused` if it wasn't one.
+
+    Wrapping the call rather than following it — `check_write(gw.sql(...))`
+    instead of `gw.sql(...)` then a check — is deliberate: the guard is inside
+    the expression, so it cannot be left off by someone adding a write below an
+    existing one and copying the line above it.
+    """
+    if refusal_reason(result):
+        raise LabCoreRefused(result, what, **extra)
+    return result
 
 
 class FakeLabCoreGateway:

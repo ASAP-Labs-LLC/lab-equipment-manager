@@ -5234,10 +5234,24 @@ function sayMaint(msg) {
   if (msg && !$('#maintDlg').open) alert(msg);
 }
 
-async function failure(r) {
+async function failure(r, fallback) {
   if (r.ok) return null;
   const b = await r.json().catch(() => ({}));
-  return b.error || 'LabCore did not accept that — nothing was saved.';
+  // Delegated to `LEM.failure` rather than formatted here. It is the same
+  // decision every other page makes about a refused write, and it says three
+  // things this local copy did not: which statements of a multi-statement save
+  // DID land, whether the refusal is worth retrying at all, and how long to
+  // wait. "LabCore did not accept that" sends someone to find help; "the queue
+  // is full, try again in 5s" tells them it will clear on its own.
+  //
+  // Kept as a wrapper because this page calls `failure(r)` in a dozen places
+  // and reads a null for "it worked", which `LEM.failure` does not do.
+  // `fallback` is the LAST resort — used only when the server sent no message
+  // at all (a proxy page, a dropped connection). A caller with a sentence of
+  // its own passes it here; LabCore's own reason still wins whenever there is
+  // one, which is the point of routing everything through `LEM.failure`.
+  return LEM.failure(r, b,
+                     fallback || 'LabCore did not accept that — nothing was saved.');
 }
 
 async function act(what, m) {
@@ -5313,7 +5327,11 @@ async function act(what, m) {
         // The bench reads lem_machine_control and takes ITSELF out of service.
         // A dropped override means the floor would show it stopped while it
         // keeps running samples, so saying so is the whole safety of this.
-        const bad = r ? await failure(r) : 'The server could not be reached.';
+        // The canned sentence is kept, but only as the fallback: it cannot
+        // tell somebody whether to retry in five seconds or go and find help,
+        // which is exactly what LabCore's own reason and `retry_after` do say.
+        const bad = r ? await failure(r, 'Could not apply the override.')
+                      : 'The server could not be reached.';
         if (bad) return bad;
         load();
         return '';

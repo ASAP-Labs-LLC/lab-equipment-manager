@@ -34,6 +34,7 @@ from db_config_store import DbConfigStore
 from labcore_result import (LabCoreError, LabCoreRefused, LabCoreUnavailable,
                             confirm_write, is_missing_table,
                             rows as labcore_rows)
+from labcore_gateway import check_write, refusal_reason
 from labcore_source import LabCoreDataSource
 from models import (
     AppConfig,
@@ -522,17 +523,28 @@ def static_version(path: str) -> str:
 #      person nothing about whether to press the button again, and pressing the
 #      button again is exactly the right move — the queue drains in seconds.
 #
-# So the two kinds are told apart on the wire as well as in the message:
+# So the kinds are told apart on the wire as well as in the message. THE STATUS
+# CODE ANSWERS ONE QUESTION — is it worth coming back — and it answers it the
+# same way here as in `refusal_response`, because both reach the same page:
 #
-#   502 + labcore="refused"      LabCore answered and said no. The record is
-#                                DEFINITELY unchanged; press Save again.
-#   503 + labcore="unavailable"  LabCore could not be asked at all. Nothing is
-#                                known — which is NOT the same as nothing
-#                                happened, and the wording never claims it is.
+#   503   Come back. A deep queue (`busy`), or a LabCore that could not be
+#         asked at all. Carries `Retry-After` when LabCore said how long.
+#   502   Do not. LabCore answered and the answer will not change — a
+#         malformed statement, a column that does not exist. A client that
+#         retries this retries forever.
 #
-# `retry` is true on both because both clear on their own; what differs is what
-# the operator can conclude about the record, and that is carried by `labcore`,
-# by the status code and by the message. A single flag cannot say two things.
+# What the STATUS cannot say is what the operator may conclude about the
+# record, and that is a different question with a different answer:
+#
+#   labcore="refused"      LabCore answered and said no. The record is
+#                          DEFINITELY unchanged; press Save again.
+#   labcore="unavailable"  Nothing answered, so nothing is known — which is
+#                          NOT the same as nothing happened, and the wording
+#                          never claims it is.
+#
+# `retry` is true on both because both clear on their own; `retryable` is the
+# narrower promise that firing this exact write again is worth doing. A single
+# flag cannot say three things.
 
 _REFUSED_HINT = ("LabCore's write queue refused it, so nothing changed. "
                  "It clears in a few seconds — try again.")
@@ -540,7 +552,8 @@ _UNAVAILABLE_HINT = ("LabCore could not be reached, so this did not go through "
                      "and its state is unknown. Try again in a moment.")
 
 
-def _labcore_failed(exc, what: str, note: str = ""):
+def _labcore_failed(exc, what: str, note: str = "", *,
+                    landed=None, not_landed=None, **extra):
     """The answer for a write LabCore did not acknowledge. JSON + status.
 
     `what` names the thing in the operator's words — "the QC band", "the map
@@ -552,19 +565,58 @@ def _labcore_failed(exc, what: str, note: str = ""):
     `detail` always carries the store's own message verbatim. The stores were
     written to say which drag or which assignment was lost, and that text must
     reach the page rather than stop at the log.
+
+    **BUSY IS 503, NOT 502.** This used to answer 502 for every refusal and
+    503 only for "could not be asked" — a second, incompatible reading of the
+    same two status codes to the one `refusal_response` uses, in the same app,
+    on endpoints the same page calls. The distinction that has to survive to
+    the client is the one a client cannot recover by reading English: *is it
+    worth coming back*. A deep queue clears in seconds and 503 is the status
+    whose whole meaning is "come back"; a malformed statement will refuse
+    again forever and 502 says so. "Could not be asked" keeps 503 because it
+    is equally worth retrying — what tells the two apart in the body is
+    `labcore`, which says whether the record is known unchanged.
+
+    `landed` / `not_landed` are the multi-statement routes' half-done report,
+    named the way `LEM.failure()` in static/lem.js reads them — there is no
+    transaction across queue ops, so the honest answer is which statements
+    landed rather than a claim of atomicity. A route that does not pass them
+    can let the exception carry them instead; `partial` follows from whether
+    anything landed at all.
     """
     refused = isinstance(exc, LabCoreRefused)
+    busy = bool(refused and getattr(exc, "busy", False))
     hint = _REFUSED_HINT if refused else _UNAVAILABLE_HINT
     message = "{0} was NOT saved. {1}".format(what[:1].upper() + what[1:], hint)
     if note:
         message += " " + note
-    return jsonify({
+    body = {
         "error": message,
         "detail": str(exc),
         "saved": False,
         "retry": True,
+        # `retry` says "this will clear on its own"; `retryable` says "and it
+        # is worth firing this exact write at it again". A permanently invalid
+        # statement is the case where they differ, and a client that cannot
+        # tell them apart retries it forever.
+        "retryable": busy,
         "labcore": "refused" if refused else "unavailable",
-    }), (502 if refused else 503)
+    }
+    if landed is None:
+        landed = getattr(exc, "landed", None)
+    if not_landed is None:
+        not_landed = getattr(exc, "not_landed", None)
+    if landed is not None or not_landed is not None:
+        body["landed"] = list(landed or [])
+        body["not_landed"] = list(not_landed or [])
+        body["partial"] = bool(body["landed"])
+    body.update(extra)
+    headers = {}
+    delay = getattr(exc, "retry_after", None) if refused else None
+    if delay is not None:
+        body["retry_after"] = delay
+        headers["Retry-After"] = str(int(delay))
+    return jsonify(body), (502 if (refused and not busy) else 503), headers
 
 
 def _labcore_unreadable(exc, what: str):
@@ -740,6 +792,40 @@ class CorrectionAuditSpool:
             landed += 1
         return landed
 
+def refusal_response(exc):
+    """The client's answer to a write LabCore turned away.
+
+    Three things have to survive the trip to the browser, and each of them is a
+    separate bug when it doesn't:
+
+    * **Non-2xx, and no `ok` key.** The floor's save handlers branch on
+      `r.ok`; anything in the 200s and the dialog closes clean over a change
+      that is not in LabCore.
+    * **Transient told apart from permanent.** "The queue is deep" is worth
+      retrying and "no such column" never will be, and a client cannot be asked
+      to tell them apart by reading English. 503 + `retryable: true` for busy —
+      503 is the status whose whole meaning is "come back" — and 502 for a
+      refusal that will refuse again, because that one is genuinely an upstream
+      answer we cannot make good.
+    * **`retry_after`, honoured rather than discarded.** LabCore says how long
+      it wants to be left alone. Both a `Retry-After` header (for anything
+      speaking HTTP properly) and the same number in the body (for the floor's
+      `fetch`, which cannot see headers it wasn't told to read).
+    """
+    body = {"error": exc.reason, "busy": exc.busy, "retryable": exc.busy}
+    if exc.what:
+        # The reason is LabCore's sentence about its queue; `what` is ours about
+        # this lab. A supervisor needs the second one — "the queue is deep" does
+        # not tell them their correction factor is not in force.
+        body["error"] = f"{exc.reason.rstrip('. ')} — {exc.what}."
+    delay = exc.retry_after
+    headers = {}
+    if delay is not None:
+        body["retry_after"] = delay
+        headers["Retry-After"] = str(int(delay))
+    body.update(exc.extra)
+    return jsonify(body), (503 if exc.busy else 502), headers
+
 
 def create_app(gateway, admin_password: Optional[str] = None,
                secret: Optional[str] = None, authenticator=None,
@@ -759,7 +845,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # record stays LabCore's. Publishing the address/token to `lem_meta` is a
     # BOOT step (see web_server.pyw) — a factory with side effects would give
     # every test a LabCore write, which is the lesson the snapshot poller taught.
-    from live_presence import LivePresence, resolve_token
+    from live_presence import (LivePresence, STALE_CORRECTIONS, STALE_OVERRIDE,
+                               resolve_token)
     app.config["LIVE"] = live if live is not None else LivePresence()
     app.config["LIVE_TOKEN"] = resolve_token(
         live_token or os.environ.get("LEM_LIVE_TOKEN"))
@@ -808,7 +895,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     provider = StatusProvider(gateway)
     app.config["PROVIDER"] = provider
 
-    def _confirmed_write(sql: str, args: Optional[list] = None) -> dict:
+    def _confirmed_write(sql: str, args: Optional[list] = None, *,
+                         what: str = "") -> dict:
         """One write this route issues itself, with BOTH failures named alike.
 
         `confirm_write(gateway.sql(...))` reads the ANSWER and leaves the CALL
@@ -825,6 +913,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
         "LabCore said no". The four stores already do this in their own
         `_write` helpers; this is the same rule for the writes web_app does not
         hand to a store.
+
+        `what` is the sentence the person who clicked Save needs — it rides on
+        the refusal so `refusal_response` can append it to LabCore's own
+        reason. `check_write`, not `confirm_write`, for exactly that: the
+        DECISION is the same rule either way (`check_write` delegates it), but
+        only the gateway's exception carries `what` out to the error handler,
+        and "the queue is deep" on its own does not tell a supervisor that
+        their correction factor is not in force.
         """
         try:
             res = gateway.sql(sql, args or [])
@@ -832,11 +928,31 @@ def create_app(gateway, admin_password: Optional[str] = None,
             raise LabCoreUnavailable(
                 "LabCore could not be written to ({0}: {1})".format(
                     type(exc).__name__, exc)) from exc
-        confirm_write(res)
-        return res
+        return check_write(res, what=what)
 
     def authed() -> bool:
         return bool(session.get("user"))
+
+    # ── a refused write is never reported as a save ───────────────────
+    # LabCore does not refuse by raising. It returns an error DICT and the
+    # gateway hands it straight back, so `gateway.sql(...)` on a line of its own
+    # is indistinguishable from a write that landed. Several endpoints here
+    # threw that answer away and replied `200 {"ok": true}` — a supervisor could
+    # set a correction factor, watch it succeed, and have it not exist, while
+    # the lab went on reporting uncorrected results (ISO/IEC 17025 §7.8.2). This
+    # is the same class as notes.md's bulk import that "reported 'imported 3094'
+    # while nothing landed".
+    #
+    # The guard is an ERROR HANDLER rather than a check per endpoint, because a
+    # check per endpoint is a pattern to remember and the one nobody remembered
+    # is exactly where the correction factor was dropped. Stores raise
+    # `LabCoreRefused` from `check_write`; anything that escapes an endpoint
+    # lands here and cannot become a 200 by omission. An endpoint that needs to
+    # say more than "it did not land" — which statements DID, for the
+    # multi-statement saves — catches it itself and passes `landed`.
+    @app.errorhandler(LabCoreRefused)
+    def _labcore_refused(exc: LabCoreRefused):
+        return refusal_response(exc)
 
     # ── UI ────────────────────────────────────────────────────────────
     # Login → mode selector → Map or Checklists. The floor used to be the root,
@@ -1639,7 +1755,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 _page_drop("checklists:", "checklisthistory")
                 _audit("checklist v4 import incomplete", "",
                        {"imported": len(saved_names), "of": len(found)})
-                body_json, status = _labcore_failed(
+                body_json, status, headers = _labcore_failed(
                     exc, "the rest of the V4 import")
                 data = body_json.get_json()
                 data.update({"count": len(saved_names),
@@ -1651,7 +1767,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                       "Nothing is duplicated by running the "
                                       "import again.".format(len(saved_names),
                                                              len(found))})
-                return jsonify(data), status
+                return jsonify(data), status, headers
             saved_names.append(checklist.name)
 
         # The archive: V4's checklist_state.json, if it came along.
@@ -1672,7 +1788,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 _page_drop("checklists:", "checklisthistory")
                 _audit("checklist v4 import incomplete", "",
                        {"imported": len(found), "history": str(exc)})
-                data, status = _labcore_failed(exc, "the imported history")
+                data, status, headers = _labcore_failed(
+                    exc, "the imported history")
                 payload = data.get_json()
                 payload.update({"count": len(found), "checklists": preview,
                                 "history_rows": 0,
@@ -1682,7 +1799,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                          "stopped accepting the historic "
                                          "ticks. Run the import again to "
                                          "finish it — nothing is duplicated."})
-                return jsonify(payload), status
+                return jsonify(payload), status, headers
         _page_drop("checklists:", "checklisthistory")
         _audit("checklist v4 import", "",
                {"imported": len(found), "names": [c.name for c in found],
@@ -1751,6 +1868,25 @@ def create_app(gateway, admin_password: Optional[str] = None,
         This handler must never touch LabCore, not even to look something up:
         one ping per bench per poll multiplied by every instrument in the lab is
         precisely the load pattern the snapshot exists to prevent.
+
+        **The response carries the bench's stale notes** — `{"stale": [...]}`,
+        any subset of `STALE_KINDS`, empty when nothing is pending. A bench used
+        to ask LabCore twice a minute whether its correction factors or its
+        manual override had changed; between them those two reads were ~64% of
+        everything on a queue that serialises at ~1.5 ops/sec, and the answer
+        was almost always no. It already pushes here twice a minute, so the
+        answer rides back on a call that was happening anyway and the bench does
+        ONE LabCore read only when there is something to read.
+
+        The note names the KIND and never the value — this is a doorbell, not a
+        delivery. Values on this road would make the floor a second writer of a
+        fact LabCore owns, which is the failure the failover rule in
+        `merge_machines` exists to avoid; it would also need the read this is
+        removing. Notes are in memory only, so the invariant above is intact.
+
+        This used to answer `"", 204`. A 200 with a body is backward compatible
+        — a module built before this change ignores it — so the two sides can be
+        deployed in either order.
         """
         import hmac
         supplied = request.headers.get("X-LEM-Token", "")
@@ -1762,8 +1898,78 @@ def create_app(gateway, admin_password: Optional[str] = None,
             return jsonify({"error": "Expected a JSON object."}), 400
         if not str(body.get("machine_uid") or "").strip():
             return jsonify({"error": "machine_uid is required."}), 400
-        app.config["LIVE"].record(body["machine_uid"], body)
-        return "", 204
+        live = app.config["LIVE"]
+        live.record(body["machine_uid"], body)
+        # Collected even when `record` refused the push (a POST delayed in
+        # flight arriving after a newer one). The bench is real and IS reading
+        # this response, so handing the notes over is right; withholding them
+        # would strand a change behind the backstop poll for no gain.
+        return jsonify({"stale": live.take_stale(body["machine_uid"])})
+
+    @app.route("/api/bench/<machine_uid>/config")
+    def api_bench_config(machine_uid):
+        """A bench reading its own configuration — from memory, never LabCore.
+
+        The floor stopped being a bad neighbour when screens started reading a
+        snapshot instead of the database; the benches never did. Every module
+        still polls LabCore itself for its QC samples, targets, specs,
+        maintenance, correction factors and manual override, so **LabCore load
+        grows with the number of instruments in the lab** — and the database
+        lives on an SMB share that cannot move, which means every one of those
+        reads takes a slot in the same serialised write queue LabStation and
+        LabEntry are using. That is the load that is crashing it.
+
+        This server already reads all nine of those tables in ONE `UNION ALL`
+        every 12s, and it is co-located with LabCore. So the same rule the
+        screens got applies to the benches: *a request never talks to LabCore,
+        and LabCore load does not depend on how many people are looking* — now
+        with benches counted among the lookers. Ten instruments or fifty, the
+        cost is the same one op per cycle. `test_bench_config.py` asserts the
+        zero with a CountingGateway, the way the push path does.
+
+        Two details that are load-bearing rather than cosmetic:
+
+        * **`snapshot_age_seconds` is the snapshot's own age**, straight off
+          `get()`. The module refuses configuration older than its own tolerance
+          and falls back to reading LabCore directly — a safety net that only
+          works if the age is true. A second clock started when the request
+          arrived would read as 0.0 forever and quietly pin every bench to
+          whatever this server last managed to fetch, however long ago that was.
+        * **an unknown uid is a 200 with empty lists, never a 404.** A machine
+          that is registered but not yet configured is an ordinary state, and a
+          bench that gets a 404 concludes this road is not for it and goes back
+          to LabCore for good — re-creating the exact per-bench load being
+          removed, for a machine somebody simply had not set up yet.
+
+        A never-populated snapshot is the one case that must NOT answer with
+        empty lists: an empty configuration is a real instruction the bench acts
+        on (it would clear its QC and drop its override), so "I have nothing
+        yet" is a 503 and the bench keeps what it has.
+        """
+        import hmac
+        # Identical to /api/live, deliberately: benches do not log in, and one
+        # shared token in `lem_meta` is what separates a bench from anything else
+        # that can reach the port.
+        supplied = request.headers.get("X-LEM-Token", "")
+        if not hmac.compare_digest(str(supplied),
+                                   str(app.config["LIVE_TOKEN"])):
+            return jsonify({"error": "Not authorised."}), 401
+        # build_if_missing=False on purpose. Letting the caller build would make
+        # this endpoint cost a LabCore read after all — and worst of all at the
+        # worst moment, when a lab full of benches comes back at once after an
+        # outage and stampedes the queue that is already down. It waits for the
+        # poller instead.
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            # Not even refresh_soon() here: with no poller running it refreshes
+            # INLINE, which is the stampede this is avoiding, wearing a different
+            # hat. The poller is the only thing that reads LabCore.
+            return jsonify({"error": "The snapshot has not built yet.",
+                            "stale": True}), 503
+        from snapshot_service import bench_config_from_tables
+        payload = bench_config_from_tables(snapshots.tables(), machine_uid)
+        payload["snapshot_age_seconds"] = snap.get("age_seconds")
+        return jsonify(payload)
 
     @app.route("/api/machines/<machine_uid>/position", methods=["POST"])
     def api_machine_position(machine_uid):
@@ -1850,6 +2056,12 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # so pressing Delete again finishes the job — which is why stopping is
         # better than ploughing on and reporting a clean retirement over a
         # machine that still has its configuration.
+        # BEFORE the first DELETE: a DELETE on a table LabCore has never
+        # created answers with an error `refusal_reason` cannot tell from a
+        # refusal, so in a lab where nobody had ever set an override a good
+        # retirement came back 502.
+        snapshots.ensure_schema()
+
         def _drop(table):
             def go():
                 try:
@@ -1903,25 +2115,29 @@ def create_app(gateway, admin_password: Optional[str] = None,
                     raise cause
                 raise LabCoreUnavailable(str(exc)) from exc
 
+        # ONE label per step, used for `landed`/`not_landed`, for `removed`
+        # and for `stopped_at`. Two vocabularies for the same ten steps is how
+        # a client ends up matching on one list and rendering the other, and
+        # these exact words are what `test_refused_writes` pins.
         steps = [
-            ("its live status", _drop("lem_machine_status")),
-            ("its QC bands", _drop("lem_qc_specs")),
-            ("its control row", _drop("lem_machine_control")),
-            ("its position on the floor",
+            ("live status", _drop("lem_machine_status")),
+            ("QC specs", _drop("lem_qc_specs")),
+            ("manual override", _drop("lem_machine_control")),
+            ("position on the floor",
              lambda: layout_store.forget(machine_uid)),
-            ("its QC assignments", lambda: target_store.forget(machine_uid)),
+            ("QC assignments", lambda: target_store.forget(machine_uid)),
             # Orphaned PM rows re-attach if that uid is ever registered again,
             # so this failing has to fail the delete rather than be skipped.
-            ("its PM and calibration tasks",
+            ("PM and calibration tasks",
              lambda: maint_store.forget(machine_uid)),
             # A stranded config would offer itself again in the module's picker.
-            ("its configuration", lambda: config_store.delete(machine_uid)),
+            ("configuration", lambda: config_store.delete(machine_uid)),
             # With no foreign keys, a placement left behind re-attaches itself
             # if that uid is ever registered again — the instrument would come
             # back standing on a level nobody put it on. `forget`, not
             # `unassign`: no history line, because the history is either about
             # to be purged or is being kept for a machine that no longer exists.
-            ("its level",
+            ("level",
              _tolerating_missing(lambda: level_store.forget(machine_uid))),
             # ONE delete for the whole set, not one per document: the queue
             # serialises at ~1.5 ops/sec in front of every QC verdict the floor
@@ -1930,13 +2146,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # rows, so the worst case is files nothing references —
             # `orphaned_files()` finds those, and a row with no file is the one
             # this store refuses to create.
-            ("its documents", _tolerating_missing(_forget_documents)),
+            ("documents", _tolerating_missing(_forget_documents)),
         ]
         if body.get("purge_history"):
-            steps.append(("its history", _drop("lem_machine_log")))
+            steps.append(("history", _drop("lem_machine_log")))
 
         removed = []
-        for label, step in steps:
+        for index, (label, step) in enumerate(steps):
             try:
                 step()
             except LabCoreError as exc:
@@ -1945,23 +2161,29 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 # machine is exactly the state someone will need explained.
                 _audit("machine delete incomplete", machine_uid,
                        {"removed": removed, "stopped_at": label})
-                data, status = _labcore_failed(
+                # NOT_LANDED IS THE WHOLE REMAINDER, not just the step that
+                # was refused. The sequence stops on the first no rather than
+                # pushing the other statements into a queue that has just said
+                # it is too deep, so everything from here down is equally
+                # still there — and a report naming only the refused step
+                # would read as "one thing left", which is what sends somebody
+                # away from a half-retired machine.
+                return _labcore_failed(
                     exc, "{0} of “{1}”".format(label, machine_uid),
                     "{0} removed before it stopped. Press Delete again to "
                     "finish — it picks up where it left off.".format(
-                        (", ".join(removed) or "Nothing").capitalize()))
-                payload = data.get_json()
-                payload.update({"removed": removed, "stopped_at": label,
-                                "complete": False})
-                return jsonify(payload), status
+                        (", ".join(removed) or "Nothing").capitalize()),
+                    landed=list(removed),
+                    not_landed=[name for name, _run in steps[index:]],
+                    removed=list(removed), stopped_at=label)
             removed.append(label)
-
+        # The bench still holds an override for a machine that is gone.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_OVERRIDE)
         # Audited AFTER the purge on purpose: wiping a machine's history is the
         # one action whose record must survive the wipe.
-        snapshots.refresh_soon()
         _audit("machine deleted", machine_uid,
                {"purged_history": bool(body.get("purge_history"))})
-        return jsonify({"ok": True, "complete": True})
+        return jsonify({"ok": True})
 
     # ── equipment configuration, held centrally ────────────────────────
     # A module starting up picks from these; see machine_configs.py.
@@ -2229,25 +2451,38 @@ def create_app(gateway, admin_password: Optional[str] = None,
             return jsonify({"error": "No such task."}), 404
         when = str(body.get("when") or datetime.now().date().isoformat())
         note = str(body.get("note") or "")
-        try:
-            maint_store.complete(uid, when, note)
-        except LabCoreError as exc:
-            return _labcore_failed(exc, "this completion")
+        # Raises if refused; the schedule has NOT moved and the handler says
+        # so, rather than the floor showing the task as done for a write that
+        # never happened.
+        maint_store.complete(uid, when, note)
         snapshots.refresh_soon()
-
-        # The completion belongs in the machine's history too — and this is a
-        # SECOND write, which can be refused on its own. The reschedule above
-        # has already happened and cannot be taken back, so failing the whole
-        # request here would be the opposite lie: "not completed" about work
-        # that is now recorded as done and no longer due.
+        # The completion belongs in the machine's history too. Second
+        # statement, no transaction — so if this one is refused the schedule
+        # HAS moved and the history row is missing.
         #
-        # So it answers 200 and says which half is missing. `logged: false` is
-        # not a detail — the PM/CAL history pages read lem_machine_log, so a
-        # dropped line is a completion an auditor cannot find, and the operator
-        # is the only person able to add the note back.
+        # AND THAT IS A 200. The reschedule has already landed and cannot be
+        # taken back, so answering "not saved" would be false about the half
+        # that did happen — and it would send the operator to press Complete
+        # again, which moves the due date a second time and logs it twice.
+        # `logged: false` plus the sentence is the honest shape, and it is the
+        # one both pages that can complete a task actually render
+        # (`out.logged === false` in floor.html, `b.logged === false` in
+        # maintenance.html). Silence is what is forbidden here, not the 200.
+        #
+        # `Exception`, not `LabCoreError`: a client that RAISES never produced
+        # an answer, and the history row is equally missing either way. Letting
+        # that escape turned a completion that DID happen into "Internal Server
+        # Error".
         logged = True
+        warning = ""
+        # The DDL stays unguarded on purpose — see CLAUDE.md: a declaration is
+        # retried on the next call and a refusal surfaces on the data write
+        # immediately below.
         try:
-            snapshots.ensure_schema()
+            gateway.sql(
+                "CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
+                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
+                "detail TEXT)")
             _confirmed_write(
                 "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
                 "test_name, value, detail) VALUES (?, ?, ?, '', '', '', ?)",
@@ -2255,18 +2490,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
                  json.dumps({"task": task.name, "completed": when,
                              "note": note,
                              "by": session.get("user", "")})])
-        except LabCoreError as exc:
+        except Exception as exc:
             logged = False
-            logger.warning("completion of %s not written to the log: %s",
-                           uid, exc)
-        if not logged:
-            return jsonify({
-                "ok": True, "logged": False, "retry": True,
-                "warning": "“{0}” is marked done and rescheduled, but LabCore "
-                           "refused the history entry — this completion will "
-                           "not appear in the PM/CAL record. Mark it done again "
-                           "in a moment to add the entry.".format(task.name)})
-        return jsonify({"ok": True, "logged": True})
+            warning = (
+                f"“{task.name}” was marked done and its schedule moved, but "
+                f"the completion did not reach the machine's history "
+                f"({exc}). The PM record an auditor reads will not show this "
+                f"one — add it by hand, or complete it again once LabCore has "
+                f"caught up and delete the duplicate.")
+            logger.warning("completion of %r on %r was not logged: %s",
+                           task.name, task.machine_uid, exc)
+            return jsonify({"ok": True, "logged": False, "warning": warning})
+        return jsonify({"ok": True})
 
     # ── audit: who changed the configuration ──────────────────────────
     # Editing a QC spec, assigning targets, running a changeover or deleting a
@@ -2727,65 +2962,101 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if dry:
             return jsonify(payload)
 
-        snapshots.ensure_schema()
-        # `made` counts rows LabCore ACKNOWLEDGED. It used to count loop
-        # iterations, so an import that filled the queue reported "imported
-        # 340" over an empty log. Re-running is safe — `_existing_completions`
-        # above skips what already landed — so stopping at the first refusal
-        # and saying how far it got is a workable instruction.
+        # BOTH ways a write can fail are the same fact here — the row is not in
+        # LabCore — so a client that RAISES is folded into the same `stopped`
+        # answer rather than escaping as "Internal Server Error" over a
+        # half-finished import. That is the whole point of the counts below:
+        # they are a promise about what is in LabCore, and a 500 makes that
+        # promise unreadable.
+        def _write_row(sql, args=None):
+            try:
+                return gateway.sql(sql, args or [])
+            except Exception as exc:                # transport, not logic
+                return {"error": "LabCore could not be written to ({0}: "
+                                 "{1})".format(type(exc).__name__, exc)}
+
+        _write_row(
+            "CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
+            "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
+            "detail TEXT)")
+        # `made += 1` used to sit unconditionally under this write. That is the
+        # notes.md failure verbatim — a bulk import that "reported 'imported
+        # 3094' while nothing landed", because the loop counted LabCore's
+        # refusals as successes — reproduced in a second importer after the
+        # checklist one was fixed. A count is a promise about what is in
+        # LabCore, and here it is the only thing the operator is told.
         made = 0
-        rescheduled = 0
-        failure = None
+        refused = 0
+        stopped = None
         for entry in plan["create"]:
+            if stopped is not None:
+                # Not attempted. Counted as refused rather than as created,
+                # because the queue that turned the last one away will turn
+                # these away too and hammering it is the load the refusal asked
+                # to be spared. They are still in the CSV; re-running the import
+                # is idempotent and will pick them up.
+                refused += 1
+                continue
             # Stamp the event at the completion date, not now, so the history
             # sorts and charts as the work actually happened.
-            try:
-                _confirmed_write(
-                    "INSERT INTO lem_machine_log (machine_uid, ts, kind, "
-                    "lab_id, test_name, value, detail) "
-                    "VALUES (?, ?, ?, '', '', '', ?)",
-                    [entry["machine_uid"], entry["completed"] + "T00:00:00",
-                     entry["kind"],
-                     json.dumps({"task": entry["task"],
-                                 "completed": entry["completed"],
-                                 "note": entry["note"],
-                                 "by": entry["by"] or session.get("user", ""),
-                                 "imported": True})])
-            except LabCoreError as exc:
-                failure = exc
-                break
+            result = _write_row(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, ?, ?, '', '', '', ?)",
+                [entry["machine_uid"], entry["completed"] + "T00:00:00",
+                 entry["kind"],
+                 json.dumps({"task": entry["task"],
+                             "completed": entry["completed"],
+                             "note": entry["note"],
+                             "by": entry["by"] or session.get("user", ""),
+                             "imported": True})])
+            if refusal_reason(result):
+                stopped = result
+                refused += 1
+                continue
             made += 1
-        if failure is None:
-            for move in plan["reschedule"]:
-                try:
-                    task = maint_store.get(move["uid"])
-                    if task is not None:
-                        maint_store.complete(move["uid"], move["last_done"],
-                                             task.note)
-                        rescheduled += 1
-                except LabCoreError as exc:
-                    failure = exc
-                    break
+        rescheduled = 0
+        for move in plan["reschedule"]:
+            if stopped is not None:
+                break
+            task = maint_store.get(move["uid"])
+            if task is None:
+                continue
+            try:
+                maint_store.complete(move["uid"], move["last_done"], task.note)
+            except LabCoreError as exc:
+                # Caught rather than allowed to reach the error handler: the
+                # payload below carries how many rows DID land, and losing that
+                # to a bare 503 would leave the operator with no idea whether to
+                # re-run the file.
+                #
+                # `LabCoreError`, not just `LabCoreRefused`: a store whose write
+                # RAISED is a reschedule that equally did not happen, and it
+                # carries no `result` — so the sentence stands in for the answer
+                # LabCore never gave.
+                stopped = getattr(exc, "result", None) or {"error": str(exc)}
+                break
+            rescheduled += 1
         payload["created"] = made
+        payload["refused"] = refused
         payload["rescheduled"] = rescheduled
-        if failure is not None:
-            _audit("maintenance history import incomplete", "",
-                   {"created": made, "rescheduled": rescheduled,
-                    "of": len(plan["create"])})
-            data, status = _labcore_failed(failure, "the rest of the import")
-            body_json = data.get_json()
-            body_json.update(payload)
-            body_json["incomplete"] = True
-            body_json["error"] = (
-                "{0} of {1} completions were written before LabCore stopped "
-                "accepting them, and {2} schedules were moved. Run the import "
-                "again to finish it — what already landed is skipped.".format(
-                    made, len(plan["create"]), rescheduled))
-            return jsonify(body_json), status
         _audit("maintenance history imported", "",
-               {"created": made, "skipped": payload["skipped"],
+               {"created": made, "refused": refused,
+                "skipped": payload["skipped"],
                 "unmatched": len(plan["unmatched"]), "errors": len(errors),
-                "rescheduled": len(plan["reschedule"])})
+                "rescheduled": rescheduled})
+        if stopped is not None:
+            # `refusal_reason(stopped)` FIRST, `stopped` SECOND. This
+            # constructor takes the sentence and then the answer; handing it
+            # the answer alone made the reason a printed dict and left `busy`
+            # False, so a deep queue was reported as permanent with no
+            # Retry-After.
+            return refusal_response(LabCoreRefused(
+                refusal_reason(stopped),
+                stopped,
+                what=f"{made} of {len(plan['create'])} completion(s) were "
+                     f"imported before LabCore stopped accepting writes — "
+                     f"re-run the same file to bring the rest in",
+                partial=made > 0, incomplete=True, **payload))
         return jsonify(payload)
 
     @app.route("/api/maintenance")
@@ -3091,9 +3362,24 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # Refused rather than coerced: a correction is added to every reading
             # this bench produces, and "a bit" would silently become 0.0.
             return jsonify({"error": f"{raw!r} is not a number."}), 400
+        existing = _corrections(machine_uid).get(test_name)
+        previous = existing["correction"] if existing else 0.0
+        # THE write this whole guard exists for. `corrected = raw + correction`
+        # is applied to EVERY measurement this bench takes — before the QC
+        # verdict, before the LabCore write, before anything is displayed — so a
+        # save that silently did not land leaves the lab reporting uncorrected
+        # results while the supervisor who set the offset believes it is in
+        # force. ISO/IEC 17025 §7.8.2: a reported result must be the measurement
+        # result. This used to capture the answer, use it only to decide whether
+        # to leave a note, and reply `200 {"ok": true}` either way.
+        #
+        # BOTH ways it can fail are named. A REFUSAL travels to the error
+        # handler carrying `what`, so the operator reads LabCore's own reason
+        # and a Retry-After. A RAISED transport error never produced an answer
+        # at all, so nothing is known about the write — `_labcore_failed` says
+        # exactly that rather than "LabCore said no", and it is caught here
+        # rather than left to escape as "Internal Server Error".
         try:
-            existing = _corrections(machine_uid).get(test_name)
-            previous = existing["correction"] if existing else 0.0
             # HERE, not in `_corrections()`: this is the path that INSERTs, so
             # this is the path that needs the table to exist.
             _corrections_schema()
@@ -3108,16 +3394,35 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 [machine_uid, test_name, correction,
                  str(body.get("units") or ""),
                  _now().isoformat(timespec="seconds"),
-                 session.get("user", "")])
-        except LabCoreError as exc:
-            # This number is added to EVERY measurement the bench reports, not
-            # only its QC. Reported as saved and dropped, the lab believes it is
-            # correcting results it is still reporting raw.
+                 session.get("user", "")],
+                what=f"the correction for “{test_name}” was NOT saved and this "
+                     f"instrument is still applying the previous one")
+        except LabCoreUnavailable as exc:
             return _labcore_failed(
                 exc, "the correction factor for “{0}”".format(test_name))
-        # AFTER the write, never before: nothing may claim a change that did
-        # not happen. The UPSERT above has just destroyed `previous`, and this
-        # is the only place left that says what it was (ISO/IEC 17025 §7.8.2).
+        # Everything below is reached only by a write that landed, which is what
+        # makes all four of these honest:
+        #
+        # The NOTE, because the bench re-reads `lem_correction_factors` when it
+        # sees one — a note for a write that failed buys a LabCore read that
+        # finds the OLD value, on the very queue that has just said it is too
+        # deep. This machine and no other: a correction is per machine per test,
+        # and a broad mark would put the whole lab through a read for one bench.
+        #
+        # The §7.8.2 RECEIPT, because the UPSERT above has just DESTROYED
+        # `previous` and `lem_correction_audit` is the only place left that
+        # says what it was, when, and who changed it — while that number is
+        # added to every result this bench reports. It never raises: the
+        # change has already landed, so a refused audit row is spooled and
+        # retried, and `_report_unrecorded_audit` tells the operator it is
+        # outstanding rather than letting it disappear.
+        #
+        # The AUDIT, because it records who changed the factor from what to
+        # what, and a change that did not happen written into the one log an
+        # assessor reads is worse than no log at all.
+        #
+        # The SNAPSHOT refresh, because there is nothing new to pick up.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
         _record_correction_change(machine_uid, test_name, previous, correction,
                                   units=str(body.get("units") or ""),
                                   reason=str(body.get("reason") or ""))
@@ -3142,18 +3447,27 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                             "factors")
         if existing is None:
             return jsonify({"error": f"No correction for “{test_name}”."}), 404
+        # Removing an offset changes every future reading exactly as setting
+        # one does. A removal reported as done that did not happen leaves the
+        # bench quietly still applying it, and the editor showing that it does
+        # not.
         try:
             _confirmed_write(
-                "DELETE FROM lem_correction_factors WHERE machine_uid = ? "
-                "AND test_name = ?", [machine_uid, test_name])
-        except LabCoreError as exc:
-            # A correction reported as removed and still in force keeps being
-            # added to every reading, and the dialog now shows it as gone.
+                "DELETE FROM lem_correction_factors "
+                "WHERE machine_uid = ? AND test_name = ?",
+                [machine_uid, test_name],
+                what=f"the correction for “{test_name}” was NOT removed and "
+                     f"this instrument is still applying it")
+        except LabCoreUnavailable as exc:
             return _labcore_failed(
                 exc, "removing the correction for “{0}”".format(test_name))
-        # Removing a factor is a change TO ZERO, not an absence. The readings
-        # after it really are corrected by nothing, and a hole in the trail
-        # cannot say when that started.
+        # The bench must re-read: from its point of view an offset going away is
+        # the same event as one arriving. Gated the same way, and for the same
+        # reason — see the save above.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+        # A removal is a change TO ZERO, not an absence. The readings after it
+        # really are corrected by nothing, and a hole in the trail cannot say
+        # when that started.
         _record_correction_change(
             machine_uid, test_name, existing["correction"], 0.0,
             units=str(existing.get("units") or ""),
@@ -4076,14 +4390,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
             state_reader.set_override(machine_uid,
                                       str(body.get("override") or ""), comment)
         except ValueError as exc:
+            # A state nobody defined, so `lem_machine_control` is untouched.
+            # Marking here would order a read of a row that did not change.
             return jsonify({"error": str(exc)}), 400
-        except LabCoreError as exc:
-            # The highest-consequence write on the floor. This is a COMMAND to a
-            # bench — the module polls lem_machine_control and takes itself to
-            # SERVICE or DEAD-LINE. Dropped and reported as applied, the floor
-            # shows an instrument out of service while the bench keeps running
-            # customer samples on it; an unheard "clear" locks out a healthy one.
-            return _labcore_failed(exc, "this override")
+        # Clearing an override marks exactly as setting one does: "back in
+        # service" is as urgent as "out of service", and a bench left on
+        # SERVICE because only one direction was marked is an instrument nobody
+        # can use until its backstop poll comes round.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_OVERRIDE)
         snapshots.refresh_soon()
         return jsonify({"ok": True})
 
@@ -4236,10 +4550,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # already have moved. Re-running is safe (the lot upserts by name
             # and moved machines no longer reference the old one), which is why
             # "run it again" is the instruction rather than a repair.
+            #
+            # `moved` is reported on the failure too, and it is the count that
+            # ACTUALLY moved — the whole reason `changeover` hangs its progress
+            # on the exception. Omitting it would leave the operator unable to
+            # tell a changeover that created the lot and moved nothing from one
+            # that moved every instrument but the last.
             return _labcore_failed(
                 exc, "the rest of this changeover",
-                "Some equipment may already point at the new lot. Run the "
-                "changeover again — it picks up the ones still on the old one.")
+                "Some equipment may already point at the new lot. Re-run the "
+                "changeover — it picks up the ones still on the old one.",
+                moved=getattr(exc, "moved", 0))
         return jsonify({"ok": True, "moved": moved})
 
     @app.route("/api/qc-samples", methods=["DELETE"])

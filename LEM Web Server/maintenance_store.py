@@ -126,7 +126,12 @@ class MaintenanceStore:
         try:
             confirm_write(res)
         except LabCoreRefused as exc:
-            raise MaintenanceWriteError(str(exc)) from exc
+        # The ANSWER travels with the re-label, not just the sentence.
+        # Re-raising the text alone drops `busy` and `retry_after`, so a
+        # full queue reaches the browser as 502 "this will never work"
+        # instead of 503 with a Retry-After — the one distinction a client
+        # cannot recover by reading English.
+            raise MaintenanceWriteError(str(exc), res) from exc
         return res
 
     def _write_rows(self, sql: str, args: Optional[list] = None) -> int:

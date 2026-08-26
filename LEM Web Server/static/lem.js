@@ -116,6 +116,69 @@ window.LEM = (function () {
       });
   }
 
+  /* Turn a failed write into a sentence worth showing a supervisor.
+   *
+   * Three things the server now sends that every save handler on the floor used
+   * to throw away:
+   *
+   * - `error`. Half the handlers replaced it with a canned string ("Could not
+   *   apply the override."), which tells the person nothing about whether to
+   *   try again in five seconds or go and find someone.
+   * - `retry_after`. LabCore says how long it wants to be left alone, the
+   *   server passes it on, and a floor that drops it makes people either give
+   *   up on a save that would have worked or hammer a queue that has just said
+   *   it is full.
+   * - `landed` / `not_landed`. There is no transaction across LabCore queue
+   *   operations, so a multi-statement save really can half-happen. Saying so
+   *   is the whole point; hiding it leaves someone to discover it later.
+   *
+   * Deliberately returns a string rather than painting anything: the callers
+   * put their errors in different places (a dialog's error line, an alert) and
+   * this has no business choosing.
+   */
+  function failure(response, body, fallback) {
+    body = body || {};
+    let text = body.error || fallback || 'That did not save.';
+    if (body.not_landed && body.not_landed.length) {
+      if (body.landed && body.landed.length) {
+        text += ' Saved: ' + body.landed.join(', ') + '.';
+      }
+      text += ' NOT saved: ' + body.not_landed.join(', ') + '.';
+    }
+    // Only for a refusal that is actually worth retrying. Telling someone to
+    // come back in five seconds for a write that will be refused forever is
+    // its own kind of lie.
+    if (body.retryable && body.retry_after > 0) {
+      text += ' Try again in ' + Math.ceil(body.retry_after) + 's.';
+    } else if (body.retryable) {
+      text += ' Try again shortly.';
+    }
+    return text;
+  }
+
+  /* fetch + parse + format, for a write. Resolves to {ok, status, body, error}
+   * — never rejects, because a save handler that throws leaves the dialog open
+   * with a spinner and no explanation, which is the failure this exists to
+   * remove. A network error reads as a failure with a sentence, like any
+   * other. */
+  function send(url, options) {
+    options = options || {};
+    const init = {method: options.method || 'POST',
+                  headers: {'Content-Type': 'application/json'}};
+    if (options.body !== undefined) init.body = JSON.stringify(options.body);
+    return fetch(url, init).then(r =>
+      r.json().catch(() => ({})).then(body => ({
+        ok: r.ok, status: r.status, body: body,
+        error: r.ok ? '' : failure(r, body, options.fallback)
+      }))
+    ).catch(() => ({
+      ok: false, status: 0, body: {},
+      error: options.fallback
+        ? options.fallback + ' The server could not be reached.'
+        : 'The server could not be reached, so nothing was saved.'
+    }));
+  }
+
   /* Drop cached answers. Pass a substring to clear only matching URLs — after
    * a write, so the next paint can't show the state before the change. */
   function bust(match) {
@@ -140,5 +203,5 @@ window.LEM = (function () {
   }
 
   return {live: live, get: get, fresh: fresh, bust: bust, prefetch: prefetch,
-          MAX_AGE: DEFAULT_MAX_AGE};
+          failure: failure, send: send, MAX_AGE: DEFAULT_MAX_AGE};
 })();

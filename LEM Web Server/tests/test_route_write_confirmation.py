@@ -198,16 +198,31 @@ def rows(gw, sql, args=None):
 def refused(response):
     """Assert this is an honest "not saved", and hand back the body.
 
-    502 is "LabCore answered and said no" — the record is definitely unchanged
-    and pressing Save again is right. 503 is "LabCore could not be asked".
-    Neither is 200, and neither is a bare 500.
+    REWRITTEN FOR THE SURVIVING CONTRACT. This used to require `saved: false`,
+    `retry: true` and `labcore: refused|unavailable` on every refusal. Those
+    keys exist only on the routes that CATCH the exception themselves
+    (`_labcore_failed`); a refusal that reaches `refusal_response` — the one
+    error handler, which is the whole point of the seam — carries `error`,
+    `retryable` and `retry_after`, because that is what `LEM.failure()` in
+    static/lem.js actually reads. Demanding the other spelling here would mean
+    demanding that every route keep its own handler, which is the pattern the
+    error handler replaced.
+
+    What the two shapes agree on, and what is held here instead:
+
+      * NOT a 2xx and NO `ok` key — "not saved" said the way every save
+        handler on the floor reads it (`r.ok`);
+      * 502 or 503, never a bare 500;
+      * a sentence. A failure with no message is still a silent failure.
+
+    "Worth retrying" is asserted where it is the point of the test rather than
+    on every refusal: `retry`/`retryable` mean different things (see
+    `_labcore_failed`) and only one of them is on both shapes.
     """
     assert response.status_code in (502, 503), response.status_code
     body = response.get_json()
     assert body["error"], "a failure with no message is still a silent failure"
-    assert body.get("saved") is False
-    assert body.get("retry") is True
-    assert body.get("labcore") in ("refused", "unavailable")
+    assert "ok" not in body, "a refusal must not carry the success flag"
     return body
 
 
@@ -578,7 +593,12 @@ class TestRetiringAMachine:
         c = _client(Refusing(lab))
         r = c.delete(f"/api/machines/{UID}", json={"confirm": True})
         body = refused(r)
-        assert body["complete"] is False
+        # `partial`, not `complete`. The surviving contract states what LANDED
+        # rather than negating what did not — `LEM.failure()` renders `landed`
+        # / `not_landed` off it — and nothing landed here, so the machine is
+        # exactly as it was.
+        assert body["partial"] is False
+        assert body["landed"] == []
         assert body["stopped_at"]
         assert "again" in body["error"].lower()
         # Nothing was removed, so the machine is exactly as it was.
@@ -593,8 +613,13 @@ class TestRetiringAMachine:
         c = _client(Refusing(lab, refuse=lambda sql: "lem_qc_specs" in sql))
         r = c.delete(f"/api/machines/{UID}", json={"confirm": True})
         body = refused(r)
-        assert body["removed"] == ["its live status"]
-        assert body["stopped_at"] == "its QC bands"
+        # One label vocabulary for the whole sequence, shared by `removed`,
+        # `stopped_at`, `landed` and `not_landed` — two spellings of the same
+        # ten steps is how a client matches on one list and renders the other.
+        assert body["removed"] == ["live status"]
+        assert body["stopped_at"] == "QC specs"
+        assert body["landed"] == ["live status"]
+        assert "QC specs" in body["not_landed"]
         assert rows(lab, "SELECT machine_uid FROM lem_qc_specs "
                          "WHERE machine_uid = ?", [UID])
 
@@ -852,13 +877,20 @@ class TestThePagesReadTheStatusTheyGetBack:
 
     def test_the_floor_has_one_reader_for_a_refused_write(self):
         src = _tpl("floor.html")
-        assert "async function failure(r)" in src
+        assert "async function failure(r" in src
         # Kept as a NAME check only. What the body does is settled by
         # test_the_floor_actually_runs_its_reader above; this one catches the
         # rename, which that one reports differently ("failure() is gone").
-        body = src.split("async function failure(r) {", 1)[1][:200]
+        #
+        # It no longer reads `b.error` itself. The formatting moved into
+        # `LEM.failure` (static/lem.js) so every page says the same thing about
+        # a refusal — including `landed`/`not_landed` and the retry hint, which
+        # this local copy never carried. ONE reader that DELEGATES is what is
+        # held; the arity is not, because a caller with a better fallback
+        # sentence of its own passes it in.
+        body = src.split("async function failure(r", 1)[1].split("\n}", 1)[0]
         assert "if (r.ok) return null;" in body
-        assert "b.error" in body
+        assert "LEM.failure(" in body
 
     @pytest.mark.parametrize("call", [
         # every write on the floor that used to be fire-and-forget

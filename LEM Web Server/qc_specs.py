@@ -94,7 +94,14 @@ def _doing(what: str):
     except LabCoreUnavailable as exc:
         raise QcSpecUnavailable("Could not {}: {}".format(what, exc)) from exc
     except LabCoreRefused as exc:
-        raise QcSpecRefused("Could not {}: {}".format(what, exc)) from exc
+        # The ANSWER is carried across the re-label, not just the sentence.
+        # Re-raising with the text alone lost `busy` and `retry_after`, so a
+        # full queue reached the browser as 502 "this will never work" instead
+        # of 503 with a Retry-After — the one distinction the client cannot
+        # recover by reading English.
+        raise QcSpecRefused(
+            "Could not {}: {}".format(what, exc),
+            getattr(exc, "result", None)) from exc
 
 
 def _sql(gateway, sql: str, args=None) -> dict:

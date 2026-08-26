@@ -128,7 +128,14 @@ def _confirm(res, what: str) -> None:
     try:
         confirm_write(res)
     except LabCoreRefused as exc:
-        raise MapWriteRefused("{0} — not saved: {1}".format(what, exc)) from exc
+        # The ANSWER travels with the re-label, not just the sentence.
+        # Re-raising the text alone drops `busy` and `retry_after`, so a
+        # full queue reaches the browser as 502 "this will never work"
+        # instead of 503 with a Retry-After — the one distinction a client
+        # cannot recover by reading English.
+        raise MapWriteRefused(
+            "{0} — not saved: {1}".format(what, exc),
+            getattr(exc, "result", None)) from exc
 
 
 def _write(gateway, sql: str, args=None, *, what: str) -> None:

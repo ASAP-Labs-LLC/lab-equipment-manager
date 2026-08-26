@@ -74,7 +74,14 @@ def _doing(what: str):
     except LabCoreUnavailable as exc:
         raise QcSampleUnavailable("Could not {}: {}".format(what, exc)) from exc
     except LabCoreRefused as exc:
-        raise QcSampleRefused("Could not {}: {}".format(what, exc)) from exc
+        # The ANSWER is carried across the re-label, not just the sentence.
+        # Re-raising with the text alone lost `busy` and `retry_after`, so a
+        # full queue reached the browser as 502 "this will never work" instead
+        # of 503 with a Retry-After — the one distinction the client cannot
+        # recover by reading English.
+        raise QcSampleRefused(
+            "Could not {}: {}".format(what, exc),
+            getattr(exc, "result", None)) from exc
 
 
 
@@ -319,25 +326,40 @@ def changeover(gateway, old_name: str, new_name: str, new_id_val: str,
         raise ValueError(f"QC sample '{new_name}' already exists.")
 
     old = samples[old_name]
-    store.save(QcSample(name=new_name, sample_id_val=new_id_val,
-                        tests=[QcSampleTest.from_dict(t.to_dict())
-                               for t in old.tests]))
 
-    targets = QcTargetStore(gateway)
+    # WHAT ALREADY LANDED TRAVELS WITH THE REFUSAL. There is no undo across
+    # queue ops, so a changeover stopped half-way really has created the new
+    # lot and really has moved some instruments — and the operator finding two
+    # lots and no explanation is the state this reporting exists to prevent.
+    # `landed` / `moved` ride on the exception rather than being returned,
+    # because returning them would mean returning a number this function is
+    # not sure of, which is exactly what the docstring above forbids.
+    landed: List[str] = []
     moved = 0
-    # `moved` is incremented only AFTER `assign` returns, so a refusal from the
-    # target store propagates instead of being counted as a move. That store owns
-    # its own confirmation; this loop's job is not to swallow it.
-    for uid, assigned in targets.all().items():
-        if not any(t.sample == old_name for t in assigned):
-            continue
-        targets.assign(uid, [WatchedTarget(new_name, t.test)
-                             if t.sample == old_name else t
-                             for t in assigned])
-        moved += 1
-
-    if retire_old:
-        store.delete(old_name)
+    targets = QcTargetStore(gateway)
+    try:
+        store.save(QcSample(name=new_name, sample_id_val=new_id_val,
+                            tests=[QcSampleTest.from_dict(t.to_dict())
+                                   for t in old.tests]))
+        landed.append("the new lot '{0}'".format(new_name))
+        # `moved` is incremented only AFTER `assign` returns, so a refusal from
+        # the target store propagates instead of being counted as a move. That
+        # store owns its own confirmation; this loop's job is not to swallow it.
+        for uid, assigned in targets.all().items():
+            if not any(t.sample == old_name for t in assigned):
+                continue
+            targets.assign(uid, [WatchedTarget(new_name, t.test)
+                                 if t.sample == old_name else t
+                                 for t in assigned])
+            moved += 1
+            landed.append("{0} moved to '{1}'".format(uid, new_name))
+        if retire_old:
+            store.delete(old_name)
+            landed.append("the old lot '{0}' retired".format(old_name))
+    except LabCoreError as exc:
+        exc.landed = landed
+        exc.moved = moved
+        raise
     return moved
 
 

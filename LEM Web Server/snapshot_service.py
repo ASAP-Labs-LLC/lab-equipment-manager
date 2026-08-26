@@ -158,6 +158,34 @@ _ARMS = (
     # constants out of levels.py. An arm naming a table LabCore has not got
     # fails the one statement every other arm shares.
     *_levels.SNAPSHOT_ARMS,
+    # ── the three the BENCHES read, not the screens ────────────────────
+    # Every module used to ask LabCore for these itself, so LabCore load grew
+    # with the number of instruments in the lab — which is what was knocking the
+    # write queue over. They ride along in the SAME statement, so the cost of
+    # serving every bench in the building is zero extra ops per cycle; see
+    # `bench_config_from_tables` and `/api/bench/<uid>/config`.
+    #
+    # Each one selects ONLY columns from its table's original CREATE — no
+    # `units`, no `updated_at`, no `comment`. Those exist on a fresh install but
+    # not necessarily on one that predates them, and because every arm shares one
+    # statement, a single column LabCore does not have fails the whole read and
+    # blanks the floor. That is exactly what `correction` did to
+    # `lem_machine_specs`, and it is why SCHEMA_MIGRATIONS exists. Nothing here
+    # needs a migration precisely because nothing here is a later addition.
+    ("control",
+     "SELECT 'control' AS src, machine_uid AS c1, manual_override AS c2, "
+     "'' AS c3, '' AS c4, '' AS c5, '' AS c6, '' AS c7, '' AS c8, '' AS c9 "
+     "FROM lem_machine_control"),
+    ("corr",
+     "SELECT 'corr' AS src, machine_uid AS c1, test_name AS c2, "
+     "CAST(correction AS TEXT) AS c3, '' AS c4, '' AS c5, '' AS c6, "
+     "'' AS c7, '' AS c8, '' AS c9 FROM lem_correction_factors"),
+    # The shared standards library, and the one arm here that is NOT
+    # machine-scoped: every bench detects QC against the whole library.
+    ("qcsample",
+     "SELECT 'qcsample' AS src, name AS c1, sample_id_val AS c2, tests AS c3, "
+     "'' AS c4, '' AS c5, '' AS c6, '' AS c7, '' AS c8, '' AS c9 "
+     "FROM lem_qc_samples"),
 )
 
 # Deliberately NOT arms, and both for the same reason: every arm shares ONE
@@ -211,6 +239,15 @@ SCHEMA_DDL = (
     "correction REAL NOT NULL DEFAULT 0.0, units TEXT, "
     "updated_at TEXT, updated_by TEXT, "
     "PRIMARY KEY (machine_uid, test_name))",
+    # Character-for-character the DDL their owners use — qc_specs.CONTROL_DDL and
+    # qc_samples.QC_SAMPLES_DDL. `CREATE TABLE IF NOT EXISTS` is a no-op once the
+    # table is there, so whoever gets in first wins and a second, subtly
+    # different shape declared here would be the one the whole lab lived with.
+    "CREATE TABLE IF NOT EXISTS lem_machine_control ("
+    "machine_uid TEXT PRIMARY KEY, manual_override TEXT, comment TEXT, "
+    "updated_at TEXT)",
+    "CREATE TABLE IF NOT EXISTS lem_qc_samples ("
+    "name TEXT PRIMARY KEY, sample_id_val TEXT, tests TEXT)",
     "CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, ts TEXT, "
     "kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, detail TEXT)",
     # ── the three stores wired up here, declared by their own constants ─────
@@ -234,6 +271,50 @@ SCHEMA_DDL = (
     # certificate and a standard's tests is a later, deliberate step, so no
     # bench moves for this either.
     _standard_docs.STANDARD_DOCUMENTS_DDL,   # lem_standard_documents
+    # ── and the indexes lem_machine_log never had ──────────────────────
+    #
+    # Every other lem_* table has a sensible key. This one has no primary key,
+    # no index and no retention rule, and it is where every parsed run, QC
+    # verdict, status change, comment and PM tick lands — so it only ever grows.
+    # Two arms above read it on EVERY refresh: `event` sorts the whole table to
+    # keep the newest sixty, and `activity` groups the whole table by machine.
+    # At the 12s default that is 14,400 full scans a day.
+    #
+    # Anywhere else that would be a slow page. Here it is a lab-wide outage,
+    # because LabCore's database is on an SMB share and cannot move: WAL is
+    # unusable there, the journal mode is DELETE, a reader blocks the writer's
+    # commit, and so LabCore serialises `read_sql` through its WRITE queue
+    # (LabCore.py:13180). Our scan therefore blocks every write in the building
+    # for as long as it runs. LabCore then INTERRUPTS any read past
+    # `read_watchdog_s` (8.0s), and the comment on that watchdog names "an
+    # unindexed scan over the SMB share" as the hazard. That is this table. As
+    # it grows the read crosses eight seconds, gets killed, every client
+    # retries, the queue deepens — and the lab reads it as "LabCore is offline"
+    # while LabCore is perfectly healthy.
+    #
+    # These MUST come after the CREATE TABLEs above: `CREATE INDEX` on a table
+    # that does not exist yet is an error, and on a fresh LabCore this tuple is
+    # what creates the tables in the first place. `CREATE INDEX IF NOT EXISTS`
+    # is idempotent, so the station module declaring the same two log indexes is
+    # harmless and correct — whichever program starts first creates them.
+    #
+    # CREATING THEM IS ITSELF A QUEUE OP, and on a log that has grown for a year
+    # over SMB the FIRST one may be slow: SQLite has to read the whole table
+    # across the share and sort it. It happens once, on the first process to
+    # start after this ships, and `ensure_schema` asks what already exists so it
+    # is not paid again on every restart.
+    "CREATE INDEX IF NOT EXISTS idx_lem_log_ts "
+    "ON lem_machine_log(ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_lem_log_uid_kind_ts "
+    "ON lem_machine_log(machine_uid, kind, ts DESC)",
+    # `lem_maintenance` is keyed on `uid` and read by `machine_uid` everywhere —
+    # maintenance_store._rows, the module's MAINTENANCE_QUERY, the fleet page.
+    # The index lives here rather than in the station module because this is the
+    # program that CREATES the table; the module only reads it, and a CREATE
+    # INDEX from there would fail on a LabCore this server has not started
+    # against yet.
+    "CREATE INDEX IF NOT EXISTS idx_lem_maint_machine "
+    "ON lem_maintenance(machine_uid)",
 )
 
 # Columns added to tables that already existed in the field. `CREATE TABLE IF NOT
@@ -583,13 +664,26 @@ class SnapshotService:
             self._schema_ready = False
             return
         trouble = []
+        indexes = self._existing_indexes()
         for ddl in SCHEMA_DDL:
-            table = ddl.split("IF NOT EXISTS", 1)[1].split("(", 1)[0].strip()
-            if existing is not None and table in existing:
-                continue
+            # `CREATE INDEX x ON t(...)` and `CREATE TABLE t (...)` both parse
+            # to "the word after IF NOT EXISTS", but for an index that word is
+            # its OWN name, not a table's — so an index checked against the
+            # table list would never match and would be re-declared on every
+            # boot. Two writes into a ~1.5 ops/sec queue, every restart, and the
+            # tray restarts this server on every code edit.
+            if "CREATE INDEX" in ddl.upper():
+                name = ddl.split("IF NOT EXISTS", 1)[1].split(" ON ", 1)[0].strip()
+                if indexes is not None and name in indexes:
+                    continue
+                what = name
+            else:
+                what = ddl.split("IF NOT EXISTS", 1)[1].split("(", 1)[0].strip()
+                if existing is not None and what in existing:
+                    continue
             refused = self._declare(ddl)
             if refused:
-                trouble.append("{0}: {1}".format(table, refused))
+                trouble.append("{0}: {1}".format(what, refused))
         trouble += self._migrate(existing)
         self._schema_error = "; ".join(trouble)
         # ONLY here, and only when nothing was left outstanding.
@@ -633,6 +727,40 @@ class SnapshotService:
         if "duplicate column" in refused.lower():
             return ""
         return refused
+
+    def _existing_indexes(self):
+        """Which of the log's indexes LabCore already has, or None if we could
+        not find out.
+
+        One read instead of three writes. A write goes through the queue that
+        serialises every operation in the lab at roughly 1.5 ops/sec, so three
+        unconditional `CREATE INDEX IF NOT EXISTS` statements is two seconds of
+        everybody's queue on every restart of this server, for indexes that are
+        almost always already there.
+
+        `pragma_index_list`, not `sqlite_master` — for the reason spelled out in
+        `labcore_gateway.existing_tables`: against production the sqlite_master
+        form does not return inside the client's read timeout, so it quietly
+        answered None on every boot and the writes it exists to avoid were
+        issued anyway.
+
+        None rather than an empty set when the question cannot be answered — a
+        missing table makes the pragma fail, and "nothing exists" is a real
+        answer for a fresh database. Callers must be able to tell the two apart,
+        because reading "could not tell" as "nothing is missing" is what would
+        skip creating an index that really is absent.
+        """
+        try:
+            res = self.gateway.read_sql(
+                "SELECT name FROM pragma_index_list('lem_machine_log') "
+                "UNION ALL "
+                "SELECT name FROM pragma_index_list('lem_maintenance')",
+                timeout=READ_TIMEOUT)
+        except Exception:
+            return None
+        if not res or res.get("error"):
+            return None
+        return {str(r.get("name")) for r in (res.get("rows") or [])}
 
     def _migrate(self, existing) -> List[str]:
         """Add columns to tables that predate them. Returns what did not land.
@@ -919,6 +1047,115 @@ def titles_from_tables(tables: Dict[str, List[dict]]) -> Dict[str, str]:
     """machine_uid → title, for pages that only need the names."""
     return {str(_f(r, "c1")): (str(_f(r, "c2")) or str(_f(r, "c1")))
             for r in tables.get("status") or [] if _f(r, "c1")}
+
+
+# ── what a BENCH needs, put back the way LabCore hands it over ──────────────
+#
+# Same trick as the floor, aimed at the other reader. A module polls LabCore for
+# its own QC samples, targets, specs, maintenance, corrections and manual
+# override; multiply that by every instrument in the lab and the load scales with
+# bench count on a queue that serialises everything at ~1.5 ops/sec. The rows are
+# already here, refreshed every cycle at constant cost, and this server sits next
+# to LabCore — so the bench asks us and LabCore never hears about it.
+#
+# The catch, and the whole reason this function exists: the snapshot FLATTENS
+# every table into `src, c1…c9`. The module feeds these lists straight into
+# `parse_correction_rows`, `parse_qc_sample_rows`, `parse_qc_specs`,
+# `parse_maint_rows` and `extract_overrides`, every one of which reads its
+# columns BY NAME and skips — silently, by design, so one bad row cannot strand
+# a poll — anything it does not recognise. Serve `c2` where `test_name` was
+# expected and the bench does not error; it simply concludes it has no QC, no
+# corrections and no maintenance, and carries on saying so. So the real column
+# names go back on here, and the shapes are pinned in tests/test_bench_config.py
+# against the module's own queries.
+
+
+def _real(value):
+    """A CAST-to-TEXT column back to the REAL LabCore stores, or None.
+
+    None rather than 0.0 for a blank: `parse_qc_specs` does `float(...)` inside a
+    try and DROPS the spec on failure, which is the correct reading of a NULL
+    band. Substituting a zero would invent a QC limit of 0 ± 0 and put a healthy
+    bench on RED.
+    """
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _whole(value):
+    """The same for an INTEGER column, keeping ints out of float-looking JSON."""
+    number = _real(value)
+    return None if number is None else int(number)
+
+
+def bench_config_from_tables(tables: Dict[str, List[dict]],
+                             machine_uid: str) -> dict:
+    """Everything one bench reads on a timer, in LabCore's own row shapes.
+
+    Scoped to `machine_uid` everywhere the module's own query has a `WHERE` —
+    corrections, targets, maintenance — and, deliberately, on `lem_qc_specs`
+    too. `QC_SPECS_QUERY` has no WHERE clause and `parse_qc_specs` filters on the
+    `machine_uid` column instead, so the column is kept; but there is no reason
+    to ship a bench the whole lab's limits for it to throw away. The one list
+    that is NOT scoped is `qc_samples`: the shared standards are the lab's, and a
+    bench detects QC against all of them.
+
+    An unknown uid is an ordinary answer here, not an error — see the endpoint.
+    """
+    uid = str(machine_uid or "")
+
+    def mine(src: str) -> List[dict]:
+        return [r for r in tables.get(src) or [] if str(_f(r, "c1")) == uid]
+
+    # `lem_machine_control` holds nothing but the override, so "no row" and
+    # "override cleared" are the same fact and both are "".
+    override = ""
+    for row in mine("control"):
+        override = str(_f(row, "c2"))
+
+    return {
+        "machine_uid": uid,
+        # build_corrections_query: SELECT test_name, correction
+        "corrections": [{"test_name": str(_f(r, "c2")),
+                         "correction": _real(r.get("c3"))}
+                        for r in mine("corr")],
+        # QC_SAMPLES_QUERY: SELECT name, sample_id_val, tests
+        # `tests` stays the JSON TEXT LabCore stores — parse_qc_sample_rows calls
+        # json.loads on it, and handing over an already-parsed list would raise
+        # there and empty the entire library.
+        "qc_samples": [{"name": str(_f(r, "c1")),
+                        "sample_id_val": str(_f(r, "c2")),
+                        "tests": str(_f(r, "c3"))}
+                       for r in tables.get("qcsample") or []],
+        # QC_TARGETS_QUERY: SELECT sample_name, test_name
+        "qc_targets": [{"sample_name": str(_f(r, "c2")),
+                        "test_name": str(_f(r, "c3"))}
+                       for r in mine("target")],
+        # QC_SPECS_QUERY: SELECT machine_uid, test_name, sample_id, expected,
+        #                        std_dev, k, units
+        "qc_specs": [{"machine_uid": str(_f(r, "c1")),
+                      "test_name": str(_f(r, "c2")),
+                      "sample_id": str(_f(r, "c3")),
+                      "expected": _real(r.get("c4")),
+                      "std_dev": _real(r.get("c5")),
+                      "k": _real(r.get("c6")),
+                      "units": str(_f(r, "c7"))}
+                     for r in mine("spec")],
+        # MAINTENANCE_QUERY: SELECT uid, name, kind, interval_days, last_done,
+        #                           note
+        "maintenance": [{"uid": str(_f(r, "c2")),
+                         "name": str(_f(r, "c3")),
+                         "kind": str(_f(r, "c4")),
+                         "interval_days": _whole(r.get("c5")),
+                         "last_done": str(_f(r, "c6")),
+                         "note": str(_f(r, "c7"))}
+                        for r in mine("maint")],
+        "override": override,
+    }
 
 
 def build_machines(tables: Dict[str, List[dict]], now: datetime,

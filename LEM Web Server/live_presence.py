@@ -41,6 +41,20 @@ LIVE_TOKEN_KEY = "live_token"
 LIVE_RETRY_MIN = 30.0
 LIVE_RETRY_MAX = 300.0
 
+# The two things a bench re-reads from LabCore on a timer, and the reason it
+# does: it has no way to be told they changed. Between them those two reads are
+# ~64% of everything on a queue that serialises at ~1.5 ops/sec, and the answer
+# is almost always "no change". A note on the push response replaces the timer.
+#
+# These strings are a wire contract with a program that CANNOT import this file
+# (LabStation loads the station module as a lone file). A rename here is a
+# silent no-op there — the bench would simply stop re-reading a table that had
+# in fact changed — so an unrecognised kind is refused at the door rather than
+# stored and handed to a bench that has no idea what to do with it.
+STALE_CORRECTIONS = "corrections"
+STALE_OVERRIDE = "override"
+STALE_KINDS = (STALE_CORRECTIONS, STALE_OVERRIDE)
+
 
 META_DDL = "CREATE TABLE IF NOT EXISTS lem_meta (key TEXT PRIMARY KEY, value TEXT)"
 META_UPSERT = ("INSERT INTO lem_meta (key, value) VALUES (?, ?) "
@@ -391,6 +405,88 @@ class LivePresence:
         self._clock = clock
         self._lock = threading.Lock()
         self._entries: dict = {}
+        # Notes are DELIBERATELY not kept in `_entries`, and this is the whole
+        # reason they are a second dict rather than a field on the entry.
+        # `_entries` is a cache of liveness and ages out on purpose — that is
+        # what makes the floor fall back to the record. A note is a pending
+        # instruction, and an instruction that ages out is a change silently
+        # dropped: a bench switched off on Friday, its correction factor
+        # changed on Saturday, and on Monday it runs samples all week with the
+        # old factor while nothing anywhere reports it. Notes therefore have no
+        # TTL at all; the only thing that removes one is the bench collecting
+        # it, or the cap below.
+        #   uid -> {"pending": set(kind), "handed": set(kind)}
+        self._stale: dict = {}
+
+    # ── stale notes: "something you cache changed, go and re-read it" ──────
+
+    def mark_stale(self, machine_uid: str, kind: str) -> bool:
+        """Leave a note for one bench. False if there was nothing to record.
+
+        Carries the KIND only, never the value. A correction factor travelling
+        this road would make the floor a second writer of a fact LabCore owns,
+        with no rule saying which wins — the same rot the failover in
+        `merge_machines` was shaped to avoid. This says "go and look"; LabCore
+        stays the only place that answers "at what".
+
+        A uid nobody has ever heard of is stored regardless. Validating it
+        would cost a LabCore lookup, and corrections are settable before an
+        instrument has ever parsed anything, so "unknown" and "not yet" are the
+        same shape from here. The cap is what makes that safe.
+        """
+        uid = str(machine_uid or "").strip()
+        if not uid or kind not in STALE_KINDS:
+            return False
+        with self._lock:
+            note = self._stale.pop(uid, None) or {"pending": set(),
+                                                  "handed": set()}
+            note["pending"].add(kind)
+            # Re-inserted so the cap evicts in marking order: the oldest
+            # uncollected note belongs to whatever is least likely to ever come
+            # back for it.
+            self._stale[uid] = note
+            while len(self._stale) > MAX_MACHINES:
+                self._stale.pop(next(iter(self._stale)))
+        return True
+
+    def take_stale(self, machine_uid: str) -> list:
+        """The notes to hand this bench on the push being served right now.
+
+        **Held for two pushes, not one.** A note found on push N is returned by
+        push N and again by push N+1, then retired.
+
+        Clearing on delivery is the obvious design and it is wrong, because the
+        delivery is an HTTP response and a response can be lost in flight.
+        `post_live` on the bench is best-effort with a 1.5s timeout and
+        swallows everything, so a response that dies on the way back is silent
+        at both ends — the note is gone, the bench never learns, and the
+        15-minute backstop poll is the only thing left to catch it. Holding one
+        extra round makes that self-heal on the next push, ~30s later. The
+        price when nothing was lost is that the bench re-reads LabCore once for
+        a change it already has: at most ONE redundant read per change, against
+        removing ~64% of the queue's traffic.
+
+        Marking again while a note is held restarts the window rather than
+        riding out the old one — the second change is a change in its own right
+        and must reach the bench.
+        """
+        uid = str(machine_uid or "").strip()
+        if not uid:
+            return []
+        with self._lock:
+            note = self._stale.get(uid)
+            if note is None:
+                return []
+            # Everything outstanding goes out: what was just marked, plus what
+            # went out on the previous push and is being repeated.
+            due = note["pending"] | note["handed"]
+            # Whatever was repeated this time has now had both its rounds and
+            # is retired; what is going out for the FIRST time gets one more.
+            note["handed"] = set(note["pending"])
+            note["pending"] = set()
+            if not note["handed"]:
+                self._stale.pop(uid, None)
+            return sorted(due)
 
     def record(self, machine_uid: str, payload: dict) -> bool:
         """Store one push. False if it was refused (no uid, or out of order)."""

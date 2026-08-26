@@ -88,7 +88,44 @@ class LabCoreRefused(LabCoreError):
 
     A full write queue, a rejected operation, or an answer so unlike an
     acknowledgement that claiming success from it would be a guess.
+
+    Carries the ANSWER, not just a sentence about it, because the HTTP layer
+    needs three separate things from a refusal and none of them can be recovered
+    from prose: whether it is worth retrying (`busy` — 503 versus 502, and a
+    client that retries a permanently-invalid write retries forever), how long
+    to wait (`retry_after`), and what to tell the person who clicked Save
+    (`what`). One error handler serves every route, and it cannot ask each
+    raiser what flavour of exception it happens to be.
+
+    `result` is optional so the older `raise LabCoreRefused("text")` form still
+    works; those simply report `busy` False, which is the safe reading — a
+    refusal nobody has evidenced as transient must not be advertised as one.
     """
+
+    def __init__(self, reason: Any = "", result: Any = None,
+                 what: str = "", **extra) -> None:
+        self.result = result if isinstance(result, dict) else {}
+        self.reason = str(reason) if reason else "LabCore refused the write"
+        self.what = what
+        self.extra = extra
+        super().__init__(self.reason)
+
+    @property
+    def busy(self) -> bool:
+        res = self.result
+        if not isinstance(res, dict):
+            return False
+        if res.get("busy"):
+            return True
+        # The flag first, then the message — `snapshot_service` already sniffs
+        # the text for the same word, and a busy answer that arrived without the
+        # flag (an older LabCore, a proxy, a timeout dressed as an error) misread
+        # as permanent is the more expensive of the two mistakes.
+        return "busy" in str(res.get("error") or "").lower()
+
+    @property
+    def retry_after(self) -> Any:
+        return retry_after(self.result) if self.busy else None
 
 
 # Matched case-insensitively against the error text. sqlite phrases it
@@ -239,7 +276,10 @@ def confirm_write(res: Any) -> None:
     """
     err = refusal_of(res)
     if err is not None:
-        raise LabCoreRefused(err)
+        # The ANSWER travels with the exception. Raising the sentence alone is
+        # why a busy queue reached the browser as 502 "do not bother retrying"
+        # instead of 503 with a Retry-After.
+        raise LabCoreRefused(err, res)
 
 
 def wrote_rows(res: Any) -> int:

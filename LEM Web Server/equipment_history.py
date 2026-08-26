@@ -734,7 +734,13 @@ def _confirmed(result, what: str) -> int:
     try:
         return wrote_rows(result)
     except LabCoreRefused as exc:
-        raise LabCoreRefused(f"{what}: {exc}") from None
+        # The ANSWER travels with the re-label, not just the sentence.
+        # Re-raising the text alone drops `busy` and `retry_after`, so a
+        # full queue reaches the browser as 502 "this will never work"
+        # instead of 503 with a Retry-After — the one distinction a client
+        # cannot recover by reading English.
+        raise LabCoreRefused(f"{what}: {exc}",
+                             getattr(exc, "result", None)) from None
 
 
 def _window_end(text) -> Optional[datetime]:

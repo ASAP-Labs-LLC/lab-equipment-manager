@@ -312,18 +312,22 @@ class TestVerdictsCarryProvenance:
         instrument, and it goes through the same `_queue_run_events`."""
         from test_manual_mode import manual_machine
         monkeypatch.setattr(mod, "_in_thread", lambda fn, cb: cb(fn()))
-        # No LabCore on this canvas, so the epoch under test is the cached one
-        # and nothing re-reads it out from under the assertion.
         monkeypatch.delitem(mod.__dict__, "labcore_read_sql", raising=False)
         module = make_module()
         module.context.current_user = FakeUser("rmoore")
         module.set_machine(manual_machine(), publish=False)
-        module._calibration_epoch = "2026-08-01T07:00:00"
+        # A REAL completed calibration on the bench, not a poked attribute. The
+        # epoch is derived from `machine.maintenance` now, so assigning
+        # `_calibration_epoch` directly is overwritten the moment the entry path
+        # resolves it — which is the design working, and a test that hid it
+        # would be asserting against a value the bench cannot actually have.
+        module.add_task("Annual cal", "calibration", 365)
+        module._machine.maintenance[0].last_done = "2026-08-01"
         module.log_manual_entry("Flash Point", "63.9", now=NOW)
         detail = next(json.loads(args[6]) for _sql, args in module._pending_events
                       if args[2] == "qc")
         assert detail["operator"] == "rmoore"
-        assert detail["calibration_id"] == "2026-08-01T07:00:00"
+        assert detail["calibration_id"] == "2026-08-01"
 
     def test_a_production_run_is_not_given_a_qc_verdict_shape(self, monkeypatch):
         """A `run` is a sample, not a check; nothing here claims otherwise."""
@@ -367,45 +371,79 @@ def bench(qapp, monkeypatch):
     return build
 
 
-class TestPerPollCost:
-    def test_the_epoch_costs_nothing_per_reading(self, bench):
-        """LabCore serialises at ~1.5 ops/sec and refuses past ~100 pending. A
-        poll that parses fifty QC prints must not be fifty lookups."""
+class TestTheEpochCostsNoLabCoreRead:
+    """It is derived from `machine.maintenance`, which the bench already holds.
+
+    The first draft of this road spent one windowed `read_sql` per bench for
+    the epoch. `test_restart_stampede` counts what a poll asks LabCore for and
+    caught it as a third read where the read-economy work allows two — that
+    work exists because a per-bench timer read multiplies by a bench count that
+    is still growing, and it is what took an idle bench from 6.2 reads/min to
+    0.9. Paying an op again for something already on the config road would give
+    a slice of that straight back.
+    """
+
+    def test_a_poll_asks_labcore_for_nothing_at_all(self, bench):
         module, reads = bench()
         module._refresh_calibration_epoch(module._machine, NOW)
-        rows = [{LAB_ID_KEY: "CP", "Cloud": "-6.6"} for _ in range(50)]
-        module._queue_run_events(module._machine, rows, NOW)
-        assert reads.calls == 1
+        assert reads.calls == 0
 
-    def test_consecutive_polls_do_not_re_read(self, bench):
-        """The epoch changes when somebody calibrates, not every twelve seconds
-        — the same argument `_config_due` makes about the QC configuration."""
+    def test_not_even_on_the_first_poll(self, bench):
+        """The window cannot be the thing that makes it free — a cold module
+        has no stamp, and that is exactly when a read would fire."""
         module, reads = bench()
-        for i in range(10):
-            module._refresh_calibration_epoch(
-                module._machine, NOW + timedelta(seconds=12 * i))
-        assert reads.calls == 1
-
-    def test_it_re_reads_once_the_window_passes(self, bench):
-        module, reads = bench()
+        module._calibration_read_at = None
+        module._calibration_epoch = None
         module._refresh_calibration_epoch(module._machine, NOW)
-        module._refresh_calibration_epoch(
-            module._machine,
-            NOW + timedelta(seconds=mod.CONFIG_REFRESH_SECONDS + 1))
-        assert reads.calls == 2
+        assert reads.calls == 0
+
+    def test_fifty_readings_in_one_poll_still_ask_nothing(self, bench):
+        module, reads = bench()
+        for n in range(50):
+            module._refresh_calibration_epoch(module._machine,
+                                              NOW + timedelta(seconds=n))
+        assert reads.calls == 0
+
+    def test_it_reads_the_calibration_task_this_bench_already_has(self, bench):
+        module, _reads = bench()
+        module.add_task("Annual cal", "calibration", 365)
+        module._machine.maintenance[0].last_done = "2026-08-20"
+        module._refresh_calibration_epoch(module._machine, NOW)
+        assert module._calibration_epoch == "2026-08-20"
+
+    def test_the_newest_calibration_wins(self, bench):
+        """A bench can carry more than one calibration task. The epoch is the
+        most recent completion, not whichever task happens to be first."""
+        module, _reads = bench()
+        module.add_task("Annual cal", "calibration", 365)
+        module.add_task("Six-monthly cal", "calibration", 180)
+        module._machine.maintenance[0].last_done = "2026-02-01"
+        module._machine.maintenance[1].last_done = "2026-08-20"
+        module._refresh_calibration_epoch(module._machine, NOW)
+        assert module._calibration_epoch == "2026-08-20"
+
+    def test_a_pm_task_is_not_a_calibration(self, bench):
+        """PM and calibration are different columns on the floor and different
+        events in the record. A PM completion must not move the epoch."""
+        module, _reads = bench()
+        module.add_task("Monthly PM", "pm", 30)
+        module._machine.maintenance[0].last_done = "2026-08-25"
+        module._refresh_calibration_epoch(module._machine, NOW)
+        assert module._calibration_epoch is None
 
     def test_a_calibration_logged_here_is_seen_at_once(self, bench):
-        """Waiting out the window would stamp readings taken right after a
+        """Waiting out a window would stamp readings taken right after a
         calibration with the epoch it replaced."""
         module, reads = bench()
         module._refresh_calibration_epoch(module._machine, NOW)
         module.add_task("Annual cal", "calibration", 365)
         uid = module._machine.maintenance[0].uid
-        reads.ts = "2026-08-26T08:00:00"
         module.complete_task(uid)
         module._refresh_calibration_epoch(module._machine,
                                           NOW + timedelta(seconds=12))
-        assert module._calibration_epoch == "2026-08-26T08:00:00"
+        assert module._calibration_epoch == module._machine.maintenance[0].last_done
+        assert module._calibration_epoch is not None
+        assert reads.calls == 0
 
     def test_no_read_at_all_without_labcore(self, qapp, monkeypatch):
         monkeypatch.delitem(mod.__dict__, "labcore_read_sql", raising=False)
@@ -415,52 +453,49 @@ class TestPerPollCost:
         assert module._calibration_epoch is None
 
 
-class TestAnUnreadableAnswerKeepsWhatItHad:
-    def test_a_busy_queue_does_not_erase_the_epoch(self, bench):
-        """`refresh_corrections` makes the same call: a stale value beats a
-        wrong one. Blanking the epoch on one busy poll would mark that poll's
-        readings as belonging to no calibration at all."""
-        module, reads = bench()
-        module._refresh_calibration_epoch(module._machine, NOW)
-        reads.error = "busy"
-        module._refresh_calibration_epoch(
-            module._machine,
-            NOW + timedelta(seconds=mod.CONFIG_REFRESH_SECONDS + 1))
-        assert module._calibration_epoch == "2026-08-01T07:00:00"
-
-    def test_a_refused_read_is_retried_next_poll(self, bench):
-        """Stamping the window on a refusal would run two minutes on an answer
-        LabCore never gave — the rule `_config_due` states."""
-        module, reads = bench()
-        reads.error = "busy"
-        module._refresh_calibration_epoch(module._machine, NOW)
-        reads.error = None
-        module._refresh_calibration_epoch(module._machine,
-                                          NOW + timedelta(seconds=12))
-        assert reads.calls == 2
-        assert module._calibration_epoch == "2026-08-01T07:00:00"
-
+class TestAbsenceIsUnknownNotAValue:
     def test_a_bench_that_has_never_been_calibrated_has_no_epoch(self, bench):
-        module, reads = bench()
-        reads.ts = ""
+        """`None`, never "". A consumer counts DISTINCT epochs to decide whether
+        a QC series spans calibrations, and a blank string counted as an epoch
+        would manufacture the coverage this road exists to report honestly."""
+        module, _reads = bench()
+        module._refresh_calibration_epoch(module._machine, NOW)
+        assert module._calibration_epoch is None
+
+    def test_a_calibration_task_never_completed_is_not_an_epoch(self, bench):
+        """A scheduled calibration is not a performed one."""
+        module, _reads = bench()
+        module.add_task("Annual cal", "calibration", 365)
+        module._machine.maintenance[0].last_done = ""
+        module._refresh_calibration_epoch(module._machine, NOW)
+        assert module._calibration_epoch is None
+
+    def test_a_whitespace_completion_is_not_an_epoch(self, bench):
+        module, _reads = bench()
+        module.add_task("Annual cal", "calibration", 365)
+        module._machine.maintenance[0].last_done = "   "
         module._refresh_calibration_epoch(module._machine, NOW)
         assert module._calibration_epoch is None
 
 
 class TestBindingAnotherInstrument:
     def test_the_previous_bench_s_calibration_does_not_carry_over(self, bench):
-        """One machine per module instance, but the instance is rebound — and
-        an epoch held across that would stamp this instrument's QC with another
-        instrument's calibration."""
-        module, reads = bench()
+        """Stamping a verdict with the instrument-before-last's calibration is
+        worse than stamping it unknown: it is a provenance claim about the wrong
+        machine, and nothing downstream can tell."""
+        module, _reads = bench()
+        module.add_task("Annual cal", "calibration", 365)
+        module._machine.maintenance[0].last_done = "2026-08-20"
         module._refresh_calibration_epoch(module._machine, NOW)
-        assert module._calibration_epoch
-        module.set_machine(qc_machine(uid="m2", title="OptiMPP 2"),
-                           publish=False)
+        assert module._calibration_epoch == "2026-08-20"
+
+        fresh = qc_machine()
+        fresh.uid = "another-bench"
+        fresh.maintenance = []
+        module.set_machine(fresh, publish=False)
+        module._refresh_calibration_epoch(module._machine, NOW)
         assert module._calibration_epoch is None
 
-
-# ── the rows already written ────────────────────────────────────────────────
 
 class TestOlderRowsStillRead:
     def test_a_verdict_with_no_provenance_is_still_a_verdict(self):

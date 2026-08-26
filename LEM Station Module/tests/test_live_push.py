@@ -164,8 +164,11 @@ class TestPostingToTheFloor:
     def test_it_posts_to_the_live_endpoint(self, urlopen):
         rec = urlopen(Recorder())
 
+        # `== {}`, not `is True`: the push now hands back what the floor SAID
+        # so the bench can act on it (see `test_live_notes.py`). A success with
+        # no body is an empty dict; failure is None.
         assert mod.post_live("http://10.0.0.5:5557", "tok",
-                             {"machine_uid": "m1"}) is True
+                             {"machine_uid": "m1"}) == {}
 
         request, timeout = rec.requests[0]
         assert request.full_url == "http://10.0.0.5:5557/api/live"
@@ -187,25 +190,25 @@ class TestPostingToTheFloor:
         import urllib.error
         urlopen(Recorder(boom=urllib.error.URLError("connection refused")))
 
-        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is False
+        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is None
 
     def test_a_timeout_is_a_no_op(self, urlopen):
         urlopen(Recorder(boom=TimeoutError("timed out")))
-        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is False
+        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is None
 
     def test_a_rejected_token_is_a_no_op(self, urlopen):
         import urllib.error
         urlopen(Recorder(boom=urllib.error.HTTPError(
             "http://x", 401, "Not authorised", {}, None)))
-        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is False
+        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is None
 
     def test_anything_at_all_going_wrong_is_a_no_op(self, urlopen):
         urlopen(Recorder(boom=ValueError("nonsense url")))
-        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is False
+        assert mod.post_live("http://10.0.0.5:5557", "tok", {}) is None
 
     def test_no_address_means_no_attempt(self, urlopen):
         rec = urlopen(Recorder())
-        assert mod.post_live("", "tok", {}) is False
+        assert mod.post_live("", "tok", {}) is None
         assert rec.requests == []
 
     def test_no_pip_dependency_is_used(self):
@@ -242,7 +245,7 @@ def polling(monkeypatch, qapp):
 
     def fake_post(url, token, payload, timeout=None):
         posted.append((url, token, payload))
-        return True
+        return {"stale": []}        # took it, nothing pending
 
     monkeypatch.setattr(mod, "post_live", fake_post)
     return module, posted, reads
@@ -297,7 +300,7 @@ class TestWhenThereIsNoFloorToTalkTo:
         monkeypatch.setitem(mod.__dict__, "labcore_write",
                             lambda op, params=None, **kw: {"ok": True})
         monkeypatch.setattr(mod, "post_live",
-                            lambda *a, **k: attempts.append(a) or True)
+                            lambda *a, **k: attempts.append(a) or {})
 
         poll(module)
 
@@ -338,7 +341,10 @@ class TestTheAddressIsReadSparingly:
         """So a moved server or a rotated token heals itself instead of
         needing a restart on every bench."""
         module, _, reads = polling
-        monkeypatch.setattr(mod, "post_live", lambda *a, **k: False)
+        # None is the new "the floor did not take it" — see
+        # `test_live_notes.py`. False would now read as a SUCCESS whose
+        # body was the wrong shape, and the counter would never trip.
+        monkeypatch.setattr(mod, "post_live", lambda *a, **k: None)
 
         for _ in range(mod.LIVE_RETRY_AFTER + 1):
             poll(module)

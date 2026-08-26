@@ -28,6 +28,7 @@ import shutil
 import threading
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -428,6 +429,52 @@ LOG_TABLE_DDL = (
     "lab_id TEXT, test_name TEXT, value TEXT, detail TEXT)"
 )
 
+# ── and the indexes it never had ────────────────────────────────────────────
+#
+# This is the only lem_* table with no primary key and no index, it is never
+# pruned, and everything above lands in it. That would be an ordinary
+# performance smell anywhere else. Here it is a lab-wide outage waiting to
+# happen, because of where LabCore's database lives.
+#
+# LabCore's SQLite file is on an SMB share and cannot move. WAL is unusable on a
+# share, so the journal mode is DELETE, so a concurrent reader blocks the
+# writer's commit — which is why `read_sql` is SERIALISED THROUGH THE WRITE
+# QUEUE (LabCore.py:13180). A slow read of ours therefore does not inconvenience
+# us; it blocks every write in the building for as long as it runs. LabCore then
+# interrupts any read that outruns `read_watchdog_s` (8.0s), and its own comment
+# names "an unindexed scan over the SMB share" as the hazard. That scan is this
+# table. As it grows, `LAST_QC_QUERY` crosses eight seconds, LabCore kills it,
+# every bench retries, the queue deepens, and the lab reads it as "LabCore is
+# offline" while LabCore is perfectly healthy.
+#
+#   * (ts DESC) serves the web server's `ORDER BY ts DESC LIMIT n` — sixty rows
+#     read off the end of an index instead of the whole table sorted.
+#   * (machine_uid, kind, ts DESC) is the exact shape of LAST_QC_QUERY: seek to
+#     this bench's QC rows, walk them newest-first, stop at 400. It also covers
+#     the web server's `GROUP BY machine_uid`.
+#
+# `CREATE INDEX IF NOT EXISTS` is idempotent, so the web server declaring the
+# same two is harmless and correct — whichever process starts first creates
+# them.
+#
+# CREATING THEM IS ITSELF A QUEUE OP, and on a log that has grown for a year
+# over SMB the FIRST one may be slow: SQLite has to read the whole table across
+# the share and sort it. It happens once, on the first process to start after
+# this ships, and every read of the table afterwards is the thing it buys. It is
+# declared inside `_declare_tables`, so a LabCore that refuses it because its
+# queue is deep backs off exactly like a refused table rather than being retried
+# on every poll of every bench.
+#
+# The index DDL must be declared AFTER LOG_TABLE_DDL in that block: CREATE INDEX
+# on a table that does not exist yet is an error, and an error there backs the
+# whole block off and leaves `_labcore_table_ready` down for the process.
+LOG_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_lem_log_ts "
+    "ON lem_machine_log(ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_lem_log_uid_kind_ts "
+    "ON lem_machine_log(machine_uid, kind, ts DESC)",
+)
+
 # ── The machine log is the promise every other cap on this road makes ────────
 #
 # Read the drop notices on the results road and they all end the same way: the
@@ -482,7 +529,25 @@ def build_log_insert(machine_uid: str, kind: str, ts: datetime,
     sql = ("INSERT INTO lem_machine_log "
            "(machine_uid, ts, kind, lab_id, test_name, value, detail) "
            "VALUES (?, ?, ?, ?, ?, ?, ?)")
-    args = [machine_uid, ts.isoformat(), kind, lab_id, test_name,
+    # A name that is ENTIRELY whitespace is stored as '', because that is what
+    # it means: no method was named. This is the write half of the pair that
+    # let LAST_QC_QUERY stop calling TRIM (see there) — the read predicate can
+    # be answerable from an index OR it can call a function on every candidate
+    # row, and on a table read over SMB through the lab's write queue it has to
+    # be the former. Normalising the one value the two predicates disagreed
+    # about, at the single choke point every log row passes through, makes them
+    # equivalent for everything this module writes.
+    #
+    # Deliberately NOT a plain .strip(). `carry_last_qc` looks a verdict back up
+    # by `spec.name`, and a spec name can carry padding — `specs_for_machine`
+    # takes the method string from the mapping as the operator wrote it. Storing
+    # "Sulphur" against a spec called " Sulphur " would mean the bench lost the
+    # verdict it had just recorded, and went YELLOW for QC it had passed. Only
+    # the case that can never be a lookup key is normalised.
+    name = str(test_name or "")
+    if not name.strip():
+        name = ""
+    args = [machine_uid, ts.isoformat(), kind, lab_id, name,
             str(value), json.dumps(detail or {})]
     return sql, args
 
@@ -507,6 +572,36 @@ def refusal_reason(result) -> str:
     if isinstance(result, dict) and result.get("error"):
         return str(result["error"]) or "LabCore refused the write"
     return ""
+
+
+def retry_after_seconds(result) -> Optional[float]:
+    """How long LabCore asked to be left alone, or None if it did not say.
+
+    The other half of a refusal, and the half every caller here used to throw
+    away. LabCore refuses with `{"error": ..., "busy": true, "retry_after": n}`
+    and `n` is seconds; notes.md's standing rule for a bulk write is to honour
+    it and back off. A caller that ignores it re-fires into the queue that has
+    just reported it is too deep, which is the load the refusal was asking to be
+    spared.
+
+    None rather than a default, so the caller can fall back to its OWN schedule
+    — a wait this function invented would be indistinguishable from one LabCore
+    asked for, and the two mean different things.
+
+    Everything unusable reads as "it did not say". A server on another schedule
+    may answer with a string, a null, a negative number or a NaN, and none of
+    those may be allowed to park a bench's declarations for a shift — or, worse,
+    for no time at all. Note that `nan > 0` is False, which is what excludes it.
+    """
+    if not isinstance(result, dict):
+        return None
+    value = result.get("retry_after")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if not (value > 0) or value == float("inf"):
+        return None
+    return value
 
 
 def build_log_batch(records: List[list]) -> tuple:
@@ -745,8 +840,26 @@ LAST_QC_QUERY = (
     # DESC, not ASC: with `ORDER BY ts ASC LIMIT 400` this asked for the OLDEST
     # 400 verdicts, so on any machine past 400 the "most recent" verdict it
     # recovered was ancient history.
+    #
+    # `test_name != ''`, not `TRIM(test_name) != ''`. An index can answer a
+    # question about a stored value; it cannot answer one about the result of a
+    # function applied to it, so every candidate row had to be fetched and TRIM
+    # run on it before the row could be ruled in or out. On a table this size,
+    # read over SMB through a queue that serialises every write in the lab, that
+    # is work nobody can afford — see LOG_INDEX_DDL for what a slow read here
+    # actually costs.
+    #
+    # `TRIM(x) != ''` excluded one thing this does not: a test_name that is
+    # ENTIRELY whitespace. That exclusion has not been dropped, it has moved to
+    # the writer — `build_log_insert` stores a whitespace-only name as '' — so
+    # the two predicates agree on every row this module writes, and the read
+    # gets to use the index. `IS NOT NULL` is redundant against SQLite's
+    # three-valued logic (NULL != '' is NULL, which is not true) and is stated
+    # anyway, because "we did not think about NULL" and "NULL is excluded on
+    # purpose" should not look the same in a query an auditor may read.
     "SELECT test_name, value, ts, detail FROM lem_machine_log "
-    "WHERE machine_uid = ? AND kind = 'qc' AND TRIM(test_name) != '' "
+    "WHERE machine_uid = ? AND kind = 'qc' "
+    "AND test_name IS NOT NULL AND test_name != '' "
     "ORDER BY ts DESC LIMIT 400"
 )
 
@@ -2844,6 +2957,54 @@ HEARTBEAT_SECONDS = 300
 # somebody pulls to take a bench off line.
 CONFIG_REFRESH_SECONDS = 120
 
+# The same window, for the same reason, on the one read that never had one.
+#
+# The correction factors were re-read at the top of EVERY poll — two of the 6.2
+# LabCore reads a minute an idle bench makes, per bench, for a table that holds
+# an instrument's calibration offsets. Those are set when the instrument is
+# calibrated and otherwise touched a handful of times a year; nothing that
+# happens during a poll changes one.
+#
+# This gates the FREQUENCY and nothing else. The read still happens BEFORE the
+# parse and `apply_row_corrections` still runs on every row of every poll,
+# because the factor applied to a measurement has to be the one in force when it
+# was made (ISO/IEC 17025 §7.8.2) — and that is a claim about ORDER, not about
+# cadence. What a window costs is that an offset edited elsewhere can be up to
+# two minutes old; a reading corrected with the offset that was in force two
+# minutes ago is still corrected with an offset that was in force.
+#
+# The edit made HERE is deliberately outside the window: `_open_corrections`
+# drops the stamp, so an operator standing at the bench sees their own change on
+# the very next poll. Two minutes of the old factor after their own save is
+# indistinguishable from the save not having worked.
+#
+# There are TWO windows because there are two ways an edit made elsewhere can
+# reach this bench. The floor's web server now answers the live push with a note
+# naming what changed (see "the note the floor sends back", below), and where
+# that channel is delivering the read is only a BACKSTOP against a note that got
+# lost — so it can be long. Where it is not delivering, the backstop is the only
+# path there is, and it goes back to being the short window it was before the
+# note existed. `_corrections_due` picks between them; nothing else may.
+CORRECTIONS_REFRESH_SECONDS = 900
+CORRECTIONS_REFRESH_UNSIGNALLED_SECONDS = 120
+
+# The same pair for the floor's manual override, `lem_machine_control`.
+#
+# This read had no window AT ALL until the note channel existed, and the reason
+# is worth restating rather than deleting: it is the lever somebody on the floor
+# pulls to take a bench OFF LINE, and a bench that keeps running for the length
+# of a refresh window after being overridden is the one delay nobody in this lab
+# would accept. The note is what makes a window defensible — it carries the news
+# within one poll, the same 30s the ungated read gave, without the two LabCore
+# ops a minute that read cost on every bench in the building.
+#
+# So the window is CONDITIONAL, and `_override_due` is where that is enforced:
+# no floor configured, or a floor that is not taking pushes, and this read goes
+# straight back to every poll. There is no third behaviour. Anything that widens
+# the definition of "the channel is healthy" is trading a bench that stays live
+# after somebody switched it off against a fraction of one LabCore op a minute.
+OVERRIDE_REFRESH_SECONDS = 900
+
 # How long a module waits before asking again for a configuration LabCore could
 # not hand over, and the ceiling that wait grows to.
 #
@@ -2859,6 +3020,26 @@ CONFIG_REFRESH_SECONDS = 120
 # it is not.
 BIND_RETRY_SECONDS = 5.0
 BIND_RETRY_MAX_SECONDS = 60.0
+
+# The same wait, for the same reason, on the table declarations.
+#
+# `_declare_tables` fires nine `IF NOT EXISTS` declarations — seven tables and
+# the log's two indexes — and latches its flag only if every one was ACCEPTED —
+# a refused declaration is not a declaration. What was missing is what happens next. LabCore turns work away
+# when its queue is deep by returning an error dict, so a congested LabCore left
+# the flag down and every subsequent poll, on every bench, re-fired those
+# statements straight at the queue that had just said it was full. A slow queue
+# produced more work, which made it slower: a positive feedback loop whose gain
+# is the number of benches in the building, arriving at the moment the lab can
+# least afford it.
+#
+# So it waits, doubling exactly as the binding read above does — and it honours
+# LabCore's own `retry_after` when the refusal carries one, which is notes.md's
+# standing rule for any bulk write. Backing off is not giving up: the tables
+# genuinely may not exist, and a bench is back within seconds of LabCore
+# answering without adding load while it is not.
+DECLARE_RETRY_SECONDS = 5.0
+DECLARE_RETRY_MAX_SECONDS = 60.0
 
 
 # ── the live road ───────────────────────────────────────────────────────────
@@ -2904,9 +3085,133 @@ def parse_live_config(rows) -> tuple:
             found.get(LIVE_TOKEN_KEY, ""))
 
 
+# ── the note the floor sends back ───────────────────────────────────────────
+#
+# The push was one-way and the answer was thrown away. It is now the cheapest
+# channel this module has for the opposite direction.
+#
+# LabCore serialises reads AND writes through one queue at about 1.5 ops/sec and
+# is falling over under the load. Two of the questions an idle bench asks it are
+# pure polling — the correction factors and the floor's manual override — and
+# the answer is "nothing changed" for weeks at a time. The bench already POSTs
+# `/api/live` on every poll, and that handler on the floor's web server never
+# touches LabCore. So the floor answers the push with a note saying what moved,
+# and the bench reads LabCore when it is TOLD to, plus a long backstop.
+#
+# The wire contract, fixed — the server is built against exactly this:
+#
+#     POST /api/live      (request body unchanged)
+#       200 + {"stale": ["corrections", "override"]}   # any subset, any order
+#       200 + {"stale": []}                            # nothing pending
+#       auth/validation failures unchanged (401 / 400)
+#
+# A missing, empty, non-JSON or unexpected-shape body is "no notes" and never an
+# error. The server is another program on another schedule; this module is the
+# half that must not fall over when it answers with something new, something
+# old, or a proxy's login page.
+LIVE_NOTE_CORRECTIONS = "corrections"
+LIVE_NOTE_OVERRIDE = "override"
+LIVE_NOTE_KINDS = frozenset((LIVE_NOTE_CORRECTIONS, LIVE_NOTE_OVERRIDE))
+LIVE_NOTE_KEY = "stale"
+# What a list of kinds may arrive as. json.loads only ever builds a list, but
+# the fakes and the in-process callers hand tuples and sets, and refusing those
+# would make the check stricter than the parser it has to agree with.
+LIVE_NOTE_LIST_TYPES = (list, tuple, set, frozenset)
+
+
+def speaks_live_notes(body) -> bool:
+    """Does this answer come from a floor that speaks the note protocol?
+
+    ONE shape question, asked in ONE place, because two callers need the same
+    answer for different reasons and a disagreement between them is a silent
+    safety failure rather than a bug anybody would see.
+
+    `parse_live_notes` asks it to decide what is stale. `_live_channel_healthy`
+    asks it to decide whether the refresh windows may apply at all — and that is
+    the load-bearing use. A push that LANDED is not evidence of a note channel:
+    the benches are separate PCs and the floor's web server cannot be upgraded
+    in the same instant as every module in the building, so there is always a
+    window where an OLDER floor answers `/api/live` with 204 and no body. That
+    reaches `_push_live` as `{}` — a success, correctly, because the push did
+    land — and it carries no note and never will. Health taken from the 2xx
+    alone therefore put the manual override, the lever that takes a bench OFF
+    LINE, behind a fifteen-minute window on a floor that has never heard of
+    notes. Reproduced: `_override_due` False at 60s, 300s and 899s. The same
+    goes for a rolled-back server and for any proxy that swallows the body.
+
+    So health is EARNED by evidence of the protocol, never by acceptance:
+    a dict carrying a `stale` list. `{"stale": []}` IS the protocol — the floor
+    saying "nothing pending" — and counts; a bare `{}` does not.
+
+    Total and never raises: it sits on the worker's road with everything else
+    here (see `post_live`).
+    """
+    return (isinstance(body, dict)
+            and isinstance(body.get(LIVE_NOTE_KEY), LIVE_NOTE_LIST_TYPES))
+
+
+def parse_live_notes(body) -> set:
+    """The floor's answer → the set of kinds it says are stale.
+
+    Total, by design: anything that is not a recognised kind inside a list under
+    "stale" is simply absent from the result. Two failure modes it exists to
+    close. An unknown kind — the server learning a third one before this module
+    does — must be ignored rather than raise or invalidate something at random.
+    And the whole call sits on the worker's road, where a raise strands the poll
+    (see `post_live`), so there is nothing here that can throw.
+
+    The shape test is `speaks_live_notes` rather than a copy of it, because
+    `_live_channel_healthy` asks the same question to decide whether the refresh
+    windows may apply. Two copies that drifted apart would let a floor be
+    "healthy" while every note it sends parses to nothing — which is the whole
+    of the defect that seam exists to close.
+    """
+    if not speaks_live_notes(body):
+        return set()
+    stale = body[LIVE_NOTE_KEY]
+    # Stripped on the way OUT, not just on the way in. Returning the raw string
+    # would hand back " override ", which no `in` test downstream matches — the
+    # note would be silently dropped by the very code that recognised it.
+    return {kind.strip() for kind in stale
+            if isinstance(kind, str) and kind.strip() in LIVE_NOTE_KINDS}
+
+
+def _live_response_body(response) -> dict:
+    """The note out of an http response, or {} for anything that is not one.
+
+    {} and not None: this is only ever reached on a response the floor ACCEPTED,
+    and a push that landed with an unreadable body is still a push that landed.
+    Conflating the two is what would walk `_live_failures` up on a healthy
+    floor — see `post_live`.
+    """
+    try:
+        reader = getattr(response, "read", None)
+        raw = reader() if callable(reader) else b""
+        if not raw:
+            return {}
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        parsed = json.loads(raw)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def post_live(url: str, token: str, payload: dict,
-              timeout: float = LIVE_TIMEOUT) -> bool:
-    """POST one push. True if the floor took it; False for anything else.
+              timeout: float = LIVE_TIMEOUT) -> Optional[dict]:
+    """POST one push and hand back what the floor said.
+
+    None means the push did not land — no address, refused, timed out, 4xx,
+    anything. A DICT, possibly empty, means it did; its content is the note (see
+    `parse_live_notes`).
+
+    That split is the whole signature, and the reason it is not a bool any more.
+    A success with an empty body is `{}`, which is FALSY — so a caller testing
+    truthiness would count a perfectly healthy push as a failure, walk
+    `_live_failures` up to LIVE_RETRY_AFTER and re-read the live config out of
+    the congested LabCore queue on every fourth poll of every bench, which is the
+    exact load pattern this whole road exists to avoid. Callers test
+    `is not None`.
 
     stdlib only — no pip dependency is available inside LabStation — and it
     swallows everything. A raise here would travel up the worker, and
@@ -2915,7 +3220,7 @@ def post_live(url: str, token: str, payload: dict,
     a far smaller problem than losing the poll.
     """
     if not str(url or "").strip():
-        return False
+        return None
     try:
         request = urllib.request.Request(
             str(url).rstrip("/") + LIVE_PATH,
@@ -2924,9 +3229,11 @@ def post_live(url: str, token: str, payload: dict,
                      "X-LEM-Token": str(token or "")},
             method="POST")
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return 200 <= int(getattr(response, "status", 200) or 200) < 300
+            if not 200 <= int(getattr(response, "status", 200) or 200) < 300:
+                return None
+            return _live_response_body(response)
     except Exception:
-        return False
+        return None
 
 
 def build_live_payload(machine: Machine, evaluation: "MachineEvaluation",
@@ -2961,6 +3268,29 @@ def build_live_payload(machine: Machine, evaluation: "MachineEvaluation",
     return payload
 
 
+def build_live_probe(machine: Machine) -> dict:
+    """The knock at boot: the least the floor needs in order to answer.
+
+    A push whose only purpose is to find out whether there is a floor there
+    that speaks the note protocol — asked BEFORE the first poll has read or
+    parsed anything, which is the whole reason it exists (see
+    `_probe_live_channel`). `/api/live` requires a `machine_uid` and nothing
+    else, so that is what this carries.
+
+    It deliberately carries NO `status`. This module has not evaluated anything
+    yet, so any status here would be invented — and the floor's `merge_machines`
+    treats a live entry with a status as authoritative over the LabCore record,
+    colour and reason and all. An entry with an EMPTY status falls straight
+    back to the record, which is precisely the right answer for a bench that
+    has not looked at its instrument yet. A knock must not repaint the floor.
+
+    No `at` either, for a smaller reason with the same shape: `LivePresence.record`
+    refuses a push stamped earlier than the one it already holds, and a knock is
+    not a report worth letting win — or lose — that comparison.
+    """
+    return {"machine_uid": machine.uid}
+
+
 def build_heartbeat_upsert(machine: Machine, now: datetime,
                            polling: bool = True) -> tuple:
     """"I am running, and here is what I am watching." Cheap, bounded, and
@@ -2985,6 +3315,206 @@ def build_heartbeat_upsert(machine: Machine, now: datetime,
            "VALUES (?, ?, ?) ON CONFLICT(machine_uid) DO UPDATE SET "
            "last_poll=excluded.last_poll, watching=excluded.watching")
     return sql, [machine.uid, now.isoformat(), watching]
+
+
+# ── the bench reads its configuration from the FLOOR ────────────────────────
+#
+# LabCore serialises reads AND writes through ONE queue at about 1.5 ops/sec.
+# Its database sits on an SMB share and CANNOT be moved to local disk, so every
+# `read_sql` will always consume a write-queue slot — a bench asking a question
+# delays every other bench's results. That is settled and is not what this
+# changes.
+#
+# What this changes is WHO is asked. Each bench read its own configuration out
+# of LabCore, so LabCore's load grew with the number of benches — which is what
+# is crashing it. The floor's web server sits beside LabCore and already holds
+# every one of these tables in an in-memory snapshot it refreshes every 12
+# seconds at a cost that does NOT grow with the bench count. So the bench asks
+# the floor, and touches LabCore only when the floor cannot answer.
+#
+# The wire contract is fixed — the server is built against exactly this:
+#
+#     GET {live_url}/api/bench/{machine_uid}/config
+#       Header: X-LEM-Token: {live_token}
+#       200 {"machine_uid", "snapshot_age_seconds", "override",
+#            "corrections", "qc_samples", "qc_targets", "qc_specs",
+#            "maintenance"}
+#       401 bad token
+#       503 {"error": ..., "stale": true}   snapshot never populated
+#
+# The row shapes are EXACTLY what `read_sql` returns for those tables, which is
+# the point: `floor_config_results` hands them back as LabCore-shaped result
+# dicts and every existing parser runs unchanged. A second parser for the same
+# rows would be a second definition of what a bench believes about itself, and
+# the two would disagree somewhere nobody ever looks.
+#
+# This road changes the SOURCE of a read, never its SCHEDULE. `_config_due`,
+# `_corrections_due` and `_override_due` still decide when to ask, and the note
+# channel still says when something is stale.
+FLOOR_CONFIG_PATH = "/api/bench/{uid}/config"
+# In the spirit of LIVE_TIMEOUT. This is on the poll's critical path and the
+# floor is one hop away on the LAN, so a long timeout would freeze the poll
+# behind a server that is merely rebooting — and the fallback that follows is
+# cheap and always correct.
+FLOOR_CONFIG_TIMEOUT = 1.5
+
+# How old the floor's snapshot may be before the bench refuses it and asks
+# LabCore instead.
+#
+# THIS IS A COMPLIANCE GATE, not a tuning knob. The correction factors served
+# here are added to EVERY measurement before it is written to LabCore,
+# displayed or QC-judged (ISO/IEC 17025:2017 s7.8.2 — the reported result must
+# be the measurement result). Serving them from the floor is defensible
+# *because* the snapshot is strictly FRESHER than the window it replaces — 12s
+# against a 900s backstop — and because LabCore remains the origin of every
+# row. That argument holds only while the age is BOUNDED: an unbounded stale
+# snapshot means a bench applying a calibration offset the lab has already
+# superseded, reported as the measurement result, which is the finding this
+# module exists to avoid. So the check lives inside `floor_config_results` —
+# the single door every floor row comes through — rather than at any call
+# site, where a future caller could simply not write it.
+#
+# 60 seconds. The floor refreshes every 12s, so this tolerates four missed
+# cycles (a long LabCore refresh, a GC pause, a skipped tick) without
+# stampeding every bench in the building back onto the queue this road exists
+# to unload. And it stays at or under CONFIG_REFRESH_SECONDS, so the floor can
+# never serve configuration older than the LabCore read it is replacing.
+FLOOR_CONFIG_MAX_AGE_SECONDS = 60.0
+
+# Every key the answer must carry, and what each one must be. A body missing
+# any of them is refused WHOLE rather than used in part: a missing `qc_specs`
+# read as an empty list is "every QC assignment was deleted", which leaves the
+# bench looking configured and monitoring nothing.
+_FLOOR_ROW_KEYS = ("corrections", "qc_samples", "qc_targets", "qc_specs",
+                   "maintenance")
+
+
+def build_floor_config_url(url: str, machine_uid: str) -> str:
+    """Where this bench's configuration lives on the floor.
+
+    The uid is quoted with `safe=""`. It is operator-typed and lands in a URL
+    PATH, so a space or a slash in it would otherwise build a request for some
+    other path entirely — and the worst version of that is a bench applying
+    another instrument's correction factors to its own measurements.
+    """
+    return (str(url).rstrip("/")
+            + FLOOR_CONFIG_PATH.format(
+                uid=urllib.parse.quote(str(machine_uid or ""), safe="")))
+
+
+def fetch_floor_config(url: str, token: str, machine_uid: str,
+                       timeout: float = FLOOR_CONFIG_TIMEOUT
+                       ) -> Optional[dict]:
+    """GET one bench's configuration from the floor. None means no answer.
+
+    None for everything that is not a 2xx carrying a JSON OBJECT: no address, a
+    refused connection, a timeout, a 401, a 503 with a cold snapshot, a proxy's
+    login page, a JSON array, an empty body. There is nothing to configure from
+    in any of those, and the caller's answer to all of them is the same — ask
+    LabCore.
+
+    Note the deliberate difference from `post_live`, where an empty body is
+    `{}` and means a push that LANDED. A push that landed is the whole point
+    of a push; an answer with no configuration in it is not an answer.
+
+    stdlib only — no pip dependency is available inside LabStation — and it
+    swallows EVERYTHING. A raise here travels up the worker, and LabStation's
+    `_run_in_thread` drops the callback on an exception, which strands
+    `_polling` so the bench stops polling altogether. Falling back to a LabCore
+    read costs one queue slot; losing the poll costs the bench.
+    """
+    if not str(url or "").strip():
+        return None
+    try:
+        request = urllib.request.Request(
+            build_floor_config_url(url, machine_uid),
+            headers={"Accept": "application/json",
+                     "X-LEM-Token": str(token or "")},
+            method="GET")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            if not 200 <= int(getattr(response, "status", 200) or 200) < 300:
+                return None
+            reader = getattr(response, "read", None)
+            raw = reader() if callable(reader) else b""
+            if not raw:
+                return None
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            parsed = json.loads(raw)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _floor_age(value) -> Optional[float]:
+    """The snapshot age as a number, or None for anything that is not one.
+
+    `bool` is excluded on purpose: `True` is an int in Python and would sail
+    through as an age of 1.0 second, which is the most dangerous possible way
+    for this gate to be wrong.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    age = float(value)
+    if age != age:                      # NaN compares False against everything
+        return None
+    return age
+
+
+def floor_config_results(body, machine_uid: str) -> Optional[dict]:
+    """The floor's answer -> LabCore-shaped result dicts, or None to fall back.
+
+    THE single door. Every row that reaches the bench from the floor comes
+    through here, which is what makes the age bound impossible to skip (see
+    FLOOR_CONFIG_MAX_AGE_SECONDS) and what keeps the two roads from drifting:
+    the returned dicts are exactly what `read_sql` hands back for those tables,
+    so `parse_correction_rows`, `parse_qc_sample_rows`, `parse_qc_specs`,
+    `parse_maint_rows` and `extract_overrides` all run unchanged on them.
+
+    Refused WHOLE, never in part, and refusal is always safe — it means the
+    bench asks LabCore, which is exactly what it did before this road existed.
+
+    Total and never raises: this runs on the worker with everything else here
+    (see `fetch_floor_config`).
+    """
+    if not isinstance(body, dict):
+        return None
+
+    # WHOSE configuration is this? A caching proxy, or a floor that resolved
+    # the uid differently, would otherwise hand this bench another instrument's
+    # correction factors — and they are added to every measurement it reports.
+    # Nothing else in the answer identifies the machine, so a missing uid is a
+    # refusal too.
+    if str(body.get("machine_uid") or "").strip() != str(machine_uid).strip():
+        return None
+
+    # The compliance gate. Missing, non-numeric, NaN and negative all refuse:
+    # "no age" is not "fresh", it is a floor that cannot tell us, and a
+    # snapshot from the future is two clocks disagreeing rather than a fresh
+    # one — the
+    # same argument `_corrections_due` makes about negative elapsed time.
+    age = _floor_age(body.get("snapshot_age_seconds"))
+    if age is None or age < 0 or age > FLOOR_CONFIG_MAX_AGE_SECONDS:
+        return None
+
+    for key in _FLOOR_ROW_KEYS:
+        if not isinstance(body.get(key), list):
+            return None
+    # The override rides the wire as a bare string, not as rows — but it is
+    # rebuilt into the `lem_machine_control` row shape below so that
+    # `extract_overrides` still does the validating. An unrecognised value is
+    # dropped there, on both roads, by one piece of code.
+    override = body.get("override")
+    if not isinstance(override, str):
+        return None
+
+    return {"corrections": {"rows": list(body["corrections"])},
+            "qc_samples": {"rows": list(body["qc_samples"])},
+            "targets": {"rows": list(body["qc_targets"])},
+            "qc_specs": {"rows": list(body["qc_specs"])},
+            "maint": {"rows": list(body["maintenance"])},
+            "override": {"rows": [{"machine_uid": str(machine_uid),
+                                   "manual_override": override}]}}
 
 
 
@@ -3138,8 +3668,48 @@ def correctable_methods(machine: Machine) -> List[str]:
     return sorted(names)
 
 
-def refresh_corrections(machine: Machine, read_sql) -> bool:
-    """Re-read this machine's correction factors. Returns whether they changed.
+def fetch_corrections(machine_uid: str, read_sql) -> tuple:
+    """Ask LabCore for one machine's correction factors. Returns
+    (answered, factors); `factors` means nothing unless `answered`.
+
+    Split out of `read_corrections` because the caller has to be able to THROW
+    THE ANSWER AWAY. This read runs on the worker and blocks on a congested
+    queue, and the bench can change underneath it — see `_corrections_epoch`.
+    A function that reads and applies in one step gives the caller no moment in
+    between to decide the answer is about something that is no longer there.
+
+    Every "no" is reported as not answered, so the caller retries rather than
+    caching a refusal for a whole refresh window: no reader injected yet (a
+    LabStation canvas restores its modules before the helpers land), a raise, an
+    error dict from a full queue — and a result with no `rows` key at all.
+
+    That last one is the one that looks like an answer. `res.get("rows") or []`
+    turned a bare `{"ok": True}` into the empty list, which means "every
+    correction was deleted" — so an acknowledgement carrying no rows WIPED the
+    map and the window then cached the wipe. An empty LIST is still a real
+    answer and still clears them; deleting a correction has to actually stop it
+    correcting.
+    """
+    if not callable(read_sql):
+        return False, {}
+    # The parse is inside the try with the read, not after it. This is called on
+    # the WORKER, where a raise strands `_polling` and the bench stops polling
+    # altogether — and the rows are whatever a gateway handed back, not a shape
+    # this module chose. Nothing about a malformed answer is worth that.
+    try:
+        res = read_sql(*build_corrections_query(machine_uid))
+        if not isinstance(res, dict) or res.get("error"):
+            return False, {}
+        rows = res.get("rows")
+        if rows is None:
+            return False, {}
+        return True, parse_correction_rows(rows)
+    except Exception:
+        return False, {}
+
+
+def read_corrections(machine: Machine, read_sql) -> tuple:
+    """Re-read this machine's correction factors. Returns (answered, changed).
 
     Called at the TOP of a poll, before the print is parsed, because the factor
     applied to a measurement has to be the one in force when it was made. It used to
@@ -3150,20 +3720,26 @@ def refresh_corrections(machine: Machine, read_sql) -> bool:
     An unreadable table keeps what it already had. A busy queue must never silently
     turn corrections off and report raw values — a stale correction is a lesser
     problem than a wrong result.
+
+    `answered` is what the caller's refresh window is stamped from, and it is NOT
+    the same question as `changed`: a table that answered with the factors already
+    held IS an answer, and a refusal that changed nothing is not one. Reporting
+    either for the other is how a bench caches "LabCore was busy" for a whole
+    window — the failure `_config_due` describes, arriving on the one read that had
+    no window at all until now. See `_corrections_due`.
     """
-    if not callable(read_sql):
-        return False
-    try:
-        res = read_sql(*build_corrections_query(machine.uid))
-    except Exception:
-        return False
-    if not res or res.get("error"):
-        return False
-    wanted = parse_correction_rows(res.get("rows") or [])
+    answered, wanted = fetch_corrections(machine.uid, read_sql)
+    if not answered:
+        return False, False
     if wanted == dict(machine.corrections or {}):
-        return False
+        return True, False
     apply_corrections(machine, wanted)
-    return True
+    return True, True
+
+
+def refresh_corrections(machine: Machine, read_sql) -> bool:
+    """`read_corrections`, asked only whether the factors changed."""
+    return read_corrections(machine, read_sql)[1]
 
 
 def build_correction_upsert(machine_uid: str, test_name: str, correction: float,
@@ -3749,6 +4325,19 @@ class LEMStationModule:
         self._poll_seconds = 30
         self._polling = False
         self._labcore_table_ready = False
+        # When LabCore last REFUSED the declarations, and how long it is being
+        # left alone for. A refusal used to cost nothing to repeat, so every
+        # road through `_declare_tables` re-fired the whole block at a queue
+        # that had just said it was full. See DECLARE_RETRY_SECONDS.
+        #
+        # Two waits and not one: `_declare_wait_seconds` is what is in force
+        # right now — LabCore's own `retry_after` when it sent one — while
+        # `_declare_retry_seconds` is where this module's own doubling schedule
+        # has got to. Collapsing them would let one `retry_after` of 30 reset
+        # the schedule, or a long schedule override a short `retry_after`.
+        self._declare_refused_at: Optional[datetime] = None
+        self._declare_retry_seconds = DECLARE_RETRY_SECONDS
+        self._declare_wait_seconds = DECLARE_RETRY_SECONDS
         # The live road (see post_live). Read from LabCore once, then only
         # again after repeated failures, so a moved server or a rotated token
         # heals itself without a restart on every bench.
@@ -3756,6 +4345,37 @@ class LEMStationModule:
         self._live_token = ""
         self._live_checked = False
         self._live_failures = 0
+        # Whether the LAST push came back SPEAKING THE NOTE PROTOCOL — which is
+        # a different question from `_live_failures`, and the one the refresh
+        # windows turn on.
+        #
+        # Not "did the push land". An older floor answers `/api/live` with 204
+        # and no body: the push landed, so the counter below is right to stay at
+        # zero, and there is no note channel at all. See `speaks_live_notes`.
+        #
+        # The counter cannot carry this. `_live_config` resets it to zero every
+        # time it re-reads, so `_live_failures >= LIVE_RETRY_AFTER` is true for
+        # one poll in every three or four while the floor is down, and a bench
+        # would read its manual override every THIRD poll instead of every poll
+        # — ninety seconds of a bench still running after somebody took it off
+        # line, arrived at by accident. This is the durable half: False the
+        # moment a push fails, True again the moment one lands.
+        #
+        # False at construction, and that matters: nothing has been delivered
+        # yet, so the first poll asks LabCore for everything. Being wrong in
+        # this direction costs one read. See `_live_channel_healthy`.
+        self._live_delivering = False
+        # Whether the one boot-time knock has been made. ONE per module life:
+        # a knock on every poll would be a second push per bench for ever, half
+        # again the traffic of the road it is helping, for no information after
+        # the first answer. See `_probe_live_channel`.
+        self._live_probed = False
+        # Worker → main thread: "a note invalidated something; re-poll now,
+        # do not wait for the tick." `_show_outcome` is the only consumer.
+        self._live_followup = False
+        # ... and whether the poll now running IS that follow-up, which is what
+        # stops the channel driving this bench in a loop. See `_ask_followup`.
+        self._in_live_followup = False
         # Machine-log records on their way to lem_machine_log. UNBOUNDED as a
         # deque and bounded in `_log_event` instead: the cap has to be able to
         # refuse a new record rather than silently evict an accepted one, and a
@@ -3770,6 +4390,38 @@ class LEMStationModule:
         self._serial_reader = None
         self._last_status_pushed = None  # (uid, status, reason) last written
         self._config_read_at = None      # when QC/PM config last ANSWERED
+        self._corrections_read_at = None  # when the factors last ANSWERED
+        self._override_read_at = None    # when lem_machine_control last ANSWERED
+        # WHICH set of correction factors a read still in flight is about.
+        #
+        # `_refresh_corrections` runs on the WORKER and blocks inside `read_sql`
+        # on the same congested LabCore queue the refresh window exists to
+        # spare; `set_machine` and `_open_corrections` run on the GUI thread and
+        # can both land in the middle of that read. Whoever changes what the
+        # read is ABOUT bumps this, and an answer whose generation moved while
+        # it was in flight is DISCARDED — not applied, and above all not
+        # stamped.
+        #
+        # Clearing the stamp cannot do this on its own. `apply_corrections`
+        # writes into the Machine object the worker captured before the swap,
+        # and no assignment on the GUI thread can reach back into a call already
+        # in progress. Without the counter, a bench bound while a read was out
+        # reports RAW values for the whole CORRECTIONS_REFRESH_SECONDS — the
+        # config LabCore hands back carries no corrections, so a fresh Machine
+        # starts with none — and an operator's own save is reverted by the
+        # pre-edit rows the read brings back and then cached for two minutes.
+        # Both are wrong REPORTED results (ISO/IEC 17025 §7.8.2), written to
+        # LabCore and QC-judged, not merely late ones.
+        self._corrections_epoch = 0
+        # Raised by the poll when the correction factors changed, cleared by the
+        # LabCore sync once it has re-judged the specs against them. Declared
+        # here so the flag has one owner and one lifetime: it is a message that
+        # outlives the poll which raised it, and a poll that did not read the
+        # factors has nothing to say about it. `set_machine` drops it with
+        # everything else it drops — a re-evaluation pending for the previous
+        # instrument is not a message about this one — so the lifetime is one
+        # binding, not one process. See `_refresh_corrections`.
+        self._corrections_changed = False
         # The calibration epoch every QC verdict this bench records is stamped
         # with (see `_refresh_calibration_epoch`). Cached because a poll can
         # carry fifty readings and the answer is the same for all of them.
@@ -4019,6 +4671,31 @@ class LEMStationModule:
         # CONFIG_REFRESH_SECONDS. Reconfiguring the same machine lands here too,
         # which is what makes a source or mapping change take effect at once.
         self._config_read_at = None
+        # The corrections belong to the bound machine just as much, and more
+        # sharply: a stale QC spec judges a reading, a stale correction factor
+        # CHANGES it. Carrying the last instrument's offset onto this one's
+        # readings would be a wrong reported result, not merely a late one.
+        self._corrections_read_at = None
+        # And the generation with it, because dropping the stamp is only half of
+        # it. A poll worker may be blocked in `read_sql` right now, holding the
+        # PREVIOUS instrument's Machine object and about to apply an answer to
+        # it and stamp the window — undoing the line above from a thread this
+        # one cannot see. Bumping tells that read its subject is gone, so it is
+        # discarded and this bench asks for its own factors on the next poll.
+        # Until then it holds none: `Machine.to_dict` does not carry them, so a
+        # machine bound from LabCore config starts with an empty map and
+        # `read_corrections` is the only thing that fills it in.
+        self._corrections_epoch += 1
+        # The override map is keyed by machine_uid, and what this module cached
+        # was the answer for the instrument it no longer is. Keeping the stamp
+        # would leave a newly bound bench holding no override at all for the
+        # whole window while the floor believes it is off line.
+        self._override_read_at = None
+        # A re-evaluation the sync has not consumed yet was raised about the
+        # instrument that has just been unbound. It says nothing about this one,
+        # whose factors have not been read at all — and the poll that reads them
+        # raises it again if they differ from the empty map it starts with.
+        self._corrections_changed = False
         # The epoch belongs to the machine that was bound a moment ago too, and
         # this one is a DIFFERENT instrument's calibration history. Cleared, not
         # merely re-read: stamping a verdict with the previous bench's
@@ -4294,51 +4971,98 @@ class LEMStationModule:
         """
         return context_operator(getattr(self, "context", None))
 
-    def _refresh_corrections(self, machine: Machine) -> bool:
+    def _refresh_corrections(self, machine: Machine, now: datetime) -> bool:
         """Re-read the correction factors for this machine (see
-        `refresh_corrections`). Kept as a method so the poll reads like a sequence."""
-        return refresh_corrections(machine, globals().get("labcore_read_sql"))
+        `read_corrections`). Kept as a method so the poll reads like a sequence.
+
+        Returns whether the factors CHANGED — never whether they were read. The
+        stamp is set only when LabCore actually answered, so a refusal is asked
+        again on the next poll instead of being cached as a configuration.
+
+        The generation is captured BEFORE the read and checked after it. This
+        runs on the worker and the read is the slow part — a query on the very
+        queue that is congested — so the GUI thread has a wide open window in
+        which to bind a different instrument or save a correction factor. An
+        answer that comes back into a bumped generation is about a bench that is
+        no longer this bench, or about the factor the operator has just
+        replaced, and it is thrown away whole: not applied to the Machine object
+        this call captured, and not stamped. Discarding costs one read on the
+        next poll; believing it costs CORRECTIONS_REFRESH_SECONDS of results
+        reported with an offset nobody chose. See `_corrections_epoch`.
+        """
+        epoch = self._corrections_epoch
+        # The floor first, LabCore only when it cannot answer. Both are read
+        # INSIDE the generation captured above, because the race the generation
+        # exists to close is a property of this running off-thread, not of
+        # LabCore being slow — the GUI thread can bind another instrument or
+        # save a factor while a floor GET is in flight just as easily. And the
+        # floor's snapshot is up to twelve seconds old, so an answer that
+        # crosses the operator's own save is carrying the PRE-edit factor and
+        # would silently revert it (ISO/IEC 17025 s7.8.2).
+        floor = self._floor_config(machine)
+        if floor is not None:
+            answered, wanted = True, parse_correction_rows(
+                floor["corrections"]["rows"])
+        else:
+            answered, wanted = fetch_corrections(
+                machine.uid, globals().get("labcore_read_sql"))
+        if not answered:
+            return False
+        if epoch != self._corrections_epoch:
+            return False
+        if wanted == dict(machine.corrections or {}):
+            self._corrections_read_at = now
+            return False
+        apply_corrections(machine, wanted)
+        self._corrections_read_at = now
+        return True
 
     def _refresh_calibration_epoch(self, machine: Machine,
                                    now: datetime) -> None:
         """Which calibration this poll's QC verdicts belong to.
 
         At the top of the poll, beside `_refresh_corrections`, because
-        `_queue_run_events` runs before `_labcore_sync` — an epoch read in the
-        sync would stamp this poll's readings with the previous poll's answer,
-        and on a module's first poll with nothing at all.
+        `_queue_run_events` runs before `_labcore_sync` — an epoch resolved in
+        the sync would stamp this poll's readings with the previous poll's
+        answer, and on a module's first poll with nothing at all.
 
-        ONE read per CONFIG_REFRESH_SECONDS, never one per reading. LabCore
-        serialises at roughly 1.5 ops/sec and refuses past ~100 pending, so a
-        lookup on every poll of every bench is 5/min each and multiplies by a
-        bench count Ryan is still growing — the same arithmetic that put the QC
-        configuration behind `_config_due`. A calibration is not something that
-        happens between two polls twelve seconds apart, and the one case where
-        it does is this bench doing it: `complete_task` clears the stamp, so a
-        calibration logged here is in force on the very next poll rather than
-        up to two minutes later.
+        **It costs no LabCore read, ever.** The epoch is `last_done` of this
+        bench's calibration tasks, which it already holds: `machine.maintenance`
+        arrives on the config road (`/api/bench/<uid>/config`), served from the
+        web server's snapshot at zero LabCore ops. That road exists because a
+        per-bench timer read multiplies by a bench count Ryan is still growing,
+        and an earlier draft of this method spent an op here —
+        `test_restart_stampede` counts the reads a poll makes and caught it as a
+        third where the road allows two.
 
-        An unreadable answer keeps what it already had and does NOT stamp the
-        window, exactly as `refresh_corrections` and `_config_due` do. A busy
-        queue blanking the epoch would mark a poll's readings as belonging to
-        no calibration at all, which is a worse lie than a stale epoch.
+        `lem_maintenance.last_done` and the `kind='calibration'` log row are the
+        SAME event: `complete_task` writes both, and it is the only thing that
+        writes either. The log row is the audit record, the task is the state,
+        and reading the state is free. A bench with no calibration task has
+        therefore never logged a calibration, so UNKNOWN is the correct answer
+        rather than a question worth an operation.
+
+        **The epoch is a DATE, not a timestamp**, because `last_done` is one.
+        Two calibrations on the same day read as one, which is coarser than the
+        log row would be. It is enough for what the epoch is for — deciding
+        whether a QC series SPANS calibrations — and it fails in the safe
+        direction: a series that looks like one epoch when it was two withholds
+        the u(Rw) claim rather than manufacturing it.
+
+        A calibration completed on this bench is in force on the very next poll:
+        `complete_task` sets `last_done` and clears the stamp.
         """
         if machine is None:
             return
-        last = self._calibration_read_at
-        if last is not None and (now - last).total_seconds() < CONFIG_REFRESH_SECONDS:
-            return
-        read_sql = globals().get("labcore_read_sql")
-        if not callable(read_sql):
-            return
-        try:
-            res = read_sql(*build_last_calibration_query(machine.uid))
-        except Exception:
-            return
-        if not res or res.get("error"):
-            return
+        done = sorted(
+            d for d in (known_text(getattr(task, "last_done", ""))
+                        for task in (machine.maintenance or [])
+                        if getattr(task, "kind", "") == "calibration")
+            if d)
+        # Absence is UNKNOWN and is written as such — never "" and never a
+        # carried-over value from the instrument that was bound before this one.
+        self._calibration_epoch = done[-1] if done else None
         self._calibration_read_at = now
-        self._calibration_epoch = last_calibration_id(res.get("rows") or [])
 
     def _live_config(self) -> tuple:
         """Where the floor listens, and with what token.
@@ -4364,8 +5088,113 @@ class LEMStationModule:
                 result.get("rows") or [])
         return self._live_url, self._live_token
 
+    def _live_channel_healthy(self) -> bool:
+        """Is the note channel actually delivering right now?
+
+        The one question the two refresh windows turn on, and the reason they
+        are safe. `live_url` may never have been published, the floor may be
+        unreachable, and `post_live` swallows every failure by design — so
+        "there is a note channel" is a claim that has to be EARNED, not assumed
+        from a row in `lem_meta`.
+
+        Earned by an answer that SPEAKS THE NOTE PROTOCOL, and specifically not
+        by a push that merely landed. An un-upgraded floor — one the rollout has
+        not reached, a rolled-back one, or a proxy that swallows the body —
+        answers with 204 and nothing, which is a perfectly successful push
+        carrying no note and never able to carry one. See `speaks_live_notes`,
+        which is where `_push_live` gets the flag below from and which
+        `parse_live_notes` shares, so the two can never disagree about what
+        "the floor is talking to us" means.
+
+        Deliberately reads the CACHED live config and never calls
+        `_live_config`, which would put a LabCore read inside the gate whose
+        whole purpose is to remove LabCore reads.
+
+        `_live_failures` is checked as well as `_live_delivering` because the
+        retry contract is stated in terms of it, but `_live_delivering` is the
+        load-bearing half: `_live_config` zeroes the counter every time it
+        re-reads, so the counter alone drops back under the threshold and would
+        re-open the window on a floor that is still dead. See `_live_delivering`.
+        """
+        return (bool(self._live_url)
+                and self._live_delivering
+                and self._live_failures < LIVE_RETRY_AFTER)
+
+    def _floor_config(self, machine: Machine) -> Optional[dict]:
+        """This bench's configuration from the floor, or None to ask LabCore.
+
+        The PREFERRED source for every config read: the floor holds all of
+        these tables in a 12-second in-memory snapshot at a cost that does not
+        grow
+        with the bench count, while every `read_sql` consumes a slot in the one
+        serialised queue LabCore runs reads and writes through. See
+        `floor_config_results`.
+
+        `_live_channel_healthy()` is the gate, and it is already the right
+        one — it is the question "is there a floor talking to this bench at all",
+        earned by a push that came back speaking the note protocol rather than
+        assumed from a row in `lem_meta`. A floor the note road has given up on
+        would otherwise cost a FLOOR_CONFIG_TIMEOUT stall on every poll of
+        every bench before falling back anyway. It also means the first poll of
+        a module's life always reads LabCore, which is correct: nothing has
+        proved the channel yet.
+
+        Deliberately reads the CACHED `_live_url` / `_live_token` and never
+        calls `_live_config`, which would put a LabCore read inside the road
+        whose whole purpose is to remove LabCore reads. The health gate above
+        already requires a url, so there is one.
+
+        Returning None is always SAFE — it means the caller reads LabCore,
+        exactly as it did before this road existed — which is why every failure
+        this can see ends here: an unhealthy channel, no answer, a non-200, a
+        body that is not a dict, a body missing keys, a body about another
+        bench, and a snapshot older than FLOOR_CONFIG_MAX_AGE_SECONDS.
+
+        Total, like everything else on the worker's road: a raise here strands
+        `_polling` and the bench stops polling altogether (see `post_live`).
+        `fetch_floor_config` swallows its own failures, but this must not
+        DEPEND on that — the guarantee has to hold at the seam as well as
+        inside it.
+        """
+        if machine is None or not self._live_channel_healthy():
+            return None
+        try:
+            return floor_config_results(
+                fetch_floor_config(self._live_url, self._live_token,
+                                   machine.uid),
+                machine.uid)
+        except Exception:
+            return None
+
+    def _act_on_live_notes(self, notes) -> bool:
+        """Drop what the floor says is stale. Returns whether anything was.
+
+        WORKER thread — this only invalidates state; it starts nothing. The
+        return value is what `_show_outcome` turns into an immediate follow-up
+        poll, because this runs at the very END of `_process_outcome`, after
+        `_labcore_sync` has already read past the values being dropped.
+        """
+        acted = False
+        if LIVE_NOTE_CORRECTIONS in notes:
+            self._corrections_read_at = None
+            # And the generation with it. This is not belt-and-braces: a
+            # corrections read may be blocked in `read_sql` on the congested
+            # queue at this very moment, and it BEGAN BEFORE the note existed —
+            # so the rows it is carrying are the pre-change ones the note is
+            # about. Applied, they overwrite the new factors and then stamp the
+            # window over the line above, and the bench reports results carrying
+            # an offset the floor has already replaced (ISO/IEC 17025 §7.8.2).
+            # Nulling the stamp cannot reach a call already in progress; the
+            # counter can. See `_corrections_epoch`.
+            self._corrections_epoch += 1
+            acted = True
+        if LIVE_NOTE_OVERRIDE in notes:
+            self._override_read_at = None
+            acted = True
+        return acted
+
     def _push_live(self, payload: dict) -> None:
-        """Tell the floor what this poll found, directly.
+        """Tell the floor what this poll found, and act on what it says back.
 
         Best-effort and silent: no configuration, no floor, or a refused push
         all mean the floor falls back to the record — which is how it behaved
@@ -4383,12 +5212,127 @@ class LEMStationModule:
                                       payload.get("now") or datetime.now(),
                                       self._poll_seconds,
                                       payload.get("rows") or [])
-            if post_live(url, token, body):
-                self._live_failures = 0
-            else:
+            # Dropped BEFORE the push, so EVERY way out of what follows leaves
+            # the refresh windows open: a refusal, an exception from a
+            # `post_live` that stops swallowing them, an exception from anything
+            # after it. The read this gates is the one that takes a bench off
+            # line, and the only tolerable direction to be wrong in is the one
+            # that costs a LabCore read. Re-raised to True below on the single
+            # path that proves the channel is delivering.
+            self._live_delivering = False
+            answer = post_live(url, token, body)
+            # `is not None`, never truthiness. A success with an empty body is
+            # `{}` and falsy, and counting that as a failure would walk the
+            # counter to LIVE_RETRY_AFTER on a healthy floor and re-read the
+            # live config out of LabCore on a loop. See `post_live`.
+            if answer is None:
                 self._live_failures += 1
+                return
+            self._live_failures = 0
+            # The push LANDED — so the address and token are right and
+            # `_live_config` has no reason to go back to LabCore. That is what
+            # the counter above records, and it is a DIFFERENT question from
+            # the one below.
+            #
+            # Delivery is not health. An older floor — and there is always one
+            # mid-rollout, because the benches are separate PCs and cannot be
+            # upgraded in the same instant as the server — answers `/api/live`
+            # with 204 and no body, which arrives here as `{}`. Accepted, and
+            # carrying no note, for ever. Taking health from `answer is not
+            # None` therefore opened the fifteen-minute window on the manual
+            # override against a floor that has never heard of notes: a bench
+            # kept running for up to a quarter of an hour after somebody took it
+            # off line, with nothing anywhere able to notice. Health is earned
+            # by evidence of the PROTOCOL — the same shape `parse_live_notes`
+            # reads — so a floor that stops speaking it (a rollback, a proxy
+            # that eats the body) closes the window again on the next push.
+            self._live_delivering = speaks_live_notes(answer)
+            if self._act_on_live_notes(parse_live_notes(answer)):
+                self._live_followup = True
         except Exception:
             # Worker thread: see post_live. A push is never worth the poll.
+            return
+
+    def _probe_live_channel(self, machine: Optional[Machine]) -> None:
+        """One knock at boot, so poll 1 can already use the floor road.
+
+        THE ORDERING PROBLEM this exists to fix. `_live_channel_healthy()` is
+        the gate on both the config road and the two refresh windows, and it
+        requires `_live_delivering` — which only a push that came back speaking
+        the note protocol can raise. That push happens at the very END of
+        `_process_outcome`, after `_labcore_sync` has already decided what to
+        read. So the first poll of a module's life fell back to LabCore for all
+        six config reads even with a healthy floor one hop away, purely because
+        nothing had had the chance to prove it yet.
+
+        Per bench that is one poll's worth of reads. Floor-wide it is the
+        failure mode: every module in the building starts at the same moment
+        after a LabStation restart, and that is also the moment LabCore's
+        queue is deepest, with every bench replaying its held results. This
+        turns that stampede into one HTTP call per bench to a server on the
+        same LAN that never touches LabCore at all.
+
+        ZERO LabCore ops, and that is a hard requirement rather than a
+        preference. It reads the CACHED `_live_url` and never calls
+        `_live_config`, which would put a `lem_meta` read inside the thing
+        whose whole purpose is to remove a `lem_meta` read. No cached address
+        means no knock: a fresh install behaves exactly as it does today, and
+        its own first push earns the channel for poll 2 as it always has.
+
+        **The safety property is untouched.** Health is still EARNED, by
+        `speaks_live_notes` on a real answer — the same one call `_push_live`
+        and `parse_live_notes` use, so the three can never drift apart. A
+        cached URL is an ADDRESS; it is not evidence that anything is listening
+        on it, and least of all evidence that whatever is listening speaks the
+        note protocol. An un-upgraded floor answers `/api/live` with a bodyless
+        204, which arrives as `{}` — a push that landed, carrying no note and
+        never able to carry one — and taking that for health is exactly the
+        version-skew hole that suppressed the manual override read, the lever
+        that takes a bench OFF LINE, for fifteen minutes against an old server.
+
+        Notes are acted on but a follow-up poll is never asked for. The floor
+        hands its notes to whichever push finds them, so dropping one here
+        would spend it without the bench acting on it. Asking for a follow-up,
+        though, is the one thing this must not do: `_ask_followup` exists
+        because `_push_live` runs AFTER the reads and a note it receives is
+        already late — while this runs BEFORE them, so everything the note
+        invalidates is about to be read anyway. A follow-up here would double
+        every bench's poll rate at the exact moment of a floor-wide restart.
+
+        WORKER thread, and total. It touches no widget and no timer, and it
+        swallows everything: a raise here travels up the worker, LabStation's
+        `_run_in_thread` drops the callback, `_polling` is stranded True and
+        the bench stops polling ALTOGETHER. `post_live` already swallows its
+        own failures with a LIVE_TIMEOUT bound, but this must not DEPEND on
+        that — the guarantee has to hold at the seam as well as inside it.
+        """
+        if self._live_probed or self._live_delivering:
+            # Already knocked, or the channel is already proven and there is
+            # nothing left to prove. Marked below on every road out, so an
+            # absent floor gets one attempt and not one per poll.
+            return
+        self._live_probed = True
+        if machine is None or not str(machine.uid or "").strip():
+            # No binding yet — LabCore has not handed this module's config back.
+            # `/api/live` refuses a push with no machine_uid, so there is
+            # nothing to knock with.
+            return
+        if not self._live_url:
+            return
+        try:
+            answer = post_live(self._live_url, self._live_token,
+                               build_live_probe(machine))
+            if answer is None:
+                # A saved address that nothing answers on. Counted, so the
+                # LIVE_RETRY_AFTER path starts walking towards the `lem_meta`
+                # re-read that heals a moved server — the cache must never be
+                # a place a bench can get permanently stuck.
+                self._live_failures += 1
+                return
+            self._live_failures = 0
+            self._live_delivering = speaks_live_notes(answer)
+            self._act_on_live_notes(parse_live_notes(answer))
+        except Exception:
             return
 
     def _pushed(self, payload: dict) -> dict:
@@ -4416,15 +5360,53 @@ class LEMStationModule:
                               "given_up": "",
                               "notice": self._held_notice}
 
+        # BEFORE any read decision this poll makes — which is the whole of the
+        # fix, so it comes first. One knock at the floor, on the worker,
+        # costing zero LabCore ops, so that `_live_channel_healthy()` can
+        # already be true when the corrections refresh below and the sync after
+        # it choose where to read from. Placed after either of them it would
+        # prove the channel for a poll that had already paid LabCore for
+        # everything, which is the defect rather than the fix.
+        #
+        # (Deliberately not naming the sync step here: a test locates it by the
+        # FIRST occurrence of its name in this function's source to prove the
+        # probe precedes it, and a mention in a comment above it defeats the
+        # check — the same trap the corrections block below documents.)
+        #
+        # Safe in every direction it can fail: no cached address, no floor, or
+        # a floor too old to speak the note protocol all leave the flag exactly
+        # as it was, and the reads below fall back to LabCore precisely as they
+        # do today. See `_probe_live_channel`.
+        self._probe_live_channel(machine)
+
         # Before anything is parsed: the factor applied to a measurement must be the
         # one in force when it was made. Moved here from the LabCore sync (which runs
-        # after the parse), so the op count is unchanged.
+        # after the parse). The read now sits behind a window
+        # (CORRECTIONS_REFRESH_SECONDS), which changes how OFTEN LabCore is asked and
+        # never where in the poll the answer is applied — the correction step below
+        # still runs on every row of every poll, read or no read.
+        #
+        # (Deliberately not naming that step here: two tests locate it by the FIRST
+        # occurrence of its name in this function's source to prove the read precedes
+        # the parse, and a mention in a comment above it defeats the check.)
+        #
+        # Never `self._corrections_changed = self._refresh_corrections(...)`. On a
+        # poll that skipped the read that assignment answers a question this poll did
+        # not ask, and answers it False — overwriting a True the sync has not
+        # consumed yet and silently losing the re-evaluation that re-judges the specs
+        # against the new offsets. The flag is only ever RAISED here; the sync clears
+        # it once it has acted on it.
+        if machine is not None and self._corrections_due(now):
+            if self._refresh_corrections(machine, now):
+                self._corrections_changed = True
+        # The calibration a QC verdict is stamped with has to be the one in
+        # force when the reading was taken, and `_queue_run_events` runs below
+        # this. Its own cache and its own window — see
+        # `_refresh_calibration_epoch` — so this is not a read per poll, and it
+        # is deliberately NOT gated on `_corrections_due`: the two roads answer
+        # different questions and a bench can recalibrate without any factor
+        # changing.
         if machine is not None:
-            self._corrections_changed = self._refresh_corrections(machine)
-            # Same argument, same place: the calibration a QC verdict is
-            # stamped with has to be the one in force when the reading was
-            # taken, and `_queue_run_events` runs below this. Cached, so it is
-            # not a read per poll — see `_refresh_calibration_epoch`.
             self._refresh_calibration_epoch(machine, now)
 
         if error:
@@ -4584,6 +5566,51 @@ class LEMStationModule:
             # in the order they were said.
             self._status_label.setToolTip("\n".join(parts))
         self._finish_evaluation(machine, payload["evaluation"], now)
+        # Last, because it starts another poll: everything this one has to paint
+        # is on the canvas before anything else is dispatched.
+        self._ask_followup()
+
+    def _ask_followup(self) -> None:
+        """Honour a note the worker acted on, by polling again AT ONCE.
+
+        The latency problem this solves. `_push_live` runs at the very END of
+        `_process_outcome`, AFTER `_labcore_sync` — so a note that arrives
+        during poll N invalidates a value poll N has already read past, and left
+        alone it would not be re-read until poll N+1. That makes an override
+        take up to TWO poll intervals, sixty seconds at the default, where the
+        ungated read it replaces took ONE. A saving that costs the lab thirty
+        seconds on the read that takes a bench off line is not a saving.
+
+        Main thread only. The worker may raise the flag and nothing else:
+        widgets and timers belong to this thread, and a QTimer touched from a
+        worker is undefined behaviour, not a race that shows up in a log.
+
+        A follow-up may never ask for a follow-up of its own. The follow-up
+        PUSHES too, so a floor that answers it with another note — because it
+        re-sends, because somebody is still editing, because of a bug on a
+        server built by another hand — would have this bench polling itself in a
+        tight loop on the GUI thread, for ever. The note it receives is still
+        ACTED on, so nothing is lost: the value stays invalidated and the next
+        scheduled poll reads it, which is the same thirty seconds the old ungated
+        read gave.
+        """
+        asked, self._live_followup = self._live_followup, False
+        was_followup, self._in_live_followup = self._in_live_followup, False
+        if not asked or was_followup:
+            return
+        self._in_live_followup = True
+        QtCore.QTimer.singleShot(0, self._followup_poll)
+
+    def _followup_poll(self) -> None:
+        """The immediate re-poll `_ask_followup` scheduled."""
+        self.poll_now()
+        if not self._polling:
+            # `poll_now` declined — no machine bound any more, or a poll is
+            # already in flight — so no `_show_outcome` is coming to clear the
+            # flag. Left set it would swallow the NEXT genuine note's follow-up,
+            # which is a silent thirty-second regression on the read that takes
+            # a bench off line. Clear it here instead.
+            self._in_live_followup = False
 
     def _results_can_accept(self, rows: List[dict]) -> bool:
         """Is any Results module's column watching one of these methods?
@@ -5676,7 +6703,53 @@ class LEMStationModule:
     # EXISTS), so the worst a race between two workers can do is declare twice
     # once, in the first seconds of a process.
 
-    def _declare_tables(self, run_sql) -> None:
+    def _declare_due(self, now: datetime) -> bool:
+        """May the declarations be attempted again yet?
+
+        The twin of `_config_due` and `_corrections_due`, on the write side.
+        True whenever nothing has been refused, which is every road through here
+        on a LabCore that is behaving.
+
+        A stamp in the FUTURE counts as due, for the reason spelled out in
+        `_corrections_due`: these are naive local `datetime.now()` values on a
+        bench PC, DST fall-back repeats an hour and NTP steps the clock back
+        whenever it likes, and negative elapsed time is not "refused a moment
+        ago" — it is arithmetic that has stopped meaning anything. Being wrong
+        in this direction costs nine idempotent statements; being wrong the
+        other way parks a bench's tables for the whole repeated hour, and the
+        writes that need them fail one at a time for as long as it lasts.
+        """
+        last = self._declare_refused_at
+        if last is None:
+            return True
+        elapsed = (now - last).total_seconds()
+        return elapsed < 0 or elapsed >= self._declare_wait_seconds
+
+    def _hold_off_declaring(self, now: datetime, refusal) -> None:
+        """Note a refusal and decide how long to leave LabCore alone.
+
+        LabCore's own `retry_after` wins when it sent one: it is the only party
+        that knows how deep its queue is, and asking again sooner than it asked
+        is the pattern notes.md's standing rule exists to stop. Where it said
+        nothing, this module's doubling schedule is the fallback — five seconds
+        to a minute, the same shape as `_retry_pending_bind`, because the reason
+        the attempt failed is usually congestion and every bench in the lab is
+        running this same loop.
+
+        The schedule advances only on the fallback path. A `retry_after` is
+        LabCore answering one question about one moment; letting it move the
+        schedule would mean a single generous `retry_after` reset a wait that
+        repeated refusals had earned.
+        """
+        wait = retry_after_seconds(refusal)
+        if wait is None:
+            wait = self._declare_retry_seconds
+            self._declare_retry_seconds = min(
+                self._declare_retry_seconds * 2, DECLARE_RETRY_MAX_SECONDS)
+        self._declare_wait_seconds = wait
+        self._declare_refused_at = now
+
+    def _declare_tables(self, run_sql, now: Optional[datetime] = None) -> None:
         """Declare every table this module writes to, once per process.
 
         A REFUSED DECLARATION IS NOT A DECLARATION. The flag was set whenever
@@ -5684,16 +6757,51 @@ class LEMStationModule:
         fresh LabCore whose queue happens to be busy at boot (and the pulse
         timer starts at construction, which is the case this method exists to
         cover) all seven tables stayed undeclared while three roads believed
-        they existed, for the life of the process. The flag now goes up only if
-        every declaration came back accepted; otherwise the next road through
-        here tries again, which costs seven idempotent statements once.
+        they existed, for the life of the process. The flag goes up only if
+        every declaration came back accepted.
+
+        AND A REFUSAL IS NOT FREE TO REPEAT. That is the part that was missing.
+        LabCore refuses because its queue is deep, and the next road through
+        here re-fired the block immediately — every poll, on every bench, aimed
+        squarely at the congestion being reported. A slow queue produced more
+        work, which made it slower, multiplied by the bench count. So a refusal
+        now buys a wait (see `_declare_due` / `_hold_off_declaring`) and the
+        roads in between simply carry on; the block is still attempted, just not
+        as fast as the polls arrive.
+
+        The loop stops at the first refusal rather than firing the remaining
+        statements into a queue that has this instant said it is full — which is
+        what it already did, and what the backoff would otherwise undo six
+        statements at a time.
+
+        `now` is injected rather than read here, so the wait is testable at a
+        bench's cadence the way `_config_due` and `_corrections_due` are; the
+        one caller with no clock of its own passes nothing.
         """
         if self._labcore_table_ready:
             return
+        now = now or datetime.now()
+        if not self._declare_due(now):
+            return
+        # The indexes ride in the same block and under the same rule. They are
+        # DDL with the same cost and the same failure mode — one queue op each,
+        # refusable by a congested LabCore — so a refused index has to back off
+        # exactly like a refused table rather than latch the flag over a
+        # declaration that never landed. LOG_INDEX_DDL comes AFTER
+        # LOG_TABLE_DDL because CREATE INDEX on a table that does not exist yet
+        # is an error, and an error here parks the whole block for the process.
+        #
+        # Only the lem_machine_log indexes. `lem_maintenance` is read by this
+        # module but CREATED by the web server, and indexing a table we do not
+        # declare would fail on a fresh LabCore the server has not started
+        # against — which, by the rule above, would leave this bench declaring
+        # its tables forever. That index is declared where the table is.
         for ddl in (STATUS_TABLE_DDL, LOG_TABLE_DDL, HEARTBEAT_TABLE_DDL,
                     HELD_TABLE_DDL, SUBSTATUS_TABLE_DDL, EFFECTIVE_SPECS_DDL,
-                    CORRECTIONS_DDL):
-            if refusal_reason(run_sql(ddl, source="LEM Station")):
+                    CORRECTIONS_DDL) + LOG_INDEX_DDL:
+            answer = run_sql(ddl, source="LEM Station")
+            if refusal_reason(answer):
+                self._hold_off_declaring(now, answer)
                 return
         for ddl in EFFECTIVE_SPECS_MIGRATIONS:
             try:
@@ -5701,8 +6809,17 @@ class LEMStationModule:
             except Exception:
                 pass          # column already present
         # Set LAST, so a run_sql that raises leaves the flag down and the next
-        # road through here tries again rather than assuming a table exists.
+        # road through here tries again rather than assuming a table exists. A
+        # raise is deliberately NOT backed off: it is not LabCore asking for
+        # room, it is this road failing, and every caller already runs inside
+        # its own try.
         self._labcore_table_ready = True
+        # Cleared on success, so a LabCore that congests, clears and congests
+        # again is met with a five-second wait rather than the minute the last
+        # bad patch had earned.
+        self._declare_refused_at = None
+        self._declare_retry_seconds = DECLARE_RETRY_SECONDS
+        self._declare_wait_seconds = DECLARE_RETRY_SECONDS
 
     def _heartbeat_due(self, now: datetime) -> bool:
         """Has this bench gone HEARTBEAT_SECONDS without checking in?
@@ -5725,10 +6842,92 @@ class LEMStationModule:
         The stamp is set only when LabCore actually ANSWERS. A refusal is not a
         configuration, and caching one would leave a bench running for the whole
         window on QC it never received. See `CONFIG_REFRESH_SECONDS`.
+
+        A stamp in the FUTURE counts as due, for the same reason as
+        `_corrections_due` — see the note there. The cost of being wrong is
+        smaller on this read (a late QC spec, not a wrong number), but the
+        arithmetic is broken in exactly the same way and a bench that goes an
+        hour without re-reading its config after the clock steps back is not a
+        behaviour anything relies on.
         """
         last = self._config_read_at
-        return (last is None
-                or (now - last).total_seconds() >= CONFIG_REFRESH_SECONDS)
+        if last is None:
+            return True
+        elapsed = (now - last).total_seconds()
+        return elapsed < 0 or elapsed >= CONFIG_REFRESH_SECONDS
+
+    def _corrections_due(self, now: datetime) -> bool:
+        """Are the cached correction factors old enough to re-ask for?
+
+        The twin of `_config_due`, on the read that until now happened on every
+        single poll. True whenever nothing has been read yet, which covers the
+        first poll of a module's life, a newly bound machine, and a correction
+        this module itself just saved — `set_machine` and `_open_corrections`
+        both clear the stamp.
+
+        The stamp is set only when LabCore actually ANSWERS. A refusal is not a
+        set of correction factors, and caching one would leave a bench correcting
+        for the whole window with whatever it happened to be holding when the
+        queue filled. See `CORRECTIONS_REFRESH_SECONDS`.
+
+        A stamp that is in the FUTURE means the clock moved, not that the read
+        is fresh. These are naive local `datetime.now()` values on a bench PC:
+        the DST fall-back repeats an hour, and an NTP correction steps the clock
+        back whenever it likes. `(now - last).total_seconds()` then goes
+        NEGATIVE, which compares less than the window and skips the read — for
+        the whole repeated hour, on the one read whose staleness changes the
+        numbers this lab reports. Negative elapsed time is not "recently read",
+        it is arithmetic that has stopped meaning anything, so it counts as due
+        and the next read re-stamps it back into sanity.
+        """
+        last = self._corrections_read_at
+        if last is None:
+            return True
+        elapsed = (now - last).total_seconds()
+        # Which window depends on whether anything can shortcut it. With the
+        # floor answering the push, an edit made in the web server arrives as a
+        # note within one poll and this read is only catching a note that got
+        # lost, so it can be long. With no floor to be told by, this read IS the
+        # only way that edit ever reaches the bench, and it goes back to being
+        # the window it was before the note existed.
+        window = (CORRECTIONS_REFRESH_SECONDS if self._live_channel_healthy()
+                  else CORRECTIONS_REFRESH_UNSIGNALLED_SECONDS)
+        return elapsed < 0 or elapsed >= window
+
+    def _override_due(self, now: datetime) -> bool:
+        """Is the floor's manual override old enough to re-ask for?
+
+        The twin of `_corrections_due` on the read that had no window at all,
+        and the one place the conditional is enforced.
+
+        The FIRST clause is the whole safety argument, so it comes first and
+        returns before any arithmetic. This is the lever somebody on the floor
+        pulls to take a bench OFF LINE. The live road is best-effort BY
+        CONSTRUCTION — `live_url` may never have been published, the floor may
+        be unreachable, and `post_live` swallows every failure — so a window
+        that applied while the note channel was dead would leave a bench running
+        for OVERRIDE_REFRESH_SECONDS after somebody switched it off, with
+        nothing anywhere able to notice. Where the channel is not delivering
+        this read goes straight back to every poll, exactly as it always was.
+
+        The stamp is set only when LabCore actually ANSWERS. A refusal is not an
+        override, and caching one would leave a bench running for the whole
+        window on a lever it never read.
+
+        A stamp in the FUTURE counts as due, for the reason spelled out in
+        `_corrections_due`: these are naive local `datetime.now()` values on a
+        bench PC, DST fall-back repeats an hour and NTP steps the clock back
+        whenever it likes, and negative elapsed time is not "recently read" —
+        it is arithmetic that has stopped meaning anything. Freezing THIS read
+        for a repeated hour is the worst version of that bug in the module.
+        """
+        if not self._live_channel_healthy():
+            return True
+        last = self._override_read_at
+        if last is None:
+            return True
+        elapsed = (now - last).total_seconds()
+        return elapsed < 0 or elapsed >= OVERRIDE_REFRESH_SECONDS
 
     def _labcore_sync(self, machine: Machine, rows: List[dict],
                       evaluation: MachineEvaluation, now: datetime,
@@ -5777,7 +6976,7 @@ class LEMStationModule:
                 self._last_storage = self._parked_storage(kept)
             return evaluation
         try:
-            self._declare_tables(run_sql)
+            self._declare_tables(run_sql, now)
 
             # Prove the module is alive even when the bench is quiet. One gate,
             # shared with the pulse timer through `_last_heartbeat`, so however
@@ -5808,16 +7007,36 @@ class LEMStationModule:
             # existed to notice a CHANGE, and a change made on the floor is
             # worth one read every two minutes, not four on every poll.
             config_due = self._config_due(now)
+            override_due = self._override_due(now)
             # Every source that answered this poll. The stamp goes up only if
             # ALL of them did — a partial answer means the next poll asks again
             # rather than running two minutes on half a configuration.
             answered = []
 
-            samples_result = read_sql(QC_SAMPLES_QUERY) if config_due else {}
+            # THE PREFERRED SOURCE. One request to the floor's 12-second
+            # snapshot answers all five reads below, where LabCore would charge
+            # five slots in the queue it runs reads AND writes through — the
+            # load that grows with the bench count and is what is crashing it.
+            # See `_floor_config`, which returns LabCore-shaped result dicts so
+            # every parser below runs unchanged, and None for every failure
+            # there is. None simply leaves the LabCore reads exactly as they
+            # were.
+            #
+            # Asked only when something is actually due: this road changes
+            # where a read comes from, never how often it happens. And asked once, so
+            # the four config sources and the override can never be assembled
+            # from two different snapshots of the floor.
+            floor = (self._floor_config(machine)
+                     if (config_due or override_due) else None)
+
+            samples_result = ((floor["qc_samples"] if floor
+                               else read_sql(QC_SAMPLES_QUERY))
+                              if config_due else {})
             if config_due and not samples_result.get("error"):
                 answered.append(True)
                 got_qc_config = True
-                targets_result = read_sql(QC_TARGETS_QUERY, [machine.uid])
+                targets_result = (floor["targets"] if floor else
+                                  read_sql(QC_TARGETS_QUERY, [machine.uid]))
                 answered.append(not targets_result.get("error"))
                 targets = [] if targets_result.get("error") else [
                     {"sample": r.get("sample_name"), "test": r.get("test_name")}
@@ -5828,7 +7047,9 @@ class LEMStationModule:
             elif config_due:
                 answered.append(False)
 
-            specs_result = read_sql(QC_SPECS_QUERY) if config_due else {}
+            specs_result = ((floor["qc_specs"] if floor
+                             else read_sql(QC_SPECS_QUERY))
+                            if config_due else {})
             if config_due:
                 answered.append(not specs_result.get("error"))
             if config_due and not specs_result.get("error"):
@@ -5916,7 +7137,7 @@ class LEMStationModule:
             # Correction factors were re-read at the top of the poll, before the
             # parse — see _refresh_corrections. If they changed, the specs need
             # re-judging against the newly corrected readings.
-            if getattr(self, "_corrections_changed", False):
+            if self._corrections_changed:
                 apply_corrections(machine, machine.corrections)
                 needs_reevaluation = True
                 self._corrections_changed = False
@@ -5969,8 +7190,9 @@ class LEMStationModule:
                 if ok:
                     self._published_specs = fingerprint
 
-            maint = read_sql(MAINTENANCE_QUERY, [machine.uid]) if config_due \
-                else {}
+            maint = ((floor["maint"] if floor
+                      else read_sql(MAINTENANCE_QUERY, [machine.uid]))
+                     if config_due else {})
             if config_due:
                 answered.append(not maint.get("error"))
             if config_due and not maint.get("error"):
@@ -5984,18 +7206,46 @@ class LEMStationModule:
             if config_due and answered and all(answered):
                 self._config_read_at = now
 
-            # NOT in the window. This is the floor's lever for taking a bench
-            # off line, so it is read every poll and always has been; a bench
-            # that keeps running for two minutes after somebody overrides it is
-            # the one delay nobody would accept. It is one small query.
-            control = read_sql("SELECT machine_uid, manual_override "
-                               "FROM lem_machine_control")
-            if not control.get("error"):
-                overrides = extract_overrides(control.get("rows") or [])
-                wanted = overrides.get(machine.uid)
-                if wanted is not None and wanted != machine.manual_override:
-                    machine.manual_override = wanted
-                    needs_reevaluation = True
+            # In a window of its OWN, and only while something can shortcut it.
+            #
+            # This is the floor's lever for taking a bench off line, and it was
+            # read on every single poll for exactly that reason: a bench that
+            # keeps running for a refresh window after somebody overrides it is
+            # the one delay nobody would accept. What changed is not that the
+            # delay became acceptable — it is that the bench now gets TOLD. The
+            # floor answers the live push with a note naming this read, and
+            # `_push_live` drops the stamp the moment it hears one, so an
+            # override still lands within one poll. The window behind it is a
+            # backstop against a note that got lost.
+            #
+            # And `_override_due` refuses the window outright unless the note
+            # channel is actually delivering — see the safety argument there.
+            # One small query is cheap; two LabCore ops a minute per bench, on a
+            # queue that runs at about 1.5 ops/sec and is falling over, is what
+            # it costs across the floor.
+            if override_due:
+                # The floor carries the override as a bare string; it is
+                # rebuilt into the `lem_machine_control` row shape by
+                # `floor_config_results`, so `extract_overrides` below still
+                # does the validating on both roads. An unrecognised value is
+                # dropped by one piece of code, not two.
+                #
+                # `override_due` was computed at the TOP of this method, beside
+                # `config_due`, so the two questions are asked before the floor
+                # is, and one answer serves both.
+                control = (floor["override"] if floor else
+                           read_sql("SELECT machine_uid, manual_override "
+                                    "FROM lem_machine_control"))
+                if not control.get("error"):
+                    # Stamped only on an ANSWER. A busy LabCore replies with an
+                    # error DICT rather than raising, and stamping that would
+                    # cache "nobody told me" as "nobody has overridden this".
+                    self._override_read_at = now
+                    overrides = extract_overrides(control.get("rows") or [])
+                    wanted = overrides.get(machine.uid)
+                    if wanted is not None and wanted != machine.manual_override:
+                        machine.manual_override = wanted
+                        needs_reevaluation = True
 
             if needs_reevaluation:
                 evaluation = evaluate_machine(machine, history, now)
@@ -6541,6 +7791,25 @@ class LEMStationModule:
         # global it read is not a thing LabStation injects.
         who = self._current_operator()
         failed = []
+        # Whatever is cached about the corrections is about to be wrong, so the
+        # next poll re-reads rather than waiting out CORRECTIONS_REFRESH_SECONDS.
+        # Dropped BEFORE the write, not after it, so every way out of what
+        # follows is covered: a partial failure that landed some rows and a
+        # run_sql that raises mid-loop both return early below, and both leave
+        # LabCore holding factors this module has not seen. Being wrong in this
+        # direction costs one read; being wrong in the other is the operator
+        # standing at the bench watching their own correction not take effect.
+        #
+        # The generation goes with it, and for a reason the stamp cannot cover.
+        # A poll worker may be inside `read_sql` right now, and LabCore still
+        # held the OLD factor when that read started — so the rows it is about
+        # to bring back are the PRE-EDIT ones. Applied, they revert the save the
+        # operator just made and then stamp the window over the line above, and
+        # the bench reports the old offset for two minutes while the status line
+        # says the change was saved. Bumping makes that in-flight answer be
+        # discarded instead.
+        self._corrections_read_at = None
+        self._corrections_epoch += 1
         try:
             run_sql(CORRECTIONS_DDL)
             for name, value in changes.items():
@@ -6681,14 +7950,59 @@ class LEMStationModule:
         The configuration itself lives in LabCore (`lem_machine_config`), so a
         LabStation reinstall can't lose it and the floor can re-purpose it. The
         poll interval stays: that's a per-bench preference, not lab config.
+
+        The floor's ADDRESS is the exception, and it is not configuration in
+        that sense — it is what the bench needs in order to ask anybody
+        anything. Without it a restarted module must spend a LabCore read on
+        `lem_meta` just to find the server that would have answered its other
+        six reads for free, and every module in the building restarts at the
+        same moment: a LabStation restart after a power cut or a deploy, which
+        is also when LabCore's queue is deepest. Caching it here is what makes
+        that restart cost nothing. It stays CORRECTABLE — see `_live_config`,
+        which re-reads `lem_meta` after LIVE_RETRY_AFTER consecutive failures,
+        so a moved server or a rotated token still heals with nothing typed at
+        the bench.
+
+        Note where the token now lives. It was already readable by anything
+        with LabCore access — it sits in `lem_meta` precisely so that benches
+        can fetch it — and nothing pushed on this road is authoritative, so
+        writing it into the canvas file does not change what it is worth to an
+        attacker. But the canvas file IS a new place it is written, on the
+        bench PC rather than in the database, and that is worth saying out loud
+        rather than leaving for somebody to discover: rotating the token now
+        means the old value lingers in saved canvases until each bench's next
+        successful re-read.
         """
         return {
             "machine_uid": self._machine.uid if self._machine else "",
             "poll_seconds": self._poll_seconds,
+            "live_url": self._live_url,
+            "live_token": self._live_token,
         }
 
     def restore_state(self, state: dict) -> None:
         self._poll_seconds = int(state.get("poll_seconds", 30))
+        # The floor's address, if this canvas was saved by a module that had
+        # one. A canvas saved before this existed simply has no key here, and
+        # everything below leaves `_live_url` empty — which is exactly today's
+        # behaviour, right down to the `lem_meta` read on the first push.
+        #
+        # `rstrip("/")` because `parse_live_config` strips it on the way out of
+        # LabCore, and a restored value that did not agree would build
+        # `http://host:5557//api/bench/...`. That is not an error anybody sees:
+        # the request 404s, `fetch_floor_config` swallows it, and the bench
+        # quietly reads LabCore for ever.
+        url = str(state.get("live_url") or "").strip().rstrip("/")
+        if url:
+            self._live_url = url
+            self._live_token = str(state.get("live_token") or "")
+            # And it counts as CHECKED, or the first push reads `lem_meta` to
+            # confirm what was just restored — which is the queue slot this
+            # whole thing exists to save; the cost is the read, not the string.
+            # `_live_failures` stays at zero, so the LIVE_RETRY_AFTER path is
+            # untouched: three consecutive failed pushes still send this module
+            # back to `lem_meta` and a moved server still heals itself.
+            self._live_checked = True
         uid = str(state.get("machine_uid") or "").strip()
         if uid:
             self._adopt_config(uid)
@@ -6898,7 +8212,7 @@ class LEMStationModule:
             if callable(is_running) and not is_running():
                 return None
             try:
-                self._declare_tables(run_sql)
+                self._declare_tables(run_sql, now)
                 sql, args = build_heartbeat_upsert(machine, now,
                                                    polling=polling)
                 if refusal_reason(run_sql(sql, args, source="LEM Station")):

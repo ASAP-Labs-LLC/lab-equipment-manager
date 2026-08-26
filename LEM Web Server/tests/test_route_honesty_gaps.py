@@ -427,7 +427,12 @@ class TestTheWritesTheROUTEIssuesItself:
         res = client.delete(f"/api/machines/{UID}")
         assert res.status_code in (502, 503), res.status_code
         body = res.get_json()
-        assert body.get("complete") is False, (
+        # `partial`/`stopped_at`, not `complete` — see the note on
+        # `refused()` in test_route_write_confirmation.py. Nothing landed, so
+        # `partial` is False and `stopped_at` names the step that refused.
+        assert body.get("partial") is False, (
+            "a half-retired machine has to say where it stopped")
+        assert body.get("stopped_at"), (
             "a half-retired machine has to say where it stopped")
 
     def test_a_completion_whose_history_line_THREW_says_so_and_stays_done(

@@ -395,8 +395,11 @@ class TestDocumentRoutes:
         ground = client.post("/api/equipment/levels",
                              json={"name": "Ground"}).get_json()["level"]
         client.post("/api/equipment/m1/level", json={"level_uid": ground["uid"]})
+        # A clean retirement answers exactly `{"ok": true}` — the `complete`
+        # flag was the retired spelling of the same fact, and the success shape
+        # is pinned by test_refused_writes.TestTheSuccessPathIsExactlyAsItWas.
         assert client.delete("/api/machines/m1",
-                             json={}).get_json()["complete"] is True
+                             json={}).get_json() == {"ok": True}
         for table in ("lem_equipment_documents", "lem_machine_level"):
             left = gw.read_sql(
                 f"SELECT COUNT(*) AS n FROM {table} "

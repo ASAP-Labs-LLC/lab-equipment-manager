@@ -39,8 +39,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-from labcore_result import (LabCoreRefused, LabCoreUnavailable, confirm_write,
-                            wrote_rows)
+from labcore_result import (LabCoreError, LabCoreRefused, LabCoreUnavailable,
+                            confirm_write, wrote_rows)
 from labcore_result import rows as read_rows
 # NOT a local copy. This file had its own `_retry_after` — same field, second
 # reading of it — in the module that already imports the shared rule. The zero
@@ -235,7 +235,12 @@ class ChecklistStore:
         try:
             confirm_write(res)
         except LabCoreRefused as exc:
-            raise ChecklistWriteError(str(exc)) from exc
+        # The ANSWER travels with the re-label, not just the sentence.
+        # Re-raising the text alone drops `busy` and `retry_after`, so a
+        # full queue reaches the browser as 502 "this will never work"
+        # instead of 503 with a Retry-After — the one distinction a client
+        # cannot recover by reading English.
+            raise ChecklistWriteError(str(exc), res) from exc
         return res
 
     def _write_rows(self, sql: str, args: Optional[list] = None) -> int:
@@ -472,13 +477,24 @@ class ChecklistStore:
         that it now RAISES instead of returning the full `touched` list, so the
         operator is told to tick again rather than shown a parent whose children
         LabCore never recorded.
+
+        AND IT SAYS WHICH ONES. The refusal carries `landed` / `not_landed`,
+        because "that tick did not save" over a group leaves the operator
+        looking at a ticked parent with no idea which children are real. The
+        page reads exactly these two names (`LEM.failure()` in static/lem.js),
+        so the split reaches the person rather than stopping at the route.
         """
         touched = [item_uid]
         for item in checklist.items:
             if item.parent_uid and item.parent_uid == item_uid:
                 touched.append(item.uid)
-        for uid in touched:
-            self.set_tick(checklist.uid, uid, checked, day, user)
+        for index, uid in enumerate(touched):
+            try:
+                self.set_tick(checklist.uid, uid, checked, day, user)
+            except LabCoreError as exc:
+                exc.landed = touched[:index]
+                exc.not_landed = touched[index:]
+                raise
         return touched
 
     def import_state(self, rows: List[dict], batch: int = 100,
@@ -558,11 +574,15 @@ class ChecklistStore:
                 spent = "" if time.monotonic() < deadline else (
                     f" It stopped waiting after {budget:.0f}s rather than hold "
                     f"the request open any longer.")
+                # `res` is LabCore's LAST answer, carried so a busy queue is
+                # still reported as busy. Without it six refusals from a deep
+                # queue come back 502 and the operator is told never to retry
+                # an import that would land a minute later.
                 raise ChecklistWriteError(
                     f"LabCore refused a batch of {len(chunk)} historical ticks "
                     f"after {attempts} attempts; {done} rows landed before it. "
                     f"Last answer: {refusal}.{spent} Run the import again — "
-                    f"what already landed is skipped.")
+                    f"what already landed is skipped.", res)
             if time.monotonic() >= deadline:
                 raise ChecklistWriteError(
                     f"The import ran out of its {budget:.0f}s budget with "
