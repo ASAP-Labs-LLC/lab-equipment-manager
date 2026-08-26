@@ -1,3 +1,6 @@
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import os
 import sys
 from datetime import datetime, timedelta
@@ -8,6 +11,47 @@ import refusal_shapes
 
 # Make the V5 app package importable (modules live one dir up).
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+class _PywFinder(importlib.abc.MetaPathFinder):
+    """Let `import web_server` find `web_server.pyw`.
+
+    The entry point is a .pyw so Windows launches it without a console window,
+    and Python's import machinery only ever looks for .py/.pyc — so the four
+    tests in test_deployment.py that drive `build_parser()` and `publish_live()`
+    could not import the module they test. They were red, and a red test that
+    fails on the file EXTENSION reads like a broken suite rather than a broken
+    app, which is how it survived.
+
+    Deliberately narrow: it answers for exactly one module name, and only when
+    that .pyw is really there. Anything else falls through to the normal
+    finders, so this cannot mask a genuine ImportError elsewhere. It is also
+    lazy — the module is executed on first `import web_server`, not at
+    collection — and web_server.pyw guards its own entry with
+    `if __name__ == "__main__"`, so importing it starts no server.
+    """
+
+    NAME = "web_server"
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != self.NAME:
+            return None
+        source = os.path.join(_ROOT, self.NAME + ".pyw")
+        if not os.path.isfile(source):
+            return None
+        # The loader has to be explicit. `spec_from_file_location` picks one by
+        # matching the suffix against importlib.machinery.SOURCE_SUFFIXES, which
+        # is [".py"] — a .pyw comes back with `spec.loader = None`, and importing
+        # that raises the same ModuleNotFoundError as having no finder at all.
+        return importlib.util.spec_from_file_location(
+            fullname, source,
+            loader=importlib.machinery.SourceFileLoader(fullname, source))
+
+
+if not any(isinstance(f, _PywFinder) for f in sys.meta_path):
+    sys.meta_path.insert(0, _PywFinder())
 
 
 @pytest.fixture(scope="session", autouse=True)

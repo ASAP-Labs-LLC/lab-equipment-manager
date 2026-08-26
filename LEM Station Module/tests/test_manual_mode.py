@@ -241,10 +241,11 @@ class TestManualBenchNeverIngests:
 
 
 class TestLoggingAQcResult:
-    def logged(self, qapp, machine=None, method="Flash Point", value="63.9"):
+    def logged(self, qapp, machine=None, method="Flash Point", value="63.9",
+               now=NOW):
         m = make_module()
         m.set_machine(machine or manual_machine(), publish=False)
-        m.log_manual_entry(method, value, now=NOW)
+        m.log_manual_entry(method, value, now=now)
         return m
 
     @staticmethod
@@ -259,7 +260,18 @@ class TestLoggingAQcResult:
         assert [r["Flash Point"] for r in m._history] == ["63.9"]
 
     def test_it_is_judged_against_the_assigned_spec(self, qapp):
-        m = self.logged(qapp)
+        """A typed reading inside the band reads GREEN.
+
+        Logged at the REAL clock, not at the module-wide `NOW`. GREEN is the
+        only assertion in this class that also depends on the QC being fresh,
+        and `evaluate_machine` measures freshness against the wall clock — so
+        pinned to a fixed date this passed on the day it was written and turned
+        YELLOW ("QC stale: Flash Point") a few weeks later, which it did.
+        Nothing here is about staleness; `test_qc_window.py` owns that rule and
+        passes its own clock. So the reading is made recent and the test says
+        only what it means to say.
+        """
+        m = self.logged(qapp, now=datetime.now())
         assert m.evaluation().status == mod.STATUS_GREEN
         result = m.evaluation().test_results[0]
         assert result.name == "Flash Point" and result.in_spec is True
