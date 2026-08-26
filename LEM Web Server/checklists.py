@@ -24,6 +24,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
+from labcore_gateway import LabCoreRefused, check_write
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # NOT `lem_checklists` — that name is already taken by db_config_store, which
@@ -240,21 +241,34 @@ class ChecklistStore:
         for item in checklist.items:
             item.uid = item.uid or uuid.uuid4().hex[:12]
         self.ensure_schema()
-        self.gateway.sql(
+        check_write(self.gateway.sql(
             "INSERT INTO lem_checklist_defs (uid, name, slot, due_time, items) "
             "VALUES (?, ?, ?, ?, ?) ON CONFLICT(uid) DO UPDATE SET "
             "name=excluded.name, slot=excluded.slot, "
             "due_time=excluded.due_time, items=excluded.items",
             [checklist.uid, checklist.name.strip(), checklist.slot,
              checklist.due_time,
-             json.dumps([i.to_dict() for i in checklist.items])])
+             json.dumps([i.to_dict() for i in checklist.items])]),
+            what=f"the checklist “{checklist.name.strip()}” was not saved")
         return checklist
 
     def delete(self, uid: str) -> None:
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_checklist_defs WHERE uid = ?", [uid])
-        self.gateway.sql("DELETE FROM lem_checklist_state "
-                         "WHERE checklist_uid = ?", [uid])
+        # Two statements, no transaction across queue ops. The DEFINITION goes
+        # first on purpose: if the second is refused the checklist is gone from
+        # every round and some orphan ticks remain, which is recoverable and
+        # invisible. The other order leaves a live checklist whose history has
+        # been erased, which is neither.
+        check_write(
+            self.gateway.sql("DELETE FROM lem_checklist_defs WHERE uid = ?",
+                             [uid]),
+            what="the checklist was not deleted")
+        check_write(
+            self.gateway.sql("DELETE FROM lem_checklist_state "
+                             "WHERE checklist_uid = ?", [uid]),
+            what="the checklist was removed but its ticks were not",
+            partial=True, landed=["the checklist"],
+            not_landed=["its recorded ticks"])
 
     # ── one day's ticks ────────────────────────────────────────────────
     def state(self, day: str) -> Dict[str, Dict[str, dict]]:
@@ -279,7 +293,10 @@ class ChecklistStore:
                  day: str, user: str, now: Optional[datetime] = None) -> None:
         self.ensure_schema()
         stamp = (now or datetime.now()).isoformat(timespec="seconds")
-        self.gateway.sql(
+        # A tick is the record that the round was done. Told it was saved when
+        # it was not, the archive shows a gap nobody can account for and the
+        # operator has no reason to go back and tick it again.
+        check_write(self.gateway.sql(
             "INSERT INTO lem_checklist_state (day, checklist_uid, item_uid, "
             "checked, user, at, value) VALUES (?, ?, ?, ?, ?, ?, "
             "COALESCE((SELECT value FROM lem_checklist_state WHERE day = ? "
@@ -287,7 +304,7 @@ class ChecklistStore:
             "ON CONFLICT(day, checklist_uid, item_uid) DO UPDATE SET "
             "checked=excluded.checked, user=excluded.user, at=excluded.at",
             [day, checklist_uid, item_uid, 1 if checked else 0, user, stamp,
-             day, checklist_uid, item_uid])
+             day, checklist_uid, item_uid]), what="the tick was not recorded")
 
     def set_value(self, checklist_uid: str, item_uid: str, value: str,
                   day: str, user: str,
@@ -298,13 +315,14 @@ class ChecklistStore:
         self.ensure_schema()
         stamp = (now or datetime.now()).isoformat(timespec="seconds")
         text = (value or "").strip()
-        self.gateway.sql(
+        check_write(self.gateway.sql(
             "INSERT INTO lem_checklist_state (day, checklist_uid, item_uid, "
             "checked, user, at, value) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(day, checklist_uid, item_uid) DO UPDATE SET "
             "checked=excluded.checked, user=excluded.user, at=excluded.at, "
             "value=excluded.value",
-            [day, checklist_uid, item_uid, 1 if text else 0, user, stamp, text])
+            [day, checklist_uid, item_uid, 1 if text else 0, user, stamp,
+             text]), what="the reading was not recorded")
 
     def values(self, checklist_uid: str, item_uid: str,
                limit: int = 180) -> List[dict]:
@@ -339,8 +357,26 @@ class ChecklistStore:
         for item in checklist.items:
             if item.parent_uid and item.parent_uid == item_uid:
                 touched.append(item.uid)
+        # One statement per item, no transaction across them. Ticking a parent
+        # ticks its children, so a refusal partway leaves a parent ticked over
+        # children that are not — which reads on the page as a round that was
+        # done when part of it was not recorded. Named rather than smoothed
+        # over: `set_tick`'s own message says only "the tick was not recorded",
+        # which is true of one item and misleading about the group.
+        done: List[str] = []
         for uid in touched:
-            self.set_tick(checklist.uid, uid, checked, day, user)
+            try:
+                self.set_tick(checklist.uid, uid, checked, day, user)
+            except LabCoreRefused as exc:
+                if not done:
+                    raise
+                raise LabCoreRefused(
+                    exc.result,
+                    what=f"{len(done)} of {len(touched)} item(s) were "
+                         f"recorded — the rest of this group was not",
+                    partial=True, landed=list(done),
+                    not_landed=touched[len(done):]) from exc
+            done.append(uid)
         return touched
 
     def import_state(self, rows: List[dict], batch: int = 100,

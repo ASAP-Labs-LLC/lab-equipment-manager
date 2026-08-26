@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime
+from labcore_gateway import check_write
 from typing import Dict, List, Optional
 
 CONFIG_DDL = (
@@ -117,13 +118,23 @@ class MachineConfigStore:
             raise ValueError("A configuration needs a machine name.")
         self.ensure_schema()
         when = datetime.now().isoformat(timespec="seconds")
-        self.gateway.sql(
+        # The config IS the parser's mapping — which column is which method. A
+        # save reported as landed that did not leaves the bench parsing with the
+        # old mapping while the editor shows the new one, and the difference
+        # only ever surfaces as results filed against the wrong test.
+        #
+        # Raised rather than returned because this method's return value is the
+        # endpoint's success body (`{"ok": true, **saved}`), and adding a
+        # failure key to it would change the shape of a write that WORKED — the
+        # one thing the floor UI is entitled to rely on.
+        check_write(self.gateway.sql(
             "INSERT INTO lem_machine_config (machine_uid, title, config, "
             "updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
             "ON CONFLICT(machine_uid) DO UPDATE SET title=excluded.title, "
             "config=excluded.config, updated_at=excluded.updated_at, "
             "updated_by=excluded.updated_by",
-            [machine_uid, title, json.dumps(config or {}), when, by])
+            [machine_uid, title, json.dumps(config or {}), when, by]),
+            what=f"the configuration for “{title}” was not saved")
         return {"machine_uid": machine_uid, "title": title,
                 "updated_at": when, "updated_by": by}
 
@@ -151,5 +162,8 @@ class MachineConfigStore:
 
     def delete(self, machine_uid: str) -> None:
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_machine_config WHERE machine_uid = ?",
-                         [machine_uid])
+        check_write(
+            self.gateway.sql(
+                "DELETE FROM lem_machine_config WHERE machine_uid = ?",
+                [machine_uid]),
+            what="the configuration was not deleted")

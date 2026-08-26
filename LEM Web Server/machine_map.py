@@ -18,6 +18,7 @@ station module's own detection against the shared sample library.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from labcore_gateway import check_write
 from typing import Dict, List, Tuple
 
 LAYOUT_DDL = (
@@ -140,10 +141,25 @@ class QcTargetStore:
             self._ready = True
 
     def assign(self, machine_uid: str, targets: List[WatchedTarget]) -> None:
-        """Replace this machine's whole assignment set."""
+        """Replace this machine's whole assignment set.
+
+        Guarded, unlike the layout and lock stores in this same file, because
+        this one decides WHAT GETS QC-JUDGED. An assignment silently dropped
+        stops QC on that instrument entirely and looks exactly like an
+        instrument that simply has not run a control lately — the failure
+        `changeover` exists to prevent, arrived at the other way round.
+
+        A replace is a DELETE then N INSERTs with no transaction across them,
+        so a refusal partway leaves FEWER assignments than either the old set
+        or the new one. That is worth saying out loud rather than smoothing
+        over; the caller is told the set is now incomplete.
+        """
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_machine_targets WHERE machine_uid = ?",
-                         [machine_uid])
+        check_write(
+            self.gateway.sql(
+                "DELETE FROM lem_machine_targets WHERE machine_uid = ?",
+                [machine_uid]),
+            what="the QC assignments were not changed")
         seen = set()
         for target in targets:
             if not target.sample.strip() or not target.test.strip():
@@ -152,9 +168,17 @@ class QcTargetStore:
             if key in seen:
                 continue
             seen.add(key)
-            self.gateway.sql(
-                "INSERT INTO lem_machine_targets (machine_uid, sample_name, "
-                "test_name) VALUES (?, ?, ?)", [machine_uid, key[0], key[1]])
+            check_write(
+                self.gateway.sql(
+                    "INSERT INTO lem_machine_targets (machine_uid, "
+                    "sample_name, test_name) VALUES (?, ?, ?)",
+                    [machine_uid, key[0], key[1]]),
+                what="the old QC assignments were cleared but not all of the "
+                     "new ones were stored — this instrument is now assigned "
+                     "fewer QC checks than intended",
+                partial=True, landed=sorted(f"{s} · {t}" for s, t in seen
+                                            if (s, t) != key),
+                not_landed=[f"{key[0]} · {key[1]}"])
 
     def targets(self, machine_uid: str) -> List[WatchedTarget]:
         self.ensure_schema()

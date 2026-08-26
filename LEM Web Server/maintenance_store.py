@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from labcore_gateway import check_write
 from typing import Dict, List, Optional, Tuple
 
 MAINTENANCE_DDL = (
@@ -93,7 +94,10 @@ class MaintenanceStore:
         task.uid = task.uid or uuid.uuid4().hex[:12]
         task.kind = self._normalise_kind(task.kind)
         self.ensure_schema()
-        self.gateway.sql(
+        # A PM or calibration task that did not save is an interval nobody is
+        # tracking — the floor shows it scheduled, LabCore has never heard of
+        # it, and the first anyone knows is an assessor asking for the record.
+        check_write(self.gateway.sql(
             "INSERT INTO lem_maintenance (uid, machine_uid, name, kind, "
             "interval_days, last_done, note) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(uid) DO UPDATE SET machine_uid=excluded.machine_uid, "
@@ -101,18 +105,28 @@ class MaintenanceStore:
             "interval_days=excluded.interval_days, "
             "last_done=excluded.last_done, note=excluded.note",
             [task.uid, task.machine_uid, task.name.strip(), task.kind,
-             int(task.interval_days), task.last_done, task.note])
+             int(task.interval_days), task.last_done, task.note]),
+            what=f"the task “{task.name.strip()}” was not saved")
         return task
 
     def complete(self, uid: str, when: str, note: str = "") -> None:
         self.ensure_schema()
-        self.gateway.sql(
-            "UPDATE lem_maintenance SET last_done = ?, note = ? WHERE uid = ?",
-            [when, note, uid])
+        # Marking work done is the write the whole schedule hangs off. Dropped
+        # silently, the task stays overdue on the floor and somebody does it
+        # twice — or, worse, the record of the calibration that WAS done is not
+        # there when it is asked for.
+        check_write(
+            self.gateway.sql(
+                "UPDATE lem_maintenance SET last_done = ?, note = ? "
+                "WHERE uid = ?", [when, note, uid]),
+            what="the completion was not recorded")
 
     def delete(self, uid: str) -> None:
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_maintenance WHERE uid = ?", [uid])
+        check_write(
+            self.gateway.sql("DELETE FROM lem_maintenance WHERE uid = ?",
+                             [uid]),
+            what="the task was not deleted")
 
     def forget(self, machine_uid: str) -> None:
         self.ensure_schema()

@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
+from labcore_gateway import check_write
 from typing import Dict, List, Optional
 
 SCHEDULE_DDL = (
@@ -171,17 +172,30 @@ class LabScheduleStore:
     def save(self, schedule: LabSchedule) -> LabSchedule:
         schedule.validate()
         self.ensure_schema()
-        self.gateway.sql(
+        # Opening hours decide whether a silent bench reads as STOPPED or as
+        # CLOSED. Saved-but-not-saved is either a floor full of alarms nobody
+        # asked for, or none on the day they were wanted.
+        check_write(self.gateway.sql(
             "INSERT INTO lem_lab_schedule (id, working_days, opens, closes) "
             "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
             "working_days=excluded.working_days, opens=excluded.opens, "
             "closes=excluded.closes",
             [json.dumps([int(d) for d in schedule.working_days]),
-             schedule.opens, schedule.closes])
+             schedule.opens, schedule.closes]),
+            what="the opening hours were not saved")
         # Holidays are a set, not a patch: saving a schedule that names them
         # replaces the list, so removing one in the UI actually removes it.
         if schedule.holidays:
-            self.gateway.sql("DELETE FROM lem_lab_holidays")
+            # Past the hours, which have already landed. Refused here, the
+            # caller is told what did and did not go in rather than being left
+            # to assume both halves succeeded together — there is no
+            # transaction across queue ops to make that true.
+            check_write(
+                self.gateway.sql("DELETE FROM lem_lab_holidays"),
+                what="the opening hours were saved but the holiday list "
+                     "was not replaced",
+                partial=True, landed=["the opening hours"],
+                not_landed=["the holiday list"])
             for day, name in schedule.holidays.items():
                 self.add_holiday(day, name)
         return schedule
@@ -189,12 +203,16 @@ class LabScheduleStore:
     def add_holiday(self, day: str, name: str = "") -> None:
         day = parse_day(day)
         self.ensure_schema()
-        self.gateway.sql(
-            "INSERT INTO lem_lab_holidays (day, name) VALUES (?, ?) "
-            "ON CONFLICT(day) DO UPDATE SET name=excluded.name",
-            [day, (name or "").strip() or "Holiday"])
+        check_write(
+            self.gateway.sql(
+                "INSERT INTO lem_lab_holidays (day, name) VALUES (?, ?) "
+                "ON CONFLICT(day) DO UPDATE SET name=excluded.name",
+                [day, (name or "").strip() or "Holiday"]),
+            what=f"{day} was not added to the holiday list")
 
     def remove_holiday(self, day: str) -> None:
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_lab_holidays WHERE day = ?",
-                         [parse_day(day)])
+        check_write(
+            self.gateway.sql("DELETE FROM lem_lab_holidays WHERE day = ?",
+                             [parse_day(day)]),
+            what=f"{parse_day(day)} was not removed from the holiday list")
