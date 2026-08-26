@@ -212,11 +212,14 @@ def seed(gateway, documents_root: Optional[str] = None,
     _seed_schedule(write)
     ladder = _seed_levels(gateway)
     placed = _seed_fleet(write, rng, now, ladder)
+    _seed_standards(gateway)
+    _seed_certificates(gateway, documents_root)
     _seed_documents(gateway, documents_root)
     actions = _seed_corrective_actions(gateway)
 
     return {"levels": len(ladder), "equipment": len(FLEET),
-            "placed": placed, "open_actions": actions}
+            "placed": placed, "open_actions": actions,
+            "standards": len(STANDARDS), "certificates": len(CERTIFICATES)}
 
 
 def _seed_schedule(write) -> None:
@@ -490,6 +493,61 @@ DOCUMENTS = (
     ("anton-paar-1", "DMA 4500 - manufacturer manual.pdf"),
     ("multitek-ns", "Multitek NS - annual verification.pdf"),
 )
+
+
+# The shared standards library: what a control is MEANT to read. Defined once,
+# detected by every bench against the whole library — which is why the bench
+# config road ships it unscoped while everything beside it is per-machine.
+#
+# Seeded because three features demo nothing without it. The bench road answered
+# `qc_samples: 0`; the certificate store attaches a COA to a STANDARD and so had
+# nothing to attach to; and `lem_qc_specs` rows are a per-machine OVERRIDE of a
+# library entry, which reads oddly when there is no library to override.
+#
+# `expected`/`std_dev` here are the CONTROL LIMIT — the pass band. They are not
+# the certificate's uncertainty, which is a different quantity from a different
+# source, and the two are deliberately kept apart (see the certificates below).
+STANDARDS = (
+    (STANDARD, STANDARD_LAB_ID,
+     (_FLASH, _CLOUD, _SULFUR, _DENSITY, _VISC, _CETANE, _POUR)),
+    ("Gasoline - RON check", "STD-2", (_DENSITY,)),
+)
+
+
+def _seed_standards(gateway) -> None:
+    """Through `QcSampleStore`, so the demo exercises the real save path."""
+    from models import SampleSpec  # noqa: F401  (kept for shape parity)
+    from qc_samples import QcSample, QcSampleStore, QcSampleTest
+
+    store = QcSampleStore(gateway)
+    store.ensure_schema()
+    for name, lab_id, tests in STANDARDS:
+        store.save(QcSample(
+            name=name, sample_id_val=lab_id,
+            tests=[QcSampleTest(name=t[0], value_col=t[0], expected=t[1],
+                                std_dev=t[2], k=t[3], units=t[4])
+                   for t in tests]))
+
+
+# Certificates hang off the STANDARD, not the instrument — the certificate is
+# the evidence for the values the standard asserts. One expired on purpose: an
+# expired certificate is a finding at assessment, and a demo where everything is
+# in date shows nothing about how that reads.
+CERTIFICATES = (
+    (STANDARD, "Diesel AO25 - certificate of analysis 2026.pdf",
+     "2027-06-30", "2026-01-15"),
+    ("Gasoline - RON check", "Gasoline RON - COA 2025.pdf",
+     "2026-03-31", "2025-03-20"),
+)
+
+
+def _seed_certificates(gateway, documents_root: Optional[str]) -> None:
+    from standard_documents import StandardCertificateStore
+
+    store = StandardCertificateStore(gateway, root=documents_root)
+    for standard, filename, expires, issued in CERTIFICATES:
+        store.save(standard, filename, _pdf(filename), uploaded_by="ryan",
+                   expires_at=expires, issued_at=issued)
 
 
 def _seed_documents(gateway, documents_root: Optional[str]) -> None:
