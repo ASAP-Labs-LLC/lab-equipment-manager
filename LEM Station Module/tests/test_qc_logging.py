@@ -51,6 +51,9 @@ class Recorder:
 
     _log_event = mod.LEMStationModule._log_event
     _queue_run_events = mod.LEMStationModule._queue_run_events
+    # No `context` on this stand-in, so the operator comes back unknown — which
+    # is the point: a verdict is still recorded when nobody can be named.
+    _current_operator = mod.LEMStationModule._current_operator
 
 
 def run_events(machine, rows):

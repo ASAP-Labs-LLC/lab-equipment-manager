@@ -756,6 +756,56 @@ def build_last_qc_query(machine_uid: str) -> tuple:
     return LAST_QC_QUERY, [machine_uid]
 
 
+LAST_CALIBRATION_QUERY = (
+    # DESC from the start. LAST_QC_QUERY shipped as ASC and therefore recovered
+    # the OLDEST row of its window for months; the same mistake here would date
+    # every QC verdict to the bench's first-ever calibration.
+    "SELECT ts FROM lem_machine_log "
+    "WHERE machine_uid = ? AND kind = 'calibration' "
+    "ORDER BY ts DESC LIMIT 1"
+)
+
+
+def build_last_calibration_query(machine_uid: str) -> tuple:
+    """When this machine was last calibrated — the epoch a QC reading belongs to.
+
+    The machine log is the only place that answers this for the machine rather
+    than for a scheduled task: `lem_maintenance.last_done` is a date somebody
+    typed against a recurring job, and a bench can be calibrated without one.
+    """
+    return LAST_CALIBRATION_QUERY, [machine_uid]
+
+
+def known_text(value) -> Optional[str]:
+    """A string somebody actually supplied, or None for "we do not know".
+
+    The distinction the whole provenance record turns on. `""` is counted as a
+    value by anything doing a set-of-strings tally, so a blank operator becomes
+    "one analyst ran all of these" — which is precisely the repeatability /
+    reproducibility confusion these fields exist to make impossible.
+    """
+    text = str(value or "").strip()
+    return text or None
+
+
+def last_calibration_id(rows) -> Optional[str]:
+    """Rows from build_last_calibration_query() → the epoch, or None.
+
+    Compares timestamps rather than trusting the row order, for the reason
+    `last_qc_by_test` does: the ORDER BY lives in another function and has been
+    wrong before. Never raises — the caller is on the poll worker, where a
+    raise strands `_polling`.
+    """
+    newest = None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        at = known_text(row.get("ts"))
+        if at and (newest is None or at > newest):
+            newest = at
+    return newest
+
+
 def last_qc_by_test(rows) -> dict:
     """Rows from build_last_qc_query() → {test_name: {at, value, in_spec}}.
 
@@ -3159,16 +3209,33 @@ def parse_correction_input(text: str) -> float:
     return float(raw)
 
 
-def qc_log_detail(spec: TestSpec, raw: float, corrected: float) -> dict:
+def qc_log_detail(spec: TestSpec, raw: float, corrected: float,
+                  operator: Optional[str] = None,
+                  calibration_id: Optional[str] = None) -> dict:
     """What a QC verdict records.
 
     Carries the raw reading and the offset whenever one was applied — a log that
     holds only the corrected number cannot be audited, and a correction that
     changes a pass into a fail has to be visible in the record that did it.
+
+    `operator` and `calibration_id` are the provenance the uncertainty budget
+    needs (PJLA ISO/IEC 17025 assessment, September 2026). The spread of a set
+    of QC results is only **within-laboratory reproducibility (u(Rw))** if the
+    set spans analysts, shifts and calibrations; one analyst against one
+    calibration is **repeatability (s_r)**, a far narrower claim. Value and
+    timestamp alone cannot tell those apart after the fact, and an assessor
+    separates them by asking who ran them.
+
+    Both are written on EVERY verdict, `None` included, and `None` is the only
+    way absence is expressed — see `known_text`. A key present and null says
+    this module looked and did not know; a key missing says the row predates
+    anything looking. Blank is neither, and would be counted as a person.
     """
     low, high = spec_band(spec)
     detail = {"in_spec": low <= corrected <= high,
-              "expected": spec.expected, "low": low, "high": high}
+              "expected": spec.expected, "low": low, "high": high,
+              "operator": known_text(operator),
+              "calibration_id": known_text(calibration_id)}
     if spec.correction:
         detail["raw_value"] = raw
         detail["correction"] = float(spec.correction)
@@ -3608,6 +3675,48 @@ def _in_thread(fn, callback):
         callback(fn())
 
 
+# The byline written where a person reads WHO, and the identity could not be
+# established. Not "" — an empty byline is indistinguishable from a field
+# nobody ever filled in, which is exactly the state these columns were in for
+# months (see `_current_operator`). Not a bare word either: this is stored in
+# the same column as usernames, and the parentheses are what stop it being read
+# as one. It is the string LabStation itself shows for this condition.
+#
+# ONLY for those byline columns. The JSON provenance writes None instead, and
+# the difference is deliberate: `lab_search._OPERATOR_KEYS` harvests `by` /
+# `user` / `username` out of a log row's detail, and `qc_series.Coverage`
+# counts distinct NAMED analysts to decide repeatability from reproducibility.
+# A marker string in there would invent a person and produce the exact
+# overstatement this whole road exists to prevent.
+UNKNOWN_OPERATOR = "(unknown user)"
+
+
+def context_operator(context) -> Optional[str]:
+    """Whoever is signed in, off the LabStation context. None if it cannot say.
+
+    THE IDENTITY IS NOT A GLOBAL AND NEVER WAS. `_load_custom_module` injects
+    exactly ten names into a custom module — BaseModule, LabStationContext, the
+    five `labcore_*` helpers, ResultEntry, format_timestamp, _run_in_thread —
+    and not one of them is a user. This file spent months reading two invented
+    names out of `globals()` for the correction-factor and config bylines, and
+    both were therefore "" on every bench in the lab, silently.
+
+    It lives on the context object every module is constructed with:
+    `LabStationContext.__init__` sets `current_user = None`, LabStationWindow
+    assigns it at login, and LabStation reads it exactly as below. The
+    context's own docstring is explicit — modules read it there "instead of
+    ... routing through module-level globals".
+
+    Total at every hop, and no exception escapes: a missing context, no login
+    yet, a user object with no username and a blank username are all simply
+    unknown. This runs on the poll worker, where a raise strands `_polling`.
+    """
+    user = getattr(context, "current_user", None)
+    if user is None:
+        return None
+    return known_text(getattr(user, "username", None))
+
+
 class LEMStationModule:
     """LEM – Lab Equipment Manager: ONE machine per module instance.
 
@@ -3661,6 +3770,11 @@ class LEMStationModule:
         self._serial_reader = None
         self._last_status_pushed = None  # (uid, status, reason) last written
         self._config_read_at = None      # when QC/PM config last ANSWERED
+        # The calibration epoch every QC verdict this bench records is stamped
+        # with (see `_refresh_calibration_epoch`). Cached because a poll can
+        # carry fifty readings and the answer is the same for all of them.
+        self._calibration_epoch = None   # ts of the last 'calibration' event
+        self._calibration_read_at = None  # when that lookup last ANSWERED
         self._last_heartbeat = None      # when this module last checked in
         self._pending_uid = ""           # bound uid whose config we can't read yet
         self._qc_tried: set = set()       # spec names we have looked history up for
@@ -3905,6 +4019,12 @@ class LEMStationModule:
         # CONFIG_REFRESH_SECONDS. Reconfiguring the same machine lands here too,
         # which is what makes a source or mapping change take effect at once.
         self._config_read_at = None
+        # The epoch belongs to the machine that was bound a moment ago too, and
+        # this one is a DIFFERENT instrument's calibration history. Cleared, not
+        # merely re-read: stamping a verdict with the previous bench's
+        # calibration is worse than stamping it unknown.
+        self._calibration_read_at = None
+        self._calibration_epoch = None
         # This module now has an instrument, however it got one. Any binding
         # still being retried is stale, and letting it land later would swap the
         # instrument underneath whoever just chose this one.
@@ -4159,10 +4279,66 @@ class LEMStationModule:
 
     # ── Worker half: parse, evaluate, ALL LabCore traffic (no widgets) ────
 
+    def _current_operator(self) -> Optional[str]:
+        """Who is signed in at this bench — the ONE way this file asks.
+
+        Three roads need it: the QC verdict's provenance, the correction-factor
+        byline and the config-publish byline. They used to ask three different
+        ways, two of them for a global LabStation has never injected, and the
+        wrong answers were invisible because "" is what an unfilled field looks
+        like. One accessor so that cannot drift apart again.
+
+        `getattr` on `context` too: `_queue_run_events` is reachable on objects
+        that have none, and returning "unknown" beats raising on the poll
+        worker.
+        """
+        return context_operator(getattr(self, "context", None))
+
     def _refresh_corrections(self, machine: Machine) -> bool:
         """Re-read the correction factors for this machine (see
         `refresh_corrections`). Kept as a method so the poll reads like a sequence."""
         return refresh_corrections(machine, globals().get("labcore_read_sql"))
+
+    def _refresh_calibration_epoch(self, machine: Machine,
+                                   now: datetime) -> None:
+        """Which calibration this poll's QC verdicts belong to.
+
+        At the top of the poll, beside `_refresh_corrections`, because
+        `_queue_run_events` runs before `_labcore_sync` — an epoch read in the
+        sync would stamp this poll's readings with the previous poll's answer,
+        and on a module's first poll with nothing at all.
+
+        ONE read per CONFIG_REFRESH_SECONDS, never one per reading. LabCore
+        serialises at roughly 1.5 ops/sec and refuses past ~100 pending, so a
+        lookup on every poll of every bench is 5/min each and multiplies by a
+        bench count Ryan is still growing — the same arithmetic that put the QC
+        configuration behind `_config_due`. A calibration is not something that
+        happens between two polls twelve seconds apart, and the one case where
+        it does is this bench doing it: `complete_task` clears the stamp, so a
+        calibration logged here is in force on the very next poll rather than
+        up to two minutes later.
+
+        An unreadable answer keeps what it already had and does NOT stamp the
+        window, exactly as `refresh_corrections` and `_config_due` do. A busy
+        queue blanking the epoch would mark a poll's readings as belonging to
+        no calibration at all, which is a worse lie than a stale epoch.
+        """
+        if machine is None:
+            return
+        last = self._calibration_read_at
+        if last is not None and (now - last).total_seconds() < CONFIG_REFRESH_SECONDS:
+            return
+        read_sql = globals().get("labcore_read_sql")
+        if not callable(read_sql):
+            return
+        try:
+            res = read_sql(*build_last_calibration_query(machine.uid))
+        except Exception:
+            return
+        if not res or res.get("error"):
+            return
+        self._calibration_read_at = now
+        self._calibration_epoch = last_calibration_id(res.get("rows") or [])
 
     def _live_config(self) -> tuple:
         """Where the floor listens, and with what token.
@@ -4245,6 +4421,11 @@ class LEMStationModule:
         # after the parse), so the op count is unchanged.
         if machine is not None:
             self._corrections_changed = self._refresh_corrections(machine)
+            # Same argument, same place: the calibration a QC verdict is
+            # stamped with has to be the one in force when the reading was
+            # taken, and `_queue_run_events` runs below this. Cached, so it is
+            # not a read per poll — see `_refresh_calibration_epoch`.
+            self._refresh_calibration_epoch(machine, now)
 
         if error:
             evaluation = MachineEvaluation(status=STATUS_UNKNOWN, reason=error)
@@ -5985,7 +6166,21 @@ class LEMStationModule:
         If such a print yields no readable verdict it falls back to a 'run', so
         that a print can never disappear from the machine's history just
         because it looked like QC.
+
+        Every 'qc' record is stamped with who ran it and which calibration was
+        in force — resolved ONCE here, not once per verdict. The epoch is a
+        LabCore read the top of the poll already paid for
+        (`_refresh_calibration_epoch`); an archive import of three thousand
+        prints must not be three thousand lookups. Unknown is None all the way
+        down, never "" — see `qc_log_detail` for why that matters.
+
+        getattr on the epoch, because `_queue_run_events` is reachable with
+        nothing but `_log_event` and `_pending_events` and the tests hold it to
+        that: the provenance may not come from state only a fully built module
+        has.
         """
+        operator = self._current_operator()
+        calibration_id = getattr(self, "_calibration_epoch", None)
         for row in rows:
             lab_id = str(row.get(LAB_ID_KEY) or "").strip()
             # RESERVED_ROW_KEYS, not just the Lab ID and timestamps: a corrected row
@@ -6015,7 +6210,9 @@ class LEMStationModule:
                 self._log_event(
                     "qc", lab_id=lab_id, test_name=spec.name,
                     value=f"{value:g}",
-                    detail=qc_log_detail(spec, raw, value), now=now)
+                    detail=qc_log_detail(spec, raw, value, operator=operator,
+                                         calibration_id=calibration_id),
+                    now=now)
 
     def _flush_events_now(self) -> None:
         """Drain queued events outside a poll (comments, overrides, PM/Cal).
@@ -6089,11 +6286,18 @@ class LEMStationModule:
             task.note = note.strip()
             next_due = (date.fromisoformat(done)
                         + timedelta(days=max(1, task.interval_days)))
-            self._log_event(task.kind if task.kind in ("pm", "calibration")
-                            else "pm",
+            kind = task.kind if task.kind in ("pm", "calibration") else "pm"
+            self._log_event(kind,
                             detail={"task": task.name, "note": task.note,
                                     "completed": done,
                                     "next_due": next_due.isoformat()})
+            if kind == "calibration":
+                # A new epoch starts here, and the readings taken right after it
+                # are the ones most likely to be stamped with the calibration it
+                # replaced. Clearing the stamp costs one read on the next poll
+                # and closes the window `_refresh_calibration_epoch` otherwise
+                # leaves open for CONFIG_REFRESH_SECONDS.
+                self._calibration_read_at = None
             self._flush_events_now()
             self._reevaluate_and_show()
             return
@@ -6330,7 +6534,12 @@ class LEMStationModule:
             self._status_label.setText("LabCore unavailable — nothing saved.")
             return
         now = datetime.now()
-        who = str(globals().get("labcore_user") or "")
+        # §7.8.2 makes this offset part of every result the bench reports, and
+        # `lem_correction_factors` is an UPSERT — saving one DESTROYS the
+        # previous value, so `updated_by` is the byline on the row that replaced
+        # it. It has been "" on every bench since this was written, because the
+        # global it read is not a thing LabStation injects.
+        who = self._current_operator()
         failed = []
         try:
             run_sql(CORRECTIONS_DDL)
@@ -6339,7 +6548,8 @@ class LEMStationModule:
                 units = spec.units if spec else ""
                 if value:
                     sql, args = build_correction_upsert(
-                        target.uid, name, value, units, now, who)
+                        target.uid, name, value, units, now,
+                        who or UNKNOWN_OPERATOR)
                 else:
                     # Zero means no correction, so the row goes rather than
                     # lingering as a correction of nothing.
@@ -6360,6 +6570,10 @@ class LEMStationModule:
         # operator did not happen to touch — and reports it raw until a poll
         # manages to re-read LabCore.
         apply_corrections(target, {**(target.corrections or {}), **changes})
+        # `who`, not the byline marker: the floor's search index harvests `by`
+        # out of a log detail as a person (`lab_search._OPERATOR_KEYS`), so
+        # "(unknown user)" here would put an analyst who does not exist on the
+        # lab-wide operator list. Null is absent to that reader; a string is not.
         self._log_event("config", detail={"action": "correction factors set",
                                          "by": who, "changes": changes},
                         now=now)
@@ -6584,7 +6798,11 @@ class LEMStationModule:
             return
         snapshot = Machine.from_dict(machine.to_dict())
         now = datetime.now()
-        user = str(globals().get("labcore_username") or "")
+        # Off the context BEFORE the worker starts: `work` runs on another
+        # thread and the identity belongs to the module, not to that thread.
+        # Same byline rule as the correction audit — a config nobody can be
+        # named for says so, rather than showing an empty author.
+        user = self._current_operator() or UNKNOWN_OPERATOR
 
         def work():
             run_sql = globals().get("labcore_sql")

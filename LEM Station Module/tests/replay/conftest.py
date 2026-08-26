@@ -197,6 +197,14 @@ def lem(labstation, gateway, clock):
     injects them, so the module under replay is the shipped file with no test
     seam cut into it. `labcore_is_running` answers True because these events
     are about a LabCore that is up; the events that need it down say so.
+
+    This list is ONLY names `_load_custom_module` really injects. It used to
+    also supply `labcore_user` and `labcore_username`, which LabStation has
+    never injected and which appear nowhere in its source — so the module's two
+    audit bylines read them, got "" on every real bench, and passed under
+    replay. A harness that supplies what production does not is a harness that
+    hides the bug it exists to catch. The signed-in user is an attribute of the
+    context (`current_user`), not a global; see `context_operator`.
     """
     mod, cls = lab_day.load_lem_like_labstation(
         replay_paths.LEM_FILE, labstation, {
@@ -206,8 +214,6 @@ def lem(labstation, gateway, clock):
             "labcore_sql": gateway.sql,
             "labcore_read_sql": gateway.read_sql,
             "labcore_is_running": lambda: True,
-            "labcore_user": "replay",
-            "labcore_username": "replay",
         })
     mod._REPLAY_CLASS = cls
     return mod
