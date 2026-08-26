@@ -212,6 +212,7 @@ def seed(gateway, documents_root: Optional[str] = None,
     _seed_schedule(write)
     ladder = _seed_levels(gateway)
     placed = _seed_fleet(write, rng, now, ladder)
+    _backdate_setup(write, now)
     _seed_standards(gateway)
     _seed_certificates(gateway, documents_root)
     _seed_documents(gateway, documents_root)
@@ -396,8 +397,17 @@ def _seed_history(write, rng, now, bench, specs, status) -> None:
                     value=status, detail={"from": "GREEN", "to": status}))
         return
 
-    for hours_ago in sorted(rng.sample(range(1, 72), 6), reverse=True):
-        ts = now - timedelta(hours=hours_ago, minutes=rng.randint(0, 59))
+    # Customer work, and some of it MINUTES old. The oldest draft put every run
+    # at least an hour back, which left the newest thing in the lab being the
+    # seeder assigning levels — so the activity rail opened on thirteen
+    # identical `config / level_move` rows and read like a lab that does
+    # nothing but get configured. Those rows are honest (a level assignment IS
+    # auditable, and `LevelStore.assign` is right to record one), they were
+    # simply the only recent thing. A working lab leads with results.
+    minutes = sorted(rng.sample(range(2, 70), 3)) + \
+        [h * 60 + rng.randint(0, 59) for h in sorted(rng.sample(range(2, 72), 5))]
+    for mins_ago in sorted(minutes):
+        ts = now - timedelta(minutes=mins_ago)
         write(*_log(bench.uid, "run", ts,
                     lab_id="L-{0}".format(37000 + rng.randint(1, 999)),
                     test_name=(specs[0]["name"] if specs else "Density 15C"),
@@ -590,6 +600,32 @@ STANDARDS = (
      (_FLASH, _CLOUD, _SULFUR, _DENSITY, _VISC, _CETANE, _POUR)),
     ("Gasoline - RON check", "STD-2", (_DENSITY,)),
 )
+
+
+
+def _backdate_setup(write, now) -> None:
+    """Move the seeder's own setup rows into the past, where they belong.
+
+    Placing thirteen instruments on levels writes thirteen `config /
+    level_move` audit rows — correctly: moving equipment between floors is an
+    auditable act and `LevelStore.assign` is right to record one. But the
+    seeder does it in the same second it runs, so those rows were the newest
+    thing in the lab and the activity rail opened on thirteen identical lines
+    of setup. A lab reads like a lab that does nothing but get configured.
+
+    The rows are not deleted or suppressed — an audit trail with a hole in it
+    to make a demo look tidy is the opposite of what this app is for. They are
+    simply dated to when the floor plan would actually have been arranged: days
+    ago, before any of the work sitting on top of it.
+
+    Only rows this seeder just wrote are touched, matched on the action, and
+    only on the in-memory fake behind `--dev`.
+    """
+    when = (now - timedelta(days=6)).replace(hour=8, minute=30, second=0,
+                                             microsecond=0)
+    write("UPDATE lem_machine_log SET ts = ? "
+          "WHERE kind = 'config' AND test_name = 'level_move'",
+          [when.isoformat()])
 
 
 def _seed_standards(gateway) -> None:
