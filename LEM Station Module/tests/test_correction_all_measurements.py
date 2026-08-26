@@ -26,12 +26,17 @@ So the correction is applied ONCE, at the parse boundary, and everything downstr
 the QC verdict, the LabCore result write, the history, the display — sees the same
 corrected number. No consumer can forget it, because no consumer applies it.
 """
+import ast
+import inspect
+import textwrap
 from datetime import datetime
 
 import pytest
 
 import lem_station_module as mod
 from lem_station_module import LAB_ID_KEY, Machine, TestSpec
+
+from test_module_qt import make_module
 
 NOW = datetime(2026, 8, 4, 9, 0)
 
@@ -41,6 +46,26 @@ def machine(**over):
                 corrections={"Flash": -3.0})
     base.update(over)
     return Machine(**base)
+
+
+def _called_at(fn, name):
+    """Line numbers of every CALL to `name` inside `fn`, from the AST.
+
+    A source-text search cannot tell a call from a mention of the same name in
+    a comment or a docstring, and the ordering guard below was defeated by
+    exactly that. This looks at `ast.Call` nodes and nothing else, so only real
+    calls count — `self.foo()` through the attribute, `foo()` through the name.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    out = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            called = (func.attr if isinstance(func, ast.Attribute)
+                      else getattr(func, "id", ""))
+            if called == name:
+                out.append(node.lineno)
+    return out
 
 
 def row(**values):
@@ -207,10 +232,70 @@ class TestTheFactorInForceIsTheOneApplied:
     """
 
     def test_corrections_are_read_before_the_parse(self):
-        import inspect
-        src = inspect.getsource(mod.LEMStationModule._process_outcome)
-        assert "_refresh_corrections" in src
-        assert src.index("_refresh_corrections") < src.index("apply_row_corrections")
+        """The ordering, read off the SYNTAX rather than the text.
+
+        This used to compare `src.index(...)` of the two names, and the first
+        occurrence of `_refresh_corrections` in that function is a COMMENT — so
+        the guard passed on prose. A critic moved the entire read to AFTER
+        `apply_row_corrections` and the whole suite still went green, which is
+        the one thing this test exists to catch. Counting `ast.Call` nodes
+        counts calls and nothing else, and comparing max(read) to min(applied)
+        keeps it honest if a second read site is ever added.
+        """
+        read = _called_at(mod.LEMStationModule._process_outcome,
+                          "_refresh_corrections")
+        applied = _called_at(mod.LEMStationModule._process_outcome,
+                             "apply_row_corrections")
+        assert read, "the poll no longer reads the correction factors at all"
+        assert applied, "the poll no longer applies corrections to its rows"
+        assert max(read) < min(applied), (
+            "the correction factors are read AFTER the rows are corrected — "
+            "the factor applied is not the one in force when the measurement "
+            "was made (ISO/IEC 17025 §7.8.2)")
+
+    def test_the_read_happens_before_the_parse_at_runtime(self, qapp):
+        """And the same claim as BEHAVIOUR, because a shape test can only ever
+        say the source looks right. One ordered list, written to by the
+        corrections read and by the parser, asked which came first."""
+        order = []
+
+        def read_sql(sql, args=None, timeout=None):
+            if "lem_correction_factors" in sql:
+                order.append("read")
+                return {"rows": [{"test_name": "Flash", "correction": -3.0}]}
+            return {"error": "no such table"}
+
+        real_parse = mod.parse_print
+
+        def spy_parse(machine, text):
+            order.append("parse")
+            return real_parse(machine, text)
+
+        monkey = pytest.MonkeyPatch()
+        try:
+            monkey.setitem(mod.__dict__, "labcore_read_sql", read_sql)
+            monkey.setattr(mod, "parse_print", spy_parse)
+            monkey.setattr(mod, "_in_thread", lambda fn, cb: cb(fn()))
+            module = make_module()
+            bench = machine(
+                corrections={},
+                delimiter=",",
+                lab_id=mod.Selector(mode="cell", index=0),
+                mappings=[mod.MethodMapping(
+                    methods=["Flash"],
+                    selector=mod.Selector(mode="cell", index=1))])
+            module._machine = bench
+            monkey.setattr(module, "_labcore_sync",
+                           lambda m, rows, ev, *a, **kw: ev)
+            payload = module._process_outcome(bench, ["L-1,66.5"], None, [], NOW)
+        finally:
+            monkey.undo()
+
+        assert order == ["read", "parse"], (
+            f"the poll did its work in the order {order} — the factor applied "
+            "to a measurement must be the one in force when it was made")
+        assert payload["rows"][0]["Flash"] == pytest.approx(63.5), (
+            "the factor read at the top of the poll never reached the row")
 
     def test_the_sync_no_longer_reads_them_again(self):
         """Moved, not added — the poll must not pay for two reads of the same thing."""

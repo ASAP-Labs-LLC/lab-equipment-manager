@@ -363,3 +363,70 @@ class TestBackgroundSync:
         runner.run_all()                      # background fetch completes
         assert d._methods == ["RON"]
         assert d._methods_loaded is True
+
+
+# ── The one consumer of `_corrections_changed` ───────────────────────────────
+#
+# The poll RAISES the flag when the correction factors changed; the sync clears
+# it once it has re-judged the specs against them. The tests for the refresh
+# window next door stub `_labcore_sync` out entirely — deliberately, that read's
+# cadence is their subject — so nothing in the suite ran the half that CLEARS
+# it. Deleting the clear left the module re-evaluating on every sync forever
+# and every test still passed.
+
+
+class TestTheSyncConsumesTheCorrectionsFlag:
+    def _sync(self, module, machine, now=NOW):
+        return module._labcore_sync(
+            machine, [], mod.MachineEvaluation(status=mod.STATUS_UNKNOWN,
+                                               reason="idle"),
+            now, [], [], store=False)
+
+    def test_an_undisturbed_sync_does_not_re_evaluate(self, qapp,
+                                                      fake_labcore,
+                                                      monkeypatch):
+        """The control. Nothing else in this sync moves, so a re-evaluation
+        that happens is the flag's and only the flag's."""
+        calls = []
+        monkeypatch.setattr(
+            mod, "evaluate_machine",
+            lambda m, h, n: calls.append(n) or mod.MachineEvaluation(
+                status=mod.STATUS_GREEN, reason="re-judged"))
+        module = make_module()
+        machine = Machine(uid="m1", title="Eraspec")
+        module._machine = machine
+        module._corrections_changed = False
+        self._sync(module, machine)
+        assert calls == []
+        module.shutdown()
+
+    def test_a_raised_flag_is_acted_on_and_then_cleared(self, qapp,
+                                                        fake_labcore,
+                                                        monkeypatch):
+        """Flag True going in, the re-evaluation taken, flag False coming out.
+
+        Both halves matter. Without the re-evaluation the specs keep the band
+        the old offset produced; without the clear the flag is never lowered,
+        every later sync re-evaluates for no reason, and the message stops
+        meaning "the factors changed".
+        """
+        calls = []
+        monkeypatch.setattr(
+            mod, "evaluate_machine",
+            lambda m, h, n: calls.append(n) or mod.MachineEvaluation(
+                status=mod.STATUS_GREEN, reason="re-judged"))
+        module = make_module()
+        machine = Machine(uid="m1", title="Eraspec")
+        module._machine = machine
+        module._corrections_changed = True
+
+        evaluation = self._sync(module, machine)
+
+        assert calls == [NOW], (
+            "the sync was told the correction factors changed and never "
+            "re-judged the specs against them")
+        assert evaluation.reason == "re-judged"
+        assert module._corrections_changed is False, (
+            "the flag the sync just acted on was never lowered — every sync "
+            "from here on re-evaluates, and the flag stops meaning anything")
+        module.shutdown()

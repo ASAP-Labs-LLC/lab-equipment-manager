@@ -525,13 +525,20 @@ class TestARefusalIsNeverCountedAsAWrite:
         """Three roads share `_labcore_table_ready`. A DDL refused on a fresh
         LabCore whose queue is busy at boot used to poison all of them for the
         life of the process, and every later write went to a table that was
-        never created."""
+        never created.
+
+        The retry now waits (see `_declare_due` — a refusal that is free to
+        repeat IS the congestion it is reporting), so the clock is injected the
+        way every other gate in this suite injects it rather than the second
+        attempt happening in the same microsecond as the first. What is being
+        pinned is unchanged: refused is not permanent."""
         gateway = BusyLabCore(capacity=0)
         module = bench(gateway)
-        module._declare_tables(gateway.sql)
+        module._declare_tables(gateway.sql, NOW)
         assert not module._labcore_table_ready
         gateway.capacity = 100
-        module._declare_tables(gateway.sql)
+        module._declare_tables(
+            gateway.sql, NOW + timedelta(seconds=mod.DECLARE_RETRY_SECONDS))
         assert module._labcore_table_ready
 
     def test_a_refused_beat_does_not_close_the_heartbeat_window(self, bench):
@@ -799,14 +806,33 @@ class TestTheBenchDoesNotReReadItsConfigEveryPoll:
 
     def test_the_floor_override_still_lands_on_the_very_next_poll(self, reader):
         """The one source that must NOT be cached: somebody on the floor taking
-        a bench off line cannot wait for a refresh window."""
+        a bench off line cannot wait for a refresh window.
+
+        This used to assert a flat `== 20` — the deliberate exception, the one
+        read the economy pass left alone. That invariant is superseded ON
+        PURPOSE, and what replaces it is not weaker, it is conditional.
+
+        The bench now has a second way to hear that the override moved: it
+        already POSTs `/api/live` on every poll, and the floor answers that push
+        with a note naming what changed (`test_live_notes.py`). Where the note
+        channel is DELIVERING, the read goes behind OVERRIDE_REFRESH_SECONDS as
+        a backstop and the note carries the news within one poll — the same
+        30s the flat read gave, for a fraction of the queue.
+
+        Where it is NOT delivering — no `live_url` published, a floor that is
+        unreachable, a push that failed — there is nothing to shortcut the
+        window, so the read falls straight back to every poll. That is the case
+        this fixture is: `ReadCounter` publishes no `lem_meta` rows, so this
+        module has no floor to talk to and the old behaviour is what it must
+        still get, exactly.
+        """
         gw = ReadCounter()
         module = reader(gw)
         for i in range(20):
             _poll(module, gw, NOW + timedelta(seconds=30 * i))
         assert gw.count("override") == 20, (
-            "the floor's manual override is being cached — it must be read "
-            "every poll")
+            "with no live channel to be told over, the floor's manual override "
+            "is being cached — it must be read every poll")
 
     def test_the_config_is_re_read_once_the_window_passes(self, reader):
         """Cached, not frozen. QC assigned in LEM has to reach the bench."""
@@ -843,3 +869,421 @@ class TestTheBenchDoesNotReReadItsConfigEveryPoll:
         _poll(module, gw, NOW + timedelta(seconds=30))
         assert gw.count("qc_samples") == before + 1, (
             "a newly bound machine reused the previous machine's config reads")
+
+
+# ── Read economy: the correction factors ────────────────────────────────────
+#
+# The last LabCore read in the module with no gate of any kind. `refresh_corrections`
+# runs at the TOP of every poll, unconditionally, from `_process_outcome` — two of
+# the 6.2 reads a minute an idle bench makes at the 30s default, a third of the
+# standing load, for a number somebody edits by hand a handful of times a year.
+#
+# What is NOT changing here, and must not: the read stays ahead of the parse and
+# `apply_row_corrections` still runs on every row of every poll. The factor applied
+# to a measurement has to be the one in force when it was made (ISO/IEC 17025
+# §7.8.2), and that is about ORDER and APPLICATION. Only the FREQUENCY is gated, on
+# the same `_config_due`/CONFIG_REFRESH_SECONDS pattern the four config sources
+# already use — see the class above.
+#
+# One thing is deliberately outside the window: the operator's own edit.
+# `_open_corrections` drops the stamp, because somebody standing at the bench who
+# has just typed a correction in cannot tell two minutes of the old factor apart
+# from the save not having worked.
+
+
+class CorrectionReads:
+    """Counts reads of lem_correction_factors, and nothing else.
+
+    The signatures are LabStation's REAL ones — `read_sql` takes NO `source`, and a
+    fake looser than the thing it stands in for is how a call that raises TypeError
+    in production sails through a test. See TestAgainstTheRealSignatures in
+    test_config_binding.py.
+    """
+
+    def __init__(self, factors=None):
+        self.reads = 0
+        self.factors = dict(factors or {})
+        self.error = False       # a busy LabCore answers with an error DICT ...
+        self.raises = False      # ... and an unreachable one with an exception
+
+    def read_sql(self, sql, args=None, timeout=None):
+        if "lem_correction_factors" not in sql:
+            return {"rows": []}
+        self.reads += 1
+        if self.raises:
+            raise RuntimeError("LabCore queue is full")
+        if self.error:
+            return {"error": "LabCore is busy"}
+        return {"rows": [{"test_name": name, "correction": value}
+                         for name, value in self.factors.items()]}
+
+    def sql(self, sql, args=None, source="LabStation", timeout=None):
+        return {"ok": True}
+
+
+class SavedCorrections:
+    """A corrections dialog the operator filled in and accepted."""
+
+    changes_to_return = {"Flash": -4.0}
+
+    def __init__(self, machine, parent):
+        self.machine = machine
+
+    def exec(self):
+        return True
+
+    def changes(self):
+        return dict(self.changes_to_return)
+
+
+@pytest.fixture
+def corrected(qapp, monkeypatch):
+    """A module whose corrections read is counted and whose LabCore sync is
+    stubbed out. This is about ONE read's cadence: the sync has its own tests
+    above, it would add reads of its own to the count, and — the reason it
+    matters here — it is the only thing that consumes `_corrections_changed`."""
+
+    def build(gateway, machine=None):
+        monkeypatch.setitem(mod.__dict__, "labcore_read_sql", gateway.read_sql)
+        monkeypatch.setitem(mod.__dict__, "labcore_sql", gateway.sql)
+        monkeypatch.setattr(mod, "_in_thread", lambda fn, cb: cb(fn()))
+        module = make_module()
+        module._machine = machine or Machine(uid="m1", title="Eraspec")
+        monkeypatch.setattr(
+            module, "_labcore_sync",
+            lambda machine, rows, evaluation, *a, **kw: evaluation)
+        return module
+    return build
+
+
+def _corrections_poll(module, now, manual_rows=None):
+    return module._process_outcome(module._machine, [], None, [], now,
+                                   manual_rows=manual_rows)
+
+
+class TestTheBenchDoesNotReReadItsCorrectionsEveryPoll:
+    def test_the_first_poll_reads_the_corrections(self, corrected):
+        """A bench that has cached nothing has to ask — there is no such thing
+        as a correction it can assume."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        assert gw.reads == 1, "the corrections were never read at start-up"
+        assert module._machine.corrections["Flash"] == pytest.approx(-3.0)
+
+    def test_the_next_poll_inside_the_window_does_not_ask_again(self, corrected):
+        """Thirty seconds later, nobody has edited anything."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert gw.reads == 1, "the corrections were re-read within the window"
+
+    def test_twenty_idle_polls_do_not_cost_twenty_correction_reads(self, corrected):
+        """Ten minutes of an idle bench at the 30s default. Before this guard
+        that was 20 reads of a table nobody touched."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        for i in range(20):
+            _corrections_poll(module, NOW + timedelta(seconds=30 * i))
+        # Exactly five, not "about five": 20 polls at 30s span 570 seconds, and
+        # a 120s window over that is the first poll plus one every four. A slop
+        # bound of six would have accepted an off-by-one in the gate itself.
+        #
+        # 120s is CORRECTIONS_REFRESH_UNSIGNALLED_SECONDS, which is the window
+        # that applies here and the one this class was written against.
+        # `CorrectionReads` publishes no `lem_meta` rows, so this bench has no
+        # live channel to be told over and the backstop is the only path the
+        # factors can reach it by — see `test_live_notes.py`. With a floor
+        # answering the push it is the much longer CORRECTIONS_REFRESH_SECONDS.
+        assert gw.reads == 5, (
+            f"corrections read {gw.reads} times across 20 idle polls")
+
+    def test_the_corrections_are_re_read_once_the_window_passes(self, corrected):
+        """Cached, not frozen. A supervisor editing the same row in the web
+        server has to reach the bench without a restart."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        gw.factors = {"Flash": -4.0}
+        _corrections_poll(module, NOW + timedelta(
+            seconds=mod.CORRECTIONS_REFRESH_UNSIGNALLED_SECONDS + 1))
+        assert gw.reads == 2, (
+            "the corrections were never re-read — an edit made anywhere else "
+            "would never reach this bench")
+        assert module._machine.corrections["Flash"] == pytest.approx(-4.0)
+
+    def test_a_refused_read_is_retried_on_the_next_poll(self, corrected):
+        """A busy queue is not a set of correction factors. Stamping a refusal
+        would report values for the whole window on a factor LabCore never
+        handed over."""
+        gw = CorrectionReads({"Flash": -3.0})
+        gw.error = True
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        gw.error = False
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert gw.reads == 2, "a refused corrections read was cached as an answer"
+        assert module._machine.corrections["Flash"] == pytest.approx(-3.0)
+
+    def test_a_read_that_raises_is_retried_on_the_next_poll(self, corrected):
+        """The other shape of "no": LabCore unreachable rather than busy."""
+        gw = CorrectionReads({"Flash": -3.0})
+        gw.raises = True
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        gw.raises = False
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert gw.reads == 2, "a failed corrections read was cached as an answer"
+        assert module._machine.corrections["Flash"] == pytest.approx(-3.0)
+
+    def test_a_new_machine_asks_again_immediately(self, corrected):
+        """Everything cached was about a different instrument — and a correction
+        carried across from one is a wrong reported result, not a stale one."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        module.set_machine(Machine(uid="m2", title="Other"), publish=False)
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert gw.reads == 2, (
+            "a newly bound machine reused the previous instrument's corrections")
+
+    def test_the_operators_own_edit_lands_on_the_very_next_poll(
+            self, corrected, monkeypatch):
+        """The case the window must never delay: the operator standing at the
+        bench. Two minutes of the old factor after their own save is
+        indistinguishable from the save not having worked."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        monkeypatch.setattr(mod, "_CorrectionsDialog", SavedCorrections)
+        gw.factors = {"Flash": -4.0}
+        module._open_corrections(module._machine)
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert gw.reads == 2, (
+            "the operator's own edit waited out the refresh window")
+
+    def test_a_skipped_poll_does_not_lose_a_pending_re_evaluation(self, corrected):
+        """`_corrections_changed` is a message TO the sync, and only the sync
+        clears it. A poll that skipped the read knows nothing about the factors
+        and must not answer for them.
+
+        Note what this does NOT cover. The assignment that would clobber the
+        flag sits inside `if machine is not None and self._corrections_due(now)`,
+        so on a SKIPPED poll its body never runs and this passes either way —
+        what it catches is the read moving OUTSIDE that gate. The clobber
+        itself bites on a poll that does read and finds nothing new; that is
+        the test below."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        assert module._corrections_changed is True, (
+            "the factors arrived and nothing was flagged for re-evaluation")
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert module._corrections_changed is True, (
+            "a poll that never read the corrections cleared the flag saying "
+            "they had changed — the sync will never re-judge the specs")
+
+    def test_a_read_that_found_nothing_new_does_not_clear_a_pending_flag(
+            self, corrected):
+        """The poll the clobber actually bites on: one that DID read, and
+        found the factors it already had.
+
+        `read_corrections` answers (True, False) there — an answer, no change —
+        so `self._corrections_changed = self._refresh_corrections(...)` would
+        write False over a True the sync has not consumed yet, and the specs
+        are never re-judged against the offsets that changed one window ago.
+        The flag is only ever RAISED by the poll."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        assert module._corrections_changed is True, (
+            "the factors arrived and nothing was flagged for re-evaluation")
+        _corrections_poll(module, NOW + timedelta(
+            seconds=mod.CORRECTIONS_REFRESH_SECONDS + 1))
+        assert gw.reads == 2, "this poll was meant to be a real read"
+        assert module._corrections_changed is True, (
+            "a read that found nothing new cleared the flag saying the factors "
+            "had changed — the sync will never re-judge the specs")
+
+    def test_a_missing_reader_is_not_cached_as_an_answer(
+            self, corrected, monkeypatch):
+        """`labcore_read_sql` is injected by LabStation and is genuinely absent
+        for the first moments of a canvas restore — the bench polls before the
+        helper lands. "There was nobody to ask" is not a set of correction
+        factors, and stamping it would run the bench for the whole window on
+        whatever it happened to be holding."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        monkeypatch.setitem(mod.__dict__, "labcore_read_sql", None)
+        _corrections_poll(module, NOW)
+        assert module._corrections_read_at is None, (
+            "a poll with no reader at all stamped the refresh window")
+        monkeypatch.setitem(mod.__dict__, "labcore_read_sql", gw.read_sql)
+        _corrections_poll(module, NOW + timedelta(seconds=30))
+        assert gw.reads == 1, "the bench never asked once the helper arrived"
+        assert module._machine.corrections["Flash"] == pytest.approx(-3.0)
+
+    def test_a_clock_that_steps_backwards_does_not_freeze_the_corrections(
+            self, corrected):
+        """A bench PC's clock is naive local time. DST fall-back repeats an
+        hour, and an NTP correction steps it back at any time — so `now` can be
+        EARLIER than the stamp, and `(now - last).total_seconds()` is negative.
+
+        Negative is not "less than the window", it is "this stamp is not about
+        now at all": the arithmetic that gates the read has stopped meaning
+        anything, and the bench would go the whole repeated hour without asking
+        for its correction factors."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        _corrections_poll(module, NOW - timedelta(minutes=45))
+        assert gw.reads == 2, (
+            "the clock stepped back and the bench stopped re-reading its "
+            "corrections until it caught up again")
+
+    def test_every_row_is_still_corrected_on_a_poll_that_skipped_the_read(
+            self, corrected):
+        """The frequency changed; the application did not. §7.8.2 is about every
+        reported result, not about the polls that happened to re-read a table."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        payload = _corrections_poll(
+            module, NOW + timedelta(seconds=30),
+            manual_rows=[{LAB_ID_KEY: "L-1", "Flash": 66.5}])
+        assert gw.reads == 1, "this poll was meant to be the skipped one"
+        assert payload["rows"][0]["Flash"] == pytest.approx(63.5), (
+            "a poll that skipped the read stopped correcting its readings")
+        assert payload["rows"][0][mod.RAW_KEY]["Flash"] == pytest.approx(66.5)
+
+
+# ── A read that is still in flight when the bench changes underneath it ──────
+#
+# The window turned a self-healing race into a cached one. The corrections read
+# runs on the WORKER thread, inside `_process_outcome`; `set_machine` and
+# `_open_corrections` run on the GUI thread. Nothing holds a lock, and the read
+# is the slow part — it is a query on the very LabCore queue this window exists
+# because it is congested.
+#
+# So the worker can be sitting in `read_sql` when the operator binds a different
+# instrument or saves a correction factor, and what comes back is an answer
+# about a bench that is no longer the bench. Applying it writes the wrong
+# offsets; STAMPING it means the right ones are not asked for again for
+# CORRECTIONS_REFRESH_SECONDS. Before the window that second half cost one poll
+# — thirty seconds and self-healing. Now it is two minutes of reported results
+# carrying an offset nobody chose, written to LabCore and QC-judged.
+#
+# The generation counter is the fix: whoever changes what the read was ABOUT
+# bumps it, and a read whose generation moved while it was in flight is thrown
+# away rather than believed. Nulling the stamp cannot do this on its own —
+# `apply_corrections` lands on the machine object the worker captured, and the
+# GUI thread has no way to reach back into a call already in progress.
+
+
+class BlockingCorrectionReads(CorrectionReads):
+    """A corrections read that is still in flight when the GUI thread acts.
+
+    `during` is the operator's action — binding an instrument, saving a factor —
+    run at exactly the moment the worker is blocked in `read_sql` on the
+    congested queue. Once, on the first corrections read, so the poll that
+    follows behaves like any other.
+    """
+
+    def __init__(self, factors=None, during=None):
+        super().__init__(factors)
+        self.during = during
+
+    def read_sql(self, sql, args=None, timeout=None):
+        if "lem_correction_factors" in sql and self.during is not None:
+            act, self.during = self.during, None
+            act()
+        return super().read_sql(sql, args, timeout)
+
+
+class TestAReadInFlightIsNeverBelievedAboutSomethingElse:
+    def test_a_read_in_flight_when_a_new_instrument_is_bound_is_discarded(
+            self, corrected):
+        """The one that reports RAW values.
+
+        `Machine.to_dict` does not carry `corrections`, so a machine bound from
+        LabCore config starts with none at all and `read_corrections` is the
+        only thing that fills them in. If the in-flight read stamps the window
+        on its way past, the newly bound bench holds `{}` for two minutes and
+        every measurement it reports in them is uncorrected — written to
+        LabCore and judged against QC that way (ISO/IEC 17025 §7.8.2).
+        """
+        gw = BlockingCorrectionReads({"Flash": -3.0})
+        stale = Machine(uid="m1", title="Eraspec")
+        module = corrected(gw, machine=stale)
+        bound = Machine(uid="m2", title="PAC Flash 2")
+        gw.during = lambda: module.set_machine(bound, publish=False)
+
+        _corrections_poll(module, NOW)
+
+        assert module._corrections_read_at is None, (
+            "a read that began before the instrument changed stamped the "
+            "window for the one bound after it — the new bench reports raw "
+            "values for up to CORRECTIONS_REFRESH_SECONDS")
+        assert stale.corrections == {}, (
+            "the answer was applied to the instrument that is no longer bound")
+
+        payload = _corrections_poll(
+            module, NOW + timedelta(seconds=30),
+            manual_rows=[{LAB_ID_KEY: "L-1", "Flash": 66.5}])
+        assert gw.reads == 2, "the newly bound bench never asked for its own"
+        assert payload["rows"][0]["Flash"] == pytest.approx(63.5), (
+            "the newly bound bench reported an uncorrected result")
+
+    def test_a_read_in_flight_when_the_operator_saves_is_discarded(
+            self, corrected, monkeypatch):
+        """The one that undoes the operator's own edit.
+
+        LabCore still holds the OLD factor while the read is in flight, so the
+        rows that come back are the pre-edit ones. Applied, they REVERT the save
+        the operator just made — and then stamp it, so the bench reports the old
+        offset for two minutes while the dialog says the change was saved.
+        """
+        gw = BlockingCorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        monkeypatch.setattr(mod, "_CorrectionsDialog", SavedCorrections)
+        gw.during = lambda: module._open_corrections(module._machine)
+
+        _corrections_poll(module, NOW)
+
+        assert module._machine.corrections["Flash"] == pytest.approx(-4.0), (
+            "the pre-edit rows a read already in flight brought back reverted "
+            "the operator's own save")
+        assert module._corrections_read_at is None, (
+            "and then cached the reverted factor for the whole window")
+
+    def test_a_pending_re_evaluation_does_not_follow_the_operator_to_a_new_bench(
+            self, corrected):
+        """`_corrections_changed` is a message about ONE instrument's factors.
+
+        The poll raises it and the sync clears it, and the template-capture path
+        returns before the sync ever runs — so a bench that captured its first
+        print can be carrying a raised flag when the operator binds something
+        else. Consumed there it re-judges the new instrument's specs against a
+        change that happened on the old one. Only a spurious re-evaluation, not
+        a wrong number, but the flag's whole meaning is that somebody's factors
+        moved, and the poll that reads THIS bench's raises it again if they did.
+        """
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        assert module._corrections_changed is True
+        module.set_machine(Machine(uid="m2", title="Other"), publish=False)
+        assert module._corrections_changed is False, (
+            "a re-evaluation raised for the previous instrument was carried "
+            "onto the one bound after it")
+
+    def test_a_read_that_nothing_disturbed_is_still_believed(self, corrected):
+        """The counterweight. Discarding is for a read whose subject changed
+        underneath it, and an ordinary poll must not be caught by it — a guard
+        that threw every answer away would turn the corrections off entirely."""
+        gw = CorrectionReads({"Flash": -3.0})
+        module = corrected(gw)
+        _corrections_poll(module, NOW)
+        assert module._corrections_read_at == NOW
+        assert module._machine.corrections["Flash"] == pytest.approx(-3.0)
