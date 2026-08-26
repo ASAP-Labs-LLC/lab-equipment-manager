@@ -91,6 +91,39 @@ def _seed_demo(gw) -> None:
             "--seed could not save the demo configuration ({0}). The "
             "dashboard would come up with no instruments on it.".format(why))
 
+    _seed_floor(gw)
+
+
+def _seed_floor(gw) -> None:
+    """Put a stacked lab on the FLOOR, not only on the old dashboard.
+
+    Everything above this writes the *config* side — `lem_samples`, `lem_boxes`,
+    `lem_qc_specs` — which is what `/api/status` reads, so `--seed` came up with
+    one instrument on the V4 dashboard and looked like it had worked. The floor
+    reads the *bench* side, written out on the instruments by the station
+    module, and nothing seeded any of it: `/api/machines` answered
+    `{"machines": [], "levels": []}`, so levels, the documents tab and the
+    corrective-action timeline all demoed an empty room.
+
+    **The schema has to be declared first.** `FakeLabCoreGateway` preseeds
+    LabCore's own `samples`/`sample_tests` tables and knows nothing about
+    `lem_*`; the server declares those from `snapshot_service.SCHEMA_DDL`, and
+    that normally happens on the snapshot poller's first cycle — which is after
+    this runs.
+
+    `documents_root` is deliberately left to the store's own default, so the
+    seeded PDFs land exactly where `create_app` will look for them. Passing a
+    path here is how you get a documents tab listing files the download route
+    cannot find.
+    """
+    import demo_floor
+    from snapshot_service import SnapshotService
+
+    SnapshotService(gw).ensure_schema()
+    summary = demo_floor.seed(gw)
+    print("Demo floor: {equipment} pieces of equipment across {levels} levels, "
+          "{open_actions} corrective actions open.".format(**summary))
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="LEM V5 — LabCore-backed dashboard")
@@ -162,7 +195,16 @@ def main(argv) -> int:
         # floor at a port that closes seconds later.
         publisher = app.config.get("LIVE_PUBLISHER")
         if publisher is not None:
-            snapshots.on_cycle = publisher.publish_if_due
+            # ATTACHED, not assigned. `create_app` has already put the
+            # correction-audit spool's retry on this one hook, and assigning
+            # the publisher straight onto it would drop that retry — on the
+            # LIVE server only, since publishing is off in dev and in every
+            # test. The rule lives in live_presence.attach_to_poller,
+            # where it can actually be tested; this file is not importable off
+            # Windows.
+            from live_presence import attach_to_poller
+
+            attach_to_poller(snapshots, publisher.publish_if_due)
     else:
         print("Live channel NOT published (--no-publish): benches keep the "
               "address they already have.")
