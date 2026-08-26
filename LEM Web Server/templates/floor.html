@@ -2298,7 +2298,7 @@ async function select(m) {
   $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
     <h2 class="sign">Recent activity</h2></div>` + (evs.length ? evs.map(e => `
     <div class="ev">
-      <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
+      <span class="k k-${esc(e.kind)}" title="${esc(e.kind)}">${esc(kindTag(e.kind))}</span>
       <span>${esc(e.lab_id || '')} ${esc((e.test_label || e.test_name || '')
         .slice(0, 22))}
         ${e.value ? `<b class="num">${esc(e.value)}</b>` : ''}</span>
@@ -2488,12 +2488,34 @@ async function renderFeed() {
         ? esc(titles[e.machine_uid] || e.machine_uid.slice(0, 8))
         : '<span style="color:var(--ink3)">Lab-wide</span>';
       return `<div class="ev">
-        <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
+        <span class="k k-${esc(e.kind)}" title="${esc(e.kind)}">${esc(kindTag(e.kind))}</span>
         <span>${who}
           <span style="color:var(--ink3)">${esc(e.lab_id || '')}</span> ${extra}</span>
         <span class="t">${esc(ago(e.ts))}</span></div>`;
     }).join('')
     : '<p class="empty">Nothing has happened yet today.</p>');
+}
+
+/* The kind tag, short enough for the column it sits in.
+ *
+ * `.ev` is a 64px grid column and `status_change` at 9px with .1em tracking is
+ * wider than that, so it ran straight over the equipment name beside it — seen
+ * in a browser screenshot, not by any test, because nothing here measures text.
+ * Widening the column would spend the width on every row to fit the longest
+ * word; the file already had the right answer in one place (`calibration` shown
+ * as `cal` in the maintenance history) and this makes that the rule rather than
+ * a local exception.
+ *
+ * The FULL kind stays in the class (`k-status_change`) so the colour rules and
+ * anything selecting on it are untouched, and in the title so the long form is
+ * still readable. Only the visible label shortens.
+ */
+const KIND_TAG = {status_change: 'status', calibration: 'cal',
+                  correction: 'corr', maintenance: 'maint'};
+
+function kindTag(kind) {
+  const k = String(kind || '');
+  return KIND_TAG[k] || k;
 }
 
 /* How many of them there are, in English.
@@ -2974,7 +2996,7 @@ async function loadMaintPanel(m) {
   const hist = done.history || [];
   $('#maintDone').innerHTML = hist.length ? hist.map(h => `
     <div class="ev">
-      <span class="k k-${esc(h.kind)}">${h.kind === 'calibration' ? 'cal' : 'pm'}</span>
+      <span class="k k-${esc(h.kind)}" title="${esc(h.kind)}">${esc(kindTag(h.kind))}</span>
       <span>${esc(h.task || '—')}
         ${h.note ? `<span style="color:var(--ink3)">· ${esc(h.note)}</span>` : ''}
         ${h.by ? `<b>${esc(h.by)}</b>` : ''}</span>
@@ -5050,7 +5072,7 @@ function timelineHtml(body) {
     return `
     <div class="tl"${act ? ` data-action="${esc(e.uid.split(':')[0] || e.uid)}"
          style="cursor:pointer"` : ''}>
-      <span class="k k-${esc(e.kind)}">${esc(e.kind)}</span>
+      <span class="k k-${esc(e.kind)}" title="${esc(e.kind)}">${esc(kindTag(e.kind))}</span>
       <span>${esc(e.summary)}
         ${e.who ? `<span class="who">${esc(e.who)}</span>` : ''}
         <span class="t">${esc((e.at || '').slice(0, 16).replace('T', ' '))}</span>
