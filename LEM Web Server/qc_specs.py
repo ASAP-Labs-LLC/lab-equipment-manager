@@ -24,6 +24,7 @@ the in-memory fake used by the tests.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from labcore_gateway import check_write
 from typing import Dict, List, Optional
 
 STATUS_COLORS = {
@@ -112,7 +113,11 @@ class QcSpecStore:
         if spec.k <= 0:
             raise ValueError("k must be greater than zero.")
         self.ensure_schema()
-        self.gateway.sql(
+        # A spec is the expected value and the limits every reading on this
+        # bench is judged against. Saved-but-not-saved leaves the module
+        # judging against the OLD limits while the editor shows the new ones —
+        # the same shape as a dropped correction factor, and just as invisible.
+        check_write(self.gateway.sql(
             "INSERT INTO lem_qc_specs (machine_uid, test_name, sample_id, "
             "expected, std_dev, k, units) VALUES (?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
@@ -121,13 +126,18 @@ class QcSpecStore:
             [spec.machine_uid, spec.test_name.strip(), spec.sample_id.strip(),
              float(spec.expected), float(spec.std_dev), float(spec.k),
              spec.units],
-        )
+        ), what=f"the QC spec for “{spec.test_name.strip()}” was not saved")
 
     def delete(self, machine_uid: str, test_name: str) -> None:
         self.ensure_schema()
-        self.gateway.sql(
-            "DELETE FROM lem_qc_specs WHERE machine_uid = ? AND test_name = ?",
-            [machine_uid, test_name])
+        # Removing a spec stops the bench being QC-judged on that method at all.
+        # Reported as done and not done, it goes on failing against limits
+        # somebody deliberately retired.
+        check_write(
+            self.gateway.sql(
+                "DELETE FROM lem_qc_specs WHERE machine_uid = ? "
+                "AND test_name = ?", [machine_uid, test_name]),
+            what=f"the QC spec for “{test_name}” was not removed")
 
     def list_specs(self, machine_uid: Optional[str] = None) -> List[QcSpec]:
         self.ensure_schema()
@@ -246,11 +256,20 @@ class MachineStateReader:
                 f"Override must be one of {VALID_OVERRIDES!r}, got {override!r}")
         from datetime import datetime
 
+        # The DDL is deliberately NOT guarded: `CREATE TABLE IF NOT EXISTS` is
+        # a declaration, it is retried on the next call, and a refusal here will
+        # be reported by the INSERT below anyway — which is the statement that
+        # carries the operator's decision.
         self.gateway.sql(CONTROL_DDL)
-        self.gateway.sql(
+        # A manual override is how an instrument is taken OUT of service.
+        # Reported as applied and silently dropped, the bench stays green on the
+        # floor and somebody runs a customer sample on a machine that is broken.
+        check_write(self.gateway.sql(
             "INSERT INTO lem_machine_control (machine_uid, manual_override, "
             "comment, updated_at) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(machine_uid) DO UPDATE SET "
             "manual_override=excluded.manual_override, "
             "comment=excluded.comment, updated_at=excluded.updated_at",
-            [machine_uid, override, comment, datetime.now().isoformat()])
+            [machine_uid, override, comment, datetime.now().isoformat()]),
+            what=("the override was not cleared" if not override
+                  else f"{machine_uid} was not set to {override}"))

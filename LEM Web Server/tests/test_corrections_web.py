@@ -128,8 +128,17 @@ class TestSetting:
 
 class TestLogged:
     def config_events(self, gw, action=""):
+        # `ORDER BY ts, rowid`, and the rowid is load-bearing. `_audit` stamps
+        # `isoformat(timespec="seconds")`, so two changes made in the same
+        # second carry the SAME ts and `ORDER BY ts` alone leaves their order to
+        # the query planner. That was invisible while lem_machine_log had no
+        # index and every read was a table scan in insertion order; the moment
+        # idx_lem_log_ts existed, the tie broke the other way and these tests
+        # started reading the first of two events as the last. The tests mean
+        # "the order they were written in", so they now ask for it.
         res = gw.read_sql("SELECT machine_uid, test_name, detail FROM "
-                          "lem_machine_log WHERE kind = 'config' ORDER BY ts")
+                          "lem_machine_log WHERE kind = 'config' "
+                          "ORDER BY ts, rowid")
         out = []
         for r in res.get("rows") or []:
             detail = json.loads(r.get("detail") or "{}")

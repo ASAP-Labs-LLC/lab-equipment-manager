@@ -1535,9 +1535,21 @@ $('#sampleSave').addEventListener('click', async () => {
     $('#sampleErr').textContent = b.error || 'Could not save.'; return;
   }
   if (editingSample && editingSample !== name) {
-    await fetch('/api/qc-samples', {method: 'DELETE',
+    // A rename is save-new-then-delete-old, with no transaction between them.
+    // The new one has already landed by here, so a refusal leaves BOTH in the
+    // library — which is confusing rather than dangerous, but only if it is
+    // said out loud.
+    const d = await fetch('/api/qc-samples', {method: 'DELETE',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: editingSample})});
+    if (!d.ok) {
+      const b = await d.json().catch(() => ({}));
+      $('#sampleErr').textContent = LEM.failure(
+        d, b, `“${name}” was saved, but the old “${editingSample}” could not ` +
+              `be removed — both are in the library.`);
+      await load(); renderQcLib();
+      return;
+    }
   }
   $('#sampleDlg').close(); await load(); renderQcLib();
 });
@@ -1546,9 +1558,14 @@ $('#sampleDelete').addEventListener('click', async () => {
   if (!editingSample) return;
   if (!requireAuth()) return;
   if (!confirm(`Delete “${editingSample}”? Instruments relying on it go UNKNOWN.`)) return;
-  await fetch('/api/qc-samples', {method: 'DELETE',
+  const r = await fetch('/api/qc-samples', {method: 'DELETE',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name: editingSample})});
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    $('#sampleErr').textContent = LEM.failure(r, b, 'Could not remove it.');
+    return;                     // dialog stays open: the standard is still there
+  }
   $('#sampleDlg').close(); await load(); renderQcLib();
 });
 
@@ -1656,9 +1673,15 @@ document.addEventListener('click', async e => {
   if (done) {
     if (!requireAuth()) return;
     const note = prompt('Note for this completion (optional):') ?? '';
-    await fetch(`/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
+    const r = await fetch(`/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
       {method: 'POST', headers: {'Content-Type': 'application/json'},
        body: JSON.stringify({note})});
+    // A completion silently dropped leaves the task overdue on the floor and
+    // the calibration unrecorded — which is the record an assessor asks for.
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      alert(LEM.failure(r, b, 'Could not record that completion.'));
+    }
     // Completable from either place: the dialog or the instrument's PM tab.
     if ($('#maintDlg').open && maintFor) await refreshMaint();
     if (selected) await loadMaintPanel(selected);
@@ -1668,8 +1691,12 @@ document.addEventListener('click', async e => {
   if (dm) {
     if (!requireAuth()) return;
     if (!confirm('Remove this scheduled task?')) return;
-    await fetch(`/api/maintenance/${encodeURIComponent(dm.dataset.delmaint)}`,
+    const r = await fetch(`/api/maintenance/${encodeURIComponent(dm.dataset.delmaint)}`,
       {method: 'DELETE'});
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      alert(LEM.failure(r, b, 'Could not remove that task.'));
+    }
     await refreshMaint(); load();
   }
 });
@@ -1849,8 +1876,12 @@ document.addEventListener('click', async e => {
   const dh = e.target.closest('[data-delhol]');
   if (!dh) return;
   if (!requireAuth()) return;
-  await fetch(`/api/holidays/${encodeURIComponent(dh.dataset.delhol)}`,
-              {method: 'DELETE'});
+  const r = await fetch(`/api/holidays/${encodeURIComponent(dh.dataset.delhol)}`,
+                        {method: 'DELETE'});
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    $('#schedErr').textContent = LEM.failure(r, b, 'Could not remove it.');
+  }
   await openHours(); load();
 });
 
@@ -2812,9 +2843,16 @@ async function act(what, m) {
       ? `A comment is required to set ${m.title} to ${mode}:`
       : `A comment is required to clear ${m.title}'s override:`);
     if (comment === null || !comment.trim()) return;
+    // The server's own sentence, not a canned one. "Could not apply the
+    // override." cannot tell somebody whether to try again in five seconds or
+    // go and find help — and this is the write that decides whether a broken
+    // instrument shows as broken on the floor.
     const r = await post(`/api/machines/${uid}/override`,
                          {override: mode, comment: comment.trim()});
-    if (!r.ok) alert('Could not apply the override.');
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      alert(LEM.failure(r, b, 'Could not apply the override.'));
+    }
     return load();
   }
   if (what === 'delete') {
@@ -2823,9 +2861,18 @@ async function act(what, m) {
                  `re-appear on the next poll.`)) return;
     const purge = confirm('Also erase its history from the machine log?\n\n' +
                           'OK = erase, Cancel = keep.');
-    await fetch(`/api/machines/${uid}`, {method: 'DELETE',
+    // Checked at all, which it was not. Retiring a machine is several
+    // LabCore statements with no transaction across them, so this is the one
+    // call on the floor that can genuinely come back half-done — and the reply
+    // now names which halves. Saying nothing left somebody to find a control
+    // row for a machine that no longer exists.
+    const r = await fetch(`/api/machines/${uid}`, {method: 'DELETE',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({purge_history: purge})});
+    if (!r.ok) {
+      const b = await r.json().catch(() => ({}));
+      alert(LEM.failure(r, b, 'Could not retire this instrument.'));
+    }
     if (selected && selected.machine_uid === m.machine_uid) selected = null;
     return load();
   }
@@ -2856,7 +2903,14 @@ $('#qcSave').addEventListener('click', async () => {
   const r = await fetch(`/api/machines/${encodeURIComponent(uid)}/qc-targets`,
     {method: 'POST', headers: {'Content-Type': 'application/json'},
      body: JSON.stringify({targets})});
-  if (!r.ok) alert('Could not save the assignment.');
+  // Left open on failure. Closing the sheet over a refused save is what
+  // makes a dropped assignment invisible — and an instrument with no QC
+  // assignment looks exactly like one that just has not run a control lately.
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    alert(LEM.failure(r, b, 'Could not save the assignment.'));
+    return;
+  }
   $('#qcSheet').close();
   load();
 });

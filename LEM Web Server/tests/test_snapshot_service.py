@@ -254,6 +254,14 @@ class TestBatchedRead:
         gw.sql("INSERT INTO lem_machine_status VALUES "
                "('m1','OptiMPP 1','GREEN','ok','2026-08-03T09:00:00')")
         gw.sql("INSERT INTO lem_machine_layout VALUES ('m1', 1.0, 2.0)")
+        # The three arms the benches read their own configuration from. An arm
+        # with no rows only proves the SQL parses; the shape check below can
+        # only see arms that actually returned something, so each one is seeded.
+        gw.sql("INSERT INTO lem_machine_control VALUES "
+               "('m1','SERVICE','bulb','2026-08-03T09:00:00')")
+        gw.sql("INSERT INTO lem_correction_factors VALUES "
+               "('m1','Cloud Point',-0.4,'C','2026-08-03T09:00:00','ryan')")
+        gw.sql("INSERT INTO lem_qc_samples VALUES ('CRM','L-1','[]')")
         shapes = {}
         for name, arm in _ARMS:
             res = gw.read_sql(arm)
@@ -263,6 +271,23 @@ class TestBatchedRead:
         assert len(shapes) == 1, f"arms disagree on shape: {shapes}"
         assert set(list(shapes)[0]) == {"src", "c1", "c2", "c3", "c4", "c5",
                                         "c6", "c7", "c8", "c9"}
+        # Named explicitly: the check above is a loop over whatever `_ARMS`
+        # happens to hold, so an arm added without a row of its own would be
+        # "covered" by never being exercised at all.
+        covered = set(list(shapes.values())[0])
+        assert {"control", "corr", "qcsample"} <= covered, covered
+
+    def test_the_bench_configuration_tables_are_in_the_same_one_op(self):
+        """Serving benches from memory is only free while it stays ONE op.
+
+        Three more tables read as three more statements would trade a per-bench
+        cost for a per-cycle one — smaller, but the wrong direction on a queue
+        that runs at ~1.5 ops/sec.
+        """
+        sql = batched_machine_sql()
+        for table in ("lem_machine_control", "lem_correction_factors",
+                      "lem_qc_samples"):
+            assert table in sql, table
 
     def test_the_batched_statement_is_accepted_whole(self, gw):
         """Each arm being fine on its own does not prove the UNION is."""
@@ -283,10 +308,15 @@ class TestBatchedRead:
         assert out.get("who?") is None or out["who?"]
 
     def test_one_op_is_used_when_batching_works(self, gw, service):
+        # Identified by the batched read's own first arm, not by "UNION ALL".
+        # That substring used to be unique to it; `_existing_indexes` now also
+        # asks one question about two tables in one op, and matching on UNION
+        # ALL counted a schema read as a second machine read. The arm marker
+        # says what this test actually means.
         gw.reads.clear()
         service.refresh()
-        batched = [r for r in gw.reads if "UNION ALL" in r]
-        assert len(batched) == 1
+        batched = [r for r in gw.reads if "'status' AS src" in r]
+        assert len(batched) == 1, gw.reads
 
     def test_it_falls_back_per_table_if_batching_is_rejected(self, gw):
         """Older LabCore, or a table that doesn't exist yet, must not blank the
@@ -406,6 +436,12 @@ class TestSchemaBootstrapIsCheap:
         SnapshotService(gw).ensure_schema()
         names = self.existing(gw)
         for ddl in SCHEMA_DDL:
+            # SCHEMA_DDL now also carries index declarations, whose name after
+            # `IF NOT EXISTS` is the index's, not a table's. They are covered by
+            # tests/test_log_indexes.py, which checks the thing that actually
+            # matters about an index — that the planner USES it.
+            if "CREATE INDEX" in ddl.upper():
+                continue
             table = ddl.split("IF NOT EXISTS")[1].split("(")[0].strip()
             assert table in names, table
 
@@ -427,7 +463,14 @@ class TestSchemaBootstrapIsCheap:
         svc.ensure_schema()
         from snapshot_service import SCHEMA_DDL
         assert len([w for w in writes if "CREATE TABLE" in w.upper()]) \
-            == len(SCHEMA_DDL)
+            == len([d for d in SCHEMA_DDL if "CREATE TABLE" in d.upper()])
+        # And the same rule for the indexes SCHEMA_DDL now also carries: a
+        # listing we could not read means "cannot tell", and the only safe
+        # reading of that is to declare. Skipping here would leave the log
+        # unindexed — the scan that blocks every write in the lab — on exactly
+        # the LabCore that was too busy to answer the question.
+        assert len([w for w in writes if "CREATE INDEX" in w.upper()]) \
+            == len([d for d in SCHEMA_DDL if "CREATE INDEX" in d.upper()])
 
 
 class TestSchemaMigrations:

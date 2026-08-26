@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from labcore_gateway import LabCoreRefused, check_write
 from typing import Dict, List, Optional, Tuple
 
 QC_SAMPLES_DDL = (
@@ -121,17 +122,25 @@ class QcSampleStore:
             if test.k <= 0:
                 raise ValueError("k must be greater than zero.")
         self.ensure_schema()
-        self.gateway.sql(
-            "INSERT INTO lem_qc_samples (name, sample_id_val, tests) "
-            "VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
-            "sample_id_val=excluded.sample_id_val, tests=excluded.tests",
-            [sample.name.strip(), sample.sample_id_val.strip(),
-             json.dumps([t.to_dict() for t in sample.tests])],
-        )
+        # The standards library every module reads to know what a control is
+        # meant to read. A lot saved that did not land means the lab is checking
+        # against the previous lot's values without anyone being told.
+        check_write(
+            self.gateway.sql(
+                "INSERT INTO lem_qc_samples (name, sample_id_val, tests) "
+                "VALUES (?, ?, ?) ON CONFLICT(name) DO UPDATE SET "
+                "sample_id_val=excluded.sample_id_val, tests=excluded.tests",
+                [sample.name.strip(), sample.sample_id_val.strip(),
+                 json.dumps([t.to_dict() for t in sample.tests])],
+            ),
+            what=f"the QC standard “{sample.name.strip()}” was not saved")
 
     def delete(self, name: str) -> None:
         self.ensure_schema()
-        self.gateway.sql("DELETE FROM lem_qc_samples WHERE name = ?", [name])
+        check_write(
+            self.gateway.sql("DELETE FROM lem_qc_samples WHERE name = ?",
+                             [name]),
+            what=f"the QC standard “{name}” was not removed")
 
     def list_samples(self) -> List[QcSample]:
         self.ensure_schema()
@@ -200,12 +209,40 @@ def changeover(gateway, old_name: str, new_name: str, new_id_val: str,
     for uid, assigned in targets.all().items():
         if not any(t.sample == old_name for t in assigned):
             continue
-        targets.assign(uid, [WatchedTarget(new_name, t.test)
-                             if t.sample == old_name else t
-                             for t in assigned])
+        try:
+            targets.assign(uid, [WatchedTarget(new_name, t.test)
+                                 if t.sample == old_name else t
+                                 for t in assigned])
+        except LabCoreRefused as exc:
+            # The new lot is already in the library and `moved` instruments have
+            # already been reassigned — there is no transaction across queue
+            # operations to undo either. A changeover that stops here and says
+            # nothing is the precise failure this function exists to prevent,
+            # arrived at from the inside: the instruments still pointing at the
+            # old lot quietly stop being QC-judged, and look exactly like ones
+            # that simply have not run a control lately.
+            #
+            # Re-raised rather than swallowed, carrying the count, so the
+            # supervisor is told how far it got and which instrument to look at.
+            # Re-running the changeover is safe: the already-moved ones no
+            # longer match `old_name` and are skipped.
+            raise LabCoreRefused(
+                exc.result,
+                what=f"the new lot “{new_name}” was created and {moved} "
+                     f"instrument(s) were moved to it, but “{uid}” was not — "
+                     f"the rest are still assigned to “{old_name}” and are no "
+                     f"longer being QC-checked against a current lot. Re-run "
+                     f"the changeover to finish it",
+                partial=True, moved=moved,
+                landed=[f"the new lot “{new_name}”"],
+                not_landed=[f"{uid} and any instrument after it"]) from exc
         moved += 1
 
     if retire_old:
+        # Last, and deliberately so: the old lot is what every un-moved
+        # instrument is still pointing at, so retiring it before the moves are
+        # known to have landed would strand them against a standard that no
+        # longer exists.
         store.delete(old_name)
     return moved
 

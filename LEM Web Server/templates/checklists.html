@@ -857,8 +857,17 @@ $('#edDelete').addEventListener('click', async () => {
   if (!EDIT || !EDIT.uid) return;
   if (!confirm(`Delete “${EDIT.name}”? Its recorded ticks and readings go too.`))
     return;
-  await fetch(`/api/checklists/${encodeURIComponent(EDIT.uid)}`,
-              {method: 'DELETE'});
+  const r = await fetch(`/api/checklists/${encodeURIComponent(EDIT.uid)}`,
+                        {method: 'DELETE'});
+  // Two statements at the far end — the definition, then its ticks — and no
+  // transaction across them, so this one really can come back half-done. The
+  // dialog stays open on a refusal rather than closing over a checklist that
+  // is still in tomorrow's rounds.
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    $('#edErr').textContent = LEM.failure(r, b, 'Could not delete it.');
+    return;
+  }
   $('#editDlg').close(); load();
 });
 
