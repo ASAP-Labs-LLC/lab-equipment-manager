@@ -211,15 +211,21 @@ Where several assigned standards state windows the **tightest** one wins — QC 
 only as fresh as the shortest-lived control, the same rule `evaluate_machine`
 uses to go YELLOW.
 
-⚠ **`templates/floor.html` has not caught up.** Its QC-standard dialog builds each
-test row by hand and sends no `qc_expire_hours`, so **saving a standard from the
-floor clears a window somebody set**. It was left alone because the floor renderer
-was being rewritten in parallel. This is deliberately NOT worked around on the
-server: making an omitted key inherit the stored value would mean no client could
-ever clear a window, and would hide the gap. `templates/stations.html` (the
-retired `/stations` page, still the editor of record in this tree) has the field;
-`tests/test_qc_standard_window.py::TestTheLiveFloorEditorStillHasToCatchUp` is a
-tripwire plus a `strict` xfail that both fire when the floor gains it.
+**`templates/floor.html` has caught up (2026-08-26).** Its QC-standard dialog
+built each test row by hand and sent no `qc_expire_hours`, so **saving a standard
+from the floor cleared a window somebody had set** — and the floor is the editor
+people actually open (`/stations` redirects to it). It now has an *Expires (h)*
+column that is sent on every save. Two rules the box has to keep: a stored 0
+renders as an EMPTY input, never a literal "0" (a 0 under that heading reads as
+"expires immediately", the one thing it never means), and the placeholder comes
+from the payload's `default_qc_expire_hours` rather than a 24 typed into the
+template — `resolve_qc_window` owns that number. Blank is sent as an explicit 0,
+so a window can still be CLEARED; this is deliberately not worked around on the
+server, where an omitted key inheriting the stored value would make clearing
+impossible. The handoff tripwire is gone, replaced by
+`tests/test_qc_standard_window.py::TestTheLiveFloorEditorOffersTheWindow`, and
+the round trip (set · reopen · edit another field · clear) is exercised in a
+real browser.
 
 **MAJOR, not MINOR.** No `lem_*` column moved, but a QC verdict rule changed: the
 same standard, the same reading and the same clock can now produce a different
@@ -825,6 +831,59 @@ existing `/api/machines` route is untouched.
 - Retiring a machine now also forgets its level and its documents, with the same
   missing-table exemption every other step in that sequence has.
 
+## The map draws ONE floor (2026-08-26)
+
+The plan briefly drew the whole building: every level as its own plane,
+exploded up and to the right, with the selected one emphasised. The geometry
+was right and it read as a building. It was still the wrong drawing.
+
+**Measured in a real browser, not argued about.** The stage is 784x802 once the
+two rails have taken their share, and the equipment on the floor being worked on
+covered **15.2%** of it. Ryan: *"the levels take way too much space, whats the
+point of having them inactive, just go back to 1 floor visible and put a little
+UI element on the side to show what floor out of what floor they are on."*
+Single deck, same fleet, same stage: **34.3%**.
+
+- **`drawSimpleFloor` draws `visibleMachines()` and nothing else.** There is no
+  stack behind a flag. `planLadder`, `planGhost`, `planLevelLabel`, the
+  rise/step solve, `PLAN_STACK_*` and the `planDeckOff` material are deleted —
+  the 3D world is the one deliberately dormant thing in this file and a second
+  one is not worth the confusion.
+- **`claimPlanBays` stayed.** OptiMPP 2 and PAC Flash 2 really are saved on bay
+  4.1,0 and `world/index.js` no longer loads, so without the spill one of them
+  is drawn exactly underneath the other. It runs over the level in view, which
+  is also everything drawn — two instruments on the same bay of DIFFERENT
+  floors are not a collision.
+- **The fit work stayed, and got better.** The tilt is still solved from the
+  stage's aspect with the measured overshoot (`PLAN_OVER`) folded in. What
+  changed is the margin: a flat 18 drawing units was 6% of each axis on a
+  six-piece floor — 12% of the stage given to nothing — so it is a *share* of
+  the drawing now (`PAD_F`). **97.0% of both axes at every viewport**, against
+  93.9–95.5% before and 96.9% for the stack it replaced.
+- **The building is SAID, not drawn.** `#levelNav` — a rung per level, top of
+  the building first, "1 of 3", how much stands on each floor and what state
+  the worst of it is in, in words as well as colour. Every other floor is a
+  real `<button>` (157x22px, `role`, `tabindex`, "Show Mezzanine, 4 pieces of
+  equipment, 1 red"); the floor you are on is a `<div>` with `aria-current`,
+  because a control that goes where you already are does nothing. It sits in
+  the stage's top-left, which is the corner the deck's diamond leaves empty at
+  every tilt the solve can reach, so it costs the map nothing.
+- **Zero LabCore ops, as before.** The ladder and every `level_uid` ride on the
+  `/api/machines` payload the floor already polls; switching floor fires no
+  request, verified in the browser and counted in `floorboot.mjs`.
+- **A lab with NO levels renders no indicator at all** — not "1 of 1". That is
+  the live production state, and a widget offering floors that do not exist
+  sends somebody looking for them.
+- `renderLevelNav` is signature-guarded like the two rails: `renderLevelBar()`
+  runs on every 2s poll and replacing that markup under an operator who has
+  tabbed onto a rung takes the focus with it.
+
+Behaviour is in `tests/js/floorboot.mjs`, which runs the shipped script and
+measures the drawn geometry. Twelve deliberate mutations were run against it —
+drawing every level again, deleting the indicator, un-buttoning the rungs,
+hard-coding three, restoring the flat pad, shrinking the pick target to a speck
+— and all twelve were caught.
+
 ## The 3D site is SEVERED — the SVG plan is the floor (2026-08-24)
 
 Ryan: "just dont have it render trains in 3d okay? We are going to focus on the
@@ -860,13 +919,12 @@ as it was.
   plan. A button that silently does nothing is worse than a missing one.
 - **Known and accepted:** `planStations()` asks `WORLD.plan.byUid` first and
   falls back to its own index grid, so with no world an instrument nobody has
-  dragged can sit in a different bay than the 3D floor put it, and two machines
-  saved on the SAME bay can overlap — `claimBays()`' spill fix lives in
-  `world/index.js`, which no longer loads. Deliberate 80/20 call, not an
-  oversight. The fix, if the plan work needs it, is to lift `claimBays()` (and
-  `arrangement()`, if Arrange comes back) into a pure `world/layout.js` with no
-  three.js import; both are already pure and exported, and `tests/js/layout.mjs`
-  + `arrange.mjs` pull them out of `index.js` by text, so they'd be repointed.
+  dragged can sit in a different bay than the 3D floor put it. The other half of
+  this — two machines saved on the SAME bay overlapping — **is fixed**:
+  `claimPlanBays()` in `floor.html` is `claimBays()`' spill rule, same canonical
+  order, run over the level in view. If Arrange comes back, `arrangement()` is
+  still in `world/index.js` and would want the same treatment; it is already
+  pure and exported, and `tests/js/arrange.mjs` pulls it out by text.
 
 Tests: `tests/test_site_view_severed.py` (5) — the served page must not
 statically import the world, must still be able to reach it, and the switch must

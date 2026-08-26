@@ -39,12 +39,142 @@ const src = scripts.sort((a, b) => b.length - a.length)[0];
  * stub element answers any property with something harmless and chainable. */
 const touched = new Set();
 
+/* ---- REAL SVG GEOMETRY, computed from the attributes the page sets -------
+ *
+ * `getBBox` used to answer a FIXED box here. That was enough to stop
+ * `drawSimpleFloor` taking its no-geometry fallback, and no more: the fit was
+ * arithmetic on a number the harness made up, so "the plan fills the stage"
+ * could only ever be a claim about the arithmetic, never about the drawing.
+ *
+ * It matters now. The floor is an exploded STACK of level planes, its height
+ * grows with the ladder, and the number the review actually asks for — what
+ * fraction of the canvas the EQUIPMENT occupies — cannot be derived from a
+ * constant. So every element computes its own box out of the attributes the
+ * renderer gave it, groups roll their children up, and `translate()` is
+ * honoured. It is the same arithmetic a browser does, and it is the only way
+ * this file can measure the drawing rather than believe it.
+ *
+ * Deliberately NOT a full SVG implementation: these are the shapes the plan
+ * actually draws. An element it cannot measure contributes nothing rather than
+ * guessing, so a bbox here is a LOWER bound on the real one. */
+const NUMS = s => String(s).trim().split(/[\s,]+/).map(Number);
+const box = (xs, ys) => (xs.length ? {x0: Math.min(...xs), y0: Math.min(...ys),
+                                      x1: Math.max(...xs), y1: Math.max(...ys)}
+                                   : null);
+
+function ownBox(el) {
+  const a = el.attrs, n = k => Number(a[k]);
+  const fin = (...v) => v.every(Number.isFinite);
+  switch (el.tagName) {
+    case 'POLYGON': case 'POLYLINE': {
+      const xs = [], ys = [];
+      for (const p of String(a.points || '').trim().split(/\s+/)) {
+        const [x, y] = p.split(',').map(Number);
+        if (fin(x, y)) { xs.push(x); ys.push(y); }
+      }
+      return box(xs, ys);
+    }
+    case 'RECT': {
+      if (!fin(n('x'), n('y'), n('width'), n('height'))) return null;
+      return {x0: n('x'), y0: n('y'),
+              x1: n('x') + n('width'), y1: n('y') + n('height')};
+    }
+    case 'LINE':
+      return fin(n('x1'), n('y1'), n('x2'), n('y2'))
+        ? box([n('x1'), n('x2')], [n('y1'), n('y2')]) : null;
+    case 'CIRCLE':
+      return fin(n('cx'), n('cy'), n('r'))
+        ? {x0: n('cx') - n('r'), y0: n('cy') - n('r'),
+           x1: n('cx') + n('r'), y1: n('cy') + n('r')} : null;
+    case 'PATH': {
+      const xs = [], ys = [];
+      const v = String(a.d || '').replace(/[A-Za-z]/g, ' ').trim();
+      const nn = v ? NUMS(v) : [];
+      for (let i = 0; i + 1 < nn.length; i += 2) {
+        if (fin(nn[i], nn[i + 1])) { xs.push(nn[i]); ys.push(nn[i + 1]); }
+      }
+      return box(xs, ys);
+    }
+    case 'TEXT': {
+      /* Approximate, and it does not have to be better: every piece of text
+       * the plan draws that MATTERS to the extent has a rect or a polygon
+       * behind it that is wider than it is. */
+      const size = Number(a['font-size']) || 12;
+      const track = Number(a['letter-spacing']) || 0;
+      const chars = String(el.textContent || '').length;
+      const w = chars * (size * 0.6 + track);
+      if (!fin(n('x'), n('y'))) return null;
+      const anchor = a['text-anchor'] === 'middle' ? w / 2
+                   : a['text-anchor'] === 'end' ? w : 0;
+      return {x0: n('x') - anchor, y0: n('y') - size,
+              x1: n('x') - anchor + w, y1: n('y') + size * 0.28};
+    }
+    default: return null;      // defs, filters, gradients, patterns: no extent
+  }
+}
+
+/* Only `translate(x, y)` — it is the only transform this page uses, and a
+ * silently-ignored one would make the stack measure as a single plane. */
+function shift(el) {
+  const t = /translate\(\s*(-?[\d.]+)[\s,]+(-?[\d.]+)\s*\)/.exec(el.attrs.transform || '');
+  return t ? [Number(t[1]), Number(t[2])] : [0, 0];
+}
+
+const NO_EXTENT = new Set(['DEFS', 'FILTER', 'LINEARGRADIENT', 'RADIALGRADIENT',
+                           'PATTERN', 'STOP', 'FEGAUSSIANBLUR']);
+
+function treeBox(el) {
+  if (!el || NO_EXTENT.has(el.tagName)) return null;
+  if (el.attrs && el.attrs.display === 'none') return null;
+  let b = ownBox(el);
+  for (const kid of el.children || []) {
+    const kb = treeBox(kid);
+    if (!kb) continue;
+    b = b ? {x0: Math.min(b.x0, kb.x0), y0: Math.min(b.y0, kb.y0),
+             x1: Math.max(b.x1, kb.x1), y1: Math.max(b.y1, kb.y1)} : kb;
+  }
+  if (!b) return null;
+  const [dx, dy] = shift(el);
+  return {x0: b.x0 + dx, y0: b.y0 + dy, x1: b.x1 + dx, y1: b.y1 + dy};
+}
+
+/* The same box, as the browser's `getBBox()` reports it: local to the element,
+ * so its OWN transform is not applied. */
+function bboxOf(el) {
+  let b = ownBox(el);
+  for (const kid of el.children || []) {
+    const kb = treeBox(kid);
+    if (!kb) continue;
+    b = b ? {x0: Math.min(b.x0, kb.x0), y0: Math.min(b.y0, kb.y0),
+             x1: Math.max(b.x1, kb.x1), y1: Math.max(b.y1, kb.y1)} : kb;
+  }
+  return b ? {x: b.x0, y: b.y0, width: b.x1 - b.x0, height: b.y1 - b.y0}
+           : {x: 0, y: 0, width: 0, height: 0};
+}
+
 function makeElement(name = 'stub') {
   const attrs = {};
   const el = {
     tagName: name.toUpperCase(),
     addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
-    appendChild(c) { return c; }, removeChild(c) { return c; },
+    /* Children are RECORDED. Without a tree there is no geometry, and without
+     * geometry the fit can only be asserted against numbers this file made up
+     * itself. `appendChild` on something already here MOVES it, exactly as the
+     * DOM does — `drawSimpleFloor` re-appends its plate layer to lift it above
+     * the equipment, and a stub that duplicated it would report every name
+     * plate twice. */
+    appendChild(c) {
+      const at = el.children.indexOf(c);
+      if (at !== -1) el.children.splice(at, 1);
+      el.children.push(c);
+      if (c && typeof c === 'object') { try { c.parentNode = el; } catch (_) {} }
+      return c;
+    },
+    removeChild(c) {
+      const at = el.children.indexOf(c);
+      if (at !== -1) el.children.splice(at, 1);
+      return c;
+    },
     insertBefore(c) { return c; }, remove() {}, focus() {}, blur() {}, click() {},
     /* Attributes are RECORDED, not swallowed. `setView()` shows and hides the
      * plan through the hidden ATTRIBUTE (an SVGElement has no `.hidden`
@@ -57,12 +187,8 @@ function makeElement(name = 'stub') {
     showModal() {}, close() {}, scrollIntoView() {}, select() {},
     getBoundingClientRect: () => ({left: 0, top: 0, width: 800, height: 600,
                                    right: 800, bottom: 600, x: 0, y: 0}),
-    /* SVG geometry. Without this the proxy answers `getBBox` with a function
-       returning an element, `bb.width > 1` is false, and `drawSimpleFloor`
-       takes its no-geometry FALLBACK — so the branch that actually fits the
-       drawing to the stage was never executed by this harness at all. A fixed
-       box is enough: the fit is arithmetic on whatever it is handed. */
-    getBBox: () => ({x: -600, y: -60, width: 1200, height: 610}),
+    /* The real box, out of the real tree. See the block above. */
+    getBBox() { return bboxOf(el); },
     classList: {add() {}, remove() {}, toggle() {}, contains: () => false},
     style: {}, dataset: {}, children: [], childNodes: [],
     innerHTML: '', textContent: '', value: '', checked: false, hidden: false,
@@ -75,12 +201,23 @@ function makeElement(name = 'stub') {
    * a missing DOM property must not be mistaken for a missing global. */
   return new Proxy(el, {
     get(target, prop) {
+      /* `drawSimpleFloor` asks whether it has drawn anything yet. A proxy that
+       * answered with a function said "yes" before the first draw. */
+      if (prop === 'firstChild') return target.children[0] || null;
+      if (prop === 'lastChild') return target.children[target.children.length - 1] || null;
       if (prop in target) return target[prop];
       if (typeof prop === 'symbol') return undefined;
       touched.add(String(prop));
       return () => makeElement();
     },
-    set(target, prop, value) { target[prop] = value; return true; },
+    set(target, prop, value) {
+      /* Emptying an element empties it. `svg.innerHTML = ''` is how the plan
+       * starts every redraw, and a stub that kept the old tree would measure
+       * every level twice by the third poll. */
+      if (prop === 'innerHTML') target.children.length = 0;
+      target[prop] = value;
+      return true;
+    },
   });
 }
 
@@ -800,14 +937,701 @@ if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
 
   /* AND IT NEVER CROPS. The box has to still contain the drawing it was
      measured from — padding out is the fix, cutting down is a floor with
-     equipment off the edge of it. */
+     equipment off the edge of it. Measured against the drawing the page
+     actually built, not against a box this file invented. */
   box(1400, 900);
   sandbox.PLAN_SIG = '';
   sandbox.drawSimpleFloor(false);
   const [x, y, vw, vh] = vb();
+  const drawn = svg.getBBox();
   claim('…and still contains the whole drawing rather than cropping to fit',
-        x <= -600 && y <= -60 && x + vw >= 600 && y + vh >= 550);
+        drawn.width > 1 && drawn.height > 1
+        && x <= drawn.x && y <= drawn.y
+        && x + vw >= drawn.x + drawn.width
+        && y + vh >= drawn.y + drawn.height);
   stage.getBoundingClientRect = realRect;
+}
+
+/* ---- HOW MUCH OF THE CANVAS IS ACTUALLY THE FLOOR ---------------------
+ *
+ * The open defect this work inherited: the drawing is fitted with
+ * `preserveAspectRatio="xMidYMid meet"`, which fits the more demanding axis
+ * and centres the other, so a viewBox that is not the stage's shape gives the
+ * difference away as empty canvas.
+ *
+ * Two different measurements, and confusing them is how a previous round
+ * reported 86.5% while a reviewer measured 41.2% off the same screen:
+ *
+ *   DRAWING FILL   the whole drawing's box — decks, pipework, name plates and
+ *                  all — against the canvas. This is what "the plan fills the
+ *                  stage" means, and it is the one the aspect solve controls.
+ *   EQUIPMENT FILL the union of the INSTRUMENTS' own boxes against the same
+ *                  canvas. This is what an operator is actually looking at,
+ *                  it is always far smaller, and it is the one that gets
+ *                  quietly given away to margin, empty deck and plate gutter.
+ *
+ * The union is rasterised rather than summed: overlapping boxes summed would
+ * report more than 100% and flatter the result. */
+const walk = (el, out = []) => {
+  if (!el) return out;
+  out.push(el);
+  for (const kid of el.children || []) walk(kid, out);
+  return out;
+};
+const byClass = (root, cls) => walk(root).filter(e =>
+  String((e.attrs && e.attrs.class) || '').split(/\s+/).includes(cls));
+
+/* Absolute box, with every ancestor translate applied — `treeBox` on the
+ * element itself does exactly that for its own subtree, but the stack's
+ * offsets live on the PLANE above it, so walk the parents. */
+function absBox(el) {
+  const b = treeBox(el);
+  if (!b) return null;
+  let p = el.parentNode;
+  while (p) { const [dx, dy] = shift(p);
+              b.x0 += dx; b.x1 += dx; b.y0 += dy; b.y1 += dy; p = p.parentNode; }
+  return b;
+}
+
+/* Coverage of a set of boxes over the viewBox, as a fraction of the canvas.
+ * The canvas IS the viewBox once the box has been padded to the stage's
+ * aspect — `meet` then scales it to fill, with nothing left over. */
+function coverage(boxes, vbx, vby, vbw, vbh, cells = 600) {
+  if (!(vbw > 0 && vbh > 0)) return 0;
+  const grid = new Uint8Array(cells * cells);
+  for (const b of boxes) {
+    if (!b) continue;
+    const c0 = Math.max(0, Math.floor((b.x0 - vbx) / vbw * cells));
+    const c1 = Math.min(cells - 1, Math.ceil((b.x1 - vbx) / vbw * cells) - 1);
+    const r0 = Math.max(0, Math.floor((b.y0 - vby) / vbh * cells));
+    const r1 = Math.min(cells - 1, Math.ceil((b.y1 - vby) / vbh * cells) - 1);
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) grid[r * cells + c] = 1;
+    }
+  }
+  let on = 0;
+  for (let i = 0; i < grid.length; i++) on += grid[i];
+  return on / (cells * cells);
+}
+
+/* Measured at three real stage shapes, because the defect was never at one
+ * viewport: it was 53% at 1600px and 43% at 1280px, at EVERY level. */
+/* THE REAL FLOOR, over the real ladder. The three-piece fixture above is
+ * shaped for the level rules, not for a measurement: two pieces on one deck
+ * measure the padding round an almost-empty floor, which is a number about
+ * nothing. These are the six instruments the lab actually has, at the bays
+ * they are actually saved on — including OptiMPP 2 and PAC Flash 2, which are
+ * both saved on 4.1,0 — spread over the ladder the way a building is. */
+const REAL_FLEET = [
+  ['b2ce21612b3c', 'OptiMPP 1',   [2.05, 0],    'l1', 'GREEN'],
+  ['2a49a1320ca1', 'OptiMPP 2',   [4.1, 0],     'l1', 'RED'],
+  ['5fd04c0031f9', 'PAC Flash 1', [0, 0],       'l1', 'GREEN'],
+  ['7e8304c31983', 'PAC Flash 2', [4.1, 0],     'l1', 'YELLOW'],
+  ['844337a2ba08', 'Multitek NS', [4.1, 2.05],  'l2', 'RED'],
+  ['300f71750e3e', 'Multitek S',  [2.05, 2.05], 'l2', 'GREEN'],
+].map(([uid, title, pos, level_uid, status]) =>
+  Object.assign({}, machine, {machine_uid: uid, title, pos, level_uid, status,
+                              level_moved_at: '', level_moved_by: ''}));
+
+const FILL = [];
+const FLAT_FILL = [];
+
+/* Measure one payload at three real stage shapes. The defect was never at one
+ * viewport — 53% at 1600px and 43% at 1280px, on every level — so an average
+ * would hide exactly the thing being looked for. */
+async function measureFill(into, payload) {
+  const stage = el('#stage');
+  const realRect = stage.getBoundingClientRect;
+  const svg = el('#floorSimple');
+  PAYLOADS['/api/machines'] = payload;
+  await sandbox.load();
+  await settle();
+  for (const [w, h] of [[1600, 1400], [1400, 900], [1100, 960]]) {
+    stage.getBoundingClientRect = () => ({left: 0, top: 0, width: w, height: h,
+                                          right: w, bottom: h, x: 0, y: 0});
+    sandbox.PLAN_SIG = '';
+    sandbox.drawSimpleFloor(false);
+    const [vx, vy, vw, vh] = String(svg.getAttribute('viewBox') || '')
+      .trim().split(/\s+/).map(Number);
+    const all = svg.getBBox();
+    const kit = byClass(svg, 'simple-machine').map(absBox);
+    const plates = byClass(svg, 'unit').map(absBox);
+
+    /* The plane the picker names, and the equipment standing on it. Reported
+     * separately because "equipment against the whole canvas" is depressed by
+     * how EMPTY the rest of the building is, which is a fact about the lab and
+     * not about the drawing — a lab with two bare floors would score a good
+     * stack badly. This one is a fit measure and nothing else. */
+    const here = byClass(svg, 'lvlplane').filter(
+      e => e.attrs['data-current'] === '1');
+    const hereBox = here.length ? absBox(here[0]) : null;
+    const hereKit = here.length ? byClass(here[0], 'simple-machine').map(absBox) : [];
+    into.push({
+      w, h,
+      stage: w / h,
+      viewBox: vw / vh,
+      /* Per axis, which is the measurement the defect was stated in: `meet`
+       * fits ONE axis and gives the whole of the other away, so a drawing
+       * that fills both is a drawing with nothing left to letterbox. The area
+       * ratio is the product of the two and reads worse than the fit is —
+       * an even 18-unit margin costs 6% of each axis and 12% of the area. */
+      fitX: all.width / vw,
+      fitY: all.height / vh,
+      drawing: (all.width * all.height) / (vw * vh),
+      equipment: coverage(kit, vx, vy, vw, vh),
+      withPlates: coverage(plates, vx, vy, vw, vh),
+      onPlane: hereBox
+        ? coverage(hereKit, hereBox.x0, hereBox.y0,
+                   hereBox.x1 - hereBox.x0, hereBox.y1 - hereBox.y0) : 0,
+      /* THE NUMBER AN OPERATOR FEELS: how much of the screen is taken up by
+       * the equipment on the level they are reading. Not against the plane —
+       * against the canvas, because that is what decides whether a status bar
+       * is readable from across the room. */
+      inView: coverage(hereKit, vx, vy, vw, vh),
+      units: kit.length,
+    });
+  }
+  stage.getBoundingClientRect = realRect;
+}
+
+if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
+  const svg = el('#floorSimple');
+  const keptFleet = PAYLOADS['/api/machines'];
+
+  /* A LAB WITH NO LEVELS. This is the live production state today and it is
+   * also, exactly, the single deck this work replaced — one plane, the whole
+   * fleet, no stack and no label. So it is both the "must still draw as it
+   * does now" case and the honest BEFORE for every number below. */
+  await measureFill(FLAT_FILL, Object.assign({}, FLEET, {
+    machines: REAL_FLEET.map(m => Object.assign({}, m, {level_uid: ''})),
+    levels: [], default_level: '', ground_level: ''}));
+
+  /* THE SAME SIX PIECES, spread over the three-level ladder — so what is
+   * measured here is the GROUND FLOOR's four, drawn on the whole stage. */
+  await measureFill(FILL, Object.assign({}, FLEET, {machines: REAL_FLEET}));
+
+  /* THE COLLISION, ON THE REAL FLOOR. OptiMPP 2 and PAC Flash 2 are both saved
+   * on 4.1,0. Drawn where they are saved, one is exactly underneath the other
+   * and has vanished from the building — which on a stack is worse than it was
+   * on a single deck, because the operator has no level to switch to to find
+   * it. Read off the drawing: six pieces of equipment, six distinct places. */
+  const spots = byClass(svg, 'simple-machine').map(absBox)
+    .map(b => `${Math.round(b.x0)},${Math.round(b.y0)}`);
+  /* The four on the ground, which is the floor in view — and two of them are
+   * OptiMPP 2 and PAC Flash 2, saved on the same bay. Four distinct places or
+   * one of them has vanished under the other. */
+  claim('two pieces of equipment saved on the SAME bay are both drawn, in '
+        + 'different places', spots.length === 4 && new Set(spots).size === 4);
+
+  /* NAME PLATES MAY NOT COVER EACH OTHER. The plate exists so an operator can
+   * say WHICH instrument is red from across the room, and a plate with another
+   * plate lying over half of it is worse than no plate at all — because it is
+   * not obvious which ones are unreadable. The plates are drawn in a layer
+   * above every instrument precisely so they are never hidden by a prism; that
+   * is no help if they hide each other.
+   *
+   * Read off the drawn rectangles: a plate is a `rect` inside a `.unit` that
+   * is not a `.simple-machine`. Touching corners are fine; overlapping by more
+   * than a sliver is not. */
+  const plateBoxes = byClass(svg, 'unit')
+    .filter(e => !String(e.attrs.class || '').split(/\s+/).includes('simple-machine'))
+    .map(absBox).filter(Boolean);
+  let worst = 0;
+  for (let i = 0; i < plateBoxes.length; i++) {
+    for (let j = i + 1; j < plateBoxes.length; j++) {
+      const a = plateBoxes[i], b = plateBoxes[j];
+      const ox = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0);
+      const oy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0);
+      if (ox <= 0 || oy <= 0) continue;
+      const area = (a.x1 - a.x0) * (a.y1 - a.y0);
+      worst = Math.max(worst, (ox * oy) / Math.max(1, area));
+    }
+  }
+  console.log(`  ..   ${plateBoxes.length} name plates, worst overlap `
+              + `${(worst * 100).toFixed(1)}%`);
+  claim('no name plate is buried under another one', worst < 0.12);
+
+  const pc = v => (v * 100).toFixed(1) + '%';
+  const say = (what, rows) => rows.forEach(f => console.log(
+    `  ..   ${what} ${f.w}x${f.h}: fit ${pc(f.fitX)}x${pc(f.fitY)} · equipment `
+    + `${pc(f.equipment)} · in view ${pc(f.inView)} · of its plane `
+    + `${pc(f.onPlane)} · ${f.units} drawn`));
+  say('flat  ', FLAT_FILL);
+  say('ground', FILL);
+
+  const both = FLAT_FILL.concat(FILL);
+  claim('the viewBox is the stage\'s shape at every viewport, with levels and '
+        + 'without, so `meet` has nothing left to letterbox',
+        both.every(f => Math.abs(f.viewBox / f.stage - 1) < 0.02));
+  /* NOTHING IS LETTERBOXED, on either axis. This is the defect stated in its
+   * own terms: `meet` used to fit the drawing to the WIDTH and throw about
+   * 40% of the height away. Both axes are now within the drawing's own
+   * margin. */
+  /* And it fills it to within its own gutter. The margin is a SHARE of the
+   * drawing now rather than a flat 18 units, so it is the same slim band at
+   * every fleet size and every tilt instead of 6% of each axis on a small
+   * one — which is 12% of the stage given away to nothing. */
+  claim('the drawing fills the canvas on BOTH axes — nothing is letterboxed',
+        both.every(f => f.fitX > 0.955 && f.fitY > 0.955));
+
+  /* THE EQUIPMENT, WHICH IS A DIFFERENT MEASUREMENT FROM THE DECK.
+   *
+   * Every threshold below is set from what the SINGLE DECK measures on the
+   * same six instruments, sitting right above it in this file's output —
+   * never from a number that seemed like it ought to be reachable. A stack of
+   * three floors cannot draw each of them the size of one floor, and an
+   * acceptance test that demanded it would make a correct drawing
+   * unreportable. That mistake has its own heading in CLAUDE.md.
+   *
+   * `onPlane` is the FIT — how much of the plane the picker names is the
+   * equipment standing on it. It does not care how empty the rest of the
+   * building is, so it is the number that says whether the drawing wastes its
+   * own space.
+   *
+   * `inView` is the same equipment against the whole CANVAS, and it is the
+   * one an operator feels. It necessarily falls when three floors are drawn
+   * where one was — the same instruments at roughly a third of the linear
+   * size. Measured: 35% on a single deck, 5–7% across a three-level stack.
+   * That is the price of seeing the whole building at once and it is stated
+   * here rather than hidden. What it may NOT do is collapse. */
+  claim('the equipment fills the floor rather than sitting in the middle of '
+        + 'an empty deck', FILL.every(f => f.onPlane > 0.25));
+  claim('…and it holds that density at every viewport, not on average',
+        FILL.every(f => f.onPlane > 0.25) && FILL.length === 3);
+  /* THE NUMBER THE STACK WAS OVERRULED OVER. Drawn as a stack of three, the
+   * equipment on the floor being worked on covered 5.0–6.8% of the canvas
+   * here and 15.2% of the stage in a real browser: specks. One floor at a
+   * time is what buys it back, and this is the claim that fails the moment
+   * canvas starts going to floors nobody is reading. */
+  claim('…and the equipment on the floor in view owns a real share of the '
+        + 'canvas, not a corner of it', FILL.every(f => f.equipment > 0.25));
+  claim('…and the map draws exactly what stands on the level in view — all '
+        + 'of it, and nothing from any other floor',
+        FILL.every(f => f.units === 4));
+  /* The single deck must still draw the way it always did: every piece on it,
+   * and the whole canvas spent on the one floor. It is the live production
+   * state, and it is also the bar the stack is measured against. */
+  claim('a lab with no levels spends the whole canvas on its one floor',
+        FLAT_FILL.every(f => f.units === REAL_FLEET.length
+                             && f.onPlane > 0.35 && f.inView > 0.30));
+
+  PAYLOADS['/api/machines'] = keptFleet;
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('l1');
+}
+
+/* ---- ONE FLOOR, AND IT IS THE ONE THE PICKER NAMES ----------------------
+ *
+ * The floor drew every level at once for a while — each as its own plane,
+ * exploded up and to the right. It was legible as a BUILDING and illegible as
+ * a MAP: measured in a real browser, the equipment on the floor being worked
+ * on covered 15.2% of the stage, because two thirds of the canvas was spent
+ * on floors whose instruments were too small to read. Ryan: "the levels take
+ * way too much space, whats the point of having them inactive, just go back to
+ * 1 floor visible and put a little UI element on the side to show what floor
+ * out of what floor they are on."
+ *
+ * So: one deck, the whole stage, and the building said by the indicator beside
+ * it. Every claim below is read off the drawing the page actually built — the
+ * recorded element tree, its attributes and its real geometry. None of it is a
+ * grep of the template. This repo has been burned three times by tests that
+ * passed while the feature was gutted, and the mutation log in the report says
+ * which of these catch which gutting. */
+const planesOf = () => byClass(el('#floorSimple'), 'lvlplane');
+const levelOfPlane = p => p.attrs['data-level'];
+/* The equipment standing on the drawn floor, by name. `aria-label` is what the
+ * plan announces an instrument as, and it starts with the title. */
+const kitOn = p => byClass(p, 'simple-machine')
+  .map(g => String(g.attrs['aria-label'] || '').split(',')[0]).sort();
+/* Every string a person could read off the drawing. */
+const wordsOn = p => walk(p).map(e => String(e.textContent || ''))
+  .filter(Boolean).join(' | ');
+/* The deck polygon, in the drawing's own coordinates. The deck is the FLOOR —
+ * as against the plane's bounding box, which is made of whatever happens to be
+ * standing on it. */
+const deckPoly = p => {
+  const d = byClass(p, 'deck')[0];
+  if (!d) return null;
+  const [dx, dy] = shift(p);
+  return String(d.attrs.points || '').trim().split(/\s+/)
+    .map(q => q.split(',').map(Number))
+    .map(([x, y]) => [x + dx, y + dy]);
+};
+const inside = (pt, poly) => {
+  let hit = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if ((yi > pt[1]) !== (yj > pt[1])
+        && pt[0] < (xj - xi) * (pt[1] - yi) / (yj - yi) + xi) hit = !hit;
+  }
+  return hit;
+};
+/* How many pieces of equipment are drawn OFF the floor they stand on. A bay
+ * that lands beside the concrete is an instrument the operator cannot find,
+ * and it is what a mis-sized deck looks like from the outside. */
+const adriftCount = planes => {
+  let adrift = 0;
+  for (const p of planes) {
+    const poly = deckPoly(p);
+    if (!poly) continue;
+    for (const g of byClass(p, 'simple-machine')) {
+      const b = absBox(g);
+      if (!b) continue;
+      // The front-centre of the bay: on the deck for anything standing on it,
+      // and clear of the prisms that rise off the back of it.
+      if (!inside([(b.x0 + b.x1) / 2, b.y1 - 2], poly)) adrift++;
+    }
+  }
+  return adrift;
+};
+/* What the indicator says, as a person reads it. */
+const navHtml = () => String(el('#levelNav').innerHTML || '');
+const navRungs = () => navHtml().match(/class="rung[^"]*"/g) || [];
+
+if (!failed && typeof sandbox.drawSimpleFloor === 'function') {
+  const svg = el('#floorSimple');
+  const stage = el('#stage');
+  const realRect = stage.getBoundingClientRect;
+  stage.getBoundingClientRect = () => ({left: 0, top: 0, width: 1400,
+                                        height: 1100, right: 1400,
+                                        bottom: 1100, x: 0, y: 0});
+  const keptFleet = PAYLOADS['/api/machines'];
+  PAYLOADS['/api/machines'] = Object.assign({}, FLEET, {machines: REAL_FLEET});
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('l1');
+
+  let planes = planesOf();
+
+  /* ONE FLOOR. Not three at a third of the size each. */
+  claim('the map draws ONE floor, whatever the ladder holds',
+        planes.length === 1);
+  claim('…and it is the level the picker names',
+        levelOfPlane(planes[0]) === 'l1');
+  claim('…holding exactly the equipment placed on that level',
+        kitOn(planes[0]).join()
+          === 'OptiMPP 1,OptiMPP 2,PAC Flash 1,PAC Flash 2');
+  /* THE MEZZANINE IS NOT DRAWN AT ALL. Not dimmed, not shrunk, not a pad — a
+   * floor nobody is reading spends canvas the floor they ARE reading needs. */
+  claim('…and nothing standing on any other floor is drawn anywhere',
+        !/Multitek/.test(wordsOn(el('#floorSimple')))
+        && byClass(svg, 'simple-machine').length === 4);
+
+  /* DRAWN IN FULL. The whole argument for one floor at a time is that the
+     instruments on it are legible: name plate, sub-status pills, status bar,
+     and the trunk main that says where the data goes. */
+  const plateCount = p =>
+    byClass(p, 'unit').length - byClass(p, 'simple-machine').length;
+  claim('every piece of equipment on it is named, not merely marked',
+        plateCount(planes[0]) === 4);
+  claim('…and the QC / PM / CAL pills are drawn on the floor in view',
+        /QC/.test(wordsOn(planes[0])) && /PM/.test(wordsOn(planes[0]))
+        && /CAL/.test(wordsOn(planes[0])));
+  claim('…and the trunk main to LabCore is drawn',
+        /LABCORE/.test(wordsOn(planes[0])));
+  claim('…and every one of them stands on the deck rather than beside it',
+        adriftCount(planes) === 0);
+
+  /* THE PICK TARGET IS THE WHOLE BAY, AND IT IS A REAL TARGET.
+   *
+   * `.hit` is an invisible polygon over the bay, so a click between two prisms
+   * of the same instrument still selects it. Two things can go wrong and both
+   * look fine in a screenshot: the polygon can be dropped altogether, and it
+   * can be drawn so small nobody can land on it — which is what the stack did
+   * to the floors it was not emphasising. Measured against the viewBox, which
+   * IS the canvas once it has been padded to the stage's aspect, so this is a
+   * size on screen and not a size in the drawing's own units. */
+  const vb = () => String(svg.getAttribute('viewBox') || '')
+    .trim().split(/\s+/).map(Number);
+  const hits = byClass(planes[0], 'hit').map(absBox).filter(Boolean);
+  const [hvx, hvy, hvw, hvh] = vb();
+  claim('every piece of equipment carries a pick target over its whole bay',
+        hits.length === 4);
+  claim('…covering the bay it stands in rather than a corner of it',
+        hits.every((h, i) => {
+          const p = byClass(planes[0], 'plinth').map(absBox)[i];
+          return p && (h.x1 - h.x0) >= (p.x1 - p.x0) - 0.5
+                   && (h.y1 - h.y0) >= (p.y1 - p.y0) - 0.5;
+        }));
+  claim('…and big enough on screen that a person can land on it',
+        coverage(hits, hvx, hvy, hvw, hvh) > 0.20);
+
+  /* SWITCHING FLOOR IS A NEW DRAWING, AND COSTS NOTHING. Redrawn from the
+     payload the floor is already polling; there is no per-level fetch here and
+     there must never be one. */
+  const before = NET;
+  sandbox.setLevelView('l2');
+  await settle();
+  claim('switching level fires NO request', NET === before);
+  planes = planesOf();
+  claim('…and the map is now the floor switched to',
+        planes.length === 1 && levelOfPlane(planes[0]) === 'l2');
+  claim('…drawn in full, with its own equipment named',
+        kitOn(planes[0]).join() === 'Multitek NS,Multitek S'
+        && plateCount(planes[0]) === 2);
+  claim('…and the floor left behind is gone from the drawing entirely',
+        !/OptiMPP|PAC Flash/.test(wordsOn(el('#floorSimple'))));
+
+  /* AN EMPTY LEVEL IS A STATE, NOT A RENDERING FAILURE. It keeps a full-sized
+     deck and says on the slab itself that nothing stands there, so it can
+     never be read as a floor that failed to draw. */
+  sandbox.setLevelView('l3');
+  await settle();
+  planes = planesOf();
+  claim('an empty level still gets a deck of its own',
+        planes.length === 1 && (deckPoly(planes[0]) || []).length === 4);
+  claim('…and says on the floor itself that nothing stands on it',
+        /no equipment on this level/.test(wordsOn(planes[0])));
+  claim('…and the designed empty panel still comes up over the stage',
+        el('#levelEmpty').hidden === false);
+
+  /* ---- THE LITTLE UI ELEMENT ON THE SIDE ------------------------------
+   *
+   * It is the whole of what the stack used to say, and it says it in a
+   * corner instead of in two thirds of the canvas: which floor this is, how
+   * many there are, how much stands on each, and a way to any of them. */
+  sandbox.setLevelView('l1');
+  await settle();
+  const rows = sandbox.levelNavRows();
+  const pos = sandbox.levelNavPosition();
+  claim('the indicator carries one rung per level in the ladder',
+        rows.length === 3 && navRungs().length === 3);
+  claim('…top of the building first, which is where the top of a building is',
+        rows.map(r => r.uid).join() === 'l3,l2,l1');
+  claim('…and says which floor of how many this is, counted from the ground',
+        pos.at === 1 && pos.of === 3 && /1 of 3/.test(navHtml()));
+  claim('…and says how much stands on each floor rather than only naming it',
+        rows.find(r => r.uid === 'l1').n === 4
+        && rows.find(r => r.uid === 'l2').n === 2
+        && rows.find(r => r.uid === 'l3').n === 0);
+  /* WHAT STATE IT IS IN, IN WORDS. A dot alone is nothing to a red-green
+     operator or to a wall display with the saturation turned down. */
+  claim('…and what state the worst of it is in, said rather than only coloured',
+        /1 red/.test(rows.find(r => r.uid === 'l1').label)
+        && /1 red/.test(rows.find(r => r.uid === 'l2').label));
+  claim('…and an empty floor says it holds no equipment',
+        /no equipment/.test(rows.find(r => r.uid === 'l3').label));
+
+  /* A FLOOR YOU ARE NOT ON IS A WAY TO GET THERE, and it says where it goes. */
+  claim('a floor you are not on is offered as a control that says where it goes',
+        rows.filter(r => !r.here).every(r => /^Show /.test(r.label))
+        && /Show Mezzanine/.test(navHtml()));
+  claim('…rendered as a real button, reachable from the keyboard',
+        (navHtml().match(/role="button"/g) || []).length === 2
+        && (navHtml().match(/tabindex="0"/g) || []).length === 2);
+  claim('the floor you are ON is not offered as a way to get to itself',
+        rows.filter(r => r.here).length === 1
+        && !/^Show /.test(rows.find(r => r.here).label)
+        && /aria-current="true"/.test(navHtml()));
+  /* And it is marked by more than colour — `aria-current` and a class the
+     stylesheet fills the tread in for, not an amber word on its own. */
+  claim('…and is marked as the current one by something other than colour',
+        /class="rung on"/.test(navHtml()));
+
+  /* THE CONTROL ACTUALLY WORKS, and costs nothing. `levelNavGo` is the whole
+     body of the rung's click handler. */
+  const before2 = NET;
+  /* `LEVEL_VIEW` is a top-level `let`, so it is in the script's lexical scope
+   * and not on the sandbox object. Ask the drawing and the indicator what they
+   * settled on instead — which is the better question anyway. */
+  const showing = () => (sandbox.levelNavRows().find(r => r.here) || {}).uid;
+  sandbox.levelNavGo('l2');
+  await settle();
+  claim('pressing a rung goes to that floor', showing() === 'l2');
+  claim('…and fires NO request doing it', NET === before2);
+  claim('…and the map redraws to it',
+        levelOfPlane(planesOf()[0]) === 'l2');
+  claim('…and the indicator follows, without moving the rungs about',
+        sandbox.levelNavPosition().at === 2
+        && sandbox.levelNavRows().map(r => r.uid).join() === 'l3,l2,l1');
+  /* Pressing the floor you are on is a no-op rather than a redraw. */
+  sandbox.levelNavGo('l2');
+  claim('pressing the floor you are already on does nothing',
+        showing() === 'l2' && levelOfPlane(planesOf()[0]) === 'l2');
+
+  /* IT READS AS ENGLISH. "Equipment" is uncountable, and this page has one
+     noun for it. */
+  readsWell('the level indicator', navHtml());
+
+  sandbox.setLevelView('l1');
+  stage.getBoundingClientRect = realRect;
+  PAYLOADS['/api/machines'] = keptFleet;
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('l1');
+}
+
+/* ---- A LAB WITH NO LEVELS AT ALL --------------------------------------
+ *
+ * This is the live production state today: nobody has made a level, and the
+ * floor has to draw exactly as it always has. One deck, the whole fleet, and
+ * NOTHING that says levels are a thing this lab has not used — an indicator
+ * reading "1 of 1" over a lab with no floors is an invitation to go looking
+ * for the ones that do not exist. */
+if (!failed && typeof sandbox.applyLevels === 'function') {
+  const keptFleet = PAYLOADS['/api/machines'];
+  PAYLOADS['/api/machines'] = Object.assign({}, FLEET, {
+    machines: REAL_FLEET.map(m => Object.assign({}, m, {level_uid: ''})),
+    levels: [], default_level: '', ground_level: ''});
+  await sandbox.load();
+  await settle();
+  const planes = planesOf();
+  claim('a flat lab draws ONE deck', planes.length === 1);
+  claim('…holding the whole fleet',
+        kitOn(planes[0]).length === REAL_FLEET.length);
+  claim('…named after no level, because there is none',
+        levelOfPlane(planes[0]) === '');
+  const t = shift(planes[0]);
+  claim('…and not lifted off the floor as though a level were under it',
+        t[0] === 0 && t[1] === 0);
+  claim('…and the picker is still hidden on a flat lab',
+        el('#btnLevel').hidden === true);
+  /* THE INDICATOR IS NOT THERE AT ALL. Not empty, not "1 of 1" — absent. */
+  claim('…and the level indicator is not rendered at all',
+        el('#levelNav').hidden === true && navHtml() === '');
+  claim('…and it offers no rungs to a lab with no ladder',
+        sandbox.levelNavRows().length === 0);
+  /* And the hint does not offer a gesture there is nothing to use it on. */
+  sandbox.paintTools();
+  claim('…and the floor hint does not offer a level that cannot exist',
+        !/another level|click a level/.test(String(el('#hint').textContent)));
+
+  PAYLOADS['/api/machines'] = keptFleet;
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('l1');
+}
+
+/* ---- one level, which is neither six nor a flat lab -------------------- */
+if (!failed && typeof sandbox.applyLevels === 'function') {
+  const keptFleet = PAYLOADS['/api/machines'];
+  PAYLOADS['/api/machines'] = Object.assign({}, FLEET, {
+    machines: REAL_FLEET.map(m => Object.assign({}, m, {level_uid: 'l1'})),
+    levels: [{uid: 'l1', name: 'Ground', rank: 1}],
+    default_level: 'l1', ground_level: 'l1'});
+  await sandbox.load();
+  await settle();
+  const planes = planesOf();
+  claim('a lab with ONE level draws one deck, and it is that level',
+        planes.length === 1 && levelOfPlane(planes[0]) === 'l1');
+  claim('…with every piece of equipment on it',
+        kitOn(planes[0]).length === REAL_FLEET.length);
+  /* The indicator still names it — that is what a wall display with the tool
+     row hidden has instead of the picker — but the single rung is not a
+     control, because there is nowhere else to go. */
+  claim('…and the indicator names it and says it is the only floor',
+        sandbox.levelNavPosition().at === 1
+        && sandbox.levelNavPosition().of === 1 && /1 of 1/.test(navHtml()));
+  claim('…with no button on it, because there is nowhere else to go',
+        !/role="button"/.test(navHtml()) && navRungs().length === 1);
+
+  PAYLOADS['/api/machines'] = keptFleet;
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('l1');
+}
+
+/* ---- six levels: the ladder is data, and three is not a constant -------
+ *
+ * Level names are user-editable and a lab can have one or six. The sketch
+ * happened to show three. A drawing that only fits at three is a drawing that
+ * letterboxes the moment somebody adds a floor — which is the defect this work
+ * began with, coming back through a different door. */
+if (!failed && typeof sandbox.applyLevels === 'function') {
+  const keptFleet = PAYLOADS['/api/machines'];
+  const TALL = [];
+  for (let i = 1; i <= 6; i++) {
+    TALL.push({uid: 'f' + i, name: 'Floor ' + i, rank: i});
+  }
+  PAYLOADS['/api/machines'] = Object.assign({}, FLEET, {
+    machines: REAL_FLEET.map((m, i) =>
+      Object.assign({}, m, {level_uid: 'f' + (1 + (i % 6))})),
+    levels: TALL, default_level: 'f1', ground_level: 'f1'});
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('f3');
+  const stage = el('#stage');
+  const realRect = stage.getBoundingClientRect;
+  const svg = el('#floorSimple');
+  let worstFit = 1;
+  for (const [w, h] of [[1600, 1400], [1400, 900], [1100, 960]]) {
+    stage.getBoundingClientRect = () => ({left: 0, top: 0, width: w, height: h,
+                                          right: w, bottom: h, x: 0, y: 0});
+    sandbox.PLAN_SIG = '';
+    sandbox.drawSimpleFloor(false);
+    const [, , vw, vh] = String(svg.getAttribute('viewBox') || '')
+      .trim().split(/\s+/).map(Number);
+    const bb = svg.getBBox();
+    worstFit = Math.min(worstFit, bb.width / vw, bb.height / vh);
+    claim(`a six-storey lab still fills a ${w}x${h} stage on both axes`,
+          bb.width / vw > 0.955 && bb.height / vh > 0.955
+          && Math.abs((vw / vh) / (w / h) - 1) < 0.02);
+  }
+  stage.getBoundingClientRect = realRect;
+  const planes = planesOf();
+  claim('…and still draws exactly one floor, not six',
+        planes.length === 1 && levelOfPlane(planes[0]) === 'f3');
+  claim('…holding the one piece of equipment that stands on it',
+        kitOn(planes[0]).length === 1);
+  claim('…and it stands on the floor rather than beside it',
+        adriftCount(planes) === 0);
+  /* Six rungs, and the position counted from the ground — the case where a
+     hard-coded three would show up. */
+  claim('…and the indicator grows to six rungs',
+        sandbox.levelNavRows().length === 6 && navRungs().length === 6);
+  claim('…and says which of the six this is', /3 of 6/.test(navHtml()));
+  claim('…with the other five offered as controls',
+        (navHtml().match(/role="button"/g) || []).length === 5);
+  claim('…and every piece of equipment is accounted for somewhere on it',
+        sandbox.levelNavRows().reduce((a, r) => a + r.n, 0)
+          === REAL_FLEET.length);
+  console.log(`  ..   six levels: worst axis fill `
+              + `${(worstFit * 100).toFixed(1)}%`);
+
+  PAYLOADS['/api/machines'] = keptFleet;
+  await sandbox.load();
+  await settle();
+  sandbox.setLevelView('l1');
+}
+/* ---- the QC standard states its own staleness window -------------------
+ *
+ * The window belongs to the MATERIAL — an ampoule opened this morning is not
+ * good for a week — so `lem_qc_samples` carries it and the floor's standards
+ * dialog is where anybody actually sets it. It used to be missing from that
+ * dialog entirely, and because `QcSampleTest.from_dict` reads an absent key as
+ * 0.0 (fall-through), editing ANY standard from the floor for ANY reason wiped
+ * a window somebody had set, silently. Read off the row the dialog actually
+ * builds, not out of the template. */
+if (!failed && typeof sandbox.addTestRow === 'function') {
+  const rows = () => (el('#sampleTests').children || [])
+    .map(r => String(r.innerHTML || ''));
+
+  el('#sampleTests').innerHTML = '';
+  sandbox.addTestRow({name: 'Flash Point', value_col: 'Flash Point',
+                      expected: 63.7, std_dev: 1.05, k: 2, units: '°C',
+                      qc_expire_hours: 8});
+  claim('a standard\'s test row offers a staleness window of its own',
+        /class="c-win"/.test(rows()[0]));
+  claim('…and a window that was set comes back in the box',
+        /class="c-win"[^>]*value="8"/.test(rows()[0]));
+
+  /* BLANK IS "USE THE DEFAULT". A literal 0 in a box labelled "Expires (h)"
+   * reads as "expires immediately", which is the one thing it never means. */
+  el('#sampleTests').innerHTML = '';
+  sandbox.addTestRow({name: 'Cloud Point', value_col: 'Cloud Point',
+                      expected: -14, std_dev: 2, k: 2, units: '°C',
+                      qc_expire_hours: 0});
+  claim('…while a standard with no opinion shows an EMPTY box, never a 0',
+        /class="c-win"[^>]*value=""/.test(rows()[0])
+        && !/class="c-win"[^>]*value="0"/.test(rows()[0]));
+  /* And it says what blank will actually get, rather than leaving an
+   * unexplained empty box. The number comes off `/api/qc-samples`, so it can
+   * never disagree with `resolve_qc_window`. */
+  claim('…and says what the effective default is',
+        /class="c-win"[^>]*placeholder="24"/.test(rows()[0]));
+
+  el('#sampleTests').innerHTML = '';
 }
 
 /* ---- the padlock agrees with the word next to it ----------------------- */

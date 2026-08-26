@@ -587,8 +587,8 @@ class TestTheEditorUiOffersTheField:
     Note what this page is: `/stations` is a retired route that redirects to
     `/floor`, so this template is no longer served. It is still the QC-standards
     editor of record in this tree and is kept in step; the LIVE editor is the
-    same dialog inside `templates/floor.html`, which is being rewritten by
-    somebody else right now — see `TestTheLiveFloorEditorStillHasToCatchUp`.
+    same dialog inside `templates/floor.html`, and it has the field too — see
+    `TestTheLiveFloorEditorOffersTheWindow`.
     """
 
     @pytest.fixture
@@ -614,40 +614,49 @@ class TestTheEditorUiOffersTheField:
         assert client.get("/stations").status_code in (301, 302)
 
 
-class TestTheLiveFloorEditorStillHasToCatchUp:
-    """A HANDOFF TRIPWIRE, not a feature test.
+class TestTheLiveFloorEditorOffersTheWindow:
+    """`templates/floor.html` holds the QC-standards dialog people actually
+    use — `/stations` is a retired route that redirects to `/floor`.
 
-    `templates/floor.html` holds the QC-standards dialog people actually use,
-    and its save builds each test row by hand:
+    It used to build each test row by hand:
 
         {name: a, value_col: a, expected: …, std_dev: …, k: …, units: …}
 
     with no `qc_expire_hours`. `QcSampleTest.from_dict` reads that absence as
     0.0 — correctly, as fall-through — so **editing any standard from the floor
-    clears a window somebody set**. It is deliberately not fixed here: the floor
-    renderer is being rewritten in parallel and this file may not touch it.
+    for any reason cleared a window somebody had set**, silently. A handoff
+    tripwire stood here until the floor caught up; these are the assertions it
+    was pointed at.
 
-    That is NOT worked around on the server. Making a save that omits the key
-    silently inherit the stored value would mean no client could ever clear a
-    window, and it would hide this gap instead of reporting it.
-
-    The two tests below are the handoff. When the floor gains the field, the
-    first goes red and the second (strict xfail) goes red too — flip them into
-    one ordinary assertion and delete this class docstring.
+    It is deliberately NOT worked around on the server: making a save that
+    omits the key inherit the stored value would mean no client could ever
+    clear a window, and would hide the next gap instead of reporting it.
     """
 
     @pytest.fixture
-    def floor_source(self):
-        import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / "floor.html").read_text(encoding="utf-8")
+    def page(self, client):
+        r = client.get("/floor")
+        assert r.status_code == 200
+        return r.get_data(as_text=True)
 
-    def test_the_floor_save_still_drops_the_window(self, floor_source):
-        head, _, tail = floor_source.partition("#sampleTests .trow")
-        assert head, "the floor's QC-standard save moved — re-aim this tripwire"
-        assert "qc_expire_hours" not in tail.split("/api/qc-samples")[0]
+    def test_the_tests_grid_has_a_window_column(self, page):
+        assert "c-win" in page
+        assert "Expires (h)" in page
 
-    @pytest.mark.xfail(strict=True, reason="the floor editor has not been "
-                                           "given the window field yet")
-    def test_the_floor_editor_offers_the_window(self, floor_source):
-        assert "qc_expire_hours" in floor_source
+    def test_the_save_carries_the_window(self, page):
+        """The bug in its own terms: the payload the dialog POSTs."""
+        head, _, tail = page.partition("#sampleTests .trow")
+        assert head, "the floor's QC-standard save moved — re-aim this test"
+        assert "qc_expire_hours" in tail.split("/api/qc-samples")[0]
+
+    def test_the_default_is_read_from_the_server_rather_than_typed_in(self, page):
+        """`resolve_qc_window` owns that number. A second copy in a template
+        drifts from it the first time anybody changes it."""
+        assert "default_qc_expire_hours" in page
+        assert "DEFAULT_QC_HOURS" in page
+
+    def test_the_page_is_the_one_that_is_actually_served(self, client):
+        """Guards the sentence above: this is the LIVE editor, and /stations
+        is not."""
+        assert client.get("/stations").status_code in (301, 302)
+        assert client.get("/floor").status_code == 200

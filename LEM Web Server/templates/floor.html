@@ -152,6 +152,64 @@
   .stage #floorSimple .unit .hit{fill:transparent}
   .stage #floorSimple .unit:focus{outline:none}
   .stage #floorSimple .unit:focus-visible .plinth{stroke:var(--amber);stroke-width:2.5}
+  /* The sentence an empty level says about itself, painted on the slab. Not a
+     control, so it never eats a click meant for the floor under it. */
+  .stage #floorSimple .lvlbare{pointer-events:none;user-select:none}
+
+  /* ── the level indicator ──────────────────────────────────────────────
+     ONE FLOOR IS DRAWN AT A TIME, which is the whole point of the map — so
+     the drawing itself cannot say which of how many floors it is. This does,
+     and it is also how the floor is changed without going back up to the
+     tool row (which the maximal view hides outright).
+
+     It sits in the stage's top-left, which is the corner the deck's diamond
+     leaves empty at every tilt the fit can solve to — the indicator costs the
+     map nothing.
+
+     A lab with NO levels never renders it: there is no ladder, and a widget
+     reading "1 of 1" over a lab that has never made a floor is an invitation
+     to go looking for the others. */
+  .lvlnav{position:absolute;left:14px;top:14px;z-index:4;width:max-content;
+          max-width:min(210px,38%);
+          background:rgba(10,13,18,.78);border:1px solid var(--edge);
+          border-radius:9px;padding:7px 8px 6px}
+  .lvlnav[hidden]{display:none}
+  .lvlnav .cap{font-size:8.5px;font-weight:800;letter-spacing:.22em;
+               text-transform:uppercase;color:var(--ink3);
+               padding:0 3px 5px;display:flex;justify-content:space-between;
+               gap:10px}
+  .lvlnav .cap b{color:var(--ink2);font-weight:800;letter-spacing:.14em}
+  /* One rung of the ladder. The highest level is the top row, because that is
+     where it is in the building. */
+  .lvlnav .rung{display:flex;align-items:center;gap:7px;width:100%;
+                font:inherit;text-align:left;cursor:pointer;
+                background:none;border:0;border-radius:5px;
+                padding:3px 5px;color:var(--ink2);min-height:22px}
+  .lvlnav .rung .tread{flex:none;width:15px;height:3px;border-radius:2px;
+                       background:var(--ink3);opacity:.55}
+  .lvlnav .rung .nm{flex:1;min-width:0;font-size:10.5px;font-weight:700;
+                    letter-spacing:.1em;text-transform:uppercase;
+                    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* How much stands on that floor, and whether any of it is shouting. The
+     number is spelled out in the rung's accessible name — a coloured dot on
+     its own is nothing at all to a red-green operator or to a wall display
+     with the saturation turned down. */
+  .lvlnav .rung .n{flex:none;font-family:var(--mono);font-size:9.5px;
+                   color:var(--ink3)}
+  .lvlnav .rung .dot{flex:none;width:6px;height:6px;border-radius:50%}
+  .lvlnav button.rung:hover,.lvlnav button.rung:focus-visible{
+        background:rgba(255,138,61,.12);color:var(--ink);outline:none}
+  .lvlnav button.rung:focus-visible{box-shadow:0 0 0 1px var(--amber)}
+  .lvlnav button.rung:hover .tread,.lvlnav button.rung:focus-visible .tread{
+        opacity:1}
+  /* THE FLOOR YOU ARE ON. Marked by three things at once — a filled tread, a
+     brighter name and `aria-current` — never by colour alone. It is not a
+     control: a button that goes where you already are is a button that does
+     nothing. */
+  .lvlnav .rung.on{color:var(--amber);cursor:default;
+                   background:rgba(255,138,61,.09)}
+  .lvlnav .rung.on .tread{background:var(--amber);opacity:1;height:5px}
+  .lvlnav .rung.on .n{color:var(--amber-dim)}
 
   .tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-118%);
        transition:opacity .12s ease;z-index:5;min-width:172px}
@@ -319,7 +377,7 @@
   /* Text fields fill their cell. Ticks must NOT: a checkbox given
      width:100% plus padding covers the label it belongs to, which is what
      made the assay picker unreadable. */
-  .tgrid{display:grid;grid-template-columns:2.4fr 1fr 1fr .7fr 1fr 40px;
+  .tgrid{display:grid;grid-template-columns:2.2fr 1fr 1fr .6fr 1fr .8fr 40px;
          gap:6px;align-items:center}
   .tgrid.thead{color:#6e7480;font-size:9.5px;letter-spacing:.8px;
                text-transform:uppercase;margin-bottom:5px}
@@ -398,9 +456,20 @@
      the maximal-map exit button is: a browser holding a stylesheet from before
      this rule existed would otherwise leave the panel permanently across the
      floor. */
-  .levelempty{position:absolute;inset:0;display:flex;flex-direction:column;
-              align-items:center;justify-content:center;text-align:center;
-              padding:26px;z-index:4}
+  /* DOCKED, NOT DRAPED. It used to be `inset:0` — a full-stage overlay with
+     the sentence centred in it, which was right when the stage held one level
+     and nothing else: with the level empty there was nothing behind the panel
+     to hide.
+     The plan draws the WHOLE BUILDING now. Blanketing the stage would cover
+     the other floors' equipment, which is the one thing an operator standing
+     on an empty level actually wants to see — and the empty plane already
+     says "no equipment on this level" on its own slab. So the panel sits in
+     the corner and says the long version, with the building still visible. */
+  .levelempty{position:absolute;left:16px;bottom:16px;max-width:min(38ch,72%);
+              display:flex;flex-direction:column;align-items:flex-start;
+              text-align:left;padding:16px 18px;z-index:4;
+              background:rgba(9,11,16,.9);border:1px solid var(--line);
+              border-radius:10px}
   .levelempty[hidden]{display:none}
   .levelempty h3{font-size:16px;letter-spacing:.1em;margin-bottom:10px}
   .levelempty p{color:var(--ink2);font-size:12.5px;line-height:1.65;
@@ -659,6 +728,13 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
          all. -->
     <div class="levelmark" id="levelMark" aria-hidden="true"></div>
 
+    <!-- Which floor of how many, and the way to another one. The map draws ONE
+         level, so nothing in the drawing can say where in the building it is;
+         this says it, in the corner the deck leaves empty, and every other
+         floor on it is a control that goes there. Built by renderLevelNav()
+         and not rendered at all on a lab with no levels. -->
+    <nav class="lvlnav" id="levelNav" aria-label="Level" hidden></nav>
+
     <!-- An empty level: a heading, orientation, instruction, one primary
          action. The tally, the legend, the level picker and the tool row all
          stay exactly where they were — an empty level is still a level, still
@@ -782,8 +858,13 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
       this Lab ID against the print.</p>
       <label class="fl" style="margin-top:10px;display:block">Tests</label>
       <div class="tgrid thead"><div>Assay</div><div>Expected</div><div>Std dev</div>
-        <div>k</div><div>Units</div><div></div></div>
+        <div>k</div><div>Units</div><div>Expires (h)</div><div></div></div>
       <div id="sampleTests"></div>
+      <!-- Filled in by renderQcWindowHint() from the server's own
+           `default_qc_expire_hours`, never from a 24 typed in here — a second
+           copy of that number drifts from `resolve_qc_window` the first time
+           anybody changes it. -->
+      <p class="sub" id="sampleWinHint" style="margin:8px 0 0"></p>
       <button class="tool" id="addTests" style="margin-top:8px">+ Add assays…</button>
       <p class="err" id="sampleErr"></p>
     </div>
@@ -1137,6 +1218,13 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const col = s => COLOR[s] || COLOR.UNKNOWN;
 let MACHINES = [], SAMPLES = [], selected = null;
+/* How long a passing QC result stays good when nothing more specific says
+ * otherwise. It comes off `/api/qc-samples` (`default_qc_expire_hours`) rather
+ * than being typed here: the chain is bench mapping → the standard's own
+ * window → the machine default → 24h, and it is resolved in ONE function on
+ * the server (`resolve_qc_window`). A copy of the number in this file is a
+ * copy that goes stale the day somebody changes it. */
+let DEFAULT_QC_HOURS = 24;
 // What the two rails were last drawn from — see panelSignature/feedSignature.
 let PANEL_SIG = '', FEED_SIG = '';
 let seenRuns = null;
@@ -1385,6 +1473,111 @@ function renderLevelBar() {
     pick.title = 'Showing ' + levelButtonLabel()
       + ' — click to choose another level';
   }
+  renderLevelNav();
+}
+
+/* WHICH FLOOR OF HOW MANY — the whole ladder, as one small element beside the
+ * map.
+ *
+ * The floor plan draws ONE level. That is what makes the equipment on it
+ * readable (see drawSimpleFloor), and it is also what the drawing can no
+ * longer tell you: a single deck looks exactly the same whether it is the
+ * only floor in the lab or the third of six. So the building is said here
+ * instead of drawn — rungs in rank order, highest at the top, the one you are
+ * standing on filled in.
+ *
+ * It costs NO request. The ladder and every machine's `level_uid` ride on the
+ * `/api/machines` payload the floor is already polling, so a level switch is
+ * zero LabCore operations — `tests/test_equipment_wiring.py` counts them.
+ *
+ * A lab with NO levels is the live production state today: there is no ladder,
+ * so there is no indicator, and nothing on the floor hints that levels are a
+ * thing this lab has not used.
+ *
+ * A lab with ONE level keeps it. "1 of 1" is not noise on a lab that has
+ * deliberately made a floor and named it — it is the name, in the one place
+ * that shows it when the maximal view has hidden the tool row — and the rung
+ * is not a control, because there is nowhere else to go. */
+/* THE LADDER, AS ROWS — pure, so what the indicator says can be asked rather
+ * than scraped out of its markup. Top of the building first, which is where the
+ * top of the building is.
+ *
+ * Each row carries what a person reads off it and what a screen reader is
+ * given: the level, whether it is the one being shown, how much stands on it
+ * and — when that is not all fine — the worst state and how many are in it.
+ * Said in WORDS as well as coloured, because a dot on its own is nothing at
+ * all to a red-green operator or to a wall display with the saturation turned
+ * down; the level picker's tick already makes the same argument. */
+function levelNavRows() {
+  const ordered = sortedLevels(LEVELS);
+  return ordered.slice().reverse().map(l => {
+    const roll = levelRollup(MACHINES, l.uid);
+    const n = roll.reduce((a, [, k]) => a + k, 0);
+    const name = l.name || 'Unnamed level';
+    const here = l.uid === LEVEL_VIEW;
+    const worst = roll.length ? roll[0][0] : '';
+    const said = n ? equipmentCount(n) : 'no equipment';
+    const shout = worst && worst !== 'GREEN'
+      ? `, ${roll[0][1]} ${worst.toLowerCase()}` : '';
+    return {uid: l.uid, name, here, n, worst,
+            /* The floor you are already on is NOT offered as a way to get to
+             * itself: a control that does nothing is worse than no control. */
+            label: here ? `${name}, showing, ${said}${shout}`
+                        : `Show ${name}, ${said}${shout}`};
+  });
+}
+
+/* Which rung of how many, counted from the ground — "1 of 3" for the ground
+ * floor of a three-storey lab, whatever order the rows arrived in. */
+function levelNavPosition() {
+  const ordered = sortedLevels(LEVELS);
+  return {at: ordered.findIndex(l => l.uid === LEVEL_VIEW) + 1,
+          of: ordered.length};
+}
+
+/* Rebuilt only when it would come out different — the same trick the two rails
+ * and the plan itself use. `renderLevelBar()` runs on every two-second poll,
+ * and replacing this markup under an operator who has tabbed onto a rung takes
+ * the focus with it. */
+let LEVELNAV_SIG = '';
+function renderLevelNav() {
+  const box = $('#levelNav');
+  if (!box) return;
+  const rows = levelNavRows();
+  const pos = levelNavPosition();
+  const sig = pos.at + '/' + pos.of + '|'
+    + rows.map(r => [r.uid, r.name, r.here, r.n, r.worst].join('~')).join('|');
+  if (sig === LEVELNAV_SIG) return;
+  LEVELNAV_SIG = sig;
+  if (!rows.length) { box.hidden = true; box.innerHTML = ''; return; }
+  box.hidden = false;
+  const rungs = rows.map(r => {
+    const inner = `<i class="tread"></i><span class="nm">${esc(r.name)}</span>`
+      + (r.worst ? `<i class="dot" style="background:${col(r.worst)}"></i>` : '')
+      + `<span class="n">${r.n}</span>`;
+    return r.here
+      ? `<div class="rung on" aria-current="true" data-level="${esc(r.uid)}"
+              aria-label="${esc(r.label)}">${inner}</div>`
+      : `<button type="button" class="rung" role="button" tabindex="0"
+                 data-level="${esc(r.uid)}"
+                 aria-label="${esc(r.label)}">${inner}</button>`;
+  }).join('');
+  box.innerHTML = `<div class="cap"><span>Level</span>`
+    + `<b>${pos.at} of ${pos.of}</b></div>${rungs}`;
+  /* One listener per rung, on markup rebuilt from scratch each time, so
+   * nothing accumulates across the two-second poll. `levelNavGo` is named and
+   * top-level rather than inline: it is the whole behaviour of this control,
+   * and a stub DOM cannot press a button. */
+  $$('#levelNav button.rung').forEach(b => {
+    b.addEventListener('click', () => levelNavGo(b.dataset.level));
+  });
+}
+
+/* Go to another floor. NO FETCH — `setLevelView` redraws from the payload the
+ * floor is already holding. */
+function levelNavGo(uid) {
+  if (!uid || uid === LEVEL_VIEW) return;
+  setLevelView(uid);
 }
 
 /* The open list. The current level is marked with a TICK as well as colour:
@@ -2212,6 +2405,9 @@ async function load() {
   // poll at zero operations with levels on it.
   applyLevels(m);
   SAMPLES = (s && s.samples) || SAMPLES;
+  if (s && Number(s.default_qc_expire_hours) > 0) {
+    DEFAULT_QC_HOURS = Number(s.default_qc_expire_hours);
+  }
   const [me, mp] = await Promise.all([
     fetch('/api/me').then(r => r.json()).catch(() => null),
     fetch('/api/map').then(r => r.json()).catch(() => null),
@@ -2502,6 +2698,32 @@ $('#btnQc').addEventListener('click', async () => {
 });
 $('#qcLibClose').addEventListener('click', () => $('#qcLib').close());
 
+/* How long a passing result on this standard stays good — a property of the
+ * MATERIAL, so it is stated once here instead of on every bench running it.
+ *
+ * Blank and 0 are the same answer: "no opinion, use the default". A stored 0
+ * therefore renders as an EMPTY box, never as a literal "0" — a 0 in a box
+ * labelled "Expires (h)" reads as "expires immediately", which is the one
+ * thing it never means. The placeholder shows what blank will actually get. */
+const qcWindowBox = t => {
+  const win = (t && Number(t.qc_expire_hours) > 0) ? Number(t.qc_expire_hours) : '';
+  return `<input class="c-win" type="number" step="any" min="0"`
+    + ` value="${esc(win)}" placeholder="${esc(DEFAULT_QC_HOURS)}"`
+    + ` title="How long a passing result on this standard stays good. Leave`
+    + ` blank to use the instrument&#39;s own default`
+    + ` (${esc(DEFAULT_QC_HOURS)} h unless that bench overrides it).">`;
+};
+
+function renderQcWindowHint() {
+  const p = $('#sampleWinHint');
+  if (!p) return;
+  p.textContent = 'Expires (h) is how long a passing result on this standard '
+    + 'stays good. It belongs to the material, so it is set here once rather '
+    + 'than on every bench. Leave it blank to use the instrument\u2019s own '
+    + 'default (' + DEFAULT_QC_HOURS + ' h unless that bench overrides it); a '
+    + 'window set on the bench itself still wins over this.';
+}
+
 function addTestRow(t) {
   const row = document.createElement('div');
   row.className = 'tgrid trow';
@@ -2515,6 +2737,7 @@ function addTestRow(t) {
     <input class="c-sd" type="number" step="any" min="0" value="${t ? t.std_dev : 0.5}">
     <input class="c-k" type="number" step="any" min="0.1" value="${t ? t.k : 2}">
     <input class="c-un" value="${t ? esc(t.units || '') : ''}">
+    ${qcWindowBox(t)}
     <button class="tool warn" data-rmrow>✕</button>`;
   $('#sampleTests').appendChild(row);
 }
@@ -2528,6 +2751,7 @@ function openSample(sample) {
   (sample ? sample.tests || [] : []).forEach(addTestRow);
   $('#sampleDelete').style.display = sample ? '' : 'none';
   $('#sampleErr').textContent = '';
+  renderQcWindowHint();
   $('#sampleDlg').showModal();
 }
 $('#qcNew').addEventListener('click', () => openSample(null));
@@ -2619,7 +2843,21 @@ $('#sampleSave').addEventListener('click', async () => {
             expected: parseFloat(r.querySelector('.c-exp').value || '0'),
             std_dev: parseFloat(r.querySelector('.c-sd').value || '0'),
             k: parseFloat(r.querySelector('.c-k').value || '2'),
-            units: r.querySelector('.c-un').value};
+            units: r.querySelector('.c-un').value,
+            /* SENT ON EVERY SAVE, and sent as 0 rather than omitted.
+             *
+             * `QcSampleTest.from_dict` reads an absent key as 0.0 — correctly,
+             * as fall-through — so a save that leaves it out silently CLEARS a
+             * window somebody set, which is what this editor used to do to
+             * every standard anybody edited from the floor for any reason. The
+             * server deliberately does not paper over that (an omitted key
+             * inheriting the stored value would mean no client could ever
+             * clear a window), so the honest fix is to always say what the box
+             * holds. Blank reads as 0, which is "use the default"; a negative
+             * is refused by the server's own 400 branch and this does not hold
+             * a second opinion about it. */
+            qc_expire_hours: Math.max(
+              0, parseFloat(r.querySelector('.c-win').value || '0') || 0)};
   }).filter(t => t.name);
   const r = await fetch('/api/qc-samples', {method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -3298,6 +3536,42 @@ let PLAN_OVER = {dw: 0, dh: 0};
  *   (deckW + dw) / (deckW * sin t + dh) = A   ->   sin t = ((deckW+dw)/A - dh)
  *                                                         / deckW
  */
+/* THE MAP IS ONE FLOOR.
+ *
+ * It was briefly a stack — every level as its own plane, exploded up and to
+ * the right. The geometry worked and the building read as a building, and it
+ * was still the wrong drawing: measured in the browser, the equipment on the
+ * floor you were actually working on covered 15.2% of the stage, because two
+ * thirds of the canvas was spent on floors whose equipment was too small to
+ * read. Ryan: "the levels take way too much space, whats the point of having
+ * them inactive, just go back to 1 floor visible and put a little UI element
+ * on the side to show what floor out of what floor they are on."
+ *
+ * So: one deck, the whole stage, and the building is SAID rather than drawn —
+ * see renderLevelNav(), which names the floor, gives its place in the ladder,
+ * and switches to any other one. What is gone is gone: there is no stack
+ * behind a flag. A second dormant renderer in this file would be a second
+ * thing to keep working, and the 3D world is already the one deliberately
+ * severed thing here.
+ *
+ * What SURVIVED the stack, because it was never about the stack:
+ *   - `claimPlanBays`, the per-level bay spill. OptiMPP 2 and PAC Flash 2 are
+ *     both saved on bay 4.1,0 and `world/index.js`, which used to fix that, no
+ *     longer loads.
+ *   - the solved tilt and the measured overshoot below, which is what stopped
+ *     the lone deck letterboxing in the first place.
+ */
+
+/* The tilt that makes the drawing the shape of the stage. Solved, not fixed —
+ * see the note above `PLAN_TILT_MIN`.
+ *
+ *   (deckW + dw) / (deckW * sin t + dh) = A
+ *   ->  sin t = ((deckW + dw) / A - dh) / deckW
+ *
+ * `dw`/`dh` are PLAN_OVER: what the name plates and the prisms add on top of
+ * the concrete, measured on the last draw. Without them the solve aims at the
+ * decks and the finished drawing overshoots the stage, which `meet` then pays
+ * for out of the other axis. */
 function planFitTilt(spanTiles) {
   const A = planStageAspect();
   const deckW = spanTiles * Math.cos(PLAN_CAM.yaw * PLAN_RAD) * PLAN_TILE;
@@ -3359,38 +3633,98 @@ function planPrism(g, gx, gy, w, d, h, z, shades) {
  *
  * `m.pos` is the fallback for a dragged instrument, and a bay of our own the
  * last resort — a fleet piled on the origin would read as one instrument. */
-function planStations() {
-  /* ONE LEVEL AT A TIME. The plan is scoped to the level the picker names, and
-   * the filter is the only thing that makes it so — `visibleMachines()` reads
-   * `level_uid` off the payload the floor already has, so switching costs no
-   * request at all. A lab with no levels answers with the whole fleet. */
-  const list = visibleMachines();
-  const byUid = WORLD && WORLD.plan && WORLD.plan.byUid ? WORLD.plan.byUid : null;
-  // The world's own canonical order, so a fallback bay is at least stable:
-  // title first so it reads sensibly, uid as the tiebreak because titles are
-  // not unique.
-  const seq = [...list].sort((a, b) =>
-    String(a.title || '').toLowerCase().localeCompare(
-      String(b.title || '').toLowerCase()) ||
-    String(a.machine_uid).localeCompare(String(b.machine_uid)));
-  const BAY = 2.05, cols = Math.max(2, Math.ceil(Math.sqrt(seq.length * 1.25)));
+/* Two instruments can be saved on the SAME bay — OptiMPP 2 and PAC Flash 2 are
+ * both at 4.1,0 in production — and the loser used to be drawn exactly beneath
+ * the winner and so was invisible. `claimBays()` in `world/index.js` fixes it
+ * by spilling the collider to a free bay, and that file no longer loads
+ * (CLAUDE.md, "The 3D site is SEVERED"), which left the plan carrying the bug
+ * as a known 80/20 call.
+ *
+ * It runs over the machines standing on ONE level, which is also every machine
+ * the map draws. Two instruments on the same bay of DIFFERENT levels are two
+ * instruments on different floors — not a collision at all, and they must never
+ * be spilled apart as if they were, which is why the spill is applied to the
+ * level in view rather than to the whole fleet.
+ *
+ * Deliberately the same rule, in the same canonical order, as `claimBays`:
+ * title then uid, saved bays claimed first, spill filling the index grid. */
+const PLAN_BAY = 2.05;
 
-  const placed = seq.map((m, i) => {
+/* THE DRAWING'S OWN AISLE. Bays are SAVED 2.05 apart and are one unit across,
+ * so a little over three quarters of the deck is aisle — dead concrete that
+ * the fit then has to find room for, and which pushes the instruments down
+ * towards the size of buttons. The plan is a DRAWING of that floor, not a
+ * survey of it, and it is free to draw the same arrangement at its own
+ * spacing: relative positions are preserved exactly, because this is one
+ * uniform scale applied to the bay INDEX.
+ *
+ * It is the bay index that is scaled, not the saved coordinate — which is the
+ * same model `claimBays` uses to decide two instruments are on one bay, so the
+ * two cannot disagree about what a bay is.
+ *
+ * Not tighter than this: the pipework runs up the aisle beside each bay, and
+ * the name plates hang off the front of them. `floorboot.mjs` measures the
+ * plate overlap on the real floor and holds it near zero, which is what stops
+ * this being tuned until the names stop being readable. */
+const PLAN_DRAW_PITCH = 1.45;
+const planBayIndex = v => Math.round(v / PLAN_BAY);
+
+function claimPlanBays(want) {
+  const seq = [...want].sort((a, b) =>
+    String(a.m.title || '').toLowerCase().localeCompare(
+      String(b.m.title || '').toLowerCase()) ||
+    String(a.m.machine_uid).localeCompare(String(b.m.machine_uid)));
+  const taken = new Set(), placed = [], spill = [];
+  const key = (x, y) => `${Math.round(x / PLAN_BAY)},${Math.round(y / PLAN_BAY)}`;
+  for (const it of seq) {
+    if (!Number.isFinite(it.gx) || !Number.isFinite(it.gy)) { spill.push(it); continue; }
+    const k = key(it.gx, it.gy);
+    if (taken.has(k)) { spill.push(it); continue; }
+    taken.add(k);
+    placed.push({m: it.m, gx: it.gx, gy: it.gy});
+  }
+  const cols = Math.max(2, Math.ceil(Math.sqrt(seq.length * 1.25)));
+  let slot = 0;
+  for (const it of spill) {
+    let gx, gy, k;
+    do {
+      gx = (slot % cols) * PLAN_BAY; gy = Math.floor(slot / cols) * PLAN_BAY; slot++;
+      k = key(gx, gy);
+    } while (taken.has(k));
+    taken.add(k);
+    placed.push({m: it.m, gx, gy});
+  }
+  return placed;
+}
+
+/* Where the instruments on ONE level stand.
+ *
+ * Called once per plane now rather than once per drawing. It still defaults to
+ * the level the picker names, so every existing caller and every probe that
+ * asks "what is on screen" gets the same answer it always did. */
+function planStations(list) {
+  const here = Array.isArray(list) ? list : visibleMachines();
+  const byUid = WORLD && WORLD.plan && WORLD.plan.byUid ? WORLD.plan.byUid : null;
+  const want = here.map(m => {
     const st = byUid ? byUid.get(m.machine_uid) : null;
     if (st && Number.isFinite(st.gx) && Number.isFinite(st.gy)) {
       return {m, gx: st.gx, gy: st.gy};
     }
-    if (Array.isArray(m.pos) && Number.isFinite(m.pos[0]) && Number.isFinite(m.pos[1])) {
+    if (Array.isArray(m.pos) && Number.isFinite(m.pos[0])
+        && Number.isFinite(m.pos[1])) {
       return {m, gx: m.pos[0], gy: m.pos[1]};
     }
-    return {m, gx: (i % cols) * BAY, gy: Math.floor(i / cols) * BAY};
+    return {m, gx: null, gy: null};        // no saved bay: claimed below
   });
 
   // Painter's order: things further back drawn first. The uid breaks the tie —
   // (gx+gy) is equal for anything on the same diagonal, and leaving that to
   // Array.sort's stability meant payload order decided who drew on top.
-  return placed.sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy)
-    || String(a.m.machine_uid).localeCompare(String(b.m.machine_uid)));
+  return claimPlanBays(want)
+    .map(({m, gx, gy}) => ({m, gx: planBayIndex(gx) * PLAN_DRAW_PITCH,
+                            gy: planBayIndex(gy) * PLAN_DRAW_PITCH}))
+    .sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy)
+      || String(a.m.machine_uid).localeCompare(String(b.m.machine_uid)));
 }
 
 /* Everything that makes a group an instrument you can pick.
@@ -3574,49 +3908,28 @@ function planMachine(root, plates, m, gx, gy) {
  * rails use. drawFloor() runs on every two-second refresh whether anything
  * changed or not, and rebuilding the SVG under the pointer takes the tooltip
  * with it and leaves a hover that can never be left. Redraw when there is
- * something to redraw. */
+ * something to redraw.
+ *
+ * It covers the LEVEL IN VIEW, which is the whole of what is drawn — and it
+ * carries the level's uid, so switching floor is a change of drawing rather
+ * than a redraw of the same one. What stands on the other floors is said by
+ * the level indicator, which is HTML and repaints on its own. */
 let PLAN_SIG = '';
-function planSignature(placed) {
-  return placed.map(({m, gx, gy}) => {
-    const s = m.sub_statuses || {};
-    return [m.machine_uid, gx, gy, m.title, m.status, s.qc, s.pm, s.calibration,
-            m.module_state, m.module_running].join('~');
-  }).join('|') + '#' + (selected ? selected.machine_uid : '')
-    // The level is part of what the drawing IS, not only of what it contains:
-    // two levels holding the same instruments cannot happen, but a level
-    // switch that changed nothing else must still repaint the plate and the
-    // deck rather than being skipped as "no change".
-    + '@' + LEVEL_VIEW
+function planSignature(uid, placed) {
+  return uid + ':' + placed.map(({m, gx, gy}) => {
+        const s = m.sub_statuses || {};
+        return [m.machine_uid, gx, gy, m.title, m.status, s.qc, s.pm,
+                s.calibration, m.module_state, m.module_running].join('~');
+      }).join('|')
+    + '#' + (selected ? selected.machine_uid : '')
     // The stage's SHAPE is part of what the drawing is: the tilt is solved
     // from it, so a window resized from wide-and-short to tall-and-narrow
     // changes the projection even though nothing about the fleet moved.
     + '~' + Math.round(planStageAspect() * 50);
 }
 
-/* Draw the plain floor plan into #floorSimple. */
-function drawSimpleFloor(refit) {
-  const svg = $('#floorSimple');
-  if (!svg) return;
-  const placed = planStations();
-  const sig = planSignature(placed);
-  if (sig === PLAN_SIG && svg.firstChild && !refit) return;
-  PLAN_SIG = sig;
-
-  /* Solve the camera BEFORE anything is projected. The deck's extent in bays is
-   * all the solve needs, and every planIso() below reads PLAN_CAM.tilt. */
-  const minX = Math.min(0, ...placed.map(p => p.gx));
-  const minY = Math.min(0, ...placed.map(p => p.gy));
-  const maxX = Math.max(1, ...placed.map(p => p.gx)) + 1;
-  const maxY = Math.max(1, ...placed.map(p => p.gy)) + 1;
-  // Tighter than the original's .85 all round: the stage here is a box the
-  // rails have already taken their share of, and empty concrete is what pushes
-  // the instruments down to the size of buttons.
-  const m0 = minX - .55, n0 = minY - .6, mx = maxX + .55, my = maxY + 1.05;
-  const tiltWanted = planFitTilt((mx - m0) + (my - n0));
-  PLAN_CAM.tilt = tiltWanted;
-
-  svg.innerHTML = '';
-  hideTip();
+/* ── the materials the drawing is made of ────────────────────────────── */
+function planDefs(svg) {
   const defs = planEl('defs', {}, svg);
 
   const soft = planEl('filter', {id: 'planSoft', x: '-120%', y: '-120%',
@@ -3649,6 +3962,97 @@ function drawSimpleFloor(refit) {
   planEl('stop', {offset: 0, 'stop-color': '#5a6272', 'stop-opacity': .28}, pool);
   planEl('stop', {offset: .55, 'stop-color': '#2b323e', 'stop-opacity': .1}, pool);
   planEl('stop', {offset: 1, 'stop-color': '#000', 'stop-opacity': .35}, pool);
+}
+
+/* The deck: the slab, its raised edge, the lamp pool, the painted aisle and the
+ * trunk main to LabCore. One floor's worth, because one floor is what is
+ * drawn. */
+function planDeckPlate(g, geom) {
+  const {m0, n0, mx, my} = geom;
+  const D = [planIso(m0, n0), planIso(mx, n0), planIso(mx, my), planIso(m0, my)];
+  const deck = planPts(D);
+  const drop = 16;                       // the deck reads as a raised plate
+  planEl('polygon', {points: planPts([D[3], D[2], [D[2][0], D[2][1] + drop],
+                                      [D[3][0], D[3][1] + drop]]),
+                     fill: '#0a0d12'}, g);
+  planEl('polygon', {points: planPts([D[2], D[1], [D[1][0], D[1][1] + drop],
+                                      [D[2][0], D[2][1] + drop]]),
+                     fill: '#070a0e'}, g);
+  planEl('polygon', {class: 'deck', points: deck, fill: 'url(#planDeck)'}, g);
+  planEl('polygon', {points: deck, fill: 'url(#planDots)', opacity: .5}, g);
+  planEl('polygon', {points: deck, fill: 'url(#planPool)', opacity: .9}, g);
+  planEl('polygon', {points: deck, fill: 'none', stroke: '#4d5a6d',
+                     'stroke-width': 2.2}, g);
+
+  // painted aisle lane down the middle of the floor
+  const laneY = (n0 + my) / 2;
+  const l0 = planIso(m0 + .2, laneY), l1 = planIso(mx - .2, laneY);
+  planEl('line', {x1: l0[0], y1: l0[1], x2: l1[0], y2: l1[1], stroke: '#2b3340',
+                  'stroke-width': 1, 'stroke-dasharray': '10 12', opacity: .5}, g);
+
+  // Trunk main to LabCore, run along the service aisle at the back. The site
+  // sends its data down a railway; the plan draws the same journey as one pipe,
+  // which is what it was before there were trains.
+  const aisle = n0 + .4;
+  const tA = planIso(m0, aisle), tB = planIso(mx, aisle);
+  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1], stroke: '#0c0f14',
+                  'stroke-width': 11, 'stroke-linecap': 'round'}, g);
+  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1], stroke: '#333c4a',
+                  'stroke-width': 7, 'stroke-linecap': 'round'}, g);
+  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1],
+                  stroke: 'var(--amber-dim)', 'stroke-width': 1.6, opacity: .5}, g);
+  planEl('circle', {cx: tB[0], cy: tB[1], r: 5, fill: '#12161d',
+                    stroke: 'var(--amber)', 'stroke-width': 1.6}, g);
+  const lbl = planEl('text', {x: tB[0] + 14, y: tB[1] + 4, fill: '#ff8a3d',
+                              'font-size': 11, 'font-weight': 800,
+                              'letter-spacing': 2.4}, g);
+  lbl.textContent = 'LABCORE';
+  return D;
+}
+
+/* Draw the plain floor plan into #floorSimple.
+ *
+ * ONE FLOOR — the level the picker names, and nothing else. It gets the whole
+ * stage, which is what makes a status bar readable from across the room; where
+ * that floor is in the building is said by the level indicator beside the map
+ * (renderLevelNav), not drawn as three quarters of a canvas nobody can read.
+ *
+ * It costs no request at all: `visibleMachines()` filters the fleet the floor
+ * is already polling by `level_uid`, which rides on every machine in
+ * `/api/machines`. There is no per-level fetch here and there must never be
+ * one — a floor poll is zero LabCore operations and
+ * `tests/test_equipment_wiring.py` counts them.
+ *
+ * A lab with NO levels is the live production state today: `visibleMachines()`
+ * answers with the whole fleet, `LEVEL_VIEW` is "", the indicator is not
+ * rendered at all, and this draws exactly the one deck it always has. */
+function drawSimpleFloor(refit) {
+  const svg = $('#floorSimple');
+  if (!svg) return;
+  const placed = planStations(visibleMachines());
+  const sig = planSignature(LEVEL_VIEW, placed);
+  if (sig === PLAN_SIG && svg.firstChild && !refit) return;
+  PLAN_SIG = sig;
+
+  /* Solve the camera BEFORE anything is projected. Every planIso() below reads
+   * PLAN_CAM.tilt. */
+  const minX = Math.min(0, ...placed.map(p => p.gx));
+  const minY = Math.min(0, ...placed.map(p => p.gy));
+  const maxX = Math.max(1, ...placed.map(p => p.gx)) + 1;
+  const maxY = Math.max(1, ...placed.map(p => p.gy)) + 1;
+  // Tighter than the original's .85 all round: the stage here is a box the
+  // rails have already taken their share of, and empty concrete is what pushes
+  // the instruments down to the size of buttons.
+  const m0 = minX - .55, n0 = minY - .6, mx = maxX + .55, my = maxY + 1.05;
+  const span = (mx - m0) + (my - n0);
+  const tiltWanted = planFitTilt(span);
+  PLAN_CAM.tilt = tiltWanted;
+
+  const geom = {m0, n0, mx, my};
+
+  svg.innerHTML = '';
+  hideTip();
+  planDefs(svg);
 
   const root = planEl('g', {}, svg);
   /* Getting OUT of an instrument has to be as easy as getting in, and it is a
@@ -3663,81 +4067,66 @@ function drawSimpleFloor(refit) {
     });
   }
 
-  // Deck sized to the instruments it holds — no dead concrete. Its extent was
-  // measured at the top of this function, because the tilt is solved from it.
-  const D = [planIso(m0, n0), planIso(mx, n0), planIso(mx, my), planIso(m0, my)];
-  const deck = planPts(D);
-  const drop = 16;                     // the deck reads as a raised plate
-  planEl('polygon', {points: planPts([D[3], D[2], [D[2][0], D[2][1] + drop],
-                                      [D[3][0], D[3][1] + drop]]),
-                     fill: '#0a0d12'}, root);
-  planEl('polygon', {points: planPts([D[2], D[1], [D[1][0], D[1][1] + drop],
-                                      [D[2][0], D[2][1] + drop]]),
-                     fill: '#070a0e'}, root);
-  planEl('polygon', {points: deck, fill: 'url(#planDeck)'}, root);
-  planEl('polygon', {points: deck, fill: 'url(#planDots)', opacity: .5}, root);
-  planEl('polygon', {points: deck, fill: 'url(#planPool)', opacity: .9}, root);
-  planEl('polygon', {points: deck, fill: 'none', stroke: '#394352',
-                     'stroke-width': 1.6}, root);
-  // painted aisle lane down the middle of the floor
-  const laneY = (n0 + my) / 2;
-  const l0 = planIso(m0 + .2, laneY), l1 = planIso(mx - .2, laneY);
-  planEl('line', {x1: l0[0], y1: l0[1], x2: l1[0], y2: l1[1], stroke: '#2b3340',
-                  'stroke-width': 1, 'stroke-dasharray': '10 12', opacity: .5}, root);
+  /* The floor carries its level on the element, so a probe — and anyone
+   * reading the DOM in a debugger — can ask which one is drawn rather than
+   * inferring it from what happens to be standing on it. "" on a flat lab. */
+  const g = planEl('g', {class: 'lvlplane here', 'data-level': LEVEL_VIEW,
+                         'data-current': '1'}, root);
+  planDeckPlate(g, geom);
 
-  // Trunk main to LabCore, run along the service aisle at the back. The site
-  // sends its data down a railway; the plan draws the same journey as one pipe,
-  // which is what it was before there were trains.
-  const aisle = n0 + .4;
-  const tA = planIso(m0, aisle), tB = planIso(mx, aisle);
-  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1], stroke: '#0c0f14',
-                  'stroke-width': 11, 'stroke-linecap': 'round'}, root);
-  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1], stroke: '#333c4a',
-                  'stroke-width': 7, 'stroke-linecap': 'round'}, root);
-  planEl('line', {x1: tA[0], y1: tA[1], x2: tB[0], y2: tB[1],
-                  stroke: 'var(--amber-dim)', 'stroke-width': 1.6, opacity: .5}, root);
-  planEl('circle', {cx: tB[0], cy: tB[1], r: 5, fill: '#12161d',
-                    stroke: 'var(--amber)', 'stroke-width': 1.6}, root);
-  const lbl = planEl('text', {x: tB[0] + 14, y: tB[1] + 4, fill: '#ff8a3d',
-                              'font-size': 11, 'font-weight': 800,
-                              'letter-spacing': 2.4}, root);
-  lbl.textContent = 'LABCORE';
-
-  // Pipework: each instrument takes its feed out of its RIGHT side, into the
-  // service aisle beside it, then up the aisle to the LabCore main — so no pipe
-  // ever crosses a machine.
-  const BAY = 2.05;
-  placed.forEach(({gx, gy, m}) => {
-    const lane = gx + 1 + (BAY - 1) / 2;          // centre of the aisle beside it
-    const p0 = planIso(gx + 1, gy + .5);          // side outlet
-    const p1 = planIso(lane, gy + .5);            // into the aisle
-    const p2 = planIso(lane, aisle);              // up the aisle
-    const p3 = planIso(mx, aisle);                // along the main to LabCore
-    const d = `M ${p0[0]} ${p0[1]} L ${p1[0]} ${p1[1]} ` +
-              `L ${p2[0]} ${p2[1]} L ${p3[0]} ${p3[1]}`;
-    planEl('path', {d, stroke: '#0b0e13', 'stroke-width': 6.5, fill: 'none',
-                    'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, root);
-    planEl('path', {d, stroke: '#2a3240', 'stroke-width': 4, fill: 'none',
-                    'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, root);
-    // a short coloured stub at the outlet: this machine's state, at its own pipe
-    planEl('path', {d: `M ${p0[0]} ${p0[1]} L ${p1[0]} ${p1[1]}`,
-                    stroke: col(m.status), 'stroke-width': 2, fill: 'none',
-                    opacity: .75}, root);
-  });
-
-  // Machines in painter's order, then every name plate above all of them.
-  const plates = planEl('g', {}, root);
-  placed.forEach(({m, gx, gy}) => planMachine(root, plates, m, gx, gy));
-  root.appendChild(plates);
+  /* AN EMPTY LEVEL IS A STATE, NOT A FAILURE. It keeps its deck at full size
+   * and says on the slab itself that nothing stands there, so a floor with
+   * nothing on it can never be mistaken for a floor that failed to draw. The
+   * designed panel over the stage says the same thing at length; this is what
+   * the drawing underneath it needs. */
+  if (!placed.length && LEVELS.length) {
+    const mid = planIso((m0 + mx) / 2, (n0 + my) / 2);
+    const t = planEl('text', {class: 'lvlbare', x: mid[0], y: mid[1],
+                              'text-anchor': 'middle', 'font-size': 13,
+                              'font-weight': 700, 'letter-spacing': 1.2,
+                              fill: '#7f8b9c'}, g);
+    t.textContent = 'no equipment on this level';
+  } else {
+    /* The pipework, the instruments in painter's order, and every name plate
+     * in a layer above all of them. */
+    const aisle = n0 + .4;
+    placed.forEach(({gx, gy, m}) => {
+      const lane = gx + 1 + (PLAN_DRAW_PITCH - 1) / 2;  // the aisle beside it
+      const p0 = planIso(gx + 1, gy + .5);        // side outlet
+      const p1 = planIso(lane, gy + .5);          // into the aisle
+      const p2 = planIso(lane, aisle);            // up the aisle
+      const p3 = planIso(mx, aisle);              // along the main to LabCore
+      const d = `M ${p0[0]} ${p0[1]} L ${p1[0]} ${p1[1]} ` +
+                `L ${p2[0]} ${p2[1]} L ${p3[0]} ${p3[1]}`;
+      planEl('path', {d, stroke: '#0b0e13', 'stroke-width': 6.5, fill: 'none',
+                      'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, g);
+      planEl('path', {d, stroke: '#2a3240', 'stroke-width': 4, fill: 'none',
+                      'stroke-linejoin': 'round', 'stroke-linecap': 'round'}, g);
+      // a short coloured stub at the outlet: this machine's state, at its own pipe
+      planEl('path', {d: `M ${p0[0]} ${p0[1]} L ${p1[0]} ${p1[1]}`,
+                      stroke: col(m.status), 'stroke-width': 2, fill: 'none',
+                      opacity: .75}, g);
+    });
+    const plates = planEl('g', {}, g);
+    placed.forEach(({m, gx, gy}) => planMachine(g, plates, m, gx, gy));
+    g.appendChild(plates);
+  }
 
   /* Fit the drawing to the stage. getBBox is the honest measure — it includes
    * the name plates, which stick out past the deck — but it is zero on an
-   * element that is not being rendered, so the deck it was drawn around is the
-   * fallback rather than a viewBox of nothing. */
-  const pad = 18;
+   * element that is not being rendered, so the concrete it was drawn around is
+   * the fallback rather than a viewBox of nothing. */
+  /* The margin is a SHARE of the drawing, not a fixed number of drawing units.
+   * A flat 18 was a different amount of screen at every fleet size and every
+   * tilt — on the six-piece production floor it was spending 6% of each axis,
+   * which is 12% of the stage given away to nothing. As a fraction it is the
+   * same slim gutter whatever is drawn, and it preserves the box's aspect
+   * exactly, so the padding below has nothing left to correct. */
+  const PAD_F = 0.0155;
   let bb = null;
   try { bb = root.getBBox(); } catch (_) {}
-  const dxs = D.map(p => p[0]), dys = D.map(p => p[1]);
+  const D0 = [planIso(m0, n0), planIso(mx, n0), planIso(mx, my), planIso(m0, my)];
+  const dxs = D0.map(p => p[0]), dys = D0.map(p => p[1]);
   if (!(bb && bb.width > 1 && bb.height > 1)) {
     const x0 = Math.min(...dxs) - 40, y0 = Math.min(...dys) - 70;
     svg.setAttribute('viewBox', `${x0} ${y0} ${Math.max(...dxs) - x0 + 60} ` +
@@ -3747,16 +4136,23 @@ function drawSimpleFloor(refit) {
 
   /* What the plates and the prisms added on top of the concrete. Fed back into
    * the solve so the NEXT draw aims the whole drawing at the stage rather than
-   * only the deck — and, when that moves the tilt by more than about half a
-   * degree, redrawn once now so the operator never sees the uncorrected frame.
-   * Once: `refit` blocks any further recursion, and the correction converges in
-   * one step because the overshoot does not depend on the tilt. */
+   * only the deck — and, when that moves the tilt by more than about a fifth of
+   * a degree, redrawn once now so the operator never sees the uncorrected
+   * frame. `refit` is the pass NUMBER, not a flag, so this can never recurse
+   * further than it says it can.
+   *
+   * Converge, rather than stopping after one pass: the overshoot is very nearly
+   * independent of the tilt, which is why one corrective pass gets most of the
+   * way — but "very nearly" left a few per cent of aspect error on the
+   * drawing's own box, and that error is spent as exactly the empty band this
+   * work exists to remove. */
   const deckW = Math.max(...dxs) - Math.min(...dxs);
   const deckH = Math.max(...dys) - Math.min(...dys);
   PLAN_OVER = {dw: Math.max(0, bb.width - deckW),
                dh: Math.max(0, bb.height - deckH)};
-  if (!refit && Math.abs(planFitTilt((mx - m0) + (my - n0)) - tiltWanted) > .5) {
-    drawSimpleFloor(true);
+  const pass = (refit | 0);
+  if (pass < 2 && Math.abs(planFitTilt(span) - tiltWanted) > .2) {
+    drawSimpleFloor(pass + 1);
     return;
   }
 
@@ -3764,8 +4160,8 @@ function drawSimpleFloor(refit) {
    * more demanding axis and centres the other, so a viewBox already the shape
    * of the stage has nothing left to letterbox: the whole floor stays visible
    * and it is as large as the space allows. */
-  let x = bb.x - pad, y = bb.y - pad;
-  let w = bb.width + pad * 2, h = bb.height + pad * 2;
+  let x = bb.x - bb.width * PAD_F, y = bb.y - bb.height * PAD_F;
+  let w = bb.width * (1 + PAD_F * 2), h = bb.height * (1 + PAD_F * 2);
   const A = planStageAspect();
   if (w / h > A) { const nh = w / A; y -= (nh - h) / 2; h = nh; }
   else           { const nw = h * A; x -= (nw - w) / 2; w = nw; }
@@ -3983,9 +4379,12 @@ function lockGlyph(open) {
 function paintHint() {
   const hint = $('#hint');
   if (!hint) return;
+  /* The map draws ONE floor. The indicator beside it is where another one is
+   * chosen, and it is a visible list of them — so this does not need to teach
+   * a gesture, only to stop promising one that is not there. */
   if (levelIsEmpty()) {
     hint.textContent = 'nothing on this level to click — move equipment here, '
-      + 'or switch level';
+      + 'or pick another level';
     return;
   }
   hint.textContent = ARRANGING
