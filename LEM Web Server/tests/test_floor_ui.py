@@ -406,9 +406,15 @@ class TestDialogsAreCentred:
 
 class TestQcChartAxes:
     def trend(self, floor):
-        m = re.search(r"async function drawTrend\(m\)\s*\{(.*?)\n\}\n", floor,
+        """The DRAWING, which is `trendSeriesHtml` now.
+
+        `drawTrend` used to fetch and draw in one function; it is the loader
+        and the renderer is pure, so the whole chart can be executed against a
+        real payload in tests/js/floorboot.mjs rather than only grepped here.
+        Every assertion below is unchanged and still about the drawing."""
+        m = re.search(r"function trendSeriesHtml\(s\)\s*\{(.*?)\n\}\n", floor,
                       re.S)
-        assert m, "drawTrend not found"
+        assert m, "trendSeriesHtml not found"
         return m.group(1)
 
     def test_x_is_scaled_by_timestamp_not_index(self, floor):

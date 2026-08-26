@@ -117,6 +117,93 @@
   .qc.actcard{cursor:pointer}
   .qc.actcard:hover{border-color:var(--amber)}
 
+  /* ── the control chart ────────────────────────────────────────────────
+     TWO KINDS OF LIMIT LIVE ON ONE CHART. The pass band is the STANDARD's
+     control limit — the same band judges every bench running that standard.
+     The zones are ±1s/2s/3s from THESE results and move as the instrument
+     moves. They are drawn in different hues, with different line treatments,
+     labelled on OPPOSITE edges, and named in a legend under the plot, because
+     a chart that draws one and labels it the other says the opposite of what
+     the process is doing. */
+  .trendrow{margin-bottom:10px}
+  .trendrow .n{font-size:11.5px;font-weight:700;display:flex;
+               align-items:baseline;justify-content:space-between;gap:8px}
+  .trendrow .n .val{font-family:var(--mono);font-size:12px}
+  .trendkeys{display:flex;flex-wrap:wrap;gap:4px 12px;margin:6px 0 2px;
+             font-size:9px;color:var(--ink3);font-family:var(--mono)}
+  .trendkeys i{display:inline-block;width:14px;height:0;vertical-align:middle;
+               margin-right:5px;border-top-width:2px}
+  .trendkeys .kband i{border-top:3px solid rgba(33,192,113,.85)}
+  .trendkeys .kzone i{border-top:2px dashed #7fb2ff}
+  .trendkeys .ktarget i{border-top:2px dashed #8e97a8}
+  .trendkeys .kmean i{border-top:2px solid #d9a441}
+  /* The self-fitted warning. Amber and boxed, because a provisional alarm
+     presented as fact is worse than no alarm — this is the sentence that
+     stops somebody acting on it. */
+  .prov{display:block;font-size:10px;line-height:1.5;color:var(--amber);
+        background:#1a1410;border:1px solid var(--amber-dim);border-radius:7px;
+        padding:6px 8px;margin:7px 0 0}
+  .prov b{letter-spacing:.1em;text-transform:uppercase;font-size:9px}
+  /* The coverage caveat, rendered VERBATIM — it is the module's own sentence
+     about what the spread may be called, and a paraphrase is a second
+     uncertainty claim drifting from the first. */
+  .caveat{font-size:10px;line-height:1.55;color:var(--ink2);margin:7px 0 0;
+          padding-left:8px;border-left:2px solid var(--edge)}
+  .viol{font-size:10px;line-height:1.5;color:var(--ink2);margin:6px 0 0;
+        padding:6px 8px;border-radius:7px;background:#14171e}
+  .viol .rule{font-family:var(--mono);font-size:9px;color:var(--red);
+              letter-spacing:.08em;text-transform:uppercase;font-weight:800}
+  .viol .pmark{font-family:var(--mono);font-size:9px;color:var(--amber);
+               letter-spacing:.08em;text-transform:uppercase;font-weight:800}
+
+  /* ── the status gutter ────────────────────────────────────────────────
+     Ryan's whiteboard: the events list with a colour band down its side, the
+     QC readings drawn as the transitions BETWEEN states. The band is per RUN
+     of events sharing a status, so a person reads "everything in this bracket
+     happened while it was GREEN" — which is the whole claim being made. */
+  .gutrun{padding:2px 0}
+  /* The state is NAMED above its band rather than in a column beside it. At
+     46px "UNKNOWN" broke as UNKNOW/N, and the column cost 55px of a ~300px
+     rail on every row — which is what squeezed the QC transitions to three
+     words a line. */
+  .guthead{font-size:10px;color:var(--ink3);padding:9px 0 5px;line-height:1.55}
+  /* Only the STATE shouts. Uppercasing the whole line turned the reason —
+     which is a sentence somebody reads — into a banner. */
+  .guthead b{font-weight:800;letter-spacing:.12em;text-transform:uppercase;
+             font-size:9.5px}
+  .gutbody{display:grid;grid-template-columns:5px minmax(0,1fr);gap:0 10px}
+  /* The band itself. A real painted bar, one colour per state — including
+     UNKNOWN, which is a state with a reason and not a colourless gap. */
+  .gutband{border-radius:3px;min-height:16px}
+  .gutrows{min-width:0}
+  .gutev{display:grid;grid-template-columns:44px minmax(0,1fr) auto;gap:4px 7px;
+         padding:5px 0;border-bottom:1px solid #161a21;font-size:11.5px;
+         align-items:baseline}
+  /* 44px holds the longest tag this list can draw (OVERRIDE) at this size, and
+     the ellipsis is the guarantee: a tag that outgrows its cell must shorten,
+     never print over the row beside it. At 30px "STATUS" measured 40px and did
+     exactly that. */
+  .gutev .k{font-size:8px;letter-spacing:.05em;text-transform:uppercase;
+            font-weight:800;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap}
+  .gutev .t{color:var(--ink3);font-family:var(--mono);font-size:9.5px;
+            white-space:nowrap}
+  .gutev .lab{overflow-wrap:anywhere}
+  /* A QC reading is the transition, so it is drawn as one rather than as
+     another row of the list it punctuates. */
+  .gutev.qcev{background:#12161d;border-radius:7px;padding:7px 8px;
+              margin:4px 0;border-bottom:none;
+              border-left:2px solid var(--edge)}
+  .gutev.qcev.moved{border-left-color:var(--amber)}
+  /* Spans the whole row. A verdict, its band and its target do not fit in a
+     third of a narrow rail, and wrapped every two words they are unreadable. */
+  .trans{grid-column:1/-1;font-family:var(--mono);font-size:9.5px;
+         line-height:1.6;color:var(--ink3);overflow-wrap:anywhere}
+  .trans .arrow{color:var(--ink2);padding:0 3px}
+  .gutnote{font-size:10px;line-height:1.55;color:var(--ink3);margin-top:10px;
+           padding-top:8px;border-top:1px solid var(--edge)}
+  .gutnote .clip{color:var(--amber);display:block;margin-bottom:5px}
+
   .ev{display:grid;grid-template-columns:64px 1fr auto;gap:8px;padding:6px 0;
       border-bottom:1px solid #161a21;font-size:11.5px;align-items:baseline}
   .ev .k{font-size:9px;letter-spacing:.1em;text-transform:uppercase;font-weight:800}
@@ -245,6 +332,60 @@
   :root.arranging .stage canvas{cursor:move}
 
   /* right-click actions */
+  /* ── the search box, and its answer ──────────────────────────────────
+     The box lives in the tool row; the answer hangs below it as a fixed
+     panel, because the row scrolls horizontally and would clip it. */
+  .findbox{display:flex;align-items:center;gap:6px;flex:none;
+           background:#171b23;border:1px solid var(--edge);border-radius:9px;
+           padding:0 9px;height:29px;width:clamp(190px,22vw,300px);
+           transition:border-color .12s}
+  .findbox:focus-within{border-color:var(--amber)}
+  .findbox .findic{color:var(--ink3);font-size:14px;line-height:1;flex:none}
+  .findbox:focus-within .findic{color:var(--amber)}
+  #findQ{flex:1;min-width:0;background:none;border:none;outline:none;
+         color:var(--ink);font:12px var(--ui);padding:0}
+  #findQ::placeholder{color:var(--ink3)}
+  /* Chrome draws its own clear button in its own colour on type=search. */
+  #findQ::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+
+  .findpanel{position:fixed;z-index:24;display:block;
+             width:clamp(300px,34vw,460px);max-height:min(66vh,560px);
+             overflow-y:auto;background:#0b0e13;
+             border:1px solid var(--edge);border-radius:10px;padding:6px;
+             box-shadow:0 22px 60px rgba(0,0,0,.66)}
+  .findpanel[hidden]{display:none}
+  /* The state line: one sentence saying which of the four answers this is.
+     It is never absent, because "nothing typed" and "nothing found" have to
+     be told apart by something a person actually reads. */
+  .findpanel .fstate{font-size:11px;line-height:1.5;color:var(--ink2);
+                     padding:8px 9px 9px}
+  .findpanel .fstate b{color:var(--ink)}
+  .findpanel .fhint{color:var(--ink3);font-style:italic}
+  /* Every cap this answer applied, spelled out. Amber rather than grey: a
+     truncation nobody notices is the "the lab has 25 of those" failure. */
+  .findpanel .fcap{font-size:10px;line-height:1.55;color:var(--brass);
+                   font-family:var(--mono);padding:6px 9px;
+                   border-top:1px solid var(--edge);margin-top:4px}
+  .findpanel .fcap .caprow{display:block}
+  .findpanel .fcap .warnrow{color:var(--amber)}
+  .findpanel .fhit{display:grid;grid-template-columns:minmax(0,1fr) auto;
+                   gap:8px;align-items:baseline;width:100%;text-align:left;
+                   background:none;border:none;border-radius:7px;
+                   padding:7px 9px;cursor:pointer;color:var(--ink);
+                   font:12px var(--ui)}
+  .findpanel .fhit:hover,.findpanel .fhit.on{background:#1e2431}
+  .findpanel .fhit.on{outline:1px solid var(--amber-dim)}
+  .findpanel .fhit .fkind{letter-spacing:.09em;font-weight:800;
+                          text-transform:uppercase}
+  .findpanel .fhit .flabel{font-weight:600;overflow-wrap:anywhere}
+  .findpanel .fhit .fwhere{display:block;font-size:10px;color:var(--ink3);
+                           margin-top:2px;overflow-wrap:anywhere}
+  .findpanel .fhit .fwhen{font-family:var(--mono);font-size:9px;
+                          color:var(--ink3);white-space:nowrap}
+  .fk-sample{color:var(--brass)} .fk-equipment{color:var(--amber)}
+  .fk-standard{color:var(--green)} .fk-method{color:#7fb2ff}
+  .fk-level{color:var(--service)} .fk-operator{color:var(--ink2)}
+
   .menu{position:absolute;display:none;z-index:20;min-width:206px;
         background:rgba(14,17,23,.98);border:1px solid var(--edge);
         border-radius:9px;padding:5px;box-shadow:0 18px 50px rgba(0,0,0,.6)}
@@ -652,10 +793,31 @@
           title="Leave the maximal map view (Esc)">✕ Exit max map</button>
 
   <div class="tools">
-    <!-- Where you are, first in the row and before anything about time or
-         mode: scope reads outward-in. Both controls ship together — the
-         picker's own label is the current-level readout, and the two steppers
-         are the one-press path a three-level lab actually wants. -->
+    <!-- SEARCH IS THE WIDEST SCOPE, so it sits before the level picker. Ryan
+         asked for "sample searchability" ahead of the September 2026 PJLA
+         assessment: an assessor or a bench tech types a word — a Lab ID, an
+         instrument, a method, a standard, a level, a person — and finds the
+         thing. /api/search is served from the snapshot at ZERO LabCore ops,
+         and this box is debounced so that stays true per viewer as well as
+         per server.
+
+         A combobox rather than a plain input: the results are a listbox, the
+         arrows walk it, and `aria-activedescendant` says which row is live —
+         a highlight that is only a CSS class is a highlight only a sighted
+         mouse user has. -->
+    <div class="findbox" role="search">
+      <span class="findic" aria-hidden="true">⌕</span>
+      <input id="findQ" type="search" autocomplete="off" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-controls="findPanel"
+             aria-autocomplete="list" aria-haspopup="listbox"
+             aria-label="Search the lab — Lab ID, equipment, method, standard, level or person"
+             placeholder="Search the lab — Lab ID, equipment…">
+    </div>
+    <span class="sep"></span>
+    <!-- Where you are, before anything about time or mode: scope reads
+         outward-in. Both controls ship together — the picker's own label is
+         the current-level readout, and the two steppers are the one-press
+         path a three-level lab actually wants. -->
     <div class="levelbar" id="levelBar" role="group" aria-label="Level">
       <button class="tool lvlstep" id="btnLevelDown"
               title="The level below — [" aria-label="Go down a level">▾</button>
@@ -702,6 +864,12 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
        below the tool row without being clipped by it. -->
   <div class="menu levelmenu" id="levelMenu" role="menu"
        aria-labelledby="btnLevel"></div>
+
+  <!-- The search answer. OUTSIDE `.tools` and `position:fixed` for the same
+       reason the level menu is: the tool row is `overflow-x:auto`, so a panel
+       positioned inside it is clipped at the row's 34px height. -->
+  <div class="findpanel" id="findPanel" role="listbox"
+       aria-label="Search results" hidden></div>
 
   <div class="shell">
 
@@ -1862,6 +2030,426 @@ function showTip(m, at) {
 }
 const hideTip = () => $('#tip').classList.remove('on');
 
+/* ── SEARCH THE LAB ──────────────────────────────────────────────────────
+ *
+ * Ryan asked for "sample searchability" ahead of the September 2026 PJLA
+ * assessment. `/api/search` answers over rows the snapshot already holds, at
+ * ZERO LabCore operations — see `lab_search.py`'s docstring, which is the
+ * contract this box is written against.
+ *
+ * TWO THINGS THIS BOX MUST NEVER DO, and both of them are cheap to do by
+ * accident:
+ *
+ * 1. COLLAPSE THE FOUR STATES. `idle` (nothing typed), `short` (typed, not
+ *    enough to search on), `no_match` (searched, found nothing) and `ok` are
+ *    four different facts. A box that draws "No results" at rest tells
+ *    everybody walking past that the lab is empty. The payload carries four
+ *    states precisely so a UI cannot have to guess.
+ * 2. SPEND THE ZERO-OP GUARANTEE ON THE CLIENT SIDE. The route costs LabCore
+ *    nothing, and a fetch per keystroke per viewer is how that stops being
+ *    true. Debounced, deduplicated, and never fired for an empty box.
+ */
+const SEARCH_DEBOUNCE_MS = 220;   // slower than a typist, faster than a pause
+let SEARCH_TIMER = 0;             // the one pending debounce, if any
+let SEARCH_SEQ = 0;               // so a slow answer cannot overwrite a fast one
+let SEARCH_ASKED = '';            // the query the last request was for
+let SEARCH_NOW = null;            // the answer on screen
+let SEARCH_AT = -1;               // which hit the keyboard is on; -1 = none
+
+/* A count, formatted the way a person reads it. 20000 records is a number
+ * nobody parses at a glance, and every cap this box reports is a number. */
+function searchNum(n) {
+  const k = Number(n);
+  if (!Number.isFinite(k)) return '—';
+  try { return k.toLocaleString('en-US'); } catch (_) { return String(k); }
+}
+
+/* What the index held, per kind, in words. "Equipment" is uncountable and goes
+ * through `equipmentCount`; the rest are ordinary plurals. */
+const SEARCH_KIND_WORDS = {
+  sample: ['Lab ID', 'Lab IDs'], equipment: null,
+  standard: ['QC standard', 'QC standards'], method: ['method', 'methods'],
+  level: ['level', 'levels'], operator: ['person', 'people'],
+};
+const SEARCH_KIND_ORDER = ['sample', 'equipment', 'standard', 'method',
+                           'level', 'operator'];
+
+function searchKindWord(kind, n) {
+  if (kind === 'equipment') return equipmentCount(n);
+  const pair = SEARCH_KIND_WORDS[kind];
+  if (!pair) return `${searchNum(n)} ${esc(kind)}`;
+  return `${searchNum(n)} ${Number(n) === 1 ? pair[0] : pair[1]}`;
+}
+
+/* WHAT THE SEARCH COULD ACTUALLY SEE.
+ *
+ * The corpus is the newest SEARCH_CORPUS_ROWS rows of `lem_machine_log`. At
+ * the ceiling, before the first corpus read lands, or after a failed refresh,
+ * "no such sample" really means "not in what I can see" — a different
+ * sentence, and the one an assessor has to be given rather than a flat denial.
+ * Returns '' when the corpus is whole, because a caveat that is always on is a
+ * caveat nobody reads. */
+function searchCorpusNote(corpus) {
+  const c = corpus || {};
+  const said = [];
+  if (c.partial) {
+    said.push("The lab's full log has not been read yet, so this searched "
+              + "only the floor's most recent activity.");
+  } else if (c.truncated) {
+    said.push(`The searchable log is capped at its newest ${searchNum(c.rows)}`
+              + ' records, so anything older than that is not in this answer.');
+  }
+  if (c.stale) {
+    said.push('The searchable log could not be refreshed, so this is the last '
+              + 'good copy of it.');
+  }
+  return said.join(' ');
+}
+
+const searchCorpusLimited = c =>
+  !!(c && (c.truncated || c.partial || c.stale));
+
+/* Every cap this answer applied, spelled out. "Showing 25" over 313 matches,
+ * drawn without saying so, reads as "the lab has 25 of those". */
+function searchCapsHtml(a) {
+  const rows = [];
+  if (a.state === 'ok') {
+    rows.push(a.truncated
+      ? `<span class="warnrow">Showing ${searchNum(a.shown)} of `
+        + `${searchNum(a.matched)} matches — the rest are not on this list.`
+        + '</span>'
+      : `${searchNum(a.matched)} match${a.matched === 1 ? '' : 'es'}.`);
+    // Per kind, but only where the per-kind cap actually bound. `sample`
+    // routinely matches hundreds and would otherwise take the whole page.
+    const capped = SEARCH_KIND_ORDER
+      .filter(k => a.counts[k] && a.counts[k].matched > a.counts[k].shown)
+      .map(k => `${searchKindWord(k, a.counts[k].matched)}: `
+                + `${searchNum(a.counts[k].shown)} shown`);
+    if (capped.length) rows.push(capped.join(' · '));
+  }
+  /* NOT A DISPLAY CAP — it changes the ANSWER. Past `max_query_tokens` the
+   * word-by-word tier is refused rather than approved on a sample of the
+   * query, so one more correct word can turn a hit into "no results". */
+  if (a.query_tokens_capped) {
+    rows.push('<span class="warnrow">That query has more than '
+      + `${searchNum(a.max_query_tokens)} distinct words, so word-by-word `
+      + 'matching was not attempted — this answer may be narrower than it '
+      + 'looks.</span>');
+  }
+  if (a.query_truncated) {
+    rows.push('<span class="warnrow">That query was longer than the box '
+      + 'searches on and was cut to fit.</span>');
+  }
+  const corpus = searchCorpusNote(a.corpus);
+  if (corpus) rows.push(`<span class="warnrow">${esc(corpus)}</span>`);
+  return rows.length
+    ? `<div class="fcap">${rows.map(r => `<span class="caprow">${r}</span>`)
+        .join('')}</div>`
+    : '';
+}
+
+/* Where a hit is, in a sentence — and for a method or a standard, honestly:
+ * a capped list of names with the TRUE count beside it, because eight names
+ * and no number reads as "eight benches run this". */
+function searchWhere(hit) {
+  const n = Number(hit.machine_count) || 0;
+  const names = (hit.machines || []).map(x => x.title).filter(Boolean);
+  if (hit.kind === 'level') {
+    return n ? `${equipmentCount(n)} on this level`
+             : 'nothing stands on this level';
+  }
+  if (hit.kind === 'sample') {
+    const meta = hit.meta || {};
+    const what = [meta.test_name, meta.value].filter(Boolean).join(' ');
+    return (what ? what + ' · ' : '')
+      + (hit.machine_title ? 'ran on ' + hit.machine_title : 'no equipment named');
+  }
+  if (hit.kind === 'equipment') {
+    const st = (hit.meta || {}).status;
+    return (st ? st + ' · ' : '') + (levelName(hit.level_uid) || 'no level');
+  }
+  if (!n) return 'not assigned to any equipment on this floor';
+  if (n === 1) return 'on ' + (names[0] || hit.machine_title || 'one bench');
+  return `on ${equipmentCount(n)} · ${searchNum(names.length)} named here: `
+       + names.join(', ')
+       + (hit.machines_truncated ? ` and ${searchNum(n - names.length)} more`
+                                 : '');
+}
+
+/* One hit.
+ *
+ * The kind leads the second line rather than taking a column of its own: at
+ * 52px "EQUIPMENT" overflowed its cell and sat against the title, and a
+ * fixed column wide enough for the longest kind spent that width on every
+ * other row. It is coloured, so the kinds are still scannable down the list. */
+function searchHitHtml(hit, i) {
+  const when = hit.ts ? String(hit.ts).slice(0, 16).replace('T', ' ') : '';
+  return `
+    <button class="fhit${i === SEARCH_AT ? ' on' : ''}" role="option"
+            id="fhit-${i}" aria-selected="${i === SEARCH_AT}"
+            data-hit="${i}" type="button">
+      <span><span class="flabel">${esc(hit.label)}</span>
+        <span class="fwhere"><b class="fkind fk-${esc(hit.kind)}">${
+          esc(hit.kind)}</b> · ${esc(searchWhere(hit))}</span></span>
+      <span class="fwhen">${esc(when)}</span>
+    </button>`;
+}
+
+/* THE FOUR STATES, AS FOUR ANSWERS.
+ *
+ * Pure — it takes the payload and returns markup, so the four branches can be
+ * read off the rendering rather than off the source. */
+function searchPanelHtml(a) {
+  if (!a) {
+    return '<div class="fstate">The search could not be run just now.</div>';
+  }
+  if (a.warming) {
+    return '<div class="fstate"><b>Still warming up.</b> The floor has not '
+      + 'finished its first read, so there is nothing to search yet — this is '
+      + 'not a lab with no records in it.</div>';
+  }
+  if (a.state === 'idle') {
+    return '<div class="fstate"><b>Search the lab.</b> A Lab ID, a piece of '
+      + 'equipment, a method, a QC standard, a level or a person. '
+      + `<span class="fhint">Type ${searchNum(a.min_query_chars)} characters `
+      + 'or more.</span></div>';
+  }
+  if (a.state === 'short') {
+    return '<div class="fstate"><b>Keep typing.</b> This searches on '
+      + `${searchNum(a.min_query_chars)} characters or more — one character `
+      + 'matches most of the lab, and a capped dump of that is not an answer.'
+      + '</div>';
+  }
+  if (a.state === 'no_match') {
+    const limited = searchCorpusLimited(a.corpus);
+    // TWO DIFFERENT SENTENCES. Over a whole corpus this is a statement about
+    // the lab; over a clipped one it is only a statement about this answer,
+    // and saying the first when the second is true is the most expensive
+    // wrong answer this box can give.
+    const head = limited
+      ? `<b>Nothing matching “${esc(a.query)}” is in what this search can `
+        + 'see.</b> That is not the same as the lab holding no such record.'
+      : `<b>Nothing in the lab matched “${esc(a.query)}”.</b>`;
+    const held = SEARCH_KIND_ORDER
+      .filter(k => a.indexed && a.indexed[k])
+      .map(k => searchKindWord(k, a.indexed[k]));
+    const looked = held.length
+      ? ` Looked through ${held.join(', ')}.` : '';
+    return `<div class="fstate">${head}${looked}</div>` + searchCapsHtml(a);
+  }
+  // ── ok ──
+  //
+  // No group headings. Every row already leads with its own kind, and a
+  // heading over each run of them printed "84 LAB IDS" above ten rows each
+  // saying SAMPLE. The per-kind number that actually MATTERS — a cap that
+  // bound — is in the caps block, where every other cap is reported.
+  return (a.results || []).map(searchHitHtml).join('') + searchCapsHtml(a);
+}
+
+function searchCursor() { return SEARCH_AT; }
+
+function closeSearch() {
+  const panel = $('#findPanel'), box = $('#findQ');
+  if (panel) panel.hidden = true;
+  if (box) {
+    box.setAttribute('aria-expanded', 'false');
+    box.removeAttribute('aria-activedescendant');
+  }
+  SEARCH_AT = -1;
+}
+
+/* Draw an answer and open the panel. The panel is `position:fixed`, for the
+ * same reason the level menu is: the tool row is `overflow-x:auto` and would
+ * clip anything positioned inside it. */
+function searchShow(answer) {
+  SEARCH_NOW = answer;
+  SEARCH_AT = -1;
+  const panel = $('#findPanel'), box = $('#findQ');
+  if (!panel || !box) return;
+  panel.innerHTML = searchPanelHtml(answer);
+  const r = box.getBoundingClientRect();
+  panel.style.left = r.left + 'px';
+  panel.style.top = (r.bottom + 6) + 'px';
+  panel.hidden = false;
+  box.setAttribute('aria-expanded', 'true');
+  box.removeAttribute('aria-activedescendant');
+}
+
+/* Move the highlight by REDRAWING, because `searchPanelHtml` already knows
+ * where the cursor is and one renderer is better than a renderer plus a
+ * patcher that can disagree with it. The click handler is delegated on the
+ * panel, once, so a redraw never leaves a row that no longer responds. */
+function paintSearchCursor() {
+  const panel = $('#findPanel'), box = $('#findQ');
+  if (!panel) return;
+  panel.innerHTML = searchPanelHtml(SEARCH_NOW);
+  // The id is minted by `searchHitHtml` from the same index, so it is known
+  // without asking the DOM — which matters, because this is the half a screen
+  // reader gets and a highlight it cannot see is a highlight it does not have.
+  if (box) {
+    if (SEARCH_AT >= 0) {
+      box.setAttribute('aria-activedescendant', 'fhit-' + SEARCH_AT);
+    } else {
+      box.removeAttribute('aria-activedescendant');
+    }
+  }
+  const live = panel.querySelector('.fhit.on');
+  if (live && live.scrollIntoView) live.scrollIntoView({block: 'nearest'});
+}
+
+/* Arrows walk the list, Enter opens, Escape closes.
+ *
+ * Escape is SWALLOWED when it does something here. The page's own Escape
+ * handler means "back out one step" and would otherwise close the search AND
+ * drop the open equipment record in one press, which reads as a glitch. */
+function searchKey(e) {
+  const hits = (SEARCH_NOW && SEARCH_NOW.results) || [];
+  const open = !$('#findPanel').hidden;
+  if (e.key === 'Escape') {
+    if (!open && !$('#findQ').value) return;      // nothing of ours to undo
+    e.preventDefault(); e.stopPropagation();
+    if (open) return closeSearch();
+    $('#findQ').value = '';
+    searchTyped();
+    return;
+  }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    if (!hits.length) return;
+    e.preventDefault(); e.stopPropagation();
+    const delta = e.key === 'ArrowDown' ? 1 : -1;
+    // Deliberately does NOT wrap: the box is above the list, so walking off
+    // the top means "back to what I typed" and wrapping to the last hit is
+    // the opposite of that.
+    SEARCH_AT = Math.max(-1, Math.min(hits.length - 1, SEARCH_AT + delta));
+    paintSearchCursor();
+    return;
+  }
+  if (e.key === 'Enter') {
+    const hit = hits[SEARCH_AT];
+    if (!hit) return;
+    e.preventDefault(); e.stopPropagation();
+    openSearchHit(hit);
+  }
+}
+
+/* One request per pause, never one per keystroke.
+ *
+ * An empty box does not ask at all — `idle` is a state this page can answer
+ * on its own, and asking the server to confirm that nothing was typed is a
+ * request per backspace. Re-typing the identical query does not ask again
+ * either: the answer is already on screen. */
+function searchTyped() {
+  clearTimeout(SEARCH_TIMER);
+  const q = String(($('#findQ') && $('#findQ').value) || '');
+  if (!q.trim()) {
+    SEARCH_ASKED = '';
+    searchShow({state: 'idle', results: [], min_query_chars: 2, counts: {},
+                indexed: {}, warming: false, corpus: null});
+    return;
+  }
+  if (q === SEARCH_ASKED && SEARCH_NOW) return;
+  SEARCH_TIMER = setTimeout(() => runSearch(q), SEARCH_DEBOUNCE_MS);
+}
+
+async function runSearch(q) {
+  SEARCH_ASKED = q;
+  const seq = ++SEARCH_SEQ;
+  const res = await fetch('/api/search?q=' + encodeURIComponent(q))
+    .catch(() => null);
+  // A slower answer to an older query must never overwrite a newer one — that
+  // is a search box showing results for something nobody typed last.
+  if (seq !== SEARCH_SEQ) return;
+  if (!res || !res.ok) {
+    SEARCH_ASKED = '';                       // so a retry is actually retried
+    searchShow(null);
+    return;
+  }
+  const body = await res.json().catch(() => null);
+  if (seq !== SEARCH_SEQ) return;
+  searchShow(body);
+}
+
+/* Where a hit goes.
+ *
+ * Everything here is read off the hit rather than re-derived: the payload
+ * carries `machine_uid`, `level_uid` and the instrument list for exactly this,
+ * and a second derivation on the floor is a second thing to drift.
+ *
+ * A LEVEL COSTS NO REQUEST. The ladder rides `/api/machines`, which the floor
+ * already polls, and a search result that fires a read is a read behind a
+ * gesture people make all day. */
+async function openSearchHit(hit) {
+  if (!hit) return;
+  if (hit.kind === 'level') {
+    setLevelView(hit.level_uid || hit.id);
+    closeSearch();
+    return;
+  }
+  const uid = hit.machine_uid
+    || ((hit.machines || [])[0] || {}).machine_uid || '';
+  const m = MACHINES.find(x => x.machine_uid === uid);
+  if (!m) {
+    // A retired bench is still in the log, and a hit naming one is a real
+    // record of something that happened. Say so rather than doing nothing:
+    // a click that silently does nothing reads as a broken page.
+    const panel = $('#findPanel');
+    if (panel) {
+      panel.innerHTML = `<div class="fstate"><b>${esc(hit.label)}</b> is in `
+        + 'the record, but the equipment it ran on is no longer on this '
+        + 'floor. Its history is still on the Logs page.</div>';
+      panel.hidden = false;
+    }
+    return;
+  }
+  const on = levelOfMachine(m);
+  // Open the record on a level that is not being looked at and the record
+  // names a piece of equipment that is not on screen.
+  if (on !== LEVEL_VIEW) setLevelView(on);
+  closeSearch();
+  await select(m);
+  if (hit.kind === 'sample') {
+    // A Lab ID is a run. The useful destination is the record of the
+    // equipment that ran it, with the history narrowed to that Lab ID —
+    // anything less leaves somebody scrolling two hundred rows.
+    const box = $('#histQ');
+    if (box) box.value = hit.id || hit.label || '';
+    await showRecordTab(m, 'hist');
+    return;
+  }
+  if (hit.kind === 'operator') {
+    const box = $('#histQ');
+    if (box) box.value = hit.id || hit.label || '';
+    await showRecordTab(m, 'hist');
+    return;
+  }
+  // A method or a standard: the QC tab, where its band is. That is the tab
+  // `select()` opens on, so there is nothing more to do.
+}
+
+if ($('#findQ')) {
+  // Delegated, once: the panel is redrawn on every answer and on every arrow
+  // key, and per-row listeners would have to be re-attached each time.
+  $('#findPanel').addEventListener('click', e => {
+    const row = e.target.closest && e.target.closest('[data-hit]');
+    if (!row) return;
+    const hit = ((SEARCH_NOW && SEARCH_NOW.results) || [])[Number(row.dataset.hit)];
+    if (hit) openSearchHit(hit);
+  });
+  $('#findQ').addEventListener('input', searchTyped);
+  $('#findQ').addEventListener('keydown', searchKey);
+  $('#findQ').addEventListener('focus', () => {
+    if (SEARCH_NOW) searchShow(SEARCH_NOW); else searchTyped();
+  });
+  // A click anywhere else puts the panel away. Not `blur`: the panel's own
+  // buttons take focus, and closing on blur would close it before the click
+  // it was opened for could land.
+  document.addEventListener('click', e => {
+    if (e.target.closest && (e.target.closest('#findPanel')
+                             || e.target.closest('.findbox'))) return;
+    closeSearch();
+  });
+}
+
 // ── QC control chart ────────────────────────────────────────────────────
 // A pill says "green now"; this says "green, and drifting toward the limit
 // for a week" — which is the thing that actually catches an instrument
@@ -1884,80 +2472,227 @@ async function drawTrend(m) {
     box.innerHTML = '<p class="empty">No QC results recorded yet.</p>';
     return;
   }
-  // A control chart's X axis is TIME. Spacing points evenly by index hid
-  // exactly what the chart exists to show: a month-old result sat as far from
-  // its neighbour as one an hour later, so drift and gaps were invisible.
-  // The limits are labelled on the Y edge where they belong — printed at the
-  // bottom corners they read as an X range, which is what they looked like.
+  box.innerHTML = b.series.map(trendSeriesHtml).join('');
+}
+
+/* The two line treatments, as the two strings the chart is actually drawn
+ * with. They are functions rather than constants so a test can hold them apart
+ * and prove the band and the zones are told apart by more than their labels —
+ * the failure being guarded against is a chart that draws one geometry and
+ * prints both names over it. */
+function trendBandStyle() {
+  return 'stroke:#21c071;stroke-width:1.1;fill:none';
+}
+function trendZoneStyle() {
+  return 'stroke:#7fb2ff;stroke-width:.7;stroke-dasharray:4 3;fill:none';
+}
+
+/* A number as a person reads it, and never as `NaN`. */
+function trendNum(v, dp) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(dp == null ? 2 : dp) : '—';
+}
+
+/* ONE SERIES, AS THE FLOOR'S CONTROL CHART.
+ *
+ * TWO KINDS OF LIMIT LIVE ON THIS CHART AND THEY ARE NOT THE SAME QUANTITY.
+ * `_chart_series` in web_app.py keeps them in two named blocks for exactly
+ * this reason, and the drawing has to keep them apart too:
+ *
+ *   pass_band — the SPECIFICATION. `expected ± k·std_dev` off the standard's
+ *     certificate. It says nothing about this equipment; the same band judges
+ *     every bench running that standard. Drawn in GREEN, solid, labelled down
+ *     the LEFT edge.
+ *   observed.zones — the OBSERVATION. ±1s/2s/3s about the mean of THESE
+ *     results, which is what a Shewhart chart is drawn with. It moves as the
+ *     equipment moves. Drawn in BLUE, dashed, labelled down the RIGHT edge.
+ *
+ * A wide certificate over a drifting bench gives narrow zones inside a wide
+ * band — in control of nothing, passing everything — and a tight certificate
+ * over a stable one gives the reverse. Draw one and label it the other and the
+ * chart says the opposite of what the process is doing. `zones_within_band` is
+ * that comparison already made, and it is printed.
+ *
+ * The X axis is TIME, in days. Spacing points evenly by index put a month-old
+ * result as far from its neighbour as one an hour later, which hid exactly
+ * what the chart exists to show.
+ */
+function trendSeriesHtml(s) {
   const dayLabel = iso => {
     const d = new Date(iso);
     return isNaN(d) ? '' : `${d.getDate()}/${d.getMonth() + 1}`;
   };
-  box.innerHTML = b.series.map(s => {
-    const W = 250, H = 62, padL = 30, padR = 6, padT = 5, padB = 12;
-    const lo = Number(s.low), hi = Number(s.high);
-    const pts = s.points;
-    const vals = pts.map(p => p.value);
-    // Scale to the band, widened to hold any excursion outside it.
-    const min = Math.min(lo, ...vals), max = Math.max(hi, ...vals);
-    const span = (max - min) || 1;
-    const times = pts.map(p => {
-      const t = Date.parse(p.ts);
-      return isNaN(t) ? null : t;
-    });
-    const known = times.filter(t => t !== null);
-    const t0 = known.length ? Math.min(...known) : 0;
-    const t1 = known.length ? Math.max(...known) : 0;
-    const usable = t1 > t0;
-    const plotW = W - padL - padR;
-    // Fall back to even spacing only when the timestamps can't separate the
-    // points (one result, or several inside the same instant).
-    const x = i => padL + (pts.length < 2 ? plotW
-      : usable && times[i] !== null
-        ? ((times[i] - t0) / (t1 - t0)) * plotW
-        : (i * plotW) / (pts.length - 1));
-    const y = v => H - padB - ((v - min) / span) * (H - padB - padT);
-    const inBand = `M ${padL} ${y(hi)} L ${W - padR} ${y(hi)} `
-                 + `L ${W - padR} ${y(lo)} L ${padL} ${y(lo)} Z`;
-    const line = pts.map((p, i) =>
-      `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(' ');
-    const last = pts[pts.length - 1];
-    const axis = usable
-      ? `${dayLabel(pts[0].ts)} → ${dayLabel(last.ts)}`
-      : (dayLabel(last.ts) || 'single result');
-    return `
-      <div class="qc" style="margin-bottom:9px">
-        <div class="n">${esc(s.test_name)}
-          <span class="val" style="color:${last.in_spec ? 'var(--green)' : 'var(--red)'}">
-            ${last.value}</span></div>
-        <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:62px;display:block">
-          <path d="${inBand}" fill="rgba(33,192,113,.10)"/>
-          <line x1="${padL}" y1="${y(s.expected)}" x2="${W - padR}" y2="${y(s.expected)}"
-                stroke="#5b6675" stroke-width=".8" stroke-dasharray="3 4"/>
-          <!-- Y axis: the spec band, labelled at the edge it belongs to -->
-          <text x="${padL - 3}" y="${y(hi) + 2.6}" text-anchor="end"
-                font-size="6.5" fill="#6e7480">${hi.toFixed(1)}</text>
-          <text x="${padL - 3}" y="${y(s.expected) + 2.6}" text-anchor="end"
-                font-size="6.5" fill="#8e97a8">${Number(s.expected).toFixed(1)}</text>
-          <text x="${padL - 3}" y="${y(lo) + 2.6}" text-anchor="end"
-                font-size="6.5" fill="#6e7480">${lo.toFixed(1)}</text>
+  const W = 250, H = 96, padL = 34, padR = 20, padT = 6, padB = 13;
+  const pts = s.points || [];
+  const band = s.pass_band
+    || (Number.isFinite(Number(s.low)) ? {low: s.low, high: s.high,
+                                         expected: s.expected} : null);
+  const obs = s.observed || {};
+  const zones = obs.zones || {};
+  const zoneOf = k => {
+    const z = zones[k + 's'];
+    return z && Number.isFinite(Number(z.low)) && Number.isFinite(Number(z.high))
+      ? {low: Number(z.low), high: Number(z.high)} : null;
+  };
+  const z1 = zoneOf(1), z2 = zoneOf(2), z3 = zoneOf(3);
+  const mean = Number.isFinite(Number(obs.mean)) ? Number(obs.mean) : null;
+
+  // The scale has to hold BOTH quantities and every reading, or one of them is
+  // silently cropped and the chart lies by omission.
+  const vals = pts.map(p => Number(p.value)).filter(Number.isFinite);
+  const edges = vals.slice();
+  if (band) edges.push(Number(band.low), Number(band.high));
+  [z1, z2, z3].forEach(z => { if (z) edges.push(z.low, z.high); });
+  if (mean !== null) edges.push(mean);
+  const finite = edges.filter(Number.isFinite);
+  const lowest = finite.length ? Math.min(...finite) : 0;
+  const highest = finite.length ? Math.max(...finite) : 1;
+  // A breath top and bottom. Without it the reading that went furthest out —
+  // the one the chart exists to show — is drawn half underneath the X axis.
+  const air = ((highest - lowest) || 1) * 0.06;
+  const min = lowest - air, max = highest + air;
+  const span = (max - min) || 1;
+
+  const times = pts.map(p => {
+    const t = Date.parse(p.ts);
+    return isNaN(t) ? null : t;
+  });
+  const known = times.filter(t => t !== null);
+  const t0 = known.length ? Math.min(...known) : 0;
+  const t1 = known.length ? Math.max(...known) : 0;
+  const usable = t1 > t0;
+  const plotW = W - padL - padR;
+  // Fall back to even spacing only when the timestamps can't separate the
+  // points (one result, or several inside the same instant).
+  const x = i => padL + (pts.length < 2 ? plotW
+    : usable && times[i] !== null
+      ? ((times[i] - t0) / (t1 - t0)) * plotW
+      : (i * plotW) / (pts.length - 1));
+  const y = v => H - padB - ((Number(v) - min) / span) * (H - padB - padT);
+
+  const hline = (v, style) => `<line x1="${padL}" y1="${y(v).toFixed(1)}"`
+    + ` x2="${W - padR}" y2="${y(v).toFixed(1)}" style="${style}"/>`;
+  const zoneLines = [[3, z3], [2, z2], [1, z1]].filter(p => p[1])
+    .map(([k, z]) => hline(z.low, trendZoneStyle()) + hline(z.high, trendZoneStyle())
+      + `<text x="${W - padR + 2}" y="${y(z.high).toFixed(1)}" dy="2.4"`
+      + ` text-anchor="start" font-size="6" fill="#7fb2ff">${k}s</text>`
+      + `<text x="${W - padR + 2}" y="${y(z.low).toFixed(1)}" dy="2.4"`
+      + ` text-anchor="start" font-size="6" fill="#7fb2ff">${k}s</text>`).join('');
+
+  const bandArt = band ? `
+          <path d="M ${padL} ${y(band.high).toFixed(1)} L ${W - padR} ${y(band.high).toFixed(1)}
+                   L ${W - padR} ${y(band.low).toFixed(1)} L ${padL} ${y(band.low).toFixed(1)} Z"
+                fill="rgba(33,192,113,.10)"/>
+          ${hline(band.high, trendBandStyle())}
+          ${hline(band.low, trendBandStyle())}
+          <line x1="${padL}" y1="${y(band.expected).toFixed(1)}" x2="${W - padR}"
+                y2="${y(band.expected).toFixed(1)}"
+                stroke="#8e97a8" stroke-width=".8" stroke-dasharray="3 4"/>
+          <text x="${padL - 3}" y="${y(band.high).toFixed(1)}" dy="2.6" text-anchor="end"
+                font-size="6.5" fill="#21c071">${trendNum(band.high, 1)}</text>
+          <text x="${padL - 3}" y="${y(band.expected).toFixed(1)}" dy="2.6" text-anchor="end"
+                font-size="6.5" fill="#8e97a8">${trendNum(band.expected, 1)}</text>
+          <text x="${padL - 3}" y="${y(band.low).toFixed(1)}" dy="2.6" text-anchor="end"
+                font-size="6.5" fill="#21c071">${trendNum(band.low, 1)}</text>` : '';
+  const meanArt = mean === null ? '' : `
+          <line x1="${padL}" y1="${y(mean).toFixed(1)}" x2="${W - padR}"
+                y2="${y(mean).toFixed(1)}" stroke="#d9a441" stroke-width="1"/>`;
+
+  // The readings the analysis actually flagged, so a person can see WHICH
+  // ones — a count with no marks on the chart sends somebody counting.
+  const flagged = new Set();
+  (s.violations || []).forEach(v => (v.indices || []).forEach(i => flagged.add(i)));
+
+  const line = pts.map((p, i) =>
+    `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${y(p.value).toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1] || {};
+  const axis = usable
+    ? `${dayLabel(pts[0].ts)} → ${dayLabel(last.ts)}`
+    : (dayLabel(last.ts) || 'single result');
+
+  const zoneText = [[1, z1], [2, z2], [3, z3]].filter(p => p[1])
+    .map(([k, z]) => `±${k}s ${trendNum(z.low)}…${trendNum(z.high)}`).join(' · ');
+
+  const cov = s.coverage || {};
+  const covCounts = [
+    cov.n_operators == null ? '' : `${cov.n_operators} analyst${cov.n_operators === 1 ? '' : 's'}`,
+    cov.n_days == null ? '' : `${cov.n_days} day${cov.n_days === 1 ? '' : 's'}`,
+    cov.n_calibrations == null ? ''
+      : `${cov.n_calibrations} calibration${cov.n_calibrations === 1 ? '' : 's'}`,
+  ].filter(Boolean).join(' · ');
+
+  /* WITH NO QUALIFICATION LIMITS THE CHART IS GRADING ITSELF. The zones are
+   * fitted to the very points they judge, so every finding comes back
+   * provisional — and a provisional alarm presented as fact is worse than no
+   * alarm. This is the sentence that stops somebody acting on it. */
+  const provisional = s.self_fitted ? `
+      <p class="prov"><b>Provisional</b> — these control zones were computed
+      from the same ${trendNum(obs.n, 0)} results they are judging (no
+      qualification limits exist for this equipment yet), so anything they
+      find has to be confirmed against fixed limits before it is acted on.</p>`
+    : '';
+
+  const violations = (s.violations || []).map(v => `
+      <p class="viol"><span class="rule">${esc(v.rule)}</span>
+        ${v.provisional ? '<span class="pmark">provisional</span>' : ''}
+        ${esc(v.message || '')}</p>`).join('');
+
+  return `
+      <div class="qc trendrow">
+        <div class="n"><span>${esc(s.test_name)}</span>
+          <span class="val" style="color:${last.in_spec === false ? 'var(--red)'
+            : last.in_spec === true ? 'var(--green)' : 'var(--ink3)'}">${
+            esc(String(last.value == null ? '—' : last.value))}</span></div>
+        <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto;display:block"
+             role="img" aria-label="Control chart for ${esc(s.test_name)}">
+          ${bandArt}
+          ${zoneLines}
+          ${meanArt}
           <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${H - padB}"
                 stroke="#252b36" stroke-width=".8"/>
           <line x1="${padL}" y1="${H - padB}" x2="${W - padR}" y2="${H - padB}"
                 stroke="#252b36" stroke-width=".8"/>
-          <path d="${line}" fill="none" stroke="var(--amber)" stroke-width="1.4"
+          <path d="${line}" fill="none" stroke="var(--amber)" stroke-width="1.3"
                 stroke-linejoin="round"/>
           ${pts.map((p, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(p.value).toFixed(1)}"
-             r="${i === pts.length - 1 ? 3 : 2}"
-             fill="${p.in_spec ? 'var(--green)' : 'var(--red)'}"><title>${
-             esc(p.ts || '')} — ${p.value}</title></circle>`).join('')}
+             r="${flagged.has(i) ? 3.4 : i === pts.length - 1 ? 3 : 2}"
+             fill="${p.in_spec === true ? 'var(--green)'
+                   : p.in_spec === false ? 'var(--red)' : '#0d1015'}"
+             stroke="${flagged.has(i) ? 'var(--red)' : p.in_spec == null
+                      ? 'var(--ink3)' : 'none'}"
+             stroke-width="${flagged.has(i) ? 1.2 : .9}"><title>${
+             esc(p.ts || '')} — ${esc(String(p.value))}${
+             p.in_spec == null ? ' (no verdict recorded)' : ''}</title></circle>`).join('')}
         </svg>
-        <div class="lim"><span class="num">${esc(axis)}</span>
+        <div class="lim"><span class="num">days ${esc(axis)}</span>
           <span>${s.runs} run${s.runs === 1 ? '' : 's'}${s.failures
-            ? ` · <b style="color:var(--red)">${s.failures} out of spec</b>` : ''}</span>
+            ? ` · <b style="color:var(--red)">${s.failures} out of spec</b>` : ''}${
+            s.unjudged ? ` · ${s.unjudged} unjudged` : ''}</span>
           <span>${s.sample_id ? 'std ' + esc(s.sample_id) : ''}</span></div>
+        <div class="trendkeys">
+          <span class="kband"><i></i>pass band — the standard's limit,
+            ${band ? `${trendNum(band.low, 1)}…${trendNum(band.high, 1)}`
+                   : 'none recorded'}</span>
+          <span class="ktarget"><i></i>target ${band ? trendNum(band.expected, 1)
+                                                     : '—'}</span>
+          <span class="kzone"><i></i>Shewhart zones — this equipment's own
+            spread${zoneText ? ': ' + zoneText : ' (not enough results)'}</span>
+          <span class="kmean"><i></i>observed mean ${trendNum(obs.mean)}
+            · s ${trendNum(obs.s, 3)} · n ${trendNum(obs.n, 0)}
+            · df ${trendNum(obs.df, 0)}</span>
+        </div>
+        <div class="trendkeys"><span>${band && zones['3s']
+          ? (s.zones_within_band
+             ? 'The 3s zones fall inside the pass band.'
+             : 'The 3s zones reach past the pass band — this equipment’s '
+               + 'own spread is wider than the standard allows for.')
+          : 'Zones and band cannot be compared here.'}</span></div>
+        ${provisional}
+        <p class="caveat">${esc(cov.caveat || 'No coverage was reported for this spread.')}</p>
+        <div class="trendkeys"><span>spread basis: ${esc(s.spread_basis || '—')}${
+          covCounts ? ' · ' + esc(covCounts) : ''}</span></div>
+        ${violations}
       </div>`;
-  }).join('');
 }
 
 function moduleStateText(m) {
@@ -2236,8 +2971,13 @@ async function select(m) {
       <div class="scroller" id="tlList"><p class="empty">Loading…</p></div>
     </div>`;
 
-  $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
-    <h2 class="sign">Recent activity</h2></div>
+  /* The activity rail is the FEED when nothing is open, and it caches what it
+   * last drew. Overwriting it here without clearing that signature meant
+   * closing the record left this equipment's events on screen under the
+   * lab-wide heading, until something in the lab happened. */
+  FEED_SIG = '';
+  $('#railR').innerHTML = `<div class="railhead"><div class="cap">Status</div>
+    <h2 class="sign">Events</h2></div>
     <p class="empty">Loading…</p>`;
   $('#railClose').addEventListener('click', deselect);
   // The actions that used to be right-click only. Right-click still works.
@@ -2267,44 +3007,227 @@ async function select(m) {
   /* The record's tabs. Documents and History are read WHEN THE TAB IS OPENED,
    * never on the floor's poll — a per-equipment fetch on a two-second timer
    * from every screen in the lab is the N+1 this whole design is built to
-   * avoid. */
-  $$('#railL .tab').forEach(t => t.addEventListener('click', () => {
-    $$('#railL .tab').forEach(x => x.classList.toggle('on', x === t));
-    ['qc', 'maint', 'docs', 'hist'].forEach(name => {
-      $(`#tab-${name}`).hidden = name !== t.dataset.tab;
-    });
-    if (t.dataset.tab === 'maint') loadMaintPanel(m);
-    if (t.dataset.tab === 'docs') loadDocuments(m);
-    if (t.dataset.tab === 'hist') loadHistory(m);
-  }));
+   * avoid. The switching itself lives in `showRecordTab` so that the search
+   * box can open a record straight onto a tab without synthesising a click on
+   * a button it would have to find first. */
+  $$('#railL .tab').forEach(t => t.addEventListener('click',
+    () => showRecordTab(m, t.dataset.tab)));
 
   drawTrend(m);
-  const r = await fetch(`/api/machines/${encodeURIComponent(m.machine_uid)}/events?limit=60`);
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    // "Nothing logged yet for this instrument" is a reason people walk over and
-    // start touching a bench that is running perfectly well.
-    $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
-      <h2 class="sign">Recent activity</h2></div>
-      <p class="empty">${esc(body.error
-        || 'LabCore did not answer, so this history could not be read.')}</p>`;
+  await loadTimeline(m);
+}
+
+/* One place that decides which tab is showing, and what that costs.
+ *
+ * It was inline in the click handler, which meant the only way to open the
+ * record on a given tab was to find that button and click it — and
+ * `openSearchHit` has a hit, not a button. Two ways to switch a tab is two
+ * places the lazy read can be forgotten. */
+function showRecordTab(m, name) {
+  $$('#railL .tab').forEach(x => x.classList.toggle('on',
+                                                    x.dataset.tab === name));
+  ['qc', 'maint', 'docs', 'hist'].forEach(pane => {
+    const box = $(`#tab-${pane}`);
+    if (box) box.hidden = pane !== name;
+  });
+  if (name === 'maint') return loadMaintPanel(m);
+  if (name === 'docs') return loadDocuments(m);
+  if (name === 'hist') return loadHistory(m);
+  return Promise.resolve();
+}
+
+/* ── THE STATUS GUTTER ───────────────────────────────────────────────────
+ *
+ * Ryan's whiteboard, under EQUIPMENT: the events list with a colour band down
+ * its side, and the QC readings drawn as the TRANSITIONS between the states
+ * that band is made of — GREEN over four runs, an arrow into `QC AO25 · 7.8`,
+ * then YELLOW.
+ *
+ * `/api/machines/<uid>/status-timeline` derives all of it (`gutter_events`,
+ * pure, in web_app.py): for every event, the status in force WHEN IT HAPPENED,
+ * derived from the verdicts recorded before it — never from what time it is
+ * now. That is what makes this a record rather than a dashboard, and it is why
+ * the drawing may not re-derive any of it here.
+ *
+ * Served from the snapshot at ZERO LabCore ops.
+ */
+
+/* How long a passing QC result lasts here, and WHICH LEVEL SAID SO.
+ *
+ * `default` is the number nobody chose. Presenting it as configuration sends
+ * somebody looking for the setting that produced it, and there isn't one. */
+function gutterWindowText(body) {
+  const raw = Number(body.qc_expire_hours);
+  if (!Number.isFinite(raw) || raw <= 0) return '';
+  const hours = Number.isInteger(raw) ? String(raw) : raw.toFixed(1);
+  const from = String(body.qc_expire_from || '');
+  if (body.qc_expire_source === 'standard' && from) {
+    return `A passing QC result counts as fresh for ${hours} h here, which is `
+      + `the window the standard ${esc(from)} states for itself.`;
+  }
+  if (body.qc_expire_source === 'standard') {
+    return `A passing QC result counts as fresh for ${hours} h here, from the `
+      + 'QC standard assigned to this equipment.';
+  }
+  if (body.qc_expire_source === 'request') {
+    return `A passing QC result counts as fresh for ${hours} h here, because `
+      + 'this window was asked for in the request — it is not what this '
+      + 'equipment normally uses.';
+  }
+  return `A passing QC result counts as fresh for ${hours} h here — the `
+    + 'built-in default, because no QC standard on this equipment states a '
+    + 'window of its own.';
+}
+
+/* An audit action whose STORED form is a constant rather than a sentence.
+ *
+ * `levels.LEVEL_MOVE_ACTION` is written into `test_name` (MOVE_LOG_SQL), so a
+ * level move arrives here as the literal `level_move` beside rows reading as
+ * English. `/api/machines/<uid>/events` has `display_action` applied on the way
+ * out; `/api/machines/<uid>/status-timeline` reports `test_name` as recorded,
+ * because it is a record of the row and not a rendering of it.
+ *
+ * So this is a SECOND COPY of `web_app._ACTION_WORDS`, held here deliberately
+ * and on the same terms as the two copies of `qc_is_stale`:
+ * `tests/test_equipment_ui.py` loads both and fails if they ever disagree. The
+ * stored value is not touched — rows written months ago have to keep matching
+ * a filter that spans them, which is why the rename happens on the way out. */
+const ACTION_WORDS = {level_move: 'level moved'};
+
+function eventLabel(e) {
+  const name = String((e && e.test_name) || '');
+  return e && e.kind === 'config' ? (ACTION_WORDS[name] || name) : name;
+}
+
+/* One QC reading, as the transition it caused. */
+function gutterTransition(e) {
+  const t = e.transition || {};
+  const from = String(t.from || 'UNKNOWN'), to = String(t.to || 'UNKNOWN');
+  const band = t.band;
+  const value = t.value == null ? String(e.value || '') : String(t.value);
+  const bandText = band
+    ? `judged against ${Number(band.low).toFixed(1)}…`
+      + `${Number(band.high).toFixed(1)}`
+      + (band.expected == null ? ''
+         : ` (target ${Number(band.expected).toFixed(1)})`)
+    // A verdict whose row carries no band is judged against nothing recorded.
+    // Drawing a line at zero would be inventing the limits it was measured to.
+    : 'no band recorded on this verdict';
+  const verdict = t.in_spec === true ? 'in spec'
+                : t.in_spec === false ? 'OUT OF SPEC'
+                : 'no verdict recorded';
+  return `<span class="trans"><b style="color:${col(from)}">${esc(from)}</b>`
+    + `<span class="arrow">→</span><b style="color:${col(to)}">${esc(to)}</b>`
+    + ` · ${esc(value)} ${esc(verdict)} · ${esc(bandText)}</span>`;
+}
+
+function gutterEventHtml(e) {
+  const when = String(e.ts || '').slice(0, 16).replace('T', ' ');
+  if (e.qc) {
+    const t = e.transition || {};
+    const moved = t.from && t.to && t.from !== t.to;
+    return `
+      <div class="gutev qcev${moved ? ' moved' : ''}" data-qc="1">
+        <span class="k k-qc">qc</span>
+        <span class="lab">${esc(e.lab_id || '')} ${esc(e.test_name || '')}</span>
+        <span class="t">${esc(when.slice(11) || when)}</span>
+        ${gutterTransition(e)}
+      </div>`;
+  }
+  return `
+      <div class="gutev">
+        <span class="k k-${esc(e.kind)}" title="${esc(e.kind)}">${
+          esc(kindTag(e.kind))}</span>
+        <span class="lab">${esc(e.lab_id || '')} ${esc(eventLabel(e))}
+          ${e.value ? `<b class="num">${esc(e.value)}</b>` : ''}</span>
+        <span class="t">${esc(when.slice(11) || when)}</span>
+      </div>`;
+}
+
+/* The whole list, banded.
+ *
+ * Events arrive newest-first and consecutive events sharing a status form one
+ * RUN — which is the claim the band is making: everything inside this bracket
+ * happened while the equipment was in this state. UNKNOWN is a run like any
+ * other: before the first QC reading there is no verdict to stand on, and that
+ * is a state with a reason, not a colourless gap in the drawing. */
+function gutterHtml(body) {
+  const events = (body && body.events) || [];
+  if (!events.length) {
+    return '<p class="empty">Nothing is recorded against this equipment in '
+      + 'this window.</p>';
+  }
+  const runs = [];
+  events.forEach(e => {
+    const last = runs[runs.length - 1];
+    if (last && last.status === e.status && last.reason === e.reason) {
+      last.events.push(e);
+    } else {
+      runs.push({status: e.status, reason: e.reason,
+                 since: e.status_since, events: [e]});
+    }
+  });
+
+  const drawn = runs.map(run => {
+    const c = col(run.status);
+    const since = run.since
+      ? ' · since ' + esc(String(run.since).slice(0, 16).replace('T', ' '))
+      : '';
+    return `
+    <div class="gutrun">
+      <div class="guthead"><b style="color:${c}">${esc(run.status)}</b>
+        · ${esc(run.reason || '')}${since}</div>
+      <div class="gutbody">
+        <div class="gutband" style="background:${c}"></div>
+        <div class="gutrows">${run.events.map(gutterEventHtml).join('')}</div>
+      </div>
+    </div>`;
+  }).join('');
+
+  /* WHAT THIS WINDOW IS, AND WHAT IT IS NOT.
+   *
+   * The snapshot holds the newest EVENT_LIMIT rows for the WHOLE lab, so a
+   * quiet bench's gutter can be clipped by a busy neighbour. "Nothing else
+   * happened" and "nothing else is in this answer" are different sentences and
+   * only one of them is a statement about the record. */
+  const reach = body.covers_from
+    ? String(body.covers_from).slice(0, 16).replace('T', ' ') : '';
+  const clipped = body.complete === false
+    ? `<span class="clip">This window is clipped — it holds only the newest
+       events the floor is carrying for the whole lab, so older activity on
+       this equipment is not on this list. The full record is on the History
+       tab.</span>` : '';
+  const covers = reach
+    ? `Reaches back to ${esc(reach)}.` : '';
+  const window = gutterWindowText(body || {});
+  const note = (clipped || covers || window)
+    ? `<div class="gutnote">${clipped}${esc('')}${covers} ${window}</div>` : '';
+  return drawn + note;
+}
+
+/* The events list, read when a record is opened — never on the floor's poll.
+ * A per-equipment fetch on a two-second timer from every screen in the lab is
+ * the N+1 the whole design exists to avoid. */
+async function loadTimeline(m) {
+  const rail = $('#railR');
+  if (!rail) return;
+  const head = `<div class="railhead"><div class="cap">Status</div>
+    <h2 class="sign">Events</h2></div>`;
+  const res = await fetch(
+    `/api/machines/${encodeURIComponent(m.machine_uid)}/status-timeline`)
+    .catch(() => null);
+  if (!res || !res.ok) {
+    // "Nothing logged yet for this equipment" about a bench with a month of
+    // work behind it is the sentence someone quotes at an assessor. A read
+    // that failed is never an empty record.
+    const e = res ? await res.json().catch(() => ({})) : {};
+    rail.innerHTML = head + `<p class="empty">${esc(e.error
+      || 'LabCore did not answer, so this activity could not be read.')} This
+      is not an equipment record with nothing on it.</p>`;
     return;
   }
-  const evs = body.events || [];
-  /* `test_label` for a config row, whose `test_name` is a stored constant like
-   * `level_move`; `test_name` for everything else, where it IS the LabCore
-   * method and must read exactly as LabCore has it. (Not an HTML comment
-   * inside the literal below — a backtick in there ends the template.) */
-  $('#railR').innerHTML = `<div class="railhead"><div class="cap">Run history</div>
-    <h2 class="sign">Recent activity</h2></div>` + (evs.length ? evs.map(e => `
-    <div class="ev">
-      <span class="k k-${esc(e.kind)}" title="${esc(e.kind)}">${esc(kindTag(e.kind))}</span>
-      <span>${esc(e.lab_id || '')} ${esc((e.test_label || e.test_name || '')
-        .slice(0, 22))}
-        ${e.value ? `<b class="num">${esc(e.value)}</b>` : ''}</span>
-      <span class="t">${esc((e.ts || '').slice(11, 16))}</span>
-    </div>`).join('')
-    : '<p class="empty">Nothing logged yet for this equipment.</p>');
+  const body = await res.json().catch(() => null);
+  rail.innerHTML = head + gutterHtml(body || {});
 }
 
 /* Where the open equipment stands, and — when that is not the level being
@@ -2336,8 +3259,7 @@ function updatePanelLevelNote() {
  * that can disagree about them. */
 async function openRecordTab(m, tab) {
   await select(m);
-  const btn = $$('#railL .tab').find(t => t.dataset.tab === tab);
-  if (btn) btn.click();
+  await showRecordTab(m, tab);
 }
 
 function renderTally() {
@@ -5803,7 +6725,10 @@ setInterval(() => {
   $('#clock').textContent = d.toLocaleDateString('en-CA') + '  ' +
     d.toLocaleTimeString('en-GB', {hour12: false});
 }, 1000);
-window.addEventListener('resize', () => drawFloor());
+/* ONE resize listener on this page, doing both jobs. A second one meant every
+ * resize redrew the whole SVG floor twice; the search panel is `position:fixed`
+ * off the box's measured rect, so it has to be put away when that rect moves. */
+window.addEventListener('resize', () => { closeSearch(); drawFloor(); });
 /* Severed: show the plan now, and take away the controls that have nothing
  * behind them.
  *

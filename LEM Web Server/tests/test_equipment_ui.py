@@ -454,8 +454,30 @@ class TestTheDetailBlobIsASentence:
         assert "test_label" not in qc
         assert qc["test_name"] == "Cloud Point"
 
-    def test_the_rail_renders_the_label_when_there_is_one(self, floor):
-        assert "e.test_label || e.test_name" in floor
+    def test_the_record_rail_holds_the_same_two_copies_together(self, floor):
+        """The record's right rail is the STATUS GUTTER now, and it reads
+        `/api/machines/<uid>/status-timeline` — which reports `test_name`
+        exactly as the row holds it, because it is a record of the row and not
+        a rendering of it. So `floor.html` carries its own `ACTION_WORDS`, and
+        the two copies are held together here for the same reason
+        `tests/test_qc_window.py` holds the two copies of `qc_is_stale`
+        together: a second copy that nothing compares is a second copy that
+        drifts, and the drift here is `level_move` printed raw beside rows
+        reading as English.
+
+        `/api/machines/<uid>/events` still applies `display_action` on the way
+        out and is untouched — this is about the list the record draws."""
+        import web_app
+
+        block = re.search(r"const ACTION_WORDS = \{(.*?)\};", floor, re.S)
+        assert block, "floor.html no longer maps the stored action constants"
+        floor_words = dict(re.findall(r"(\w+)\s*:\s*'([^']*)'", block.group(1)))
+        assert floor_words == web_app._ACTION_WORDS, (
+            "floor.html and web_app._ACTION_WORDS disagree about what a stored "
+            "action constant reads as")
+        # And the rail actually renders THROUGH it, rather than printing the
+        # raw column beside it.
+        assert "esc(eventLabel(e))" in floor
 
     def test_the_logs_page_prints_the_sentence_and_not_the_blob(self, client):
         page = client.get("/logs").get_data(as_text=True)

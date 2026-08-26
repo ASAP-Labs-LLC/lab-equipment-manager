@@ -10,6 +10,7 @@ reload (a wall display is set once and left), and never trap someone in a view w
 no way out — hence Escape, and a control that stays visible.
 """
 import pathlib
+import re
 
 import pytest
 
@@ -75,9 +76,12 @@ class TestGettingBackOut:
     def test_escape_leaves_it(self):
         s = src()
         assert "maxmap" in s
-        esc = s[s.index("Escape") - 400:s.index("Escape") + 400] \
-            if "Escape" in s else ""
-        assert "maxmap" in esc or "exitMax" in s
+        # The page has more than one Escape handler now (the search box
+        # swallows its own), so this looks for the one that backs out of the
+        # maximal view rather than for the first time the word appears.
+        handlers = [s[m.start() - 400:m.start() + 400]
+                    for m in re.finditer("Escape", s)]
+        assert any("maxmap" in h for h in handlers) or "exitMax" in s
 
     def test_the_choice_is_remembered(self):
         """A wall display is set once and left; a reload must not undo it."""

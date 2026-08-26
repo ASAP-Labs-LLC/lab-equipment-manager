@@ -2896,6 +2896,830 @@ if (!failed) {
 }
 
 
+/* ==== JOB 1: THE SEARCH BOX =============================================
+ *
+ * `/api/search` answers with FOUR states and reports every cap it applied.
+ * Both of those are load-bearing and both are invisible to a test that greps
+ * the template: `state` appears in the source whether or not the four branches
+ * are four, and "matched" appears whether or not the number is ever drawn.
+ *
+ * So every assertion below runs the shipped render function over a real
+ * `lab_search.search()` answer and reads what came back.
+ *
+ * The fixtures are the actual shapes the route sends, taken off the running
+ * dev server (`GET /api/search?q=…`) rather than written from the docstring:
+ * an invented field on a fixture is how showTip's NaN survived a test suite
+ * for a month. */
+
+const HIT_EQUIP = {
+  kind: 'equipment', key: 'equipment:pacflash1', id: 'pac-flash-1',
+  label: 'PAC Flash 1', score: 8916, match: 'prefix', field: 'title',
+  machine_uid: 'pac-flash-1', machine_title: 'PAC Flash 1',
+  level_uid: 'l1', ts: '2026-08-26T15:20:00',
+  machines: [{machine_uid: 'pac-flash-1', title: 'PAC Flash 1',
+              level_uid: 'l1'}],
+  machine_count: 1, machines_truncated: false, meta: {status: 'GREEN'},
+};
+/* A method runs on the whole fleet: eight named, the true count beside them.
+ * `machines_truncated` is the cap that reads as "eight benches run this"
+ * when it is dropped. */
+const HIT_METHOD = {
+  kind: 'method', key: 'method:flashpoint', id: 'Flash Point',
+  label: 'Flash Point', score: 8216, match: 'prefix', field: 'name',
+  machine_uid: 'pac-flash-1', machine_title: 'PAC Flash 1',
+  level_uid: 'l1', ts: '',
+  machines: [{machine_uid: 'pac-flash-1', title: 'PAC Flash 1', level_uid: 'l1'},
+             {machine_uid: 'pac-flash-2', title: 'PAC Flash 2', level_uid: 'l1'},
+             {machine_uid: 'pensky-1', title: 'Pensky-Martens 1', level_uid: 'l2'}],
+  machine_count: 11, machines_truncated: true, meta: {},
+};
+const HIT_SAMPLE = {
+  kind: 'sample', key: 'sample:l37176', id: 'L-37176', label: 'L-37176',
+  score: 8516, match: 'prefix', field: 'name',
+  machine_uid: 'gc-2', machine_title: 'GC 2', level_uid: 'l2',
+  ts: '2026-08-26T15:22:36.953512',
+  machines: [{machine_uid: 'gc-2', title: 'GC 2', level_uid: 'l2'}],
+  machine_count: 1, machines_truncated: false,
+  meta: {log_kind: 'run', test_name: 'Sulfur', value: '0.8392'},
+};
+const HIT_STANDARD = {
+  kind: 'standard', key: 'standard:std1', id: 'STD-1', label: 'STD-1',
+  score: 8316, match: 'prefix', field: 'name',
+  machine_uid: 'optimpp-1', machine_title: 'OptiMPP 1', level_uid: 'l1',
+  ts: '', machines: [{machine_uid: 'optimpp-1', title: 'OptiMPP 1',
+                      level_uid: 'l1'}],
+  machine_count: 2, machines_truncated: false, meta: {},
+};
+const HIT_LEVEL = {
+  kind: 'level', key: 'level:l2', id: 'l2', label: 'Mezzanine',
+  score: 8116, match: 'prefix', field: 'name',
+  machine_uid: 'gc-2', machine_title: 'GC 2', level_uid: 'l2', ts: '',
+  machines: [{machine_uid: 'gc-2', title: 'GC 2', level_uid: 'l2'}],
+  machine_count: 1, machines_truncated: false, meta: {rank: 2},
+};
+const HIT_OPERATOR = {
+  kind: 'operator', key: 'operator:dana', id: 'dana', label: 'dana',
+  score: 8066, match: 'prefix', field: 'name',
+  machine_uid: 'gc-1', machine_title: 'GC 1', level_uid: 'l1',
+  ts: '2026-08-26T14:00:00',
+  machines: [{machine_uid: 'gc-1', title: 'GC 1', level_uid: 'l1'}],
+  machine_count: 1, machines_truncated: false, meta: {},
+};
+
+const CORPUS_WHOLE = {rows: 385, truncated: false, partial: false,
+                      stale: false, refreshed_at: '2026-08-26T16:14:38'};
+/* The corpus is capped at its newest SEARCH_CORPUS_ROWS records. At the
+ * ceiling "not found" means "not in the last 20 000", which is a different
+ * sentence and the one an assessor has to be given. */
+const CORPUS_CLIPPED = {rows: 20000, truncated: true, partial: false,
+                        stale: false, refreshed_at: '2026-08-26T16:14:38'};
+const CORPUS_PARTIAL = {rows: null, truncated: false, partial: true,
+                        stale: false, refreshed_at: ''};
+const CORPUS_STALE = {rows: 385, truncated: false, partial: false,
+                      stale: true, refreshed_at: '2026-08-26T09:00:00'};
+
+const answerBase = over => Object.assign({
+  query: '', normalised: '', query_truncated: false, state: 'idle',
+  results: [], shown: 0, matched: 0, truncated: false, limit: 25,
+  per_kind_limit: 10, min_query_chars: 2, max_query_tokens: 8,
+  query_tokens_capped: false, counts: {}, kinds: [], searched: 0,
+  indexed: {}, warming: false, age_seconds: 2, corpus: CORPUS_WHOLE,
+}, over || {});
+
+const A_IDLE = answerBase({});
+const A_SHORT = answerBase({query: 'f', normalised: 'f', state: 'short'});
+const A_NO_MATCH = answerBase({query: 'zzqqxx', normalised: 'zzqqxx',
+                               state: 'no_match', searched: 115,
+                               indexed: {equipment: 13, sample: 85, method: 8,
+                                         standard: 2, level: 3, operator: 4}});
+const A_OK = answerBase({
+  query: 'l-37', normalised: 'l37', state: 'ok',
+  results: [HIT_SAMPLE, HIT_EQUIP, HIT_STANDARD, HIT_METHOD, HIT_LEVEL,
+            HIT_OPERATOR],
+  shown: 6, matched: 84, truncated: true, searched: 115,
+  counts: {sample: {matched: 79, shown: 1}, equipment: {matched: 1, shown: 1},
+           standard: {matched: 1, shown: 1}, method: {matched: 1, shown: 1},
+           level: {matched: 1, shown: 1}, operator: {matched: 1, shown: 1}},
+  kinds: ['sample', 'equipment', 'standard', 'method', 'level', 'operator'],
+});
+
+if (!failed && typeof sandbox.searchPanelHtml !== 'function') {
+  failed = true;
+  console.log('FAIL: searchPanelHtml() is missing — the search box draws '
+              + 'nothing, and no test below can judge what it says');
+}
+
+/* ---- THE FOUR STATES ARE FOUR ------------------------------------------
+ *
+ * `idle` and `no_match` are the pair that matters. A box that draws "No
+ * results" at rest is telling everyone who walks past that the lab is empty,
+ * and the payload was shaped with four states specifically to stop it. The
+ * assertion is not "the word appears somewhere" — it is that the four
+ * renderings are four different things, which is the only form a collapse
+ * cannot survive. */
+if (!failed) {
+  const drawn = {
+    idle: String(sandbox.searchPanelHtml(A_IDLE) || ''),
+    short: String(sandbox.searchPanelHtml(A_SHORT) || ''),
+    no_match: String(sandbox.searchPanelHtml(A_NO_MATCH) || ''),
+    ok: String(sandbox.searchPanelHtml(A_OK) || ''),
+  };
+  const words = html => String(html).replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+
+  const names = Object.keys(drawn);
+  let allDistinct = true;
+  for (let i = 0; i < names.length; i++) {
+    for (let j = i + 1; j < names.length; j++) {
+      if (words(drawn[names[i]]) === words(drawn[names[j]])) {
+        allDistinct = false;
+        console.log(`       ${names[i]} and ${names[j]} read identically`);
+      }
+    }
+  }
+  claim('the four search states draw four different answers', allDistinct);
+
+  /* NOTHING TYPED IS NOT NOTHING FOUND. */
+  claim('idle never says nothing matched',
+        !/no results|nothing match|no match|not found|nothing found/
+          .test(words(drawn.idle)));
+  claim('…and idle still says what can be searched for',
+        /lab id|equipment|method|standard|level|person/.test(words(drawn.idle)));
+  claim('short asks for more characters rather than reporting a miss',
+        /keep typing|more character|at least/.test(words(drawn.short))
+        && !/no results|nothing match/.test(words(drawn.short)));
+  claim('…and short says how many characters it needs',
+        words(drawn.short).includes(String(A_SHORT.min_query_chars)));
+  claim('no_match says nothing matched, and names what was typed',
+        /nothing|no match|no result/.test(words(drawn.no_match))
+        && words(drawn.no_match).includes('zzqqxx'));
+  claim('ok draws the hits it was given',
+        drawn.ok.includes('L-37176') && drawn.ok.includes('PAC Flash 1')
+        && drawn.ok.includes('Flash Point') && drawn.ok.includes('Mezzanine'));
+  /* Six kinds, and each one has to be nameable on screen — "L-37176" and
+   * "Mezzanine" in one undifferentiated list is not an answer. */
+  claim('…and says what kind each hit is',
+        ['sample', 'equipment', 'standard', 'method', 'level', 'operator']
+          .every(k => words(drawn.ok).includes(k)));
+}
+
+/* ---- EVERY CAP IS REPORTED, NEVER SILENT -------------------------------
+ *
+ * "Showing 25" over 313 matches, drawn without saying so, reads to an
+ * assessor as "the lab has 25 of those". Each of these numbers is one the
+ * answer carries and the screen has to spend. */
+if (!failed) {
+  const ok = String(sandbox.searchPanelHtml(A_OK) || '');
+  const flat = ok.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+
+  claim('a truncated answer prints BOTH what is shown and what matched',
+        flat.includes('6') && flat.includes('84')
+        && /\b6\b[^.]*\b84\b/.test(flat));
+  claim('…and a hit capping its instrument list prints the true count',
+        /\b11\b/.test(flat) && /3\b/.test(flat));
+
+  /* An uncapped answer must NOT invent a truncation sentence — a caveat that
+   * is always on is a caveat nobody reads. */
+  const whole = answerBase({query: 'flash', normalised: 'flash', state: 'ok',
+                            results: [HIT_EQUIP], shown: 1, matched: 1,
+                            truncated: false, kinds: ['equipment'],
+                            counts: {equipment: {matched: 1, shown: 1}}});
+  const wholeFlat = String(sandbox.searchPanelHtml(whole) || '')
+    .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  claim('an uncapped answer does not claim to be capped',
+        !/showing \d+ of \d+/i.test(wholeFlat));
+
+  /* THE QUERY-TOKEN CAP CHANGES THE ANSWER. Past MAX_QUERY_TOKENS the tokens
+   * tier is refused rather than sampled, so one more correct word can turn a
+   * hit into "no results" — a cap that is reported nowhere else. */
+  const capped = answerBase({
+    query: 'a b c d e f g h i', normalised: 'a b c d e f g h i',
+    state: 'no_match', query_tokens_capped: true, searched: 115});
+  const cappedFlat = String(sandbox.searchPanelHtml(capped) || '')
+    .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+  claim('a query past the word cap says so, because the cap changed the answer',
+        /word/.test(cappedFlat) && cappedFlat.includes('8'));
+
+  const long = answerBase({query: 'x'.repeat(128), normalised: 'x'.repeat(128),
+                           state: 'no_match', query_truncated: true});
+  claim('a query cut to fit says it was cut',
+        /cut|shorten|truncat|first 128|too long/i.test(
+          String(sandbox.searchPanelHtml(long) || '')));
+}
+
+/* ---- "NOT FOUND" AND "NOT IN WHAT I CAN SEE" ARE DIFFERENT SENTENCES ----
+ *
+ * `corpus.truncated` / `partial` / `stale` each mean the search looked at
+ * less than the lab holds. A flat denial over a clipped corpus is the single
+ * most expensive wrong answer this box can give. */
+if (!failed) {
+  const say = corpus => String(sandbox.searchPanelHtml(
+    answerBase({query: 'l-99999', normalised: 'l99999', state: 'no_match',
+                searched: 115, corpus})) || '')
+    .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+
+  const whole = say(CORPUS_WHOLE);
+  for (const [what, corpus] of [['capped', CORPUS_CLIPPED],
+                                ['not fully read yet', CORPUS_PARTIAL],
+                                ['stale', CORPUS_STALE]]) {
+    const clipped = say(corpus);
+    claim(`a ${what} corpus does not read the same as a whole one`,
+          clipped !== whole);
+    claim(`…and says the miss is about what could be SEEN (${what})`,
+          /can see|could see|not in what|searched only|older|not been read|could not be refreshed|last good/
+            .test(clipped));
+  }
+  claim('a whole corpus does not manufacture a caveat',
+        !/can see|older records|last good copy/.test(whole));
+  /* The cap's own number, because "some records are missing" is not a fact
+   * anybody can act on and this one is in the payload. */
+  claim('a capped corpus prints how many records it did search',
+        say(CORPUS_CLIPPED).includes('20000')
+        || say(CORPUS_CLIPPED).includes('20,000'));
+}
+
+/* ---- A HIT NAVIGATES ---------------------------------------------------
+ *
+ * "Clicking equipment opens it" cannot be tested by looking for an onclick in
+ * the markup. Drive `openSearchHit` and read what the page did. */
+if (!failed && typeof sandbox.openSearchHit === 'function') {
+  const realFetch = sandbox.fetch;
+  const quiet = () => Promise.resolve({ok: true, status: 200,
+    json: () => Promise.resolve({authenticated: true, user: 'ryan',
+                                 machines: [], events: [], series: [],
+                                 entries: [], actions: [], documents: []})});
+
+  /* Equipment on the level NOT being looked at: opening it has to take the
+   * plan there too, or the record names a piece of equipment that is not on
+   * screen. */
+  /* `selected` is a top-level `let`, so it is NOT a property of the vm
+   * context and cannot be read from here. That is the better test anyway:
+   * ask what the record rail actually DREW. */
+  const openRecord = () => String(el('#railL').innerHTML || '');
+  sandbox.fetch = quiet;
+  await sandbox.setLevelView('l1');
+  await sandbox.openSearchHit(Object.assign({}, HIT_EQUIP, {
+    id: 'gc-2', label: 'GC 2', machine_uid: 'gc-2', level_uid: 'l2',
+    machines: [{machine_uid: 'gc-2', title: 'GC 2', level_uid: 'l2'}]}));
+  await settle();
+  claim('clicking an equipment hit opens that equipment record',
+        /<h2 class="sign">GC 2<\/h2>/.test(openRecord()));
+  claim('…and takes the plan to the level it stands on',
+        String(el('#levelName').textContent) === 'Mezzanine');
+
+  /* A sample is a Lab ID that RAN somewhere. "Somewhere useful" is the record
+   * of the instrument that ran it, with the history narrowed to that Lab ID —
+   * anything less leaves the person to scroll two hundred rows. */
+  const asked = [];
+  sandbox.fetch = (...args) => { asked.push(String(args[0])); return quiet(); };
+  await sandbox.openSearchHit(HIT_SAMPLE);
+  await settle();
+  claim('a sample hit opens the equipment that ran it',
+        /<h2 class="sign">GC 2<\/h2>/.test(openRecord()));
+  claim('…on its history, narrowed to that Lab ID',
+        String(el('#histQ').value || '').includes('L-37176')
+        && asked.some(u => /\/history\?limit=/.test(u)));
+
+  /* A level goes to the level. Nothing is fetched: the ladder rides the
+   * payload the floor already polls, and a search result that costs a read is
+   * a read behind a gesture people make all day. */
+  const before = asked.length;
+  await sandbox.openSearchHit(HIT_LEVEL);
+  await settle();
+  claim('a level hit switches the plan to that level',
+        String(el('#levelName').textContent) === 'Mezzanine');
+  claim('…and costs no request at all', asked.length === before);
+
+  /* A method and a standard both lead to an instrument that runs it, on the
+   * tab where its band is. */
+  await sandbox.openSearchHit(Object.assign({}, HIT_METHOD,
+    {machine_uid: 'gc-1', machines: [{machine_uid: 'gc-1', title: 'GC 1',
+                                      level_uid: 'l1'}]}));
+  await settle();
+  claim('a method hit opens equipment that runs it',
+        /<h2 class="sign">GC 1<\/h2>/.test(openRecord()));
+  await sandbox.openSearchHit(Object.assign({}, HIT_STANDARD,
+    {machine_uid: 'gc-2', machines: [{machine_uid: 'gc-2', title: 'GC 2',
+                                      level_uid: 'l2'}]}));
+  await settle();
+  claim('a standard hit opens equipment it is assigned to',
+        /<h2 class="sign">GC 2<\/h2>/.test(openRecord()));
+
+  /* A hit naming equipment this floor no longer holds must say so rather than
+   * silently doing nothing — a retired bench is still in the log. */
+  const before5 = openRecord();
+  await sandbox.openSearchHit(Object.assign({}, HIT_EQUIP,
+    {machine_uid: 'gone-1', id: 'gone-1', label: 'Retired GC',
+     machines: [{machine_uid: 'gone-1', title: 'Retired GC', level_uid: ''}]}));
+  await settle();
+  claim('a hit for equipment that is no longer on the floor says so',
+        openRecord() === before5
+        && /no longer|not on|retired|could not/i.test(
+             String(el('#findPanel').innerHTML || '')));
+  sandbox.fetch = realFetch;
+}
+
+/* ---- IT DOES NOT FIRE A REQUEST PER KEYSTROKE --------------------------
+ *
+ * The route costs LabCore nothing, and this is where that gets spent anyway:
+ * one fetch per character, per viewer, forever. The harness's own setTimeout
+ * is a no-op, so a REAL clock is swapped in for this block — a debounce
+ * tested against a timer that never fires proves nothing. */
+if (!failed && typeof sandbox.searchTyped === 'function') {
+  const realFetch = sandbox.fetch, realSet = sandbox.setTimeout,
+        realClear = sandbox.clearTimeout;
+  let pending = new Map(), nextId = 1;
+  sandbox.setTimeout = (fn, ms) => { const id = nextId++;
+                                     pending.set(id, {fn, ms}); return id; };
+  sandbox.clearTimeout = id => { pending.delete(id); };
+  let hits = 0;
+  sandbox.fetch = url => {
+    hits++;
+    return Promise.resolve({ok: true, status: 200,
+      json: () => Promise.resolve(A_OK)});
+  };
+
+  const box = el('#findQ');
+  for (const typed of ['l', 'l-', 'l-3', 'l-37', 'l-371', 'l-3717']) {
+    box.value = typed;
+    sandbox.searchTyped();
+  }
+  claim('typing six characters fires no request on its own', hits === 0);
+  claim('…because exactly one timer is left standing, not six',
+        pending.size === 1);
+  const [only] = [...pending.values()];
+  claim('…and it waits long enough to be slower than a typist',
+        only && only.ms >= 120);
+  await only.fn();
+  await settle();
+  claim('…then one request goes out, once', hits === 1);
+
+  /* Re-typing the same query is not a new question. */
+  hits = 0; pending.clear();
+  box.value = 'l-3717';
+  sandbox.searchTyped();
+  for (const {fn} of [...pending.values()]) await fn();
+  await settle();
+  claim('asking the identical question again does not ask the server again',
+        hits === 0);
+
+  /* An emptied box is `idle` and asks nothing at all. */
+  hits = 0; pending.clear();
+  box.value = '';
+  sandbox.searchTyped();
+  for (const {fn} of [...pending.values()]) await fn();
+  await settle();
+  claim('emptying the box costs no request', hits === 0);
+  claim('…and returns the box to idle, not to "no results"',
+        !/no results|nothing match/i.test(String(el('#findPanel').innerHTML || '')));
+
+  sandbox.fetch = realFetch;
+  sandbox.setTimeout = realSet;
+  sandbox.clearTimeout = realClear;
+}
+
+/* ---- ARROWS, ENTER, ESCAPE --------------------------------------------- */
+if (!failed && typeof sandbox.searchKey === 'function') {
+  const key = k => {
+    let stopped = false, prevented = false;
+    sandbox.searchKey({key: k, preventDefault: () => { prevented = true; },
+                       stopPropagation: () => { stopped = true; }});
+    return {stopped, prevented};
+  };
+  sandbox.searchShow(A_OK);
+  claim('the results list opens with nothing pre-selected',
+        sandbox.searchCursor() === -1);
+  key('ArrowDown');
+  claim('down arrow walks onto the first hit', sandbox.searchCursor() === 0);
+  key('ArrowDown');
+  claim('…and on to the second', sandbox.searchCursor() === 1);
+  key('ArrowUp'); key('ArrowUp');
+  claim('up arrow walks back, and stops at the top rather than wrapping past it',
+        sandbox.searchCursor() === -1 || sandbox.searchCursor() === 0);
+  /* The active row has to be SAID, not merely styled — the box is a combobox
+   * and a screen reader reads aria-activedescendant, not a CSS class. */
+  key('ArrowDown');
+  claim('the active hit is named for assistive technology',
+        String(el('#findQ').getAttribute('aria-activedescendant') || '')
+          .length > 0);
+  const esc = key('Escape');
+  claim('escape closes the list', el('#findPanel').hidden === true);
+  claim('…and is swallowed, so it does not also close the open record',
+        esc.stopped === true);
+}
+
+/* ==== JOB 2: THE EXPANDED EQUIPMENT RECORD ==============================
+ *
+ * Two payloads, both live on the dev server, neither of them drawn before
+ * this. Every number below came off `GET /api/machines/optimpp-1/qc-trend`
+ * and `.../status-timeline`. */
+
+const SERIES = {
+  test_name: 'Cloud Point', sample_id: 'STD-1',
+  points: [
+    {ts: '2026-07-30T14:05:36', value: -14.2, in_spec: true},
+    {ts: '2026-08-02T14:06:36', value: -14.1, in_spec: true},
+    {ts: '2026-08-08T09:12:36', value: -13.6, in_spec: true},
+    {ts: '2026-08-14T11:02:36', value: -14.9, in_spec: true},
+    {ts: '2026-08-20T16:41:36', value: -13.2, in_spec: true},
+    {ts: '2026-08-26T13:34:36', value: -16.8, in_spec: false},
+  ],
+  runs: 6, failures: 1, unjudged: 0,
+  low: -16.0, high: -12.0, expected: -14.0,
+  pass_band: {low: -16.0, high: -12.0, expected: -14.0},
+  observed: {
+    mean: -14.05, s: 0.7078920193865103, n: 28, df: 27, self_fitted: true,
+    zones: {'1s': {low: -14.75789201938651, high: -13.342107980613491},
+            '2s': {low: -15.465784038773021, high: -12.63421596122698},
+            '3s': {low: -16.173676058159533, high: -11.92632394184047}},
+  },
+  zones_within_band: false,
+  self_fitted: true, in_control: false,
+  violations: [{rule: '1_3s', indices: [5], side: 'below', provisional: true,
+                message: 'Run 28 (-16.8) is beyond the lower 3s control limit '
+                  + '(-16.1737). Hold every result since the last good check '
+                  + 'and investigate before this instrument reports again. '
+                  + 'PROVISIONAL: these limits were computed from the same '
+                  + 'results they are judging, so this instrument has no '
+                  + 'qualification limits to be out of control against. '
+                  + 'Confirm against fixed limits before acting on it.'}],
+  firm_violations: 0,
+  spread_basis: 'intermediate',
+  coverage: {
+    basis: 'intermediate',
+    caveat: '28 results from 3 analysts over 28 calendar days against 3 '
+          + 'calibrations: this spread supports within-laboratory '
+          + 'reproducibility, u(Rw).',
+    n: 28, operators: ['dana', 'ryan', 'sam'], n_operators: 3,
+    n_unknown_operator: 0, n_days: 28, n_undated: 0,
+    calibrations: ['2026-06-02', '2026-07-14', '2026-08-11'],
+    n_calibrations: 3, n_unknown_calibration: 0,
+    supports_repeatability: false, supports_reproducibility: true,
+  },
+};
+
+/* The same instrument on a thin record: one analyst, one day, one
+ * calibration. The module says so in its own sentence, and the chart may not
+ * upgrade it. */
+const SERIES_THIN = Object.assign({}, SERIES, {
+  test_name: 'Pour Point',
+  coverage: Object.assign({}, SERIES.coverage, {
+    caveat: '6 results from 1 analyst over 1 calendar day against 1 '
+          + 'calibration: this spread is repeatability only, u(r) — it does '
+          + 'not span analysts, days or calibrations, so it cannot be called '
+          + 'within-laboratory reproducibility.',
+    n_operators: 1, n_days: 1, n_calibrations: 3 - 2,
+    supports_repeatability: true, supports_reproducibility: false,
+    basis: 'repeatability'}),
+  spread_basis: 'repeatability',
+});
+
+if (!failed && typeof sandbox.trendSeriesHtml !== 'function') {
+  failed = true;
+  console.log('FAIL: trendSeriesHtml() is missing — the control chart cannot '
+              + 'be judged on what it draws');
+}
+
+/* ---- THE ZONES AND THE PASS BAND ARE DIFFERENT QUANTITIES --------------
+ *
+ * The band is the STANDARD's control limit — the same band judges every bench
+ * running that standard, and it says nothing about this instrument. The zones
+ * are +/-1s/2s/3s from THESE results and move as the instrument moves. A wide
+ * certificate over a drifting instrument gives narrow zones inside a wide
+ * band: in control of nothing, passing everything. Drawing one and labelling
+ * it the other says the opposite of what the process is doing. */
+if (!failed) {
+  const html = String(sandbox.trendSeriesHtml(SERIES) || '');
+  const flat = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  const low = flat.toLowerCase();
+
+  claim('the chart draws the standard\'s pass band and names it as the band',
+        /pass band|control limit of the standard|the standard/.test(low));
+  claim('…and draws the Shewhart zones and names them as zones',
+        /zone/.test(low) && /1s/.test(flat) && /2s/.test(flat)
+        && /3s/.test(flat));
+  /* THE NUMBERS, not only the words. Swapping the two geometries leaves both
+   * labels in place and both sentences true, so the only thing that catches it
+   * is the value each line is actually drawn at — taken off the payload here
+   * rather than typed, so this cannot drift from the fixture.
+   *
+   * `includes('-16') && includes('-12')` was NOT enough and a mutation proved
+   * it: with the band drawn at the 3s zone (-16.17…-11.93) both substrings
+   * were still somewhere in the markup, one of them inside a zone label. */
+  const bandLabels = [SERIES.pass_band.low, SERIES.pass_band.high,
+                      SERIES.pass_band.expected].map(v => v.toFixed(1));
+  claim('…and the band is drawn at the band\u2019s own numbers, exactly',
+        bandLabels.every(t => html.includes(t)));
+  claim('…and the zones at the OBSERVED mean and spread, which are not those',
+        /-14\.7[0-9]/.test(html) && /-16\.1[0-9]/.test(html)
+        && /-13\.3[0-9]/.test(html));
+  claim('…and the two are told apart by more than their labels',
+        sandbox.trendZoneStyle && sandbox.trendBandStyle
+        && sandbox.trendZoneStyle() !== sandbox.trendBandStyle());
+  /* The observed mean is the zones' centre and is NOT the target. Both lines
+   * are on this chart, and a reader has to be able to say which is which. */
+  claim('the target line off the certificate is drawn and labelled',
+        /target/.test(low) && html.includes('-14.0'));
+  claim('…and the observed mean is drawn beside it, as a different thing',
+        /mean/.test(low) && /-14\.0[0-9]/.test(html));
+  claim('the days axis the whiteboard asked for is labelled',
+        /day/.test(low));
+
+  /* `zones_within_band: false` is the comparison already made for us. */
+  claim('the chart says whether the zones fall inside the band',
+        /wider than|outside the band|beyond the band|not inside|exceed/
+          .test(low));
+}
+
+/* ---- A SELF-FITTED CHART MUST SAY SO -----------------------------------
+ *
+ * With no qualification limits the analysis judges the points against limits
+ * computed from those same points, and every finding comes back
+ * `provisional`. A provisional alarm presented as fact is worse than no
+ * alarm at all. */
+if (!failed) {
+  const html = String(sandbox.trendSeriesHtml(SERIES) || '');
+  const low = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+  /* THE PAGE'S OWN WORDS, with the module's quoted sentence lifted out.
+   *
+   * `qc_series`' violation message already contains "PROVISIONAL: these limits
+   * were computed from the same results they are judging" — so with the whole
+   * markup as the haystack, DELETING the chart's own warning left both of
+   * these passing. A mutation proved it. The page has to say it itself,
+   * because a chart with no violations to quote is exactly the case where the
+   * quote is absent and the warning still has to be there. */
+  const own = html.split(SERIES.violations[0].message).join(' ')
+    .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+  claim('a self-fitted chart says IN ITS OWN WORDS that its limits came from '
+        + 'these same results',
+        /self-fitted|fitted to|computed from the same|these same results|no qualification/
+          .test(own));
+  claim('…and marks the finding provisional, in its own words, rather than '
+        + 'stating it as fact', /provisional/.test(own));
+  /* And with nothing to quote at all: no violations, still self-fitted. */
+  const quiet = String(sandbox.trendSeriesHtml(
+    Object.assign({}, SERIES, {violations: [], in_control: true})) || '')
+    .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+  claim('…and says it even when there is no violation to quote it inside of',
+        /provisional/.test(quiet)
+        && /computed from the same|these same results|self-fitted|no qualification/
+             .test(quiet));
+  claim('…and the violation the module found is actually drawn',
+        /1_3s|3s control limit|beyond the lower/.test(low));
+
+  /* And when limits ARE fixed, the caveat must go — a warning that is always
+   * on is a warning nobody reads, and it would understate a real alarm. */
+  const firm = Object.assign({}, SERIES, {
+    self_fitted: false, firm_violations: 1,
+    observed: Object.assign({}, SERIES.observed, {self_fitted: false}),
+    violations: [Object.assign({}, SERIES.violations[0],
+                               {provisional: false,
+                                message: 'Run 28 (-16.8) is beyond the lower '
+                                  + '3s control limit (-16.1737).'})]});
+  const firmLow = String(sandbox.trendSeriesHtml(firm) || '')
+    .replace(/<[^>]*>/g, ' ').toLowerCase();
+  claim('a chart with fixed limits does not call itself provisional',
+        !/provisional|self-fitted/.test(firmLow));
+}
+
+/* ---- THE COVERAGE CAVEAT IS A SENTENCE THE MODULE WROTE ----------------
+ *
+ * `coverage.caveat()` states whether the spread supports u(Rw) or only
+ * repeatability, and why. It is rendered VERBATIM. A paraphrase is a second
+ * copy of an uncertainty claim, drifting from the one the module makes — and
+ * the whole reason `qc_series` writes the sentence rather than the flags. */
+if (!failed) {
+  const html = String(sandbox.trendSeriesHtml(SERIES) || '');
+  claim('the coverage caveat is rendered word for word',
+        html.includes(SERIES.coverage.caveat));
+  const thin = String(sandbox.trendSeriesHtml(SERIES_THIN) || '');
+  claim('…and so is the thin one, which claims the opposite',
+        thin.includes(SERIES_THIN.coverage.caveat));
+  /* The dangerous direction: claiming reproducibility the payload denies. */
+  const thinFlat = thin.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  const claimsRw = thinFlat.replace(SERIES_THIN.coverage.caveat, ' ');
+  claim('a repeatability-only spread is never presented as u(Rw)',
+        !/u\(Rw\)|within-laboratory reproducibility/i.test(claimsRw));
+  claim('…and it says which basis the spread actually is',
+        /repeatability/i.test(thinFlat));
+}
+
+/* ---- THE GUTTER ---------------------------------------------------------
+ *
+ * Ryan's whiteboard: the events list with a colour band down its side, and
+ * the QC readings drawn as the transitions BETWEEN the states — GREEN above,
+ * an arrow into `QC AO25 · 7.8 C`, YELLOW below. */
+
+const TIMELINE = {
+  machine_uid: 'optimpp-1',
+  qc_expire_hours: 24.0, qc_expire_source: 'default', qc_expire_from: '',
+  source: 'snapshot', snapshot_age_seconds: 4.5,
+  complete: false, covers_from: '2026-08-25T19:09:36',
+  events: [
+    {machine_uid: 'optimpp-1', ts: '2026-08-26T15:05:36', kind: 'run',
+     lab_id: 'L-37508', test_name: 'Cloud Point', value: '0.8326', qc: false,
+     status: 'RED', reason: 'QC Out of Spec',
+     status_since: '2026-08-26T12:31:36'},
+    {machine_uid: 'optimpp-1', ts: '2026-08-26T14:34:36', kind: 'run',
+     lab_id: 'L-37328', test_name: 'Cloud Point', value: '0.8564', qc: false,
+     status: 'RED', reason: 'QC Out of Spec',
+     status_since: '2026-08-26T12:31:36'},
+    {machine_uid: 'optimpp-1', ts: '2026-08-26T13:34:36', kind: 'qc',
+     lab_id: 'STD-1', test_name: 'Cloud Point', value: '-16.8', qc: true,
+     status: 'RED', reason: 'QC Out of Spec',
+     status_since: '2026-08-26T12:31:36',
+     transition: {from: 'GREEN', to: 'RED', in_spec: false, value: -16.8,
+                  band: {low: -16.0, high: -12.0, expected: -14.0}}},
+    {machine_uid: 'optimpp-1', ts: '2026-08-26T11:02:36', kind: 'run',
+     lab_id: 'L-37101', test_name: 'Cloud Point', value: '0.8401', qc: false,
+     status: 'GREEN', reason: 'QC Fresh',
+     status_since: '2026-08-26T10:15:36'},
+    {machine_uid: 'optimpp-1', ts: '2026-08-26T10:15:36', kind: 'qc',
+     lab_id: 'STD-1', test_name: 'Cloud Point', value: '-14.1', qc: true,
+     status: 'GREEN', reason: 'QC Fresh',
+     status_since: '2026-08-26T10:15:36',
+     transition: {from: 'UNKNOWN', to: 'GREEN', in_spec: true, value: -14.1,
+                  band: {low: -16.0, high: -12.0, expected: -14.0}}},
+    /* Before the first QC reading there is no verdict to stand on. That is
+     * UNKNOWN — a real state with a reason — and NOT a colourless gap. */
+    {machine_uid: 'optimpp-1', ts: '2026-08-25T21:43:36', kind: 'run',
+     lab_id: 'L-37974', test_name: 'Cloud Point', value: '0.8396', qc: false,
+     status: 'UNKNOWN', reason: 'No valid QC data found.', status_since: null},
+    {machine_uid: 'optimpp-1', ts: '2026-08-25T19:09:36', kind: 'run',
+     lab_id: 'L-37731', test_name: 'Cloud Point', value: '0.8248', qc: false,
+     status: 'UNKNOWN', reason: 'No valid QC data found.', status_since: null},
+  ],
+};
+
+if (!failed && typeof sandbox.gutterHtml !== 'function') {
+  failed = true;
+  console.log('FAIL: gutterHtml() is missing — the status gutter cannot be '
+              + 'judged on what it draws');
+}
+
+if (!failed) {
+  const html = String(sandbox.gutterHtml(TIMELINE) || '');
+  const flat = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  const low = flat.toLowerCase();
+
+  /* THE GUTTER IS THE POINT. Three states are in this window and the BAND has
+   * to carry all three.
+   *
+   * Counting the distinct colours anywhere in the markup is NOT enough, and a
+   * mutation proved it: painting every band from one constant still left all
+   * three colours in the file, because a QC transition names the state it came
+   * from and the state it went to. So each band is paired with the state it is
+   * banding, and both have to be that state's colour. */
+  const PALETTE = {GREEN: '#21c071', YELLOW: '#f5c542', RED: '#f85b5b',
+                   SERVICE: '#a855f7', 'DEAD-LINE': '#e2483d',
+                   UNKNOWN: '#6b7280'};
+  const bands = [...html.matchAll(
+    /<b style="color:(#[0-9a-f]{6})">([A-Z][A-Z-]*)<\/b>[\s\S]*?gutband[^>]*background:(#[0-9a-f]{6})/gi)]
+    .map(m => ({head: m[1].toLowerCase(), state: m[2],
+                band: m[3].toLowerCase()}));
+  claim('every run of events is banded, and the band is the run\u2019s own state',
+        bands.length >= 2
+        && bands.every(b => PALETTE[b.state]
+                            && b.band === PALETTE[b.state]
+                            && b.head === PALETTE[b.state]));
+  claim('the gutter is painted in the colour of each state it passes through',
+        new Set(bands.map(b => b.band)).size >= 2
+        && bands.some(b => b.state === 'RED')
+        && bands.some(b => b.state === 'UNKNOWN'));
+  claim('…and it is a band down the side, not a dot per row',
+        /class="[^"]*gut/.test(html));
+
+  /* UNKNOWN IS A STATE, NOT AN ABSENCE. */
+  claim('the stretch before the first QC reading reads as UNKNOWN',
+        /unknown/.test(low));
+  claim('…and says why, in the reason the server derived',
+        /no valid qc data/.test(low));
+
+  /* THE QC EVENTS ARE THE TRANSITIONS. */
+  claim('a QC event is drawn as the transition it caused',
+        /green\s*[^a-z]{0,4}\s*red/i.test(flat)
+        || /green.{0,24}(→|->|to)\s*red/i.test(flat));
+  claim('…and the first one, out of UNKNOWN, too',
+        /unknown.{0,24}(→|->|to)\s*green/i.test(flat));
+  claim('…carrying the reading that decided it',
+        flat.includes('-16.8') && flat.includes('-14.1'));
+  claim('…and the band it was judged against, off that row',
+        flat.includes('-16') && flat.includes('-12'));
+  claim('…and the standard it was run on', flat.includes('STD-1'));
+  /* A QC row must be distinguishable from a run row, or the transitions are
+   * lost in the list they punctuate. */
+  claim('a QC event is marked out from the runs around it',
+        /class="[^"]*(qcev|transition|tr)\b/.test(html)
+        || (html.match(/data-qc/g) || []).length > 0);
+
+  /* A CLIPPED WINDOW IS NOT A COMPLETE RECORD. `complete: false` means the
+   * snapshot's EVENT_LIMIT rows for the WHOLE lab ran out before this
+   * instrument's history did — a quiet bench clipped by a busy neighbour. */
+  claim('a clipped window says it is clipped',
+        /clipped|not everything|older|only the newest|cut short|more than this/
+          .test(low));
+  claim('…and does not imply that is all that ever happened',
+        !/nothing else happened|that is everything/.test(low));
+  claim('…and says how far back it does reach',
+        flat.includes('2026-08-25'));
+
+  const whole = Object.assign({}, TIMELINE, {complete: true});
+  const wholeLow = String(sandbox.gutterHtml(whole) || '')
+    .replace(/<[^>]*>/g, ' ').toLowerCase();
+  claim('a complete window does not manufacture a clipping warning',
+        !/clipped|only the newest|cut short/.test(wholeLow));
+}
+
+/* ---- WHERE THE QC WINDOW CAME FROM ------------------------------------
+ *
+ * `qc_expire_source` is `standard` | `request` | `default`. The default is
+ * the number nobody chose, and presenting it as configuration sends somebody
+ * looking for the setting that produced it. */
+if (!failed) {
+  const say = over => String(sandbox.gutterHtml(
+    Object.assign({}, TIMELINE, over)) || '')
+    .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
+
+  const byDefault = say({});
+  claim('a defaulted QC window is named as the default',
+        /default/.test(byDefault) && byDefault.includes('24'));
+  claim('…and is not presented as something somebody set',
+        !/configured|set to|as configured|specified/.test(byDefault));
+
+  const fromStd = say({qc_expire_source: 'standard', qc_expire_hours: 12.0,
+                       qc_expire_from: 'Diesel - AO25'});
+  claim('a window off the standard names the standard it came from',
+        fromStd.includes('diesel - ao25') && fromStd.includes('12')
+        && !/default/.test(fromStd));
+  const fromReq = say({qc_expire_source: 'request', qc_expire_hours: 8.0});
+  claim('a window asked for in the request says that is where it came from',
+        /request|asked/.test(fromReq) && fromReq.includes('8'));
+}
+
+/* ---- AND THE TWO PANELS ARE ACTUALLY WIRED TO THE TWO ROUTES ----------- */
+if (!failed) {
+  const realFetch = sandbox.fetch;
+  const asked = [];
+  sandbox.fetch = (...args) => {
+    asked.push(String(args[0]));
+    const url = String(args[0]);
+    const body = url.includes('qc-trend') ? {series: [SERIES]}
+               : url.includes('status-timeline') ? TIMELINE
+               : {authenticated: true, user: 'ryan', events: [], machines: []};
+    return Promise.resolve({ok: true, status: 200,
+                            json: () => Promise.resolve(body)});
+  };
+  if (typeof sandbox.drawTrend === 'function') {
+    await sandbox.drawTrend(FLEET.machines[0]);
+    await settle();
+    claim('the QC tab reads the trend route',
+          asked.some(u => /\/qc-trend$/.test(u)));
+    claim('…and draws the coverage caveat into the panel',
+          String(el('#trend').innerHTML || '').includes(SERIES.coverage.caveat));
+  }
+  asked.length = 0;
+  if (typeof sandbox.loadTimeline === 'function') {
+    await sandbox.loadTimeline(FLEET.machines[0]);
+    await settle();
+    claim('the events list reads the status-timeline route',
+          asked.some(u => /\/status-timeline$/.test(u)));
+    const drawn = String(el('#railR').innerHTML || '');
+    claim('…and the gutter it draws carries more than one state',
+          /#f85b5b/i.test(drawn) && /#21c071/i.test(drawn));
+  }
+  sandbox.fetch = realFetch;
+
+  /* A route that could not be read is never an empty record: "nothing has
+   * ever happened on this bench" is a statement about the record. */
+  sandbox.fetch = () => Promise.resolve({ok: false, status: 503,
+    json: () => Promise.resolve({error: 'That could not be read.'})});
+  if (typeof sandbox.loadTimeline === 'function') {
+    await sandbox.loadTimeline(FLEET.machines[0]);
+    await settle();
+    const drawn = String(el('#railR').innerHTML || '').toLowerCase();
+    claim('a failed timeline read reads as a failure, not as an empty bench',
+          /could not/.test(drawn) && !/nothing logged yet/.test(drawn));
+  }
+  sandbox.fetch = realFetch;
+}
+
+/* ---- and everything new reads in the one noun -------------------------- */
+if (!failed) {
+  readsWell('the search results panel', sandbox.searchPanelHtml(A_OK));
+  readsWell('an idle search box', sandbox.searchPanelHtml(A_IDLE));
+  readsWell('a search that found nothing', sandbox.searchPanelHtml(A_NO_MATCH));
+  /* The violation MESSAGE is `qc_series`' own sentence, quoted verbatim
+   * because it carries the PROVISIONAL clause and the instruction that goes
+   * with it. It is data this page relays, not prose this page wrote — the
+   * same exemption `prose()` already makes for wire identifiers — so it is
+   * lifted out before the rename check, and nothing else is. */
+  readsWell('the control chart',
+            String(sandbox.trendSeriesHtml(SERIES) || '')
+              .split(SERIES.violations[0].message).join(' '));
+  readsWell('the status gutter', sandbox.gutterHtml(TIMELINE));
+}
+
+
 /* ---- THE PROJECTION IS ISOMETRIC, AND STAYS ISOMETRIC -------------------
  *
  * This is the test whose absence let a rotated plan ship as an isometric.
