@@ -426,14 +426,75 @@ class TestTheAddressIsRetriedNotPublishedOnceAndForgotten:
         suite off Windows — see tests/test_deployment.py::TestNoPublish, which
         fails on macOS for the same reason and predates this branch. A weak
         test of a real connection beats no test of it.
+
+        It used to grep for `snapshots.on_cycle = publisher.publish_if_due`,
+        and that assignment was the bug: `create_app` now puts the
+        correction-audit spool's retry on the same single hook, so assigning
+        over it would strip the receipt retry from the live server — and ONLY
+        from the live server, because publishing is off in dev and in every
+        test. The behaviour is now `attach_to_poller`, which is importable and
+        tested for real just below; what stays here is that the entry point
+        calls it, and calls it only when the address was actually published.
         """
         import os
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         src = open(os.path.join(here, "web_server.pyw"), encoding="utf-8").read()
-        assert "snapshots.on_cycle = publisher.publish_if_due" in src
+        assert "attach_to_poller(snapshots, publisher.publish_if_due)" in src
+        # Never a bare assignment: that is the whole point of the helper.
+        assert "snapshots.on_cycle =" not in src
         # ...and only when the address was actually published: --no-publish
         # exists so a health check on a scratch port never advertises itself.
-        assert src.index("if live_where:") < src.index("snapshots.on_cycle")
+        assert src.index("if live_where:") < src.index("attach_to_poller")
+
+    def test_attaching_keeps_the_passenger_that_was_already_there(self):
+        """The failure the grep above could not see.
+
+        One hook, two passengers. The floor's fast path and a compliance
+        receipt both ride the snapshot poller because it is the thread that is
+        already awake and already talking to LabCore, and losing either of them
+        is silent.
+        """
+        from live_presence import attach_to_poller
+
+        class Poller:
+            on_cycle = None
+
+        ran = []
+        poller = Poller()
+        poller.on_cycle = lambda: ran.append("spool")
+        attach_to_poller(poller, lambda: ran.append("publish"))
+        poller.on_cycle()
+        assert ran == ["spool", "publish"]
+
+    def test_attaching_to_an_empty_hook_just_assigns(self):
+        from live_presence import attach_to_poller
+
+        class Poller:
+            on_cycle = None
+
+        poller = Poller()
+        publish = lambda: None
+        attach_to_poller(poller, publish)
+        assert poller.on_cycle is publish
+
+    def test_a_raising_passenger_does_not_stop_the_publish(self):
+        """Every bench's fast path depends on the address being republished.
+        A receipt retry that blew up must not be able to take it down."""
+        from live_presence import attach_to_poller
+
+        class Poller:
+            on_cycle = None
+
+        published = []
+        poller = Poller()
+
+        def angry():
+            raise RuntimeError("the spool fell over")
+
+        poller.on_cycle = angry
+        attach_to_poller(poller, lambda: published.append(1))
+        poller.on_cycle()
+        assert published == [1]
 
     def test_the_snapshot_poller_runs_it_every_cycle(self):
         """Wired to the thing that is already awake and already talking to

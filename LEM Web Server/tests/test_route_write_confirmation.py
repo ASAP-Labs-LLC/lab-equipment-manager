@@ -873,7 +873,12 @@ class TestThePagesReadTheStatusTheyGetBack:
         # Both delete paths (the rename's tidy-up and the explicit button) run
         # through `failure`, so neither can leave two lots under one Lab ID.
         assert src.count("'/api/qc-samples', {method: 'DELETE'") == 2
-        assert "$('#sampleErr').textContent = bad" in src
+        # The explicit delete asks in the page's own sheet now, not a native
+        # confirm(), so its refusal is RETURNED to that sheet rather than
+        # painted behind it. Either way it is read and shown, which is the
+        # thing this test exists to hold.
+        assert "$('#sampleErr').textContent = bad" in src or (
+            "askConfirm({" in src and "return bad;" in src)
 
     def test_the_qc_assignment_sheet_stays_open_on_a_failure(self):
         src = _tpl("floor.html")

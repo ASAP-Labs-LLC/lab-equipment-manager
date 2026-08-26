@@ -171,3 +171,294 @@ class TestStaticFilesAreCacheBusted:
         """A packaging slip must not take every page down."""
         from web_app import static_version
         assert isinstance(static_version("/no/such/file.css"), str)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The bug the class above could not see.
+#
+# `TestTheExitButtonCannotLeak` asserts the markup ships `hidden`, that `.tool`
+# supplies the look, and that `setMaxMap()` drives the attribute. All four were
+# true, and the button still sat in the header of a page that was NOT in the
+# maximal view — fixed at the top right, painted over the clock, leaving "202"
+# of it showing. Reported again 2026-08-25.
+#
+# The cause is the cascade, which none of those tests evaluates. The UA
+# stylesheet's `[hidden]{display:none}` and lem.css's `.tool{...display:
+# inline-flex...}` have the SAME specificity (0,1,0), and an author rule beats
+# the user agent at a tie — so `hidden` did nothing to any `.tool` anywhere in
+# the app. `.who[hidden]{display:none}` already existed for exactly this
+# reason, on exactly one element.
+#
+# So this RESOLVES the cascade rather than looking for a string: it parses both
+# stylesheets, matches the rules that apply to the button, ranks them, and asks
+# what `display` a browser would land on. The resolver is checked against the
+# broken stylesheet first, so a resolver that has been gutted into "always
+# answers none" cannot pass.
+# ─────────────────────────────────────────────────────────────────────────────
+import re
+
+
+def _rules(sheet):
+    """Every `selector { declarations }` in source order.
+
+    At-rules are stepped over by brace depth rather than parsed: `@media`
+    blocks in these sheets are all viewport queries, and a desktop browser
+    running the page at 1600px applies none of them to this button. Anything
+    inside one is therefore skipped, which is the same answer.
+    """
+    out, i, n = [], 0, len(sheet)
+    sheet = re.sub(r"/\*.*?\*/", " ", sheet, flags=re.S)
+    n = len(sheet)
+    while i < n:
+        brace = sheet.find("{", i)
+        if brace < 0:
+            break
+        prelude = sheet[i:brace].strip()
+        if prelude.startswith("@"):
+            # Step over the whole at-rule, block and all.
+            depth, j = 0, brace
+            while j < n:
+                if sheet[j] == "{":
+                    depth += 1
+                elif sheet[j] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            i = j + 1
+            continue
+        close = sheet.find("}", brace)
+        if close < 0:
+            break
+        body = sheet[brace + 1:close]
+        for sel in prelude.split(","):
+            sel = sel.strip()
+            if sel:
+                out.append((sel, body))
+        i = close + 1
+    return out
+
+
+#: A compound selector we understand: an optional element name followed by any
+#: number of `.class`, `[attr]`, `#id` and `:pseudo-class` parts.
+_COMPOUND = re.compile(
+    r"^(?P<tag>[a-zA-Z][\w-]*|\*)?"
+    r"(?P<rest>(?:[.#][\w-]+|\[[^\]]+\]|:[\w-]+)*)$")
+_PART = re.compile(r"[.#][\w-]+|\[[^\]]+\]|:[\w-]+")
+
+
+def _match_compound(compound, node):
+    m = _COMPOUND.match(compound)
+    if not m:
+        return None                      # not a shape we can judge
+    tag = m.group("tag")
+    if tag and tag != "*" and tag.lower() != node["tag"]:
+        return False
+    ids = classes = elems = 0
+    if tag and tag != "*":
+        elems = 1
+    for part in _PART.findall(m.group("rest") or ""):
+        if part.startswith("#"):
+            if part[1:] != node.get("id"):
+                return False
+            ids += 1
+        elif part.startswith("."):
+            if part[1:] not in node["classes"]:
+                return False
+            classes += 1
+        elif part.startswith("["):
+            if part[1:-1].split("=")[0].strip() not in node["attrs"]:
+                return False
+            classes += 1
+        else:                                            # :pseudo-class
+            if part[1:] not in node.get("pseudo", ()):
+                return False
+            classes += 1
+    return (ids, classes, elems)
+
+
+def _specificity(selector, chain):
+    """The selector's specificity if it matches the LAST node of `chain`.
+
+    Descendant combinators only. Anything using `>`, `+`, `~`, a pseudo-element
+    or a functional pseudo-class is returned as unmatched — none of the rules
+    that decide this button's `display` use one, and guessing at them would be
+    worse than declining.
+    """
+    if re.search(r"[>+~]|::|\(", selector):
+        return None
+    parts = selector.split()
+    if not parts:
+        return None
+    got = _match_compound(parts[-1], chain[-1])
+    if got is None or got is False:
+        return None if got is None else False
+    total = list(got)
+    # Every earlier compound must match some strict ancestor, innermost first.
+    ancestors = list(chain[:-1])
+    for compound in reversed(parts[:-1]):
+        while ancestors:
+            node = ancestors.pop()
+            hit = _match_compound(compound, node)
+            if hit is None:
+                return None
+            if hit:
+                total = [a + b for a, b in zip(total, hit)]
+                break
+        else:
+            return False
+    return tuple(total)
+
+
+def _resolve(prop, sheets, chain):
+    """What `prop` settles on for the last node of `chain`.
+
+    The UA stylesheet's `[hidden]{display:none}` is seeded first and at a lower
+    origin, which is the whole point: an author rule of equal specificity beats
+    it, and that is the bug.
+    """
+    best, winner = None, None
+    candidates = [(0, "[hidden]", "display:none")]
+    for origin, sheet in enumerate(sheets, start=1):
+        for sel, body in _rules(sheet):
+            candidates.append((origin, sel, body))
+    for order, (origin, sel, body) in enumerate(candidates):
+        value = None
+        for decl in body.split(";"):
+            name, _, val = decl.partition(":")
+            if name.strip() == prop and val.strip():
+                value = val.strip().split("!")[0].strip()
+        if value is None:
+            continue
+        spec = _specificity(sel, chain)
+        if not spec:
+            continue
+        rank = (origin,) + spec + (order,)
+        if best is None or rank > best:
+            best, winner = rank, value
+    return winner
+
+
+HTML = {"tag": "html", "classes": set(), "attrs": set(), "pseudo": {"root"}}
+HTML_MAX = {"tag": "html", "classes": {"maxmap"}, "attrs": set(),
+            "pseudo": {"root"}}
+BODY = {"tag": "body", "classes": set(), "attrs": set()}
+PANE = {"tag": "div", "classes": {"pane"}, "attrs": set()}
+
+
+def _exit_button(hidden):
+    node = {"tag": "button", "classes": {"tool", "maxexit"},
+            "attrs": {"hidden"} if hidden else set(), "id": "btnMaxExit"}
+    return node
+
+
+class TestTheResolverItself:
+    """The harness is checked before it is trusted.
+
+    A cascade resolver that silently understands nothing answers `None` for
+    everything, and `None != 'inline-flex'` would make every assertion below
+    pass on a completely broken stylesheet. So it has to get the ORIGINAL bug
+    right first.
+    """
+
+    def test_it_finds_the_rule_that_caused_the_bug(self):
+        got = [b for s, b in _rules(css()) if s == ".tool"]
+        assert got, "the resolver cannot even see the .tool rule"
+        assert "inline-flex" in got[0]
+
+    def test_it_reproduces_the_bug_on_the_broken_stylesheet(self):
+        """Take the fix back out and the button must come back on screen. If
+        this passes with the fix removed, the resolver is decoration."""
+        broken = css().replace(".tool[hidden]{display:none}", "")
+        assert ".tool[hidden]" not in broken
+        settled = _resolve("display", [broken, ""],
+                           [HTML, BODY, PANE, _exit_button(hidden=True)])
+        assert settled == "inline-flex", (
+            "the resolver cannot see the bug it exists to catch")
+
+    def test_it_can_tell_a_shown_button_from_a_hidden_one(self):
+        shown = _resolve("display", [css(), ""],
+                         [HTML, BODY, PANE, _exit_button(hidden=False)])
+        assert shown == "inline-flex"
+
+
+class TestTheExitButtonIsActuallyHidden:
+    """Ryan, 2026-08-25: "'✕ EXIT MAX MAP' is visible when not in max map, on
+    both desktop and mobile. It should appear only in that mode."
+    """
+
+    def test_hidden_really_hides_it(self):
+        settled = _resolve("display", [css(), ""],
+                           [HTML, BODY, PANE, _exit_button(hidden=True)])
+        assert settled == "none", (
+            "the exit button renders on a page that is not in the maximal "
+            "view — `.tool`'s display beats the UA's [hidden]")
+
+    def test_it_is_hidden_in_the_maximal_view_too_until_shown(self):
+        """`hidden` is the single source of truth in BOTH modes: `setMaxMap()`
+        clears it on the way in and sets it on the way out, so a rule that
+        showed it whenever `:root.maxmap` was present would make the attribute
+        a lie half the time."""
+        settled = _resolve("display", [css(), ""],
+                           [HTML_MAX, BODY, PANE, _exit_button(hidden=True)])
+        assert settled == "none"
+
+    def test_the_fix_is_not_private_to_this_one_button(self):
+        """Every `.tool` on every page had the same bug; `.who[hidden]` was
+        already this fix applied to exactly one element. A rule written as
+        `.maxexit[hidden]` would leave the floor's own hidden buttons — the
+        View, Quality and Arrange controls the severed site hides — rendering
+        on the tool row."""
+        severed = {"tag": "button", "classes": {"tool"}, "attrs": {"hidden"},
+                   "id": "btnView"}
+        settled = _resolve("display", [css(), ""], [HTML, BODY, PANE, severed])
+        assert settled == "none"
+
+
+class TestTheClockIsNotPaintedOver:
+    """Ryan, 2026-08-25: "the clock is truncated to '202' in the header."
+
+    It was not truncated: the exit button above is `position:fixed` at the top
+    right, so it was OUT OF FLOW and sitting on top of the last item in the
+    bar. Hiding it fixes the normal view — but in the maximal view the button
+    is legitimately there, and it would still land on the clock. So the bar
+    reserves the lane.
+    """
+
+    def test_the_clock_does_not_shrink_out_of_its_own_box(self):
+        """Every other item in this bar carries `flex:none`. A shrinkable item
+        whose text cannot wrap does not get shorter — it overflows onto its
+        neighbour."""
+        rules = dict((s, b) for s, b in _rules(src()) if s == ".clock")
+        assert ".clock" in rules, "the clock lost its rule entirely"
+        assert "flex:none" in rules[".clock"].replace(" ", "")
+
+    def test_the_maximal_bar_reserves_the_lane_the_exit_button_sits_in(self):
+        lane = _resolve("padding-right", [css(), src()],
+                        [HTML_MAX, BODY,
+                         {"tag": "header", "classes": {"bar"}, "attrs": set()}])
+        shorthand = _resolve("padding", [css(), src()],
+                             [HTML_MAX, BODY,
+                              {"tag": "header", "classes": {"bar"},
+                               "attrs": set()}])
+        reserved = lane or (shorthand or "").split()
+        assert "var(--maxexit-lane)" in str(reserved), (
+            "the fixed exit button would sit on top of the clock in the "
+            "maximal view")
+
+    def test_the_lane_is_wide_enough_for_the_button(self):
+        """A lane narrower than the control it is reserving for is the same bug
+        with an extra step. The button is ~129px of text plus its 12px offset."""
+        sheet = css()
+        m = re.search(r"--maxexit-lane:\s*(\d+)px", sheet)
+        assert m, "the lane has no width to check"
+        assert int(m.group(1)) >= 141
+
+    def test_the_normal_bar_does_not_reserve_it(self):
+        """Nothing is parked there when the button is hidden, and 156px of dead
+        space on the right of every header would be a worse bug than the one
+        being fixed."""
+        lane = _resolve("padding", [css(), src()],
+                        [HTML, BODY,
+                         {"tag": "header", "classes": {"bar"}, "attrs": set()}])
+        assert "maxexit-lane" not in str(lane)

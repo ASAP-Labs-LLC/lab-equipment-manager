@@ -327,17 +327,29 @@ class TestDeselect:
 
 
 class TestRecordTabs:
-    def test_there_are_three_tabs(self, floor):
-        for name in ("qc", "maint", "sop"):
+    """Four tabs now: QC, PM & CAL, Documents, History.
+
+    The SOPs tab used to be here and said so — "This tab is a placeholder —
+    nothing is stored or uploaded here." Ryan asked for the real thing ("I want
+    a documents tab as well per equipment for adding documents like PDF's"), so
+    the placeholder is gone and `equipment_documents` is behind it. A tab that
+    stores nothing is worse than no tab, because somebody eventually files a
+    certificate into it.
+    """
+
+    TABS = ("qc", "maint", "docs", "hist")
+
+    def test_the_record_has_all_four_tabs(self, floor):
+        for name in self.TABS:
             assert f'data-tab="{name}"' in floor, name
 
     def test_each_tab_has_a_pane(self, floor):
-        for name in ("qc", "maint", "sop"):
+        for name in self.TABS:
             assert f'id="tab-{name}"' in floor, name
 
-    def test_the_sop_tab_is_an_honest_placeholder(self, floor):
-        block = floor[floor.index('id="tab-sop"'):][:500]
-        assert "placeholder" in block.lower()
+    def test_the_sop_placeholder_is_gone(self, floor):
+        assert 'id="tab-sop"' not in floor
+        assert "No SOPs attached" not in floor
 
     def test_pm_and_cal_show_scheduled_and_completed(self, floor):
         assert 'id="maintNow"' in floor and 'id="maintDone"' in floor
@@ -438,3 +450,79 @@ class TestQcChartAxes:
     def test_there_are_axis_lines(self, floor):
         body = self.trend(floor)
         assert body.count("<line") >= 3       # expected + both axes
+
+
+class TestTheFlaggedEquipmentCardCannotCollideAgain:
+    """Reported off a screenshot, 2026-08-25.
+
+    "Needs attention" put the reason, the level name and the corrective-action
+    badge into ONE `.lim` flex row inside a 220px rail. Multitek NS — the most
+    prominent card on the page — came out as
+
+        Cloud   Second
+        Point   Floor
+        -9.8 C
+        -
+        outside
+        63.7
+
+    with the red "1 OPEN · 1 OVERDUE" badge painted as a block across it. Three
+    flex items, one of them (`.badge`) `white-space:nowrap` and so unable to
+    give width back; the two text items squeezed to their min-content width and
+    wrapped a word per line; and the badge, a flex item under the default
+    `align-items:stretch`, grown to the full height of the wreckage. The
+    sibling card laid out correctly only because its reason was short enough to
+    fit on one line, which is why this looked like a one-card problem.
+
+    **The fix is structural, and `tests/js/floorboot.mjs` is where it is
+    judged** — it renders the card with a long reason AND a badge and reads
+    back that the reason has an element of its own and the badge is not in it.
+    What is left here is the CSS that stops the same shape reappearing inside
+    the new row.
+    """
+
+    def rule(self, floor, selector):
+        style = re.search(r"<style>(.*?)</style>", floor, re.S)
+        assert style, "the floor lost its stylesheet"
+        sheet = re.sub(r"/\*.*?\*/", " ", style.group(1), flags=re.S)
+        found = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", sheet)
+        return found.group(1).replace(" ", "").replace("\n", "") if found else ""
+
+    def test_the_meta_row_centres_what_it_holds(self, floor):
+        """The default is `stretch`, and a `.badge` is `display:inline-flex`:
+        stretched, it grows to the row's full height and its pill background
+        becomes a block. That was the red rectangle."""
+        assert "align-items:center" in self.rule(floor, ".qc .attnmeta")
+
+    def test_the_meta_row_wraps_rather_than_crushes(self, floor):
+        """A rail is 220px. Without this the level name and the badge compete
+        for it and the loser is squeezed to its min-content width — which is
+        the one-word-per-line wrapping, arriving by a different route."""
+        assert "flex-wrap:wrap" in self.rule(floor, ".qc .attnmeta")
+
+    def test_the_badge_is_never_the_item_that_gives_way(self, floor):
+        """It carries `white-space:nowrap`, so it cannot shrink usefully — it
+        can only overflow. Saying `flex:none` makes that explicit instead of
+        leaving it to be discovered."""
+        assert "flex:none" in self.rule(floor, ".qc .attnmeta .badge")
+
+    def test_the_level_name_ellipses_instead_of_wrapping(self, floor):
+        """"Second Floor" must not become two lines of one word each."""
+        css = self.rule(floor, ".qc .attnmeta .lvl")
+        assert "text-overflow:ellipsis" in css
+        assert "white-space:nowrap" in css
+        # `min-width:0` is what actually lets a flex item shrink far enough for
+        # the ellipsis to happen at all; without it the item refuses to go
+        # below min-content and overflows the rail instead.
+        assert "min-width:0" in css
+
+    def test_the_reason_can_break_a_long_unbroken_run(self, floor):
+        """A QC reason is machine-written and can hold a token with no spaces
+        in it — a path, a lot code. Without this it pushes the rail wider than
+        the column and the whole card overflows."""
+        assert "overflow-wrap:anywhere" in self.rule(floor, ".qc .why")
+
+    def test_the_old_shared_row_is_hardened_too(self, floor):
+        """`.lim` is still the right element for a QC band's low/high pair. It
+        keeps the centring so nothing put in it can stretch again."""
+        assert "align-items:center" in self.rule(floor, ".qc .lim")

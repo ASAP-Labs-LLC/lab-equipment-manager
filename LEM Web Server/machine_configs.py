@@ -194,8 +194,8 @@ class MachineConfigStore:
             self._read_sql(
                 "SELECT machine_uid, title, updated_at, updated_by "
                 "FROM lem_machine_config ORDER BY title",
-                what="listing the machine configurations"),
-            "listing the machine configurations", missing_ok=True)
+                what="listing the equipment configurations"),
+            "listing the equipment configurations", missing_ok=True)
         return [{"machine_uid": str(r.get("machine_uid") or ""),
                  "title": str(r.get("title") or ""),
                  "updated_at": str(r.get("updated_at") or ""),
@@ -243,7 +243,7 @@ class MachineConfigStore:
         if not machine_uid:
             raise ValueError("A configuration needs a machine uid.")
         if not title:
-            raise ValueError("A configuration needs a machine name.")
+            raise ValueError("A configuration needs an equipment name.")
         self.ensure_schema()
         when = datetime.now().isoformat(timespec="seconds")
         # The return value below is the route's "ok, saved" payload, so it
@@ -268,7 +268,7 @@ class MachineConfigStore:
         """Register a brand-new machine with an empty config."""
         title = (title or "").strip()
         if not title:
-            raise ValueError("A new machine needs a name.")
+            raise ValueError("New equipment needs a name.")
         uid = new_uid()
         return self.save(uid, title, {"uid": uid, "title": title}, by=by)
 

@@ -239,6 +239,49 @@ def start_live_channel(app, gateway, host, port) -> str:
     return url
 
 
+def attach_to_poller(snapshots, publish) -> None:
+    """Run `publish` on every snapshot cycle, KEEPING whatever was already there.
+
+    `SnapshotService` has ONE `on_cycle` hook and more than one passenger wants
+    it, because it is the thread that is already awake and already talking to
+    LabCore — which is the whole reason a retry rides it rather than starting a
+    thread of its own. `create_app` puts the correction-audit spool's retry
+    there; `web_server.pyw` adds the live-address publisher on top, and only
+    when the address was actually published.
+
+    A bare `snapshots.on_cycle = publisher.publish_if_due` in the entry point is
+    what this replaces, and the failure it had was invisible in the worst way:
+    publishing is ON in production and OFF in dev and in every test, so the
+    assignment would have silently stripped the §7.8.2 receipt retry from the
+    live server alone, while everything green.
+
+    Lives here rather than in `web_server.pyw` because that file cannot be
+    imported off Windows (see tests/test_deployment.py::TestNoPublish), so
+    anything written there can only ever be tested by grepping its text. This
+    is the part with a rule in it; the entry point keeps the one line that says
+    when to apply it.
+
+    Both passengers are best-effort and isolated from each other: a retry that
+    raised must not be able to stop the address being republished, which is the
+    thing every bench's fast path depends on.
+    """
+    already = getattr(snapshots, "on_cycle", None)
+    if already is None:
+        snapshots.on_cycle = publish
+        return
+
+    def _cycle():
+        try:
+            already()
+        except Exception:
+            # Whatever it was has already reported itself; `SnapshotService.
+            # _loop` records anything `publish` raises.
+            pass
+        publish()
+
+    snapshots.on_cycle = _cycle
+
+
 def ttl_for(interval_seconds) -> float:
     """How long a push from a bench on this interval stays live.
 

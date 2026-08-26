@@ -99,7 +99,7 @@
 
       <section class="panel">
         <h2 class="sign">Recently completed</h2>
-        <p class="sub">Across every instrument.</p>
+        <p class="sub">Across every piece of equipment.</p>
         <div class="scroller" id="doneList"><p class="empty">Loading…</p></div>
       </section>
     </div>
@@ -171,7 +171,7 @@ async function load() {
   // over its labels (the rule /api/export/qc.csv follows). Without this line a
   // row reading "m1" looks like an instrument actually called m1.
   $('#named').textContent = now.machines_named === false
-    ? 'LabCore did not answer for the instrument names, so some rows are '
+    ? 'LabCore did not answer for the equipment names, so some rows are '
       + 'labelled by id. The schedule itself is complete.'
     : '';
   const n = s => tasks.filter(t => t.status === s).length;
@@ -194,7 +194,7 @@ async function load() {
       <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
     </div>`).join('')
     : `<p class="empty">Nothing ${KIND ? 'of this kind ' : ''}scheduled
-       anywhere. Add PMs and calibrations from an instrument's record on the
+       anywhere. Add PMs and calibrations from an equipment record on the
        <a href="/floor">map</a>.</p>`;
 
   // `done` is null when its fetch failed and nothing was cached (see lem.js).
@@ -290,7 +290,7 @@ function renderImport(b) {
     bits.push(`<div class="cap" style="color:var(--yellow)">Unmatched
       equipment — not imported</div>` + b.unmatched.map(u =>
       `<div class="ev"><span></span><span>line ${u.line}:
-        <b>${esc(u.equipment)}</b></span><span class="t">no such machine</span>
+        <b>${esc(u.equipment)}</b></span><span class="t">no such equipment</span>
        </div>`).join(''));
   }
   if ((b.errors || []).length) {

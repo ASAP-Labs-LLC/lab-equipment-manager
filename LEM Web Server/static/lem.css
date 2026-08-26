@@ -22,6 +22,11 @@
   --ui:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --mono:"SF Mono","Cascadia Mono",Consolas,"Roboto Mono",monospace;
   --navw:76px;
+  /* The lane the fixed "✕ Exit max map" button occupies at the top right. The
+     bar reserves it as padding in the maximal view, because a `position:fixed`
+     control is out of flow and will happily park on top of whatever the bar's
+     last item is — which is the clock. */
+  --maxexit-lane:156px;
 }
 
 *{box-sizing:border-box;margin:0}
@@ -71,9 +76,38 @@ dialog{margin:auto;max-height:min(90vh,900px);overflow:auto}
 .bar h1{font-size:12.5px}
 .bar .sep{width:1px;height:20px;background:var(--edge);flex:none}
 .spacer{flex:1}
+/* The tool row scrolls when it does not fit — it always did, and at 390px that
+   meant half of it was simply gone with nothing on screen saying there was more.
+   Two affordances, both CSS-only so they cannot desynchronise from the actual
+   scroll position:
+
+   1. SCROLL SHADOWS. The two solid blocks are `background-attachment:local`, so
+      they travel with the content and uncover the amber gradients underneath
+      only while there is content past that edge. At either end the block sits
+      over its gradient and the hint disappears — which is the whole trick, and
+      why this needs no listener.
+   2. A VISIBLE SCROLLBAR, thin, rather than the overlay one a trackpad hides. */
 .tools{display:flex;align-items:center;gap:8px;padding:8px 14px;
        background:#0c0e13;border-bottom:1px solid var(--edge);flex:none;
-       overflow-x:auto;white-space:nowrap}
+       overflow-x:auto;white-space:nowrap;
+       scrollbar-width:thin;scrollbar-color:#46536a transparent;
+       background-image:
+         linear-gradient(to right,#0c0e13,#0c0e13),
+         linear-gradient(to left,#0c0e13,#0c0e13),
+         linear-gradient(to right,rgba(255,138,61,.5),rgba(255,138,61,0)),
+         linear-gradient(to left,rgba(255,138,61,.5),rgba(255,138,61,0));
+       background-position:left center,right center,left center,right center;
+       background-repeat:no-repeat;
+       /* The covering blocks must be WIDER than the gradients they hide, or
+          16px of amber shows at an edge with nothing past it. */
+       background-size:34px 100%,34px 100%,30px 100%,30px 100%;
+       background-attachment:local,local,scroll,scroll}
+/* Styling the scrollbar at all is what makes it PERMANENT rather than the
+   overlay bar a trackpad hides until you already know to scroll. */
+.tools::-webkit-scrollbar{height:8px}
+.tools::-webkit-scrollbar-thumb{background:#46536a;border-radius:4px;
+       border:2px solid #0c0e13}
+.tools::-webkit-scrollbar-track{background:#12161d}
 
 .tool{background:#171b23;border:1px solid var(--edge);color:var(--ink2);
       border-radius:9px;padding:6px 11px;font:600 11.5px var(--ui);
@@ -81,10 +115,26 @@ dialog{margin:auto;max-height:min(90vh,900px);overflow:auto}
       text-decoration:none;display:inline-flex;align-items:center;gap:6px;
       white-space:nowrap;flex:none}
 .tool:hover{border-color:var(--amber);color:var(--amber)}
+/* Keyboard focus, on the shared button rather than per page. `:focus-visible`
+   so a mouse press does not leave a ring behind it, and an outline rather than
+   a border change so the button does not move by a pixel when it is reached by
+   Tab. The level picker and its steppers are the first controls here anyone
+   drives from the keyboard, and a focus nobody can see is a control nobody can
+   use without a mouse. */
+.tool:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
 .tool.on,.tool.live{border-color:var(--amber);color:var(--amber);
       background:#1a1410}
 .tool.warn{color:#ffb4b4}
 .tool.warn:hover{border-color:var(--red);color:var(--red)}
+/* `hidden` has to actually hide.
+   The UA stylesheet's `[hidden]{display:none}` and the `.tool` rule above have
+   the SAME specificity (0,1,0), and an author rule wins that tie — so every
+   `.tool` carrying the `hidden` attribute rendered as `display:inline-flex`
+   anyway. That is how "✕ Exit max map" came to sit in the header of a page
+   that was not in the maximal view at all, fixed at top-right, painted over
+   the clock and leaving "202" of it showing. `.who[hidden]` below is the same
+   fix for the same reason; this one covers every button on every page. */
+.tool[hidden]{display:none}
 
 /* Who is at the bench. A shared screen that doesn't name its operator invites
    changes nobody will own. */

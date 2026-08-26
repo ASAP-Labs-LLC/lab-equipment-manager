@@ -37,8 +37,13 @@
   .k-calibration{background:#2a2136;color:#c79bff}
   .k-config{background:#2b2412;color:var(--brass)}
   .det{color:var(--ink3);font-family:var(--mono);font-size:11px;
-       word-break:break-word;max-width:420px}
+       overflow-wrap:anywhere;max-width:460px;line-height:1.5}
   .count{color:var(--ink3);font-size:11.5px;white-space:nowrap}
+  .labwide{display:inline-flex;align-items:center;padding:1px 7px;
+     border-radius:20px;font-size:9px;font-weight:800;letter-spacing:.14em;
+     text-transform:uppercase;color:var(--ink3);border:1px solid var(--edge);
+     background:#12161d;white-space:nowrap}
+  .det{font-family:var(--ui);font-size:11.5px}
 </style>
 </head>
 <body>
@@ -55,7 +60,7 @@
   </header>
 
   <div class="filters">
-    <div class="f"><label for="fMachine">Instrument</label>
+    <div class="f"><label for="fMachine">Equipment</label>
       <select id="fMachine"><option value="">All</option></select></div>
     <div class="f"><label for="fKindSel">Kind</label>
       <select id="fKindSel"><option value="">All</option></select></div>
@@ -71,7 +76,7 @@
   <main>
     <table>
       <thead><tr>
-        <th>When</th><th>Instrument</th><th>Kind</th><th>Lab ID</th>
+        <th>When</th><th>Equipment</th><th>Kind</th><th>Lab ID</th>
         <th>Test</th><th>Value</th><th>Who</th><th>Detail</th>
       </tr></thead>
       <tbody id="rows"></tbody>
@@ -84,13 +89,28 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-// A `config` entry's interesting part is its detail, and a run's is its values.
-// Show the blob minus the keys already in their own columns.
+/* A `config` entry's interesting part is its detail, and a run's is its values.
+ *
+ * THIS USED TO PRINT THE BLOB. On a level move that was
+ *
+ *   {"from":"","from_name":"","to":"1fbb5f3672d4","to_name":"Ground Floor"}
+ *
+ * — a bare uid on the screen of a page whose whole job is to be read, with the
+ * readable name two keys away inside the same object. The server now sends the
+ * sentence alongside the blob (`describe_detail` in web_app.py, the one place
+ * that knows what these actions mean); this falls back to the pairs only for
+ * an entry written before that, or by something else. */
 function detailText(e) {
+  if (e.detail_text) return e.detail_text;
   const d = {...(e.detail || {})};
   delete d.by; delete d.action;
-  const s = JSON.stringify(d);
-  return s === '{}' ? '' : s;
+  const bits = Object.entries(d)
+    .map(([k, v]) => [k.replace(/_/g, ' '),
+                      v && typeof v === 'object' ? Object.values(v).join(', ')
+                                                 : String(v ?? '')])
+    .filter(([, v]) => v !== '')
+    .map(([k, v]) => `${k}: ${v}`);
+  return bits.join(' · ');
 }
 
 function query() {
@@ -155,10 +175,18 @@ async function load() {
   $('#rows').innerHTML = evs.map(e => `
     <tr>
       <td class="num" style="white-space:nowrap">${esc(e.ts.replace('T', ' ').slice(0, 19))}</td>
-      <td>${esc(e.machine_title)}</td>
+      <!-- A lab-wide event has no equipment, and an empty cell in an
+           EQUIPMENT column reads as a row whose equipment nobody recorded.
+           "level created" happens to the lab, not to one bench. -->
+      <td>${e.machine_uid ? esc(e.machine_title)
+             : '<span class="labwide">Lab-wide</span>'}</td>
       <td><span class="k k-${esc(e.kind)}">${esc(e.kind.replace(/_/g, ' '))}</span></td>
       <td class="num">${esc(e.lab_id)}</td>
-      <td>${esc(e.kind === 'config' ? e.action : e.test_name)}</td>
+      <td>${esc(e.kind === 'config'
+                 /* `action_label` is `action` in the word this page prints —
+                    see display_action() in web_app.py for why the stored value
+                    is left exactly as it was written. */
+                 ? (e.action_label || e.action) : e.test_name)}</td>
       <td class="num">${esc(e.value)}</td>
       <td>${esc(e.by)}</td>
       <td class="det">${esc(detailText(e))}</td>

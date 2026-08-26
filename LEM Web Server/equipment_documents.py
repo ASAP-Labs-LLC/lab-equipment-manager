@@ -138,38 +138,32 @@ from labcore_result import (
 )
 from labcore_result import rows as labcore_rows
 
-# NOT REGISTERED YET, and saying so is the point of this comment.
+# REGISTERED CENTRALLY, and saying which way round it is, is the point of this
+# comment.
 #
-# `lem_equipment_documents` is absent from `snapshot_service.SCHEMA_DDL`, so on a
-# running server this table does not exist. Every read here then earns the
-# missing-table empty list, and an unwired deployment looks on screen exactly
-# like an instrument that has no documents — which is why it is written down
-# here rather than found later by someone wondering where the certificates went.
-# An earlier version of this comment claimed the registration as done; it was
-# not, and `test_the_ddl_is_registered_or_the_module_says_it_is_not` now holds
-# the claim to the fact in both directions.
+# `snapshot_service.SCHEMA_DDL` imports this constant — `equipment_documents.
+# DOCUMENTS_DDL`, imported and never retyped — so the table is declared once at
+# boot, after `existing_tables()` has been asked, and costs nothing on the
+# restarts the tray does on every code edit.
 #
-# **What the wiring phase must do**, in this order:
-#   1. add this constant — as `equipment_documents.DOCUMENTS_DDL`, imported, not
-#      retyped — to `snapshot_service.SCHEMA_DDL`, so the table is declared once
-#      at boot. Verbatim, at the end of the SCHEMA_DDL tuple:
+# It said the opposite until 2026-08-25, and had said the opposite while
+# claiming otherwise before that: the table was in no central tuple, so on a
+# running server it did not exist, every read earned the missing-table empty
+# list, and an unwired deployment looked on screen exactly like an instrument
+# with no documents. `test_the_ddl_is_registered_or_the_module_says_it_is_not`
+# holds the claim to the fact in BOTH directions, so this paragraph cannot go
+# stale again in either.
 #
-#          import equipment_documents
-#          SCHEMA_DDL = (
-#              ...,
-#              equipment_documents.DOCUMENTS_DDL,
-#          )
-#
-#      `ensure_schema` reads the table name back out of each entry by splitting
-#      on "IF NOT EXISTS", so the constant must keep that spelling — it does;
-#   2. leave `_ARMS` alone. This table is deliberately NOT an arm of the batched
-#      read: documents are per-equipment and read on demand, every arm shares ONE
-#      statement, and an eleventh arm buys a tab badge with the whole floor's
-#      read;
-#   3. any column added here AFTER that ships needs an entry in
-#      `SCHEMA_MIGRATIONS` and an `ALTER`, because `CREATE TABLE IF NOT EXISTS`
-#      is a no-op on a table that already exists. That is exactly how adding
-#      `correction` dropped the whole floor to the fallback path once.
+# Two rules that came with the registration and outlive it:
+#   * `_ARMS` is deliberately untouched. Documents are per-equipment and read on
+#     demand; every arm of the batched read shares ONE statement, so an extra
+#     arm buys a tab badge with the whole floor's read. The fleet-wide badge is
+#     `document_counts_by_machine` — one `COUNT(*) … GROUP BY`, on a page
+#     nobody polls.
+#   * any column added here AFTER this shipped needs an entry in
+#     `SCHEMA_MIGRATIONS` and an `ALTER`, because `CREATE TABLE IF NOT EXISTS`
+#     is a no-op on a table that already exists. That is exactly how adding
+#     `correction` dropped the whole floor to the fallback path once.
 #
 # This store still declares nothing on demand. A table created by whoever
 # touches it first is how a column ends up missing from a shared statement.

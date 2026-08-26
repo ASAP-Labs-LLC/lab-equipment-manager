@@ -220,7 +220,7 @@ class BoxConfig:
     def from_dict(d: dict) -> "BoxConfig":
         return BoxConfig(
             uid=str(d.get("uid", "")),
-            title=str(d.get("title", "Machine")),
+            title=str(d.get("title", "Equipment")),
             csv_path=str(d.get("csv_path", "")),
             timestamp_col=str(d.get("timestamp_col", "")),
             qc_expire_hours=float(d.get("qc_expire_hours", 24.0)),

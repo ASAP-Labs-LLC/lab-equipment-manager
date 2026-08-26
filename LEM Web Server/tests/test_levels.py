@@ -1599,40 +1599,32 @@ class TestMovingIsCheap:
         assert len(gw.reads) == 2, gw.reads
 
 
-# ── the module is declared but wired to nothing ──────────────────────────────
+# ── the module is wired: the DDL, the arms and the parsers all landed ────────
 
-class TestTheWiringIsNotDoneYet:
+class TestTheWiringIsDone:
     """"Declared but inert" and "working" must not look the same.
 
-    This module's docstring specifies three edits into `snapshot_service` —
-    SCHEMA_DDL, _ARMS, and the parsers — and until they land, every table here
-    is missing, every read degrades to empty, and the whole feature is a no-op
-    that no test noticed. The two tests below are the gate: one states the
-    current truth and trips the day it changes, the other states the end state
-    and fails loudly until it is reached.
+    This class used to hold the opposite gate: a tripwire asserting the wiring
+    had NOT happened, plus a `strict` xfail on the end state. Both fired on the
+    commit that wired it — the tripwire failed and the xfail XPASSed — which is
+    exactly what they were for, and both were then removed. What is left is the
+    end state, asserted plainly.
+
+    `TestTheWiringIsNotDoneYet` is gone on purpose. Do not reinstate it: it now
+    describes a lab where the three tables do not exist, and the wider gates on
+    the wiring live in `tests/test_equipment_wiring.py`, which holds all three
+    stores rather than only this one.
     """
 
-    def test_this_module_is_declared_but_not_yet_wired(self):
-        """A tripwire, and it is meant to be DELETED by the wiring commit.
+    def test_the_schema_and_the_arms_landed_together(self):
+        """The dangerous half. An arm naming a table the boot path does not
+        declare fails the ONE statement every other arm shares and drops the
+        whole floor to the fallback path."""
+        for ddl in levels_mod.SCHEMA_DDL:
+            assert ddl in snapshot_service.SCHEMA_DDL
+        for arm in levels_mod.SNAPSHOT_ARMS:
+            assert arm in snapshot_service._ARMS
 
-        If this fails, the wiring has landed: remove this test and the
-        `xfail` marker below, and the feature is live for real.
-        """
-        wired = [d for d in snapshot_service.SCHEMA_DDL if "lem_levels" in d]
-        assert not wired, (
-            "levels are wired now — delete this tripwire and the xfail marker "
-            "on test_a_wired_snapshot_carries_the_levels")
-        assert not [a for a in snapshot_service._ARMS
-                    if a[0] in ("level", "levelof", "levelset")], (
-            "the arms are wired now — delete this tripwire")
-
-    @pytest.mark.xfail(strict=True, reason=(
-        "levels.py is wired to nothing yet. The single-writer phase must paste "
-        "levels.SCHEMA_DDL into snapshot_service.SCHEMA_DDL, levels."
-        "SNAPSHOT_ARMS into snapshot_service._ARMS, and call levels."
-        "levels_from_tables / assignments_from_tables / "
-        "default_level_from_tables / moves_from_tables from web_app's floor "
-        "payload. Until then the tables do not exist and the feature is inert."))
     def test_a_wired_snapshot_carries_the_levels(self):
         """The end state, spelled as the thing a user would notice: a level
         made through the store comes back out of the ONE batched read the floor

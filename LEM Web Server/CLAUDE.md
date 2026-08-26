@@ -531,6 +531,89 @@ and **deploys them itself once nobody is using LEM**.
 - The API contract LEM depends on is in the LabLink repo:
   `apps/LabCore/src/LABCORE_INTEGRATION_GUIDE.txt`.
 
+## The equipment record is wired up (2026-08-25)
+
+Three stores — `levels.py`, `equipment_documents.py`, `equipment_history.py` —
+shipped fully tested and **connected to nothing**. Their tables were in no
+central DDL, their arms in no batched read, and no route reached any of them.
+Declared-but-inert and working look identical from the outside, which is why
+`levels.py` shipped a tripwire (a test asserting the wiring was NOT done) and a
+`strict` xfail on the end state. Both fired on the wiring commit and both were
+removed; `tests/test_equipment_wiring.py` is the standing gate for all three.
+
+**`snapshot_service` is the single writer of the schema.** It IMPORTS the
+constants — `levels.SCHEMA_DDL`, `equipment_documents.DOCUMENTS_DDL`,
+`equipment_history.HISTORY_DDL` — rather than retyping them, and
+`levels.SNAPSHOT_ARMS` into `_ARMS`. A retyped copy drifts, and a copy that
+drifts here is an arm selecting a column the boot path never declared, which
+fails the ONE statement every other arm shares and drops the whole floor to the
+fallback path. **The DDL and the arms have to land in the same commit**, and
+they did. Seven new tables, no existing `lem_*` table touched, nothing in
+`SCHEMA_MIGRATIONS` — so this is a MINOR and no bench moves.
+
+**Levels are placed for the whole fleet out of rows the snapshot already
+holds.** `build_machines` calls `levels_from_tables` / `assignments_from_tables`
+/ `moves_from_tables` and then `placements(fleet, assignments, ladder)`, adding
+`level_uid`, `level_moved_at`, `level_moved_by` per machine and `levels`,
+`default_level`, `ground_level` to the payload. A floor poll still costs **zero
+LabCore ops** and `test_equipment_wiring.py` counts them to prove it.
+
+**`placements` takes three arguments and must never grow a fourth.** Handing it
+the settings default is what made flipping one drop-down teleport every unplaced
+instrument up a floor — `lem_machine_level` still empty, nothing on the map to
+say anything had happened. Unplaced stands on the ground, derived from the
+ladder. The default is reported beside the placements and never fed into them.
+
+**Documents and the history tables are deliberately NOT arms.** Every arm shares
+one statement, so an extra one is bought with the whole floor's read. The
+fleet-wide answers are one read each on pages nobody polls:
+`/api/equipment/document-counts` (`COUNT(*) … GROUP BY`) and
+`/api/equipment/open-actions` (`open_by_machine()`), so a UI drawing sixty cards
+never asks sixty times.
+
+### The 17025 gap is closed where the value is destroyed
+
+`lem_correction_factors` is an UPSERT, so saving an offset **destroys** the
+previous one and `lem_correction_audit` is the only place left that says what it
+was, when and who — while §7.8.2 makes that number part of every result the
+bench reports. `CorrectionAuditStore` existed for exactly this and was called by
+nothing. `api_save_correction` and `api_delete_correction` now call it, AFTER
+the factor write lands (nothing may claim a change that did not happen), and a
+delete records a change **to 0.0** rather than leaving a hole.
+
+The `lem_machine_log` config line is still written and is not the same record:
+it is filtered by the logs page and can be PURGED with the machine. Both.
+
+**A refused audit row is held, not lost.** The queue refuses past ~100 pending
+by answering, on an ordinary afternoon, and by then the operator's change has
+landed — so `CorrectionAuditSpool` keeps the row (bounded at 200, oldest
+dropped), retries it on the snapshot poller (`snapshots.on_cycle`) and on the
+next correction save, and `/healthz` reports `audit_spool` / `audit_spool_oldest`
+until it drains. The row's uid is minted once and kept across retries, so a
+write whose ANSWER was lost cannot land twice; a primary-key refusal on retry is
+read as "already recorded". `web_server.pyw` **chains** the live publisher onto
+this hook rather than assigning over it — replacing it would strip the retry
+from every production server and leave it working in dev and in tests.
+
+### Routes: `/api/equipment/…`
+
+Levels (list, create, rename, delete, default, assign, up, down), documents
+(list, upload, download, delete, fleet counts), corrective actions (timeline,
+open, record, verify, close, withdraw, assign, note, fleet open-actions). Every
+existing `/api/machines` route is untouched.
+
+- **Nothing is written against equipment that does not exist.** LabCore has no
+  foreign keys, so such a row is accepted and then unreachable forever.
+  `_equipment_gate` validates first — and tells "no such instrument" (404) apart
+  from "could not ask" (503), because a 404 on a blip sends somebody looking for
+  a bench standing right in front of them.
+- **Every mutation carries `by`** — the session user, on every store call.
+- **A blip reads as a blip**: `_labcore_unreadable` / `_labcore_failed`, never an
+  empty tab and never a bare 500. A lifecycle refusal is a 409 with the sentence
+  that says what to do instead; a rejected file is a 400 with nothing to retry.
+- Retiring a machine now also forgets its level and its documents, with the same
+  missing-table exemption every other step in that sequence has.
+
 ## The 3D site is SEVERED — the SVG plan is the floor (2026-08-24)
 
 Ryan: "just dont have it render trains in 3d okay? We are going to focus on the

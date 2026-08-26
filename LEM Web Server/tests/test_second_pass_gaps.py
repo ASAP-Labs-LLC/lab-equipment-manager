@@ -421,13 +421,13 @@ class TestTheExportsSayWhenTheirNamesAreMissing:
         text = res.get_data(as_text=True)
         assert "timestamp,machine,kind" in text
         assert "m1" in text
-        assert "machine names could not be read" in text.lower()
+        assert "equipment names could not be read" in text.lower()
 
     def test_the_qc_export_says_it_too(self, lab):
         gw = Selective(lab, fail_read=lambda s: "lem_machine_status" in s)
         client, _app = _client(gw)
         text = client.get("/api/export/qc.csv").get_data(as_text=True)
-        assert "machine names could not be read" in text.lower()
+        assert "equipment names could not be read" in text.lower()
 
     def test_a_healthy_export_carries_no_note(self, lab):
         client, _app = _client(lab)

@@ -68,7 +68,7 @@
             <path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/>
             <path d="M9 4v13.5M15 6.5V20"/></svg>
           <span class="nm">Map</span>
-          <span class="sub">The floor: every instrument, its QC, PM and
+          <span class="sub">The floor: every piece of equipment, its QC, PM and
           calibration.</span>
           <span class="tally" id="tallyMap">&nbsp;</span>
         </a>
@@ -121,7 +121,7 @@ async function load() {
     const n = b.machines.length;
     const bad = b.machines.filter(m => m.status === 'RED'
                                     || m.status === 'DEAD-LINE').length;
-    $('#tallyMap').innerHTML = `${n} instrument${n === 1 ? '' : 's'}`
+    $('#tallyMap').innerHTML = `${n} ${n === 1 ? 'piece' : 'pieces'} of equipment`
       + (bad ? ` · <b>${bad} need attention</b>` : '');
     if (b.labcore_online === false) {
       $('#foot').textContent =

@@ -160,17 +160,98 @@ class TestNothingIsClipped:
         rule = m.group(1).replace(" ", "")
         assert "overflow-x:auto" in rule or "flex-wrap:wrap" in rule
 
+    def test_the_tools_row_says_it_scrolls(self, client):
+        """It scrolled and said nothing about it. At 390px more than half the
+        row is off-screen — including the level picker, which is the primary
+        readout of which level the plan is drawing.
+
+        Two affordances, both CSS-only so neither can drift out of step with
+        the actual scroll position: scroll shadows (the solid blocks travel
+        with the content on `background-attachment:local` and uncover the
+        gradients only while there IS content past that edge) and a scrollbar
+        that is styled, which is what makes it permanent rather than the
+        overlay bar a trackpad hides.
+        """
+        css = client.get("/static/lem.css").get_data(as_text=True)
+        rule = re.search(r"\.tools\{([^}]*)\}", css).group(1).replace(" ", "")
+        assert "background-attachment:local" in rule, "no scroll shadow"
+        assert "linear-gradient" in rule
+        assert "::-webkit-scrollbar" in css and ".tools::-webkit-scrollbar" in css
+        # The covering block must be WIDER than the gradient it hides, or an
+        # edge with nothing past it glows anyway.
+        sizes = re.search(r"background-size:([^;]+)", rule).group(1)
+        px = [float(x) for x in re.findall(r"([\d.]+)px", sizes)]
+        assert px[0] > px[2], "the fade shows at an edge that cannot scroll"
+
+    def test_the_level_watermark_does_not_truncate_on_a_phone(self, client):
+        """It is the FALLBACK readout for the case where the tool row has
+        pushed the picker off-screen — so "GROUND F…" fails on exactly the
+        viewport it exists for."""
+        css = style_block(body(client, "/floor"))
+        rule = re.search(r"\.levelmark\{([^}]*)\}", css).group(1)
+        assert "text-overflow:ellipsis" not in rule.replace(" ", "")
+        assert "clamp(" in rule, "the watermark does not scale with the stage"
+        assert "white-space:nowrap" not in rule.replace(" ", "")
+
+    def test_the_default_level_wears_one_chip_everywhere(self, client):
+        """The picker drew a styled chip and the Levels dialog drew the same
+        word as bare lowercase text glued to the name — "Ground Floor default",
+        which reads as the level's name. One rule, both places."""
+        css = style_block(body(client, "/floor"))
+        m = re.search(r"(?<![\w.\[])\.dflt\{([^}]*)\}", css)
+        assert m, "`.dflt` is not styled at all outside the picker row"
+        rule = m.group(1).replace(" ", "")
+        assert "text-transform:uppercase" in rule and "border-radius" in rule
+
 
 # ── the floor still gets its width ──────────────────────────────────────────
 
 class TestFloorWidth:
+    @staticmethod
+    def _rail_cost(css: str, viewport: int) -> int:
+        """What the two rails actually cost at a given window width.
+
+        Was `sum(every px in the rule)`, which is only right while both rails
+        are one fixed number each. They are `clamp()`s now — the record rail
+        could not hold a corrective action at 248px — so summing the numbers
+        adds a floor and a ceiling together and reports 1196px for a grid that
+        costs 540. The rule is evaluated instead.
+        """
+        m = re.search(r"\.shell\{[^}]*grid-template-columns:\s*([^;}]+)", css)
+        assert m, "floor shell grid not found"
+        rule = m.group(1)
+        total = 0
+        for track in re.findall(r"clamp\(([^)]*)\)", rule):
+            lo, mid, hi = [t.strip() for t in track.split(",")]
+            def px(v):
+                if v.endswith("vw"):
+                    return float(v[:-2]) * viewport / 100
+                return float(v.rstrip("px"))
+            total += min(max(px(lo), px(mid)), px(hi))
+        if not total:                      # a grid of plain pixel tracks
+            fixed = [int(x) for x in re.findall(r"(\d+)px", rule)]
+            total = sum(fixed)
+        return round(total)
+
     def test_the_rails_are_narrower_than_before(self, client):
         """The rail cost 612px of a 1366px laptop; the map is the page."""
         css = style_block(body(client, "/floor"))
+        assert self._rail_cost(css, 1366) <= 560, "rails still cost too much"
+
+    def test_the_rails_do_not_take_the_floor_on_a_wide_screen(self, client):
+        """A ceiling as well as a floor: a 1920px screen spends the extra
+        width on the plan, not on two columns of whitespace."""
+        css = style_block(body(client, "/floor"))
+        assert self._rail_cost(css, 1920) <= 700
+
+    def test_the_record_rail_can_hold_a_corrective_action(self, client):
+        """It was 248px, and a corrective action's title, three badges, an
+        owner and two dates could not fit in it — dates broke mid-token."""
+        css = style_block(body(client, "/floor"))
         m = re.search(r"\.shell\{[^}]*grid-template-columns:\s*([^;}]+)", css)
-        assert m, "floor shell grid not found"
-        widths = [int(x) for x in re.findall(r"(\d+)px", m.group(1))]
-        assert sum(widths) <= 560, f"rails still cost {sum(widths)}px"
+        first = re.search(r"clamp\(([^,]+),", m.group(1))
+        assert first, "the record rail is not fluid"
+        assert float(first.group(1).strip().rstrip("px")) >= 288
 
     def test_the_nav_rail_is_slim(self, client):
         css = client.get("/static/lem.css").get_data(as_text=True)

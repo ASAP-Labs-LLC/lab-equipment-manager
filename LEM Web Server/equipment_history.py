@@ -35,14 +35,17 @@ have to move with it. New tables only means this ships MINOR and no bench
 changes. `machine_uid` stays the key everywhere — LabCore has no foreign keys,
 so renaming it would not error, it would silently orphan every row ever written.
 
-Neither store declares its own schema, and **nothing applies `HISTORY_DDL`
-today**. It is a declaration waiting for a wiring phase, not a live schema: the
-exact paste is the three statements below into `snapshot_service.SCHEMA_DDL`
-(the tuple that currently ends with `lem_machine_log`), and nothing else —
-`SCHEMA_MIGRATIONS` stays empty of them, because that tuple is for columns added
-to tables that already exist in the field. Until that paste happens these tables
-do not exist on any LabCore, which is exactly the state the read rule below
-calls "nothing has been recorded yet".
+Neither store declares its own schema. `HISTORY_DDL` is applied in exactly one
+place — `snapshot_service.SCHEMA_DDL` imports the constant, so boot declares all
+three tables once, after `existing_tables()` has been asked. Nothing goes into
+`SCHEMA_MIGRATIONS`: that tuple is for columns added to a table that already
+exists in the field, and all three of these are new. A column added to one of
+them AFTER this shipped needs an ALTER there, because `CREATE TABLE IF NOT
+EXISTS` is a no-op on a table that already exists.
+
+Until 2026-08-25 nothing applied it at all, and the read rule below is written
+for that state as much as for this one: a missing table means nothing has been
+recorded yet, and it is still the only failure a read here may call empty.
 
 A per-store `ensure_schema()` would put a bare CREATE TABLE on the write path,
 and that pattern is how a column LabCore did not have took the whole batched
@@ -172,13 +175,16 @@ from labcore_result import (LabCoreRefused, LabCoreUnavailable, confirm_write,
                             is_missing_table, rows, wrote_rows)
 
 # ── schema ─────────────────────────────────────────────────────────────────
-# NOT applied here, and NOT applied anywhere else yet either — see the module
-# docstring. The wiring phase pastes these three statements into
-# `snapshot_service.SCHEMA_DDL`, which asks `existing_tables()` first and so
-# costs nothing on a restart. All three tables are new, so nothing goes into
-# SCHEMA_MIGRATIONS — that tuple is for columns added to a table that already
-# exists in the field, where `CREATE TABLE IF NOT EXISTS` is a no-op and only an
-# ALTER helps. A column added to *these* tables later will need one.
+# NOT applied here — applied by `snapshot_service.SCHEMA_DDL`, which imports
+# this constant rather than retyping it and asks `existing_tables()` first, so
+# it costs nothing on a restart. Nothing goes into SCHEMA_MIGRATIONS: that
+# tuple is for columns added to a table that already exists in the field, where
+# `CREATE TABLE IF NOT EXISTS` is a no-op and only an ALTER helps. A column
+# added to *these* tables later will need one.
+#
+# None of the three is an arm of the batched read, deliberately. Every arm
+# shares ONE statement, and a timeline is opened by a person rather than polled
+# by the floor; the fleet-wide badge is `open_actions()`, one read.
 HISTORY_DDL = (
     # One row per corrective action, updated in place as it moves through its
     # life. The states are columns rather than a status word so the record says
@@ -731,6 +737,36 @@ def _confirmed(result, what: str) -> int:
         raise LabCoreRefused(f"{what}: {exc}") from None
 
 
+def _window_end(text) -> Optional[datetime]:
+    """The last instant a register window includes.
+
+    **A date alone means the end of that day**, the same rule `due_datetime`
+    applies to a due date and for the same reason: someone asking for a window
+    ending "2026-08-26" means the whole of the 26th. Read as midnight it would
+    exclude everything opened that day — so the register would quietly lose its
+    most recent day, which is the day someone is most likely to be asking about.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    when = parse_stamp(raw)
+    if when is None:
+        return None
+    if len(raw) <= 10:
+        return when.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return when
+
+
+def _register_order(action: CorrectiveAction):
+    """Newest-opened first, with unreadable stamps sorted to the bottom.
+
+    Sorted `reverse=True`, so `datetime.min` for an unreadable stamp puts it
+    last rather than first — a row nobody can date must not displace the recent
+    ones at the top of the page.
+    """
+    return parse_stamp(action.opened_at) or datetime.min
+
+
 def _open_order(action: CorrectiveAction):
     """Most urgent first: priority, then the soonest deadline, then the oldest.
 
@@ -833,7 +869,7 @@ class CorrectiveActionStore:
         """
         machine_uid = str(machine_uid or "").strip()
         if not machine_uid:
-            raise ValueError("A corrective action belongs to an instrument.")
+            raise ValueError("A corrective action belongs to a piece of equipment.")
         what_happened = str(what_happened or "").strip()
         if not what_happened:
             # A row recording only that somebody clicked is not a record of
@@ -1307,6 +1343,83 @@ class CorrectiveActionStore:
         a supervisor calls them."""
         return self.open_actions()
 
+    def register(self, start: str = "", end: str = "",
+                 machine_uid: Optional[str] = None) -> List[CorrectiveAction]:
+        """Every corrective action in a window — **open and resolved**.
+
+        Every other fleet-wide answer this store gives is about what is still
+        open: `open_actions`, `open_by_machine`, `overdue`. That is the Monday
+        supervisor question — what do I do next. An assessment asks the opposite
+        one: *show me everything that happened in the last twelve months and
+        what you did about it.* At an assessment the CLOSED actions are the
+        interesting ones, because closing them is the evidence that the system
+        works, and until now there was no way to list one across the fleet.
+
+        Filtered on `opened_at`, which is when the fault was found. Filtering on
+        `closed_at` instead would drop everything still open out of a window
+        that plainly contains it.
+
+        **An action whose `opened_at` cannot be read is always included**,
+        whatever window is asked for. That is deliberate and it is the safer of
+        the two wrong answers: a register is a compliance record, and one that
+        silently loses rows under-reports the lab to an assessor, which is worse
+        than showing a row with a blank date that a person can see and chase.
+        """
+        sql = f"SELECT {_ACTION_COLUMNS} FROM lem_corrective_actions"
+        args: list = []
+        if machine_uid:
+            sql += " WHERE machine_uid = ?"
+            args.append(machine_uid)
+
+        lo = parse_stamp(start) if str(start or "").strip() else None
+        hi = _window_end(end)
+
+        kept = []
+        for action in self._list(sql, args):
+            opened = parse_stamp(action.opened_at)
+            if opened is None:
+                kept.append(action)
+                continue
+            if lo is not None and opened < lo:
+                continue
+            if hi is not None and opened > hi:
+                continue
+            kept.append(action)
+
+        # Newest first — a register is read from the top. An unreadable stamp
+        # sorts to the bottom rather than to the top, where it would displace
+        # the recent rows the reader came for.
+        return sorted(kept, key=_register_order, reverse=True)
+
+    def recurrences(self, start: str = "", end: str = ""
+                    ) -> Dict[Tuple[str, str], List[CorrectiveAction]]:
+        """Faults that came back, keyed by `(machine_uid, test_name)`.
+
+        "Has this happened before on this instrument, for this test?" is the
+        question that separates a lab which closes tickets from one with a
+        working corrective-action system, and across a year of rows nobody can
+        answer it by eye.
+
+        Two grouping rules, both of which exist to avoid inventing a recurrence
+        the record does not show:
+
+        * **The instrument is part of the key.** Two benches failing the same
+          method is a method problem, not one instrument repeating itself.
+        * **A blank `test_name` never groups.** It is missing information, not a
+          shared key — otherwise every general fault on one bench ("odd noise",
+          "loose door") collapses into a fictitious repeat.
+
+        Only groups of two or more are returned; a single occurrence is not a
+        recurrence and a caller should not have to filter that out itself.
+        """
+        grouped: Dict[Tuple[str, str], List[CorrectiveAction]] = {}
+        for action in self.register(start=start, end=end):
+            test_name = str(action.test_name or "").strip()
+            if not test_name:
+                continue
+            grouped.setdefault((action.machine_uid, test_name), []).append(action)
+        return {key: items for key, items in grouped.items() if len(items) > 1}
+
     def open_by_machine(self) -> Dict[str, List[CorrectiveAction]]:
         """Every instrument's open actions, in ONE read. Machines with none are
         absent rather than empty, so a caller can badge on presence."""
@@ -1363,7 +1476,7 @@ class CorrectionAuditStore:
         """
         machine_uid = str(machine_uid or "").strip()
         if not machine_uid:
-            raise ValueError("A correction belongs to an instrument.")
+            raise ValueError("A correction belongs to a piece of equipment.")
         test_name = str(test_name or "").strip()
         if not test_name:
             raise ValueError("Which test?")
@@ -1777,7 +1890,7 @@ class EquipmentHistory:
             notes.append(f"Showing the {int(limit)} most recent entries.")
         if log_cut:
             notes.append(f"Showing the most recent {self.LOG_LIMIT} log "
-                         f"entries for this instrument; older runs, QC "
+                         f"entries for this equipment; older runs, QC "
                          f"verdicts and status changes are not listed.")
         return Timeline(entries, truncated=bool(limit_cut or log_cut),
                         note=" ".join(notes), limit=limit)

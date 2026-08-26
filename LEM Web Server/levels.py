@@ -35,24 +35,24 @@ An INSERT is not a schema change and this stays a MINOR.
                          default level is the same kind of fact: one switch,
                          shared by everyone looking at the map.
 
-**This module declares its schema; it does not create it.** The DDL below is
-written to be pasted into `snapshot_service.SCHEMA_DDL`, and `SNAPSHOT_ARMS`
-into `_ARMS`. A store that runs its own `CREATE TABLE IF NOT EXISTS` is the old
-pattern, and it is how the floor went down once already: every arm of the
-batched machine read shares ONE statement, so a table LabCore has not got fails
-the entire read and drops the whole floor to the fallback path.
+**This module declares its schema; it does not create it.** `SCHEMA_DDL` and
+`SNAPSHOT_ARMS` below are IMPORTED by `snapshot_service` — never retyped — so
+boot declares the three tables and the one batched read fetches them. A store
+that runs its own `CREATE TABLE IF NOT EXISTS` is the old pattern, and it is how
+the floor went down once already: every arm of that read shares ONE statement,
+so a table LabCore has not got fails the entire read and drops the whole floor
+to the fallback path.
 
-Until that wiring lands the three tables do not exist, so every read here names
-a missing table — the one error a read may honestly turn into "nothing" (see
-`_rows`), and exactly the truth about the lab today. **Nothing else degrades
-to empty.**
+**The three edits land together and they did** (2026-08-25): the DDL, the arms,
+and the `*_from_tables` parsers, which `snapshot_service.build_machines` calls
+to place the whole fleet. Arms without parsers would be a table nobody reads
+from the snapshot, and the floor would keep paying three LabCore reads a poll —
+every two seconds, from every open screen — for rows it already has in memory.
 
-**"Declared but inert" and "working" look identical from the outside**, which
-is why the wiring has a gate rather than a paragraph:
-`tests/test_levels.py::TestTheWiringIsNotDoneYet` holds a tripwire that fails
-the day somebody pastes the DDL in (delete it then — that is the point) and a
-`strict` xfail that fails the day the feature is live and nobody removed the
-marker. The silence is over either way round.
+A missing table is still the one error a read here may honestly turn into
+"nothing" (see `_rows`); **nothing else degrades to empty.** That path is now
+reached only on a LabCore where the CREATE was refused, rather than on every
+lab, but it is the same rule and it stays.
 
 These are all NEW tables, so `SCHEMA_MIGRATIONS` has nothing to say about them:
 `CREATE TABLE IF NOT EXISTS` is enough for a table nobody has yet. The moment a
@@ -61,10 +61,14 @@ column is added to one of them *after this ships*, it needs an ALTER in
 that already exists and the missing column then fails the whole batched read.
 That is what `correction` did to `lem_machine_specs`.
 
-Wiring it up is three edits and they go together: the DDL, the arms, **and the
-`*_from_tables` parsers**. Arms without parsers are a table nobody reads from
-the snapshot, so the floor keeps paying three LabCore reads a poll for data it
-already has in memory.
+**"Declared but inert" and "working" looked identical from the outside**, which
+is why the wiring had a gate rather than a paragraph: a tripwire that failed the
+day the DDL went in, and a `strict` xfail that failed the day the feature went
+live. Both fired on the same commit and both were then removed; what is left is
+`tests/test_levels.py::TestTheWiringIsDone` and the wider
+`tests/test_equipment_wiring.py`, which holds the same gate for all three
+stores. Do not reinstate the tripwire — it now asserts a lab where these tables
+do not exist.
 
 Two states this module is built around, neither of them an edge case:
 
@@ -538,9 +542,10 @@ class LevelStore:
     """Owns `lem_levels`, `lem_machine_level` and `lem_level_settings`.
 
     No `ensure_schema`: the tables are declared once, centrally, by
-    `snapshot_service` (see SCHEMA_DDL above). Until that wiring lands every
-    table here is missing, and a missing table is the one failure a read may
-    honestly report as "nothing" — which is the lab's state today.
+    `snapshot_service`, which imports SCHEMA_DDL above. A missing table is the
+    one failure a read may honestly report as "nothing" — now reached only on a
+    LabCore that refused the CREATE, rather than on every lab, and the rule is
+    unchanged either way.
 
     Every other failure raises. `labcore_result` is the rule and it is imported,
     not restated: three modules wrote their own version of it in one week and
@@ -848,10 +853,10 @@ class LevelStore:
     def placement_of(self, machine_uid: str) -> Optional[Placement]:
         """The placement AND who put it there, for one instrument.
 
-        The same fact `moves_from_tables` gets free out of the snapshot, but
-        reachable before the wiring lands — otherwise the provenance would
-        exist only down a path that is currently connected to nothing, and an
-        equipment panel could record a move it could never show.
+        The same fact `moves_from_tables` gets free out of the snapshot, kept
+        as a direct read for a panel that wants one instrument on demand rather
+        than the whole fleet's rows. One instrument, never a loop over the
+        fleet — that is what the snapshot parser is for.
 
         One instrument, on demand: never a loop over the fleet. That is what
         the snapshot parser is for.
