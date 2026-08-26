@@ -43,6 +43,22 @@ from labcore_result import (LabCoreUnavailable, is_missing_table,
                             refusal_of, retry_after)
 from labcore_result import rows as read_rows
 
+# ── the three stores this module is the single writer for ───────────────────
+#
+# Their DDL and (for levels) their arms are IMPORTED, never retyped. A copy
+# drifts, and a copy that drifts here is a column the boot path does not
+# declare while an arm of the one batched statement selects it — which fails
+# the ENTIRE read and drops the whole floor to the fallback path. That has
+# happened in production once.
+#
+# The dependency runs one way only: none of these three imports this module
+# (levels._f is a deliberate copy for exactly that reason), so there is no
+# cycle to fail at start-up on a `.pyw` with no console to report it.
+import equipment_documents as _documents
+import equipment_history as _history
+import levels as _levels
+import standard_documents as _standard_docs
+
 # How often the poller refreshes. The floor's own polling is decoupled from this,
 # so raising it costs freshness but not responsiveness.
 DEFAULT_INTERVAL = 12.0
@@ -131,7 +147,31 @@ _ARMS = (
      "SELECT 'activity' AS src, machine_uid AS c1, MAX(ts) AS c2, '' AS c3, "
      "'' AS c4, '' AS c5, '' AS c6, '' AS c7, '' AS c8, '' AS c9 "
      "FROM lem_machine_log GROUP BY machine_uid"),
+    # The lab, stacked. Three arms — the ladder, where each instrument stands,
+    # and the floor-wide view default — so `build_machines` can place the WHOLE
+    # fleet out of rows this read already fetched. Asking `LevelStore` from the
+    # floor payload instead would be three LabCore reads on a page that polls
+    # every two seconds from every open screen, which is the load pattern this
+    # whole service exists to remove.
+    #
+    # THE ARMS AND THE DDL LAND TOGETHER, and neither is retyped: both are the
+    # constants out of levels.py. An arm naming a table LabCore has not got
+    # fails the one statement every other arm shares.
+    *_levels.SNAPSHOT_ARMS,
 )
+
+# Deliberately NOT arms, and both for the same reason: every arm shares ONE
+# statement, so an extra one is bought with the whole floor's read.
+#
+#   lem_equipment_documents — per equipment, opened as a tab. The fleet-wide
+#     badge is `document_counts_by_machine`, which is ONE read of COUNT(*)
+#     GROUP BY on a page nobody polls, not sixty reads on a page that does.
+#   lem_corrective_actions / lem_action_events / lem_correction_audit — a
+#     timeline is opened by a person and read. `open_actions()` answers the
+#     whole floor in one read for the badge.
+#
+# If either ever ends up on a polled page, the answer is to add the arm here,
+# padded to the same width as the rest — not to read it per request.
 
 
 # The tables the snapshot reads. Every writer creates its own on demand, so on a
@@ -173,6 +213,27 @@ SCHEMA_DDL = (
     "PRIMARY KEY (machine_uid, test_name))",
     "CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, ts TEXT, "
     "kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, detail TEXT)",
+    # ── the three stores wired up here, declared by their own constants ─────
+    #
+    # All NEW tables, touching no existing one: the station module on every
+    # bench reads the `lem_*` tables, so a new or renamed column on a SHARED
+    # table is a MAJOR release that has to move every bench with it
+    # (RELEASING.md §2). These ship as a MINOR and no bench changes.
+    #
+    # Nothing goes into SCHEMA_MIGRATIONS for any of them — that tuple is for
+    # a column added to a table that already exists in the field, where
+    # `CREATE TABLE IF NOT EXISTS` is a no-op and only an ALTER helps. The
+    # moment a column is added to one of these AFTER this ships, it needs one.
+    *_levels.SCHEMA_DDL,             # lem_levels, lem_machine_level,
+                                     # lem_level_settings
+    _documents.DOCUMENTS_DDL,        # lem_equipment_documents
+    *_history.HISTORY_DDL,           # lem_corrective_actions,
+                                     # lem_correction_audit, lem_action_events
+    # The certificate a QC standard's values rest on. NEW table, and
+    # `lem_qc_samples` gains nothing — the numeric binding between a
+    # certificate and a standard's tests is a later, deliberate step, so no
+    # bench moves for this either.
+    _standard_docs.STANDARD_DOCUMENTS_DDL,   # lem_standard_documents
 )
 
 # Columns added to tables that already existed in the field. `CREATE TABLE IF NOT
@@ -374,6 +435,13 @@ class SnapshotService:
         age = (datetime.now() - at).total_seconds() if at else None
         out = dict(snap)
         out.update({"ready": True, "age_seconds": age,
+                    # WHEN this build landed, not how old it is now. `age_seconds`
+                    # moves on every call, and `refreshes` counts attempts —
+                    # including the ones that kept the previous rows because the
+                    # read failed. Neither can key a cache derived from these
+                    # rows. `_at` is assigned only where a build is committed, so
+                    # this string changes if and only if the data did.
+                    "built_at": at.isoformat() if at else "",
                     # NOT `and not err`: a read that timed out behind a busy
                     # queue is stale data, not an unreachable server. `_online`
                     # is the reachability probe.
@@ -974,4 +1042,48 @@ def build_machines(tables: Dict[str, List[dict]], now: datetime,
     # share one, and two machines swapping places is exactly the flicker being
     # fixed here. Recency is still on every machine for the feed and "ago" stamps.
     machines.sort(key=lambda m: (m["title"].lower(), m["machine_uid"]))
-    return {"machines": machines, "closed_reason": closed_reason}
+
+    # ── which level each instrument stands on ──────────────────────────────
+    #
+    # Placed for the WHOLE fleet in one pass, out of rows this read already
+    # holds. `LevelStore` is not touched: it would be three LabCore reads on a
+    # payload the floor rebuilds every two seconds from every open screen.
+    #
+    # `placements` takes the ladder and the assignments and NOTHING ELSE. It
+    # has no fourth argument and must never grow one: handing it the settings
+    # default is what made flipping a drop-down teleport every unplaced
+    # instrument up a floor, with `lem_machine_level` still empty and nothing
+    # on the map to say anything had happened. Unplaced stands on the ground,
+    # derived from the ladder, full stop.
+    ladder = _levels.levels_from_tables(tables)
+    assignments = _levels.assignments_from_tables(tables)
+    moves = _levels.moves_from_tables(tables)
+    placed = _levels.placements([m["machine_uid"] for m in machines],
+                                assignments, ladder)
+    for entry in machines:
+        uid = entry["machine_uid"]
+        entry["level_uid"] = placed.get(uid, "")
+        # Provenance rides along free — the same `levelof` rows. "Moved three
+        # days ago, by Ryan" costs the floor no op at all, where asking per
+        # instrument would be the N+1 the snapshot exists to end. Blank for an
+        # instrument nobody has placed, and for a row written before this
+        # shipped: an unstamped placement is still a placement.
+        move = moves.get(uid)
+        entry["level_moved_at"] = move.moved_at if move else ""
+        entry["level_moved_by"] = move.moved_by if move else ""
+
+    return {
+        "machines": machines,
+        "closed_reason": closed_reason,
+        "levels": [level.to_dict() for level in ladder],
+        # The VIEW default: what the picker opens on and what the create dialog
+        # preselects. Resolved on read, so a setting left pointing at a deleted
+        # level still opens on something — no foreign key will ever tidy it up.
+        # Reported beside the placements and never fed into them.
+        "default_level": _levels.resolve_default(
+            ladder, _levels.default_level_from_tables(tables)),
+        # Where an unplaced instrument is drawn. A separate fact from the one
+        # above, permanently, and the floor needs both: one to open the picker
+        # on, one to label the plane everything unassigned is standing on.
+        "ground_level": _levels.ground_level_uid(ladder),
+    }
