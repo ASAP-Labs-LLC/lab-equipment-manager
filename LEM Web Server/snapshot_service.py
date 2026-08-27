@@ -58,6 +58,7 @@ import equipment_documents as _documents
 import equipment_history as _history
 import levels as _levels
 import standard_documents as _standard_docs
+import uncertainty as _uncertainty
 
 # How often the poller refreshes. The floor's own polling is decoupled from this,
 # so raising it costs freshness but not responsiveness.
@@ -271,6 +272,12 @@ SCHEMA_DDL = (
     # certificate and a standard's tests is a later, deliberate step, so no
     # bench moves for this either.
     _standard_docs.STANDARD_DOCUMENTS_DDL,   # lem_standard_documents
+    # The frozen ISO/IEC 17025 uncertainty budgets. NEW table, same rules as
+    # the four above: no existing `lem_*` table gains a column, so no bench
+    # moves and this is a MINOR. Deliberately NOT an arm — every arm is bought
+    # with the whole floor's 2-second read and the register is a page nobody
+    # polls; the reads it needs are one each, in `uncertainty.UncertaintyStore`.
+    _uncertainty.UNCERTAINTY_DDL,            # lem_uncertainty_estimates
     # ── and the indexes lem_machine_log never had ──────────────────────
     #
     # Every other lem_* table has a sensible key. This one has no primary key,

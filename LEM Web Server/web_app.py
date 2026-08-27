@@ -1365,6 +1365,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     from standard_documents import (CertificateRejected, CertificateStoreError,
                                     StandardCertificateStore,
                                     content_disposition, expiry_report)
+    import uncertainty
+    from uncertainty import EstimateRefused, Exclusion, UncertaintyStore
 
     level_store = LevelStore(gateway)
     document_store = EquipmentDocumentStore(gateway, root=documents_root)
@@ -1372,6 +1374,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # equipment documents — one place a deploy has to preserve, not two — and
     # the store keeps them apart underneath by its own folder scheme.
     certificate_store = StandardCertificateStore(gateway, root=documents_root)
+    # Frozen measurement-uncertainty records. Deliberately NOT a snapshot arm:
+    # every arm is bought with the whole floor's two-second read, and this is
+    # opened by a person preparing for an assessment, not polled.
+    uncertainty_store = UncertaintyStore(gateway)
     equipment_history = EquipmentHistory(gateway)
     correction_audit = CorrectionAuditStore(gateway)
 
@@ -4720,6 +4726,186 @@ def create_app(gateway, admin_password: Optional[str] = None,
             "superseded": rows(report.get("superseded") or []),
             "covered": list(report.get("covered") or []),
         })
+
+
+    # ── measurement uncertainty (ISO/IEC 17025 §7.6, SOP QMU 1.001) ─────
+    #
+    # `uncertainty.py` shipped fully tested and reachable by nothing, and left a
+    # tripwire saying so — the fourth store in this app to do that, after
+    # levels, documents and history. This is the wiring; the tripwire is gone
+    # and `tests/test_uncertainty_web.py` replaces it.
+    #
+    # NOTHING HERE COMPUTES ON READ. An estimate is a record: it is calculated
+    # once, from a stated window, and frozen. A number recomputed on page load
+    # is not a record, because the inputs move under it — which is the whole
+    # argument of the design doc's gap 4.
+
+    def _estimate_or_404(estimate_id):
+        try:
+            est = uncertainty_store.get(estimate_id)
+        except LabCoreError as exc:
+            return None, _labcore_unreadable(exc, "this uncertainty estimate")
+        if est is None:
+            return None, (jsonify({"error": "No such estimate."}), 404)
+        return est, None
+
+    @app.route("/api/uncertainty")
+    def api_uncertainty_list():
+        """Current approved estimates, and what has gone stale.
+
+        A read that failed is NOT an empty register: "no uncertainty estimates
+        on file" is itself a finding at an assessment, and it must be
+        impossible to produce from an outage.
+        """
+        try:
+            current = uncertainty_store.list_current()
+            stale = uncertainty_store.stale(now=_now())
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the uncertainty register")
+        return jsonify({
+            "estimates": [e.to_dict() for e in current],
+            "stale": [t.to_dict() if hasattr(t, "to_dict") else str(t)
+                      for t in stale],
+        })
+
+    @app.route("/api/uncertainty/<machine_uid>/<path:test_name>")
+    def api_uncertainty_history(machine_uid, test_name):
+        """Every estimate for one measurand, newest first.
+
+        Supersession is the revision mechanism, so the history IS the audit
+        trail — an assessor walks backwards through it.
+        """
+        try:
+            history = uncertainty_store.history_for(machine_uid, test_name)
+            current = uncertainty_store.current_for(machine_uid, test_name)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this measurand's estimates")
+        return jsonify({
+            "machine_uid": machine_uid, "test_name": test_name,
+            "history": [e.to_dict() for e in history],
+            "current": current.to_dict() if current else None,
+        })
+
+    @app.route("/api/uncertainty/compute", methods=["POST"])
+    def api_uncertainty_compute():
+        """Calculate and SAVE a draft. It is never approved here.
+
+        SOP 2.10's Register entry is signed. A number that signed itself the
+        moment it was calculated records nobody's judgement.
+        """
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        machine_uid = str(body.get("machine_uid") or "").strip()
+        test_name = str(body.get("test_name") or "").strip()
+        if not machine_uid or not test_name:
+            return jsonify({"error": "Name the equipment and the test."}), 400
+        kw = {k: body[k] for k in
+              ("control_limit", "control_limit_k", "s_r", "certificate",
+               "astm_r", "bias_decision", "short_series_justification", "notes")
+              if k in body}
+        try:
+            est = uncertainty_store.compute(
+                machine_uid, test_name,
+                window_start=body.get("window_start"),
+                window_end=body.get("window_end"),
+                rw_route=str(body.get("rw_route") or "control_sample"),
+                **kw)
+            uncertainty_store.save(est, computed_by=session.get("user", ""))
+        except EstimateRefused as exc:
+            # The evidence does not permit the route that was asked for. This
+            # is the common answer in this laboratory today and it is not an
+            # error condition — the sentence names the route that IS permitted.
+            return jsonify({"error": str(exc),
+                            "route": getattr(exc, "route", ""),
+                            "evidence": _route_evidence(machine_uid, test_name,
+                                                        body)}), 400
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this uncertainty estimate")
+        _audit("uncertainty computed", machine_uid,
+               {"estimate": est.estimate_id, "test": test_name,
+                "route": est.rw_route})
+        return jsonify({"ok": True, "estimate": est.to_dict()})
+
+    def _route_evidence(machine_uid, test_name, body):
+        """Which routes the evidence permits, and why not for the rest."""
+        try:
+            series = uncertainty_store.read_series(
+                machine_uid, test_name,
+                window_start=body.get("window_start"),
+                window_end=body.get("window_end"))
+            verdicts = uncertainty.route_evidence(
+                series, control_limit=body.get("control_limit"),
+                s_r=body.get("s_r"), now=_now())
+        except Exception:                       # noqa: BLE001 — advisory only
+            return {}
+        return {name: {"permitted": v.permitted, "reason": v.reason}
+                for name, v in verdicts.items()}
+
+    @app.route("/api/uncertainty/<estimate_id>/approve", methods=["POST"])
+    def api_uncertainty_approve(estimate_id):
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        est, refusal = _estimate_or_404(estimate_id)
+        if refusal is not None:
+            return refusal
+        try:
+            uncertainty_store.approve(estimate_id, session.get("user", ""),
+                                      when=_now())
+            est = uncertainty_store.get(estimate_id)
+        except EstimateRefused as exc:
+            # Already signed. A second signature would overwrite the name and
+            # the date of the person who actually reviewed it.
+            return jsonify({"error": str(exc)}), 409
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this approval")
+        _audit("uncertainty approved", est.machine_uid,
+               {"estimate": estimate_id, "test": est.test_name})
+        return jsonify({"ok": True, "estimate": est.to_dict()})
+
+    @app.route("/api/uncertainty/<estimate_id>/exclude", methods=["POST"])
+    def api_uncertainty_exclude(estimate_id):
+        """Drop a point, with an investigated cause and an NCR reference.
+
+        TR 537 and SOP 2.9 both forbid automatic outlier rejection: statistical
+        extremity alone is not grounds. And if the excluded run represents work
+        already reported to a customer, clause 7.10 is engaged — which is why
+        the nonconforming-work reference is required rather than encouraged.
+        The result SUPERSEDES rather than mutating; nothing is recomputed in
+        place.
+        """
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        _est, refusal = _estimate_or_404(estimate_id)
+        if refusal is not None:
+            return refusal
+        body = request.get_json(silent=True) or {}
+        try:
+            exclusion = Exclusion(ts=str(body.get("ts") or ""),
+                                  value=body.get("value"),
+                                  cause=str(body.get("cause") or ""),
+                                  ncr_ref=str(body.get("ncr_ref") or ""))
+            new = uncertainty_store.exclude(estimate_id, exclusion,
+                                            computed_by=session.get("user", ""),
+                                            now=_now())
+        except (EstimateRefused, ValueError) as exc:
+            return jsonify({"error": str(exc)}), 400
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this exclusion")
+        _audit("uncertainty point excluded", new.machine_uid,
+               {"estimate": new.estimate_id, "supersedes": estimate_id,
+                "cause": exclusion.cause, "ncr": exclusion.ncr_ref})
+        return jsonify({"ok": True, "estimate": new.to_dict()})
+
+    @app.route("/api/uncertainty/<estimate_id>/register")
+    def api_uncertainty_register(estimate_id):
+        """The SOP 2.10 Register entry — the thing that goes in the file."""
+        est, refusal = _estimate_or_404(estimate_id)
+        if refusal is not None:
+            return refusal
+        return jsonify({"estimate_id": estimate_id,
+                        "register": est.to_register_row(),
+                        "fields": uncertainty.REGISTER_FIELDS})
 
     @app.route("/api/equipment/register")
     def api_action_register():
