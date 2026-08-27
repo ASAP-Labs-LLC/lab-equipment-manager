@@ -15,9 +15,21 @@ from labcore_gateway import FakeLabCoreGateway
 from machine_map import QcTargetStore, WatchedTarget
 from qc_samples import QcSample, QcSampleStore, QcSampleTest
 
-# The station module lives in the LAB-lem project; import it so both halves
-# of the system are checked against one another.
-MODULE_DIR = Path("/Volumes/Labsharedrive/Ryan C/LAB-lem/LEM Station Module")
+# The station module, so both halves of the system are checked against one
+# another.
+#
+# This used to name an absolute path on the SMB share
+# (`/Volumes/Labsharedrive/Ryan C/LAB-lem/LEM Station Module`). That path is
+# stale — the project moved, per the root CLAUDE.md — and the share is not
+# mounted on every machine anyway, so `importorskip` swallowed the WHOLE module
+# and every test in this file had been quietly skipping. A cross-check that
+# does not run is worse than none: it reads as coverage in the count.
+#
+# Resolved relative to this file instead, exactly as `test_qc_window.py` does
+# for the same module. It still skips when the module genuinely is not
+# alongside — CI archives `LEM Web Server/` on its own — but on a checkout that
+# has it, it runs.
+MODULE_DIR = Path(__file__).resolve().parent.parent.parent / "LEM Station Module"
 if MODULE_DIR.exists() and str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 lem = pytest.importorskip("lem_station_module")
