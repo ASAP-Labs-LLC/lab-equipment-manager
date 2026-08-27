@@ -195,3 +195,23 @@ input[type=checkbox],input[type=radio]{width:15px;height:15px;flex:0 0 auto;
    palette that drifts from it. Visibility is the `hidden` attribute, not this
    rule — a cached stylesheet once left it unstyled and therefore on screen. */
 .maxexit{position:fixed;top:10px;right:12px;z-index:200}
+
+/* The running release, bottom-right of the viewport.
+
+   Fixed rather than in flow: every page here owns its own scroll regions
+   (the floor's rails, the logs table), so a stamp in the document would
+   scroll away on some pages and not others — and the question it answers,
+   "which build is this screen running?", is about the SCREEN.
+
+   Quiet by default and readable on hover. It is reference, not status: it
+   must never compete with a RED instrument for attention, and on a wall
+   display nobody is standing at, it should be the last thing the eye finds.
+   `pointer-events: none` so it can sit over a corner of the map without
+   swallowing a click meant for the floor underneath it. */
+.verstamp{position:fixed;right:10px;bottom:8px;z-index:40;
+          font-family:var(--mono);font-size:10px;letter-spacing:.04em;
+          color:var(--ink3);opacity:.55;pointer-events:none;
+          padding:2px 6px;border-radius:4px;background:rgba(10,12,16,.72);
+          transition:opacity .15s ease}
+.verstamp:hover{opacity:1}
+@media print{.verstamp{display:none}}

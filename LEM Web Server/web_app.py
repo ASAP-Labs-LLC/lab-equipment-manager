@@ -1040,6 +1040,16 @@ def create_app(gateway, admin_password: Optional[str] = None,
         return static_version(
             os.path.join(app.static_folder or "static", filename))
 
+    # And as `app_version()`. The SAME string /healthz reports — two version
+    # stamps that can disagree is worse than one, because the one on the wall
+    # is the one people quote. Deploys here are unattended: the updater swaps a
+    # junction under a running service once the lab goes quiet, so nobody
+    # installs a release at a moment they would remember, and "which one is
+    # live?" has meant reading /healthz or the updater log.
+    @app.template_global("app_version")
+    def _app_version() -> str:
+        return APP_VERSION
+
     # The 3D floor loads as ES modules, and a static `import` cannot carry a
     # version of its own — so the import map is the only place a fingerprint can
     # go. Without it a screen holding last week's terrain.js runs it against

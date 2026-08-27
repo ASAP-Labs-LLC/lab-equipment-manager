@@ -42,3 +42,21 @@
   {% endfor %}
   <span class="grow"></span>
 </nav>
+
+{# Which release is actually on this screen.
+
+   In the shared nav rather than per page, so it cannot be on four pages and
+   missing from the fifth. Fixed to the bottom-right corner of the VIEWPORT,
+   not the rail, because that is where Ryan asked for it and because a wall
+   display is read from across a room.
+
+   A `<span>`, deliberately not a link or a button: it reports, and a clickable
+   thing in the corner of a display somebody walks past is a thing they lean on
+   by accident.
+
+   `aria-hidden` — a screen reader working down the page does not want the
+   build number between the nav and the content; anyone who needs it has
+   /healthz, which is the same string. #}
+<span class="verstamp" aria-hidden="true" title="The LEM release running on this server">
+  LEM {{ app_version() }}
+</span>

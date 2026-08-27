@@ -3433,11 +3433,28 @@ async function renderFeed() {
  * still readable. Only the visible label shortens.
  */
 const KIND_TAG = {status_change: 'status', calibration: 'cal',
-                  correction: 'corr', maintenance: 'maint'};
+                  correction: 'corr', maintenance: 'maint',
+                  held_expired: 'held', config: 'config'};
+
+/* The column fits about eight characters at 9px with .1em tracking, so the
+ * cap is STRUCTURAL and not a list. The first version of this was the map
+ * alone, built from the kinds `lem_machine_log`'s DDL comment documents —
+ * run | qc | status_change | override | comment | pm | calibration. Production
+ * also writes `held_expired`, which is not in that comment, so HELD_EXPIRED
+ * printed straight over the equipment name beside it on the live floor. Seen
+ * in a screenshot of lem.asaplabs.net, not in any test.
+ *
+ * A map cannot be complete about a column whose values another program writes.
+ * The cap can. */
+const KIND_TAG_MAX = 8;
 
 function kindTag(kind) {
   const k = String(kind || '');
-  return KIND_TAG[k] || k;
+  const named = KIND_TAG[k];
+  if (named) return named;
+  // Unknown and too long: truncate rather than overflow. The full kind is in
+  // the class and the title, so nothing is lost — only the visible label.
+  return k.length > KIND_TAG_MAX ? k.slice(0, KIND_TAG_MAX - 1) + '…' : k;
 }
 
 /* How many of them there are, in English.
