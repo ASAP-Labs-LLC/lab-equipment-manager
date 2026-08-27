@@ -854,12 +854,15 @@ Single deck, same fleet, same stage: **34.3%**.
   is drawn exactly underneath the other. It runs over the level in view, which
   is also everything drawn — two instruments on the same bay of DIFFERENT
   floors are not a collision.
-- **The fit work stayed, and got better.** The tilt is still solved from the
-  stage's aspect with the measured overshoot (`PLAN_OVER`) folded in. What
-  changed is the margin: a flat 18 drawing units was 6% of each axis on a
-  six-piece floor — 12% of the stage given to nothing — so it is a *share* of
-  the drawing now (`PAD_F`). **97.0% of both axes at every viewport**, against
-  93.9–95.5% before and 96.9% for the stack it replaced.
+- **The margin is a share of the drawing** (`PAD_F`), not a flat 18 units —
+  which on a six-piece floor was 6% of each axis, 12% of the stage given to
+  nothing.
+- ⚠ **The tilt is NOT solved. See "The camera is a constant" below** — an
+  earlier version of this section said the tilt was still solved from the
+  stage's aspect with a measured overshoot (`PLAN_OVER`) folded in, and quoted
+  97.0% on both axes. Both the mechanism and the number are gone: that solve is
+  what made the floor stop being isometric, and `planFitTilt`, `PLAN_TILT_MIN`,
+  `PLAN_TILT_MAX` and `PLAN_OVER` no longer exist.
 - **The building is SAID, not drawn.** `#levelNav` — a rung per level, top of
   the building first, "1 of 3", how much stands on each floor and what state
   the worst of it is in, in words as well as colour. Every other floor is a
@@ -867,7 +870,7 @@ Single deck, same fleet, same stage: **34.3%**.
   equipment, 1 red"); the floor you are on is a `<div>` with `aria-current`,
   because a control that goes where you already are does nothing. It sits in
   the stage's top-left, which is the corner the deck's diamond leaves empty at
-  every tilt the solve can reach, so it costs the map nothing.
+  every tilt the camera has ever used, so it costs the map nothing.
 - **Zero LabCore ops, as before.** The ladder and every `level_uid` ride on the
   `/api/machines` payload the floor already polls; switching floor fires no
   request, verified in the browser and counted in `floorboot.mjs`.
@@ -883,6 +886,47 @@ measures the drawn geometry. Twelve deliberate mutations were run against it —
 drawing every level again, deleting the indicator, un-buttoning the rungs,
 hard-coding three, restoring the flat pad, shrinking the pick target to a speck
 — and all twelve were caught.
+
+
+## The camera is a constant (2026-08-26)
+
+`PLAN_CAM.tilt` was solved per draw so the drawing came out the shape of the
+stage. On our nearly-square stage (784x802) that pinned it to `PLAN_TILT_MAX` —
+**68 degrees, sin 0.93** — and the depth axis stopped being foreshortened. Ryan:
+*"you have the 3/4ths angle but not the perspective, its top down at an angle
+instead of isometric."* It was a square rotated 45 degrees seen from nearly
+overhead, and the 97% coverage the fit work reported was bought by flattening
+the projection.
+
+**Every fit test passed the whole time**, because they all measured how much
+CANVAS was covered and not one measured what the drawing looked like. That is
+the lesson, and it is the same one as the NaN tooltip and the invented fixture: a
+suite can be strong and still be aimed away from the thing that matters.
+
+`const PLAN_TILT = 30` — the classic 2:1 isometric, and what `PLAN_H_UNIT =
+cos(30°)` had assumed all along. **The camera is a look parameter and must never
+be a layout lever again.**
+
+Fitting happens where fitting belongs: the viewBox, padded to the stage's aspect
+and centred. A fixed projection means a fixed drawing aspect, so on a stage of
+any other shape ONE axis fills and the other cannot — **97.0% across, 57–78%
+down**. That band is the price of an isometric view. It is not slack, and it must
+not be reclaimed by bending the camera.
+
+Equipment measures **21.7%** of the stage at 1400x900 and **26.8%** at 1920x1080,
+against 34.3% for the flattened camera. Lower, and correct. The harness
+thresholds are set from what the shipped projection measures, never from what the
+flattened one could reach — an acceptance test stricter than the thing it
+describes makes a correct drawing unreportable, which has its own heading further
+down this file.
+
+**The guard that was missing:** at yaw 45 the projected deck's width:height is
+exactly `1/sin(tilt)` however the bays are laid out, so the deck's own box IS the
+tilt and can be asserted without reaching for the camera. `checkIsometric` in
+`floorboot.mjs` holds it at 2:1 across four stage shapes including a deliberately
+extreme 2400x700, holds it IDENTICAL at all four so no viewport can bend it, and
+asserts exactly one line sets the tilt and takes the constant. Restoring 68 fails
+it at 1.08:1.
 
 ## The 3D site is SEVERED — the SVG plan is the floor (2026-08-24)
 
