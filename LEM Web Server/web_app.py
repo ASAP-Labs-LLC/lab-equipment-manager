@@ -5322,15 +5322,111 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 "Some equipment may already point at the new lot. Re-run the "
                 "changeover — it picks up the ones still on the old one.",
                 moved=getattr(exc, "moved", 0))
-        return jsonify({"ok": True, "moved": moved})
+
+        # The certificate deliberately does NOT come across. A changeover is a
+        # new LOT: different batch, different assay, different certificate.
+        # Inheriting the specs is right — they are what the lab expects of the
+        # material — but inheriting the old lot's document would attach a COA
+        # describing a batch this is not, which is worse than having none
+        # because it looks complete.
+        #
+        # So the answer says the new lot needs one, and says it only when the
+        # old lot actually had one: an unconditional nag is a nag people learn
+        # to close. A failed read here does not fail the changeover, which has
+        # already happened — it just cannot promise the prompt.
+        needed = False
+        try:
+            needed = bool(certificate_store.certificates(
+                str(body.get("old_name") or "")))
+        except LabCoreError:
+            pass
+        return jsonify({"ok": True, "moved": moved,
+                        "certificate_needed": needed})
 
     @app.route("/api/qc-samples", methods=["DELETE"])
     def api_delete_qc_sample():
+        """Remove a QC standard — and decide what happens to its certificate.
+
+        A certificate is keyed by the standard's NAME, and the library renames
+        by saving the new name then deleting the old. So this route is where a
+        rename either carries the document across or loses it, and until the
+        floor could upload one there was nothing to lose.
+
+        `renamed_to` is what tells the two apart. It is sent by the rename path
+        and by nothing else; a plain delete never guesses that a deletion was
+        "really" a rename, because guessing wrong moves a controlled document
+        onto a standard it does not describe.
+        """
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
+        name = str(body.get("name") or "")
+        renamed_to = str(body.get("renamed_to") or "").strip()
+
+        # Read the certificates BEFORE anything is removed. Deciding what to do
+        # about them after the standard is gone means deciding it from a table
+        # that no longer says which standard they belonged to.
         try:
-            sample_store.delete(str(body.get("name") or ""))
+            held = certificate_store.certificates(name)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this standard's certificates")
+
+        if renamed_to and renamed_to == name.strip():
+            # "Remove this standard, and move its certificates onto itself."
+            # Neither half can be honoured. Refused here, explicitly, so it
+            # cannot fall through to the certificate-conflict branch below and
+            # be reported as a conflict — which is not what is wrong with it.
+            return jsonify({
+                "error": "A standard cannot be renamed to the name it already "
+                         "has. Nothing was changed.",
+                "retry": False}), 400
+
+        if renamed_to:
+            # The target has to EXIST. Repointing at a name the library does
+            # not hold produces an orphan wearing a valid label — worse than a
+            # plain orphan, because `orphaned_certificates` cannot see it.
+            try:
+                # missing_ok=False: an empty library because the table is
+                # absent would reject every rename with "there is no standard
+                # called that", which is a sentence about a read that failed.
+                known = {s.name for s in
+                         sample_store.list_samples(missing_ok=False)}
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "the QC library")
+            if renamed_to not in known:
+                return jsonify({
+                    "error": f"There is no QC standard called "
+                             f"\u201c{renamed_to}\u201d to move this one's "
+                             f"certificates onto. Nothing was changed.",
+                    "retry": False}), 400
+            try:
+                moved = certificate_store.repoint_certificates(name, renamed_to)
+            except (CertificateRejected, CertificateStoreError) as exc:
+                return jsonify({"error": str(exc), "retry": False}), 400
+            except LabCoreError as exc:
+                return _labcore_failed(
+                    exc, "moving this standard's certificates",
+                    "The standard was NOT removed, so nothing is orphaned. "
+                    "Try the rename again.")
+            if moved:
+                _audit("certificate moved", "",
+                       {"from": name, "to": renamed_to, "certificates": moved})
+        elif held:
+            # Deleting a standard that still has a certificate on it. The
+            # certificate is a controlled document and this is a library
+            # tidy-up, so it is REFUSED rather than obeyed: destroying an
+            # assessor-visible record as a side effect of removing a row is the
+            # worse of the two mistakes, and it is not undoable.
+            return jsonify({
+                "error": "This standard still holds %d certificate%s (%s). "
+                         "Remove them first, or rename the standard instead — "
+                         "a rename carries them across." % (
+                             len(held), "" if len(held) == 1 else "s",
+                             ", ".join(c.filename for c in held[:3])),
+                "retry": False}), 409
+
+        try:
+            sample_store.delete(name)
         except LabCoreError as exc:
             # The rename path deletes the old name after saving the new one, so
             # a silent drop here leaves two lots in the library under different

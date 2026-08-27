@@ -3720,7 +3720,29 @@ if (!failed) {
 }
 
 
-/* ---- THE PROJECTION IS ISOMETRIC, AND STAYS ISOMETRIC -------------------
+/* ---- THE PROJECTION IS A FLAT PLAN, AND STAYS FLAT ----------------------
+ *
+ * Ryan, 27 Aug: "Make the map not isometric but a simple top down 2d view for
+ * faster loading." So this guard is INVERTED, not deleted.
+ *
+ * Deleting it is how the drawing drifts back. The history is the argument: a
+ * tilt solver once bent the camera per draw to fill the stage, every coverage
+ * claim in this file passed throughout, and a square rotated 45 degrees
+ * shipped as an isometric because not one test measured what the drawing
+ * looked like. The invariant has changed; the fact that SOME invariant is
+ * enforced has not.
+ *
+ * Flat and overhead means two things, and both are checked below:
+ *   AXIS-ALIGNED — a bay is a rectangle, not a diamond. Grid x moves the
+ *     projection horizontally only, grid y vertically only.
+ *   NO HEIGHT — the h argument cannot move a point. In a top-down view there
+ *     is no elevation to see, and a wall that still contributes height is an
+ *     isometric hiding inside a plan.
+ *
+ * The old text is kept below for what it explains about how this was got wrong
+ * the first time.
+ *
+ * ---- WHAT THIS REPLACED --------------------------------------------------
  *
  * This is the test whose absence let a rotated plan ship as an isometric.
  *
@@ -3763,15 +3785,71 @@ async function checkIsometric() {
   sandbox.drawSimpleFloor(false);
 
   ratios.forEach(([at, r]) => console.log(
-    `  ..   deck at ${at}: ${r.toFixed(2)}:1  (2:1 is isometric)`));
-  claim('the deck is drawn 2:1 — the projection is isometric, not a rotated '
-        + 'plan', ratios.length === 4
-        && ratios.every(([, r]) => Math.abs(r - 2) < 0.25));
+    `  ..   deck at ${at}: ${r.toFixed(2)}:1  (the isometric pinned this at 2.00)`));
+  /* THE DECK IS UNDISTORTED, which under a flat plan is a different claim
+   * from "the deck is square".
+   *
+   * The isometric pinned the deck at 2:1 whatever the bay layout — that ratio
+   * was the CAMERA, which is why asserting on it caught a bent one. Flat, the
+   * deck's aspect is the bay grid's own aspect (this floor measures 1.37,
+   * about 11x8), and pinning a number here would only assert what the fixture
+   * happens to be laid out as.
+   *
+   * So: divide the drawn deck by one projected bay and recover the grid it was
+   * drawn on. Whole numbers mean the deck is on the same projection as
+   * everything else, and the recovered ratio has to be the measured ratio. A
+   * camera that went back to a tilt fails this — at 2:1 the recovered rows
+   * come out at half the bays and land between whole numbers. */
+  const proj = sandbox.planIso;
+  if (ratios.length === 4 && typeof proj === 'function') {
+    const o = proj(0, 0, 0);
+    const bw = Math.abs(proj(1, 0, 0)[0] - o[0]);
+    const bh = Math.abs(proj(0, 1, 0)[1] - o[1]);
+    stage.getBoundingClientRect = () => ({left: 0, top: 0, width: 1400,
+                                          height: 900, right: 1400,
+                                          bottom: 900, x: 0, y: 0});
+    sandbox.PLAN_SIG = '';
+    sandbox.drawSimpleFloor(false);
+    const deck = byClass(planesOf()[0], 'deck').map(absBox).filter(Boolean)[0];
+    stage.getBoundingClientRect = realRect;
+    sandbox.PLAN_SIG = '';
+    sandbox.drawSimpleFloor(false);
+    // The deck is measured in screen pixels and the bay in drawing units, so
+    // only the RATIO of the two is meaningful — scale cancels.
+    const cols = (deck.x1 - deck.x0) / bw, rows = (deck.y1 - deck.y0) / bh;
+    console.log(`  ..   deck spans ${cols.toFixed(2)} x ${rows.toFixed(2)}`
+                + ' bay-widths');
+    claim('the deck aspect is the bay grid\'s own, not the camera\'s',
+          Math.abs((cols / rows) - ratios[1][1]) < 0.02,
+          `${(cols / rows).toFixed(3)} vs measured ${ratios[1][1].toFixed(3)}`);
+    claim('and it is not the 2:1 the isometric camera pinned it at',
+          Math.abs(ratios[1][1] - 2) > 0.1, ratios[1][1].toFixed(3));
+  }
   claim('…and it is the SAME projection at every stage shape, so no viewport '
         + 'can bend the camera to fill itself',
         ratios.length === 4
         && Math.max(...ratios.map(([, r]) => r))
            - Math.min(...ratios.map(([, r]) => r)) < 0.02);
+
+  /* The projection itself, not the drawing it produced. `planIso` is a
+   * function declaration, so it is on the sandbox context. */
+  const P = sandbox.planIso;
+  claim('planIso() is still the one projection everything goes through',
+        typeof P === 'function');
+  if (typeof P === 'function') {
+    const o = P(0, 0, 0), gx = P(1, 0, 0), gy = P(0, 1, 0);
+    claim('grid x moves the drawing horizontally only',
+          Math.abs(gx[1] - o[1]) < 1e-9 && Math.abs(gx[0] - o[0]) > 1e-9,
+          `${JSON.stringify(o)} -> ${JSON.stringify(gx)}`);
+    claim('grid y moves the drawing vertically only',
+          Math.abs(gy[0] - o[0]) < 1e-9 && Math.abs(gy[1] - o[1]) > 1e-9,
+          `${JSON.stringify(o)} -> ${JSON.stringify(gy)}`);
+    claim('one bay is square — x and y carry the same scale',
+          Math.abs(Math.abs(gx[0] - o[0]) - Math.abs(gy[1] - o[1])) < 1e-9);
+    claim('height cannot move a point — there is no elevation in a plan',
+          Math.abs(P(2, 3, 9)[0] - P(2, 3, 0)[0]) < 1e-9
+          && Math.abs(P(2, 3, 9)[1] - P(2, 3, 0)[1]) < 1e-9);
+  }
   /* And the mechanism is gone, not merely unused.
    *
    * `PLAN_TILT` and `PLAN_CAM` are top-level `const`s, which in this sandbox

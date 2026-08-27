@@ -61,3 +61,11 @@ desktop.ini
 # dev machine claim to be a release, and the updater compares this string
 # against the tag it staged to decide whether a deploy actually took effect.
 VERSION
+
+# Uploaded files, never source. `documents_root` defaults to `LEM Web Server/
+# data/`, so a --dev run and any test that exercises an upload leaves real
+# PDFs here. They are somebody's certificate on a real deploy and a test
+# fixture in a checkout; neither belongs in git, and committing them once
+# would put lab documents in the history permanently.
+LEM Web Server/data/documents/
+LEM Web Server/data/standard-certificates/

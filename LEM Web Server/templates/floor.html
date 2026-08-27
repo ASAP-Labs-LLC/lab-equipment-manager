@@ -475,14 +475,76 @@
          color:var(--ink2);font:700 12px var(--ui);cursor:pointer;
          display:flex;align-items:center;justify-content:center}
   .railx:hover{border-color:var(--amber);color:var(--amber)}
-  .tabs{display:flex;gap:6px;margin:12px 0 4px}
-  .tab{flex:1;background:#12151c;border:1px solid var(--edge);
-       color:var(--ink3);border-radius:9px;padding:7px 4px;
+  /* THE STRIP IS A BOUNDARY, NOT FOUR BUTTONS IN A ROW.
+     Ryan: the four tabs "should be more visually separated". They sat 6px
+     apart with nothing under them, so the strip ran straight into whichever
+     pane it had selected and the eye had no line to stop at. The rule below
+     the strip is that line, and the selected tab breaks it — which is what
+     makes the connection between a tab and its pane visible without relying
+     on the amber, so it survives greyscale and a colour-blind reader. */
+  .tabs{display:flex;gap:4px;margin:16px 0 0;
+        border-bottom:1px solid var(--edge);padding-bottom:0}
+  .tab{flex:1;background:transparent;border:1px solid transparent;
+       border-bottom:none;color:var(--ink3);border-radius:8px 8px 0 0;
+       padding:8px 4px;margin-bottom:-1px;
        font:800 9.5px var(--ui);letter-spacing:.14em;text-transform:uppercase;
        cursor:pointer}
-  .tab:hover{color:var(--ink2)}
-  .tab.on{border-color:var(--amber);color:var(--amber);background:#1a1410}
+  .tab:hover{color:var(--ink2);background:#12151c}
+  .tab.on{border-color:var(--edge);border-bottom:1px solid var(--panel);
+          color:var(--amber);background:var(--panel);
+          box-shadow:inset 0 2px 0 var(--amber)}
+  .tabpane{padding-top:12px}
+
+  /* The QC pane's own two questions. Deliberately lighter than the tabs above
+     it — a nested control that looked as strong as its parent would read as a
+     fifth tab. */
+  .subtabs{display:flex;gap:14px;margin:14px 0 10px;
+           border-bottom:1px solid #1b2029}
+  .subtab{background:none;border:none;border-bottom:2px solid transparent;
+          color:var(--ink3);padding:0 0 7px;cursor:pointer;
+          font:700 10.5px var(--ui);letter-spacing:.04em}
+  .subtab:hover{color:var(--ink2)}
+  .subtab.on{color:var(--ink);border-bottom-color:var(--amber)}
+
+  /* The identity block: three kinds of fact, told apart by spacing rather than
+     by five identical grey lines in a column. */
+  .idblock{margin-top:10px;padding:9px 10px;border:1px solid #191d25;
+           border-radius:9px;background:#0e1116}
+  .idblock .meta{margin-top:4px}
+  .idblock .idrun{margin-top:7px;padding-top:7px;border-top:1px solid #191d25}
+  .idblock .idrun .meta:first-child{margin-top:0}
+  /* U is the number an assessor asks for; it leads the block. */
+  .urow{display:flex;align-items:baseline;gap:8px;margin-top:0!important;
+        font-size:12px;color:var(--ink2)}
+  .urow .ulab{font:800 9.5px var(--ui);letter-spacing:.14em;color:var(--ink3)}
+  .urow .uval{font-variant-numeric:tabular-nums}
+  .urow.none .uval{color:var(--ink3);font-size:10.5px}
+  .urow.interim .uval{color:var(--amber)}
+  .urow.failed .uval{color:var(--red)}
+  /* Nobody reads a uid unless they are debugging. Under the rule, and quiet. */
+  .railuid{opacity:.38;margin-top:10px;padding-top:8px;
+           border-top:1px solid #171b22;font-size:9.5px}
+
+  /* The folded statistics. The summary row is the one line that stays — it is
+     the only part somebody reads at a glance, and it doubles as the handle. */
+  .stats{margin-top:6px}
+  .stats>summary{list-style:none;cursor:pointer;display:flex;gap:10px;
+                 justify-content:space-between;align-items:baseline;
+                 padding:5px 7px;border:1px solid #191d25;border-radius:8px;
+                 background:#0e1116;color:var(--ink3);font-size:10.5px}
+  .stats>summary::-webkit-details-marker{display:none}
+  .stats>summary::after{content:'▸';color:var(--ink3);font-size:9px;
+                        transition:transform .12s}
+  .stats[open]>summary::after{transform:rotate(90deg)}
+  .stats>summary:hover{color:var(--ink2);border-color:#232935}
+  .stats[open]>summary{border-radius:8px 8px 0 0;border-bottom-color:transparent}
+  .stats>.lim,.stats>.trendkeys{padding:0 7px}
+  .stats>*:last-child{padding-bottom:7px;
+    border:1px solid #191d25;border-top:none;border-radius:0 0 8px 8px}
   .railact{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  /* The actions at the TOP of the QC tab sit above a rule instead of below
+     one, so they read as the tab's controls rather than as its footer. */
+  .railact-top{margin:0 0 4px}
   .railact .tool{flex:1 1 auto;font-size:10.5px;padding:6px 8px}
   /* Completions accumulate for years; give them their own scroll rather than
      letting one machine's history push everything else off the panel. */
@@ -1034,6 +1096,44 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
            anybody changes it. -->
       <p class="sub" id="sampleWinHint" style="margin:8px 0 0"></p>
       <button class="tool" id="addTests" style="margin-top:8px">+ Add assays…</button>
+
+      <!-- THE DOCUMENT THE NUMBERS ABOVE COME FROM.
+           Ryan: "build out the infrastructure to upload the certificate into
+           the standard itself." `standard_documents.py` shipped fully tested
+           with four routes and no caller in any template — working and unwired
+           look identical from the outside, which is the pattern CLAUDE.md
+           names for `levels.py` and `equipment_documents.py`. This is the
+           wiring.
+           It is deliberately below the assays: an expected value and a band
+           without the certificate they came off is a number nobody can trace,
+           so reading down the dialog goes values → the evidence for them. -->
+      <div class="certsect" id="certSect" hidden>
+        <label class="fl" style="margin-top:14px;display:block">Certificate</label>
+        <p class="sub" style="margin:2px 0 8px">The certificate of analysis
+        these values were taken from. PDF, PNG or JPEG, up to 25 MB.</p>
+        <div class="filepick">
+          <input type="file" id="certFile" accept=".pdf,.png,.jpg,.jpeg">
+          <label class="tool" for="certFile">Choose a file…</label>
+          <span class="chosen" id="certChosen">No file chosen</span>
+        </div>
+        <div class="two-up" style="margin-top:8px">
+          <div><label class="fl">Issued (optional)</label>
+            <input id="certIssued" type="date"></div>
+          <div><label class="fl">Expires (optional)</label>
+            <input id="certExpires" type="date"></div>
+        </div>
+        <div class="railact"><button class="tool live" id="certUpload">Upload
+          certificate</button></div>
+        <p class="err" id="certErr"></p>
+        <div id="certList"><p class="empty">Loading…</p></div>
+      </div>
+      <!-- A standard that has never been saved has no name to file a
+           certificate against, and a certificate filed against an empty name
+           can never be found again (the store refuses it outright). Say so
+           rather than showing a picker that cannot work. -->
+      <p class="sub" id="certUnsaved" hidden style="margin-top:14px">
+        Save this standard first — a certificate is filed against the
+        standard's name, so there has to be one.</p>
       <p class="err" id="sampleErr"></p>
     </div>
     <div class="sheetfoot">
@@ -2664,10 +2764,22 @@ function trendSeriesHtml(s) {
              esc(p.ts || '')} — ${esc(String(p.value))}${
              p.in_spec == null ? ' (no verdict recorded)' : ''}</title></circle>`).join('')}
         </svg>
-        <div class="lim"><span class="num">days ${esc(axis)}</span>
+        <!-- FOLDED, NOT DELETED.
+             Ryan: this block "needs to be not populating for every single QC,
+             as it takes so much visual space." It is ~10 lines per method, so
+             a five-method instrument opened with fifty lines of statistics
+             above everything else.
+             What stays OUT of the fold is anything that is a warning — the
+             violations, and the fact that the zones are provisional — because
+             a warning that only appears once you have opened a disclosure is
+             a warning nobody sees. What goes IN is the reference material: the
+             band, the target, the zone arithmetic, the coverage. All of it is
+             still in the DOM and still one click away. -->
+        <details class="stats"><summary class="statsum"><span class="num">days ${esc(axis)}</span>
           <span>${s.runs} run${s.runs === 1 ? '' : 's'}${s.failures
             ? ` · <b style="color:var(--red)">${s.failures} out of spec</b>` : ''}${
-            s.unjudged ? ` · ${s.unjudged} unjudged` : ''}</span>
+            s.unjudged ? ` · ${s.unjudged} unjudged` : ''}</span></summary>
+        <div class="lim">
           <span>${s.sample_id ? 'std ' + esc(s.sample_id) : ''}</span></div>
         <div class="trendkeys">
           <span class="kband"><i></i>pass band — the standard's limit,
@@ -2687,12 +2799,105 @@ function trendSeriesHtml(s) {
              : 'The 3s zones reach past the pass band — this equipment’s '
                + 'own spread is wider than the standard allows for.')
           : 'Zones and band cannot be compared here.'}</span></div>
-        ${provisional}
         <p class="caveat">${esc(cov.caveat || 'No coverage was reported for this spread.')}</p>
         <div class="trendkeys"><span>spread basis: ${esc(s.spread_basis || '—')}${
           covCounts ? ' · ' + esc(covCounts) : ''}</span></div>
+        </details>
+        ${provisional}
         ${violations}
       </div>`;
+}
+
+/* ── MEASUREMENT UNCERTAINTY, ON THE PANEL ───────────────────────────────
+ *
+ * Ryan: "The uncertainty number should be above where it says the module
+ * status and the check-in time." This is the first UI `uncertainty.py` has
+ * ever had — it shipped with six routes, a full test suite and no caller in
+ * any template, which is the pattern CLAUDE.md names three times over.
+ *
+ * ISO/IEC 17025 §7.6. Four rules, and each one is somebody's test:
+ *
+ *   APPROVED ONLY. `TestComputeNeverAutoApproves` — SOP 2.10's register entry
+ *   is signed, and a number that signed itself the moment it was calculated is
+ *   not a record of anybody's judgement. An unapproved estimate is not the
+ *   answer to "what is U for this measurand".
+ *
+ *   ABSENCE IS SAID OUT LOUD. A blank corner reads as "uncertainty is zero",
+ *   which is the one value it can never be.
+ *
+ *   INTERIM IS LABELLED. `test_the_interim_route_is_labelled_as_interim` —
+ *   this lab's log begins 2026-08-03, so no series qualifies for TR 537's
+ *   control-sample route on time span and Route 3 is what these panels will
+ *   actually show. A target-limits estimate presented as a measured u(Rw) is
+ *   a claim about a year of data that does not exist.
+ *
+ *   A FAILED READ IS NOT AN EMPTY REGISTER.
+ *   `TestAReadThatFailedIsNotAnEmptyRegister` — "no uncertainty estimates on
+ *   file" is itself a finding at an assessment, so it must be impossible to
+ *   produce from an outage.
+ *
+ * Pure, and takes the parsed body so the harness can call it with each case.
+ * `null` means the read failed — distinct from a body carrying no estimates.
+ */
+function uncertaintyLine(body) {
+  if (!body) {
+    return {cls: 'failed',
+            text: 'could not be read — this is not a blank register'};
+  }
+  // Approved only. The route already filters, but the rule is stated here too:
+  // this line is the last thing between an unsigned number and a wall display.
+  const approved = (body.estimates || []).filter(e => e && e.approved_at);
+  if (!approved.length) {
+    return {cls: 'none', text: 'no approved estimate on file'};
+  }
+  // One instrument can carry several measurands. The panel has one line, so it
+  // shows the widest — the one that governs what this equipment can claim —
+  // and says how many others there are rather than hiding them.
+  const num = e => Number(e.u_expanded);
+  const usable = approved.filter(e => Number.isFinite(num(e)));
+  if (!usable.length) {
+    return {cls: 'none', text: 'approved, but no expanded value recorded'};
+  }
+  const widest = usable.reduce((a, b) => (num(b) > num(a) ? b : a));
+  const interim = String(widest.rw_route || '') === 'target_limits'
+    || /interim/i.test(String(widest.u_rw_label || ''));
+  const k = Number(widest.k);
+  const more = usable.length > 1
+    ? ` · widest of ${usable.length}` : '';
+  const partial = widest.is_partial ? ' · partial' : '';
+  return {
+    cls: interim ? 'interim' : 'ok',
+    text: `\u00b1${num(widest).toFixed(2)}`
+      + (Number.isFinite(k) ? ` (k=${k})` : '')
+      + (interim ? ' · interim' : '')
+      + partial + more,
+    title: `${esc(widest.test_name || '')} — expanded uncertainty`
+      + (interim ? '. Interim, from target limits: this laboratory has no '
+                 + 'series long enough for the control-sample route yet.' : ''),
+  };
+}
+
+/* Read once when a record is opened, never on the floor's poll. An estimate
+ * changes when somebody computes and approves one, which is not a two-second
+ * event, and a per-equipment fetch on the poll is the N+1 this page exists to
+ * avoid. */
+async function loadUncertainty(m) {
+  const box = $('#panelU');
+  if (!box) return;
+  const res = await fetch('/api/uncertainty').catch(() => null);
+  let body = null;
+  if (res && res.ok) {
+    const all = await res.json().catch(() => null);
+    if (all) {
+      body = {estimates: (all.estimates || []).filter(
+        e => e && e.machine_uid === m.machine_uid)};
+    }
+  }
+  const line = uncertaintyLine(body);
+  box.className = `meta num urow ${line.cls}`;
+  box.innerHTML = `<span class="ulab">U</span>`
+    + `<span class="uval">${esc(line.text)}</span>`;
+  if (line.title) box.title = line.title;
 }
 
 function moduleStateText(m) {
@@ -2739,10 +2944,12 @@ function diagnosis(m) {
                `registration you can delete.` : ''));
   }
   if (!parsed || silentFor(m) > 6) {
+    // The source path used to be repeated here in full — 78 characters of UNC
+    // that the `watching` line two rows below already carries verbatim. Saying
+    // it twice made the one sentence somebody has to READ the longest on the
+    // panel.
     return warn('yellow',
-      `Module is running but has parsed nothing for ${Math.floor(silentFor(m))} h. ` +
-      `Check its source${m.watching ? ` (${esc(m.watching)})` : ''} — the ` +
-      `equipment may simply be idle.`);
+      `Running, nothing parsed for ${Math.floor(silentFor(m))} h — may just be idle.`);
   }
   /* NEVER STATE A CONCLUSION THE BADGE CONTRADICTS. This said "that is why it
    * reads UNKNOWN" without ever looking at the status — so an instrument
@@ -2884,16 +3091,35 @@ async function select(m) {
               box-shadow:0 0 8px ${c}"></span>${esc(m.status)}
       </div>
       <div class="reason">${esc(m.reason)}</div>
-      <div class="meta num">last data ${esc(ago(m.last_activity))}</div>
-      <div class="meta num">module ${moduleStateText(m)}</div>
-      ${m.watching ? `<div class="meta num" style="opacity:.75">watching ${esc(m.watching)}</div>` : ''}
+
+      <!-- FIVE KINDS OF FACT, NOT FIVE FACTS.
+           Ryan: this run "needs better visual separation". It was a verdict, a
+           data recency, a module heartbeat, a source and an identifier drawn as
+           five identical grey siblings, so it read as one paragraph and the eye
+           had nothing to catch on. Grouped now: what this instrument MEASURES
+           (uncertainty), when it last SAID anything, and what is watching it —
+           with the uid demoted under a rule, because nobody reads it unless
+           they are debugging. -->
+      <div class="idblock">
+        <!-- The expanded uncertainty, filled by loadUncertainty(). Above the
+             module status, per the ask. It renders a stated absence rather than
+             nothing: a blank here reads as "uncertainty is zero", which is the
+             one value it can never be. -->
+        <div class="meta num urow" id="panelU">
+          <span class="ulab">U</span><span class="uval">…</span></div>
+        <div class="idrun">
+          <div class="meta num">last data ${esc(ago(m.last_activity))}</div>
+          <div class="meta num">module ${moduleStateText(m)}</div>
+          ${m.watching ? `<div class="meta num" style="opacity:.75">watching ${esc(m.watching)}</div>` : ''}
+        </div>
+      </div>
       <!-- Every named piece of equipment carries its level, everywhere it is
            named. It is the most consistently applied rule in both of the
            floor-plan products the reference captured, and the cheapest to
            copy: equipment that names its level can be talked about across a
            level boundary without anybody having to ask which one. -->
       <div class="meta" id="panelLevel"></div>
-      <div class="meta num" style="opacity:.5">${esc(m.machine_uid)}</div>
+      <div class="meta num railuid">${esc(m.machine_uid)}</div>
       ${diagnosis(m)}
     </div>
     <div class="tabs" role="tablist">
@@ -2904,13 +3130,28 @@ async function select(m) {
     </div>
 
     <div class="tabpane" id="tab-qc">
-      <div class="cap sect">QC control chart</div>
-      <div id="trend"><p class="empty">Loading…</p></div>
-      <div class="cap sect">QC checks on this equipment</div>
-      ${qcChecksHtml(m)}
-      <div class="railact">
+      <!-- The two things somebody opens this tab to DO, at the top of it.
+           They used to sit under the chart and under the whole checks list, so
+           on a five-method instrument you scrolled past fifty lines of
+           statistics to reach them. -->
+      <div class="railact railact-top">
         <button class="tool" id="actQc">Assign QC samples…</button>
         <button class="tool" id="actQcLib">QC standards library…</button>
+      </div>
+
+      <!-- Chart and checks are two questions, not one scroll. "How is this
+           method behaving over time" and "what is assigned to this instrument
+           and when was each last seen" were stacked, so the second was
+           something you found by accident under the first. -->
+      <div class="subtabs" role="tablist">
+        <button class="subtab on" data-qcsub="chart" role="tab">Control chart</button>
+        <button class="subtab" data-qcsub="checks" role="tab">QC checks</button>
+      </div>
+      <div id="qcsub-chart">
+        <div id="trend"><p class="empty">Loading…</p></div>
+      </div>
+      <div id="qcsub-checks" hidden>
+        ${qcChecksHtml(m)}
       </div>
     </div>
 
@@ -3013,7 +3254,15 @@ async function select(m) {
   $$('#railL .tab').forEach(t => t.addEventListener('click',
     () => showRecordTab(m, t.dataset.tab)));
 
+  /* The QC pane's own two views. No fetch on either side — the panel already
+   * holds both, and switching a view is not a reason to ask LabCore anything.
+   * `drawTrend` has already run against #trend, so the chart survives being
+   * hidden and shown. */
+  $$('#railL .subtab').forEach(t => t.addEventListener('click',
+    () => showQcSub(t.dataset.qcsub)));
+
   drawTrend(m);
+  loadUncertainty(m);
   await loadTimeline(m);
 }
 
@@ -3034,6 +3283,19 @@ function showRecordTab(m, name) {
   if (name === 'docs') return loadDocuments(m);
   if (name === 'hist') return loadHistory(m);
   return Promise.resolve();
+}
+
+/* Chart or checks, inside the QC tab. Ryan: the checks "should be visually
+ * separated from the QC control chart, not just stacked below them, maybe a
+ * separate tab within the QC window." Nothing is read here; both panes were
+ * rendered when the record was drawn. */
+function showQcSub(name) {
+  $$('#railL .subtab').forEach(x => x.classList.toggle('on',
+                                                       x.dataset.qcsub === name));
+  ['chart', 'checks'].forEach(pane => {
+    const box = $(`#qcsub-${pane}`);
+    if (box) box.hidden = pane !== name;
+  });
 }
 
 /* ── THE STATUS GUTTER ───────────────────────────────────────────────────
@@ -3713,8 +3975,141 @@ function openSample(sample) {
   $('#sampleDelete').style.display = sample ? '' : 'none';
   $('#sampleErr').textContent = '';
   renderQcWindowHint();
+  showCertSection(sample ? sample.name : null);
   $('#sampleDlg').showModal();
 }
+
+/* ── the certificate a standard's values rest on ─────────────────────────
+ *
+ * The store is CONTENT-ADDRESSED. Uploading identical bytes under a second
+ * filename returns the FIRST record, with the first name — so everything here
+ * renders the filename the SERVER returned, never the one that was picked.
+ * Otherwise the dialog claims to have filed a document it did not file.
+ *
+ * The same limits as the equipment documents, and deliberately the same
+ * function: `docLimitProblem` is the courtesy check the server has the final
+ * word on, and a second copy of the rule drifts from it the first time either
+ * is changed. */
+function showCertSection(name) {
+  const sect = $('#certSect'), note = $('#certUnsaved');
+  const saved = !!name;
+  if (sect) sect.hidden = !saved;
+  if (note) note.hidden = saved;
+  const say = $('#certErr'); if (say) say.textContent = '';
+  const pick = $('#certFile'); if (pick) pick.value = '';
+  const chose = $('#certChosen'); if (chose) chose.textContent = 'No file chosen';
+  if (saved) loadCertificates(name);
+}
+
+function certificatesHtml(body) {
+  const certs = (body && body.certificates) || [];
+  if (!certs.length) {
+    return '<p class="empty">No certificate on this standard. Its expected '
+      + 'values have nothing on file behind them.</p>';
+  }
+  const currentUid = (body.current || {}).uid || '';
+  return certs.map(c => `
+    <div class="doc" data-cert="${esc(c.uid)}">
+      <span class="nm">${esc(c.filename)}
+        ${c.uid === currentUid ? '<span class="pmark">current</span>' : ''}
+        <span class="t" style="color:var(--ink3);font-size:10px">
+          ${c.issued_at ? 'issued ' + esc(c.issued_at) + ' · ' : ''}${
+          c.expires_at ? 'expires ' + esc(c.expires_at) : 'no expiry recorded'}
+          ${c.uploaded_by ? '· ' + esc(c.uploaded_by) : ''}</span></span>
+      <span class="sz">${humanBytes(c.size_bytes)}</span>
+      <a class="tool" target="_blank" rel="noopener"
+         href="/api/qc-standards/certificates/${encodeURIComponent(c.uid)}/download"
+         >Open</a>
+      <button class="tool warn" data-certdel="${esc(c.uid)}"
+              data-certname="${esc(c.filename)}"
+              aria-label="Delete ${esc(c.filename)}">✕</button>
+    </div>`).join('');
+}
+
+async function loadCertificates(name) {
+  const box = $('#certList');
+  if (!box) return;
+  const res = await fetch('/api/qc-standards/certificates?standard='
+    + encodeURIComponent(name)).catch(() => null);
+  if (!res || !res.ok) {
+    // "No certificate on this standard" is a FINDING. It must be impossible to
+    // produce from an outage — the same rule the expiry report follows.
+    const b = res ? await res.json().catch(() => ({})) : {};
+    box.innerHTML = `<p class="empty">${esc(b.error
+      || 'LabCore did not answer, so the certificates could not be read.')}
+      This is not a standard with no certificate.</p>`;
+    return;
+  }
+  box.innerHTML = certificatesHtml(await res.json());
+  box.querySelectorAll('[data-certdel]').forEach(btn =>
+    btn.addEventListener('click',
+      () => deleteCertificate(name, btn.dataset.certdel, btn.dataset.certname)));
+}
+
+async function uploadCertificate() {
+  if (!requireAuth()) return;
+  const name = ($('#sName').value || '').trim();
+  const say = $('#certErr');
+  if (!name) {
+    if (say) say.textContent = 'Name this standard first — a certificate is '
+      + 'filed against its name.';
+    return;
+  }
+  const input = $('#certFile');
+  const file = (input && input.files && input.files[0]) || null;
+  const problem = docLimitProblem(file);
+  if (problem) { if (say) say.textContent = problem; return; }
+  if (say) say.textContent = 'Uploading…';
+  const form = new FormData();
+  form.append('standard', name);
+  form.append('file', file);
+  const issued = ($('#certIssued').value || '').trim();
+  const expires = ($('#certExpires').value || '').trim();
+  if (issued) form.append('issued_at', issued);
+  if (expires) form.append('expires_at', expires);
+  const r = await fetch('/api/qc-standards/certificates',
+                        {method: 'POST', body: form}).catch(() => null);
+  const bad = r ? await failure(r) : 'The server could not be reached.';
+  if (bad) { if (say) say.textContent = bad; return; }
+  // The server's filename, not the picked one — identical bytes come back as
+  // the record that already held them.
+  const filed = ((await r.json().catch(() => ({}))).certificate || {}).filename;
+  if (say) {
+    say.textContent = filed && file && filed !== file.name
+      ? `Already on file as “${filed}” — same document, so nothing was added.`
+      : '';
+  }
+  if (input) input.value = '';
+  $('#certChosen').textContent = 'No file chosen';
+  $('#certIssued').value = ''; $('#certExpires').value = '';
+  await loadCertificates(name);
+}
+
+function deleteCertificate(name, uid, filename) {
+  if (!requireAuth()) return;
+  askConfirm({
+    title: 'Delete this certificate',
+    what: {cap: 'Certificate', text: filename || ''},
+    body: 'Delete this certificate? The file is removed from the server. The '
+        + "standard's expected values are not changed — they will simply have "
+        + 'nothing on file behind them.',
+    submit: 'Delete it',
+    onSubmit: async () => {
+      const r = await fetch('/api/qc-standards/certificates/'
+        + encodeURIComponent(uid), {method: 'DELETE'}).catch(() => null);
+      const bad = r ? await failure(r) : 'The server could not be reached.';
+      if (bad) return bad;
+      await loadCertificates(name);
+      return '';
+    },
+  });
+}
+$('#certUpload').addEventListener('click', () => uploadCertificate());
+$('#certFile').addEventListener('change', () => {
+  const f = $('#certFile').files[0] || null;
+  $('#certChosen').textContent = f ? f.name : 'No file chosen';
+  $('#certErr').textContent = f ? (docLimitProblem(f) || '') : '';
+});
 $('#qcNew').addEventListener('click', () => openSample(null));
 $('#sampleCancel').addEventListener('click', () => $('#sampleDlg').close());
 
@@ -3831,9 +4226,17 @@ $('#sampleSave').addEventListener('click', async () => {
     // A rename is save-new-then-delete-old. If the delete is dropped the
     // library ends up holding BOTH lots under the same Lab ID, so this cannot
     // be fire-and-forget.
+    //
+    // `renamed_to` is what makes it a RENAME rather than a deletion that
+    // happens to be followed by a save. A certificate is filed against the
+    // standard's NAME, so without this the server has no way to tell the two
+    // apart — and it deliberately will not guess, because guessing wrong moves
+    // a controlled document onto a standard it does not describe. Sent here,
+    // the certificates are repointed onto the new name in one statement before
+    // the old row goes.
     const gone = await fetch('/api/qc-samples', {method: 'DELETE',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: editingSample})});
+      body: JSON.stringify({name: editingSample, renamed_to: name})});
     const bad = await failure(gone);
     if (bad) {
       $('#sampleErr').textContent =
@@ -4422,52 +4825,52 @@ const VIEW_KEY = 'lem.floor.view';
  */
 const PLAN_TILE = 128;                    // one bay, in drawing units
 const PLAN_NS = 'http://www.w3.org/2000/svg';
-// The old floor's 3/4 view, frozen. The original could tilt to a true overhead
-// plan; there is no camera here to move, so it keeps the angle the instruments
-// were drawn to look best at. `tilt` is assigned once, from PLAN_TILT below,
-// and nothing else may write it — see the note there.
-const PLAN_CAM = {tilt: 30, yaw: 45}, PLAN_RAD = Math.PI / 180;
+// THE CAMERA IS OVERHEAD AND FLAT.
+//
+// Ryan, 27 Aug: "Make the map not isometric but a simple top down 2d view for
+// faster loading." `tilt: 90` looks straight down, `yaw: 0` keeps the grid
+// square to the screen. Neither is a lever — see the note under PLAN_TILT.
+const PLAN_CAM = {tilt: 90, yaw: 0}, PLAN_RAD = Math.PI / 180;
 
 /* THE TILT IS FIXED, AND IT IS NOT A LAYOUT LEVER.
  *
- * At yaw 45 the projected deck is a diamond whose aspect is exactly 1/sin(tilt),
- * and that ratio does not depend on how the bays are laid out: a 1x8 rank and a
- * 3x3 block both project to 2:1 at tilt 30. A previous version exploited that —
- * it SOLVED the tilt per draw so the drawing came out the shape of the stage,
- * and reported 97% of the canvas in use.
+ * That sentence has survived two opposite cameras and it is the part that
+ * matters. The angle changed on 27 Aug; the rule did not.
  *
- * That number was bought by destroying the projection. Our stage is nearly
- * square (784x802 once both rails have taken their share), so the solve pinned
- * the tilt to its own ceiling: 68 degrees, where sin(t) is 0.93 and the depth
- * axis is barely foreshortened at all. Ryan, on the result: "you have the 3/4ths
- * angle but not the perspective, its top down at an angle instead of
- * isometric." He was right — it was a plan rotated 45 degrees, not a space.
+ * WHAT WENT WRONG THE FIRST TIME, because it is the reason the guard exists.
+ * At yaw 45 the projected deck is a diamond whose aspect is exactly
+ * 1/sin(tilt), independent of how the bays are laid out. A previous version
+ * exploited that: it SOLVED the tilt per draw so the drawing came out the
+ * shape of the stage, and reported 97% of the canvas in use. On our nearly
+ * square stage the solve pinned the tilt to 68 degrees, where the depth axis
+ * is barely foreshortened — a plan rotated 45 degrees, not a space. Every fit
+ * test passed throughout, because they all measured COVERAGE and none measured
+ * whether the drawing still looked like anything.
  *
- * Every fit test passed throughout, because they all measured COVERAGE and none
- * measured whether the drawing still looked isometric. `test_the_projection_
- * stays_isometric` in floorboot.mjs is that missing test.
+ * WHY IT IS FLAT NOW. Ryan asked for a top-down 2D map, for speed. At tilt 90
+ * `sin(t)` is 1 and yaw 0 drops the rotation, so `planIso` reduces to a scale:
+ * grid x goes right, grid y goes down, and a square block of bays projects
+ * square. `PLAN_H_UNIT` is 0 with it — an overhead view has no elevation to
+ * show, and a wall still contributing height would be an isometric hiding
+ * inside a plan. That is what makes it cheaper: no wall polygons, no depth
+ * sort, and the drawing's aspect now follows the bay layout instead of being
+ * pinned at 2:1, so it fits a squarish stage without the band above and below.
  *
- * So the camera is a constant. A fixed projection means a fixed drawing aspect
- * (~2:1) which will NOT match a squarish stage, and the band above and below is
- * the honest price of an isometric view — the viewBox solve below pads to the
- * stage's aspect and centres, which is what a viewBox is for. Coverage is lower
- * than 97% and that is the correct outcome, not a regression.
- *
- * 30 degrees is the classic 2:1 isometric and is what `PLAN_H_UNIT` below was
- * already written against.
+ * `test_the_projection_stays_flat` in floorboot.mjs is the guard, INVERTED
+ * from the isometric one rather than deleted. Deleting it is how the drawing
+ * drifts back; it checks the projection's own arithmetic now (axis-aligned,
+ * square, height-free) as well as the deck it produces.
  */
-const PLAN_TILT = 30;
+const PLAN_TILT = 90;
 
-/* The wall height, consistent with the tilt above.
+/* No elevation in a top-down view.
  *
- * This used to be a workaround: a true projection scales height by cos(tilt),
- * and while the tilt was being solved upwards to fill the stage that would have
- * flattened every instrument to a lid at exactly the angle the solve preferred.
- * Freezing it kept a block looking like a block. With the tilt now a constant
- * there is nothing to compensate for — cos(30) IS the projection's own vertical
- * unit, so this is simply correct rather than a hedge.
+ * This was `cos(30)` — the isometric's own vertical unit. `cos(90)` is 0 to
+ * fifteen decimal places but not exactly, and a projection that moves a point
+ * by 6e-17 per unit of height is a projection nobody can assert on. Stated as
+ * the zero it means.
  */
-const PLAN_H_UNIT = Math.cos(30 * PLAN_RAD);
+const PLAN_H_UNIT = 0;
 
 function planIso(gx, gy, h = 0) {
   const a = PLAN_CAM.yaw * PLAN_RAD, t = PLAN_CAM.tilt * PLAN_RAD;

@@ -841,12 +841,27 @@ class TestAHalfFinishedChangeoverSaysSo:
         assert "Re-run the changeover" in body.get("error", ""), body
 
     def test_a_clean_changeover_answers_exactly_as_before(self):
+        """The shape is pinned, and `certificate_needed` was added to it on
+        purpose (2026-08-27).
+
+        A changeover is a new LOT, so it does not inherit the old lot's
+        certificate — and the answer has to SAY the new lot needs one, or the
+        absence is only noticed during an assessment. The key is always
+        present and false here because CRM-8 has no certificate: a flag that
+        appears only when it is true cannot be told apart from an older server
+        that does not send it at all.
+
+        Kept as an exact-equality assertion rather than relaxed to a subset.
+        The point of this test is that the shape does not drift by accident;
+        widening it to `>=` would retire the guard to make room for one
+        intended change."""
         _gw, client = self.lab()
         response = client.post("/api/qc-samples/changeover",
                                json={"old_name": "CRM-8", "new_name": "CRM-9",
                                      "new_id_val": "L-9"})
         assert response.status_code == 200
-        assert response.get_json() == {"ok": True, "moved": 2}
+        assert response.get_json() == {"ok": True, "moved": 2,
+                                       "certificate_needed": False}
 
 
 class TestAHalfRecordedGroupOfTicksSaysSo:
