@@ -202,35 +202,69 @@ one that was picked, or it will claim to have filed a document it did not.
 
 ---
 
-## 10. Agilent GC 1 shows no events — NEEDS ONE ANSWER
+## 10. Agilent GC 1 shows no events — FIXED
 
 **Ask:** *"The Agilent GC doesn't show events for some reason, but other
 equipment does."*
 
-Measured against live LabCore this morning, and **the API is healthy**:
+It was the **status gutter** (STATUS / EVENTS), not History. The API was
+healthy the whole time; the window was not.
 
-| | Agilent GC 1 | OptiMPP 1 |
+`EVENT_LIMIT` is **60 rows for the whole lab**, and on this floor that reaches
+back about four hours. Eraspec NIR alone held 29 of the 60. Agilent's newest
+event was fourteen hours old, so it owned **none** — and it holds 26,106 log
+rows, more than any other instrument here. The panel said *"Nothing is recorded
+against this equipment in this window."*
+
+The route's own docstring already named this as the thing not to do: *"'nothing
+else happened' and 'nothing else is in this answer' are different sentences and
+only one of them is a statement about the record."* Two things stopped it
+keeping its own rule.
+
+**`covers_from` came off the wrong list.** It was `events[-1]["ts"] if events
+else None` — this instrument's slice, not the window. An instrument owning none
+of a full window reported no horizon at all, so the panel had nothing to say
+but the damaging sentence. It was also wrong when the instrument DID own rows:
+two events an hour apart inside a four-hour window reported a one-hour horizon,
+which a reader takes as the limit of the record. It is the window's oldest row
+now.
+
+**The route asked the wrong question.** It checked whether a snapshot exists,
+never whether the snapshot has anything to say about THIS instrument. Those
+diverge the moment the window is lab-wide. A clipped-out instrument now falls
+through to the per-machine read that was already written as this route's cold
+path.
+
+Measured after, against live LabCore:
+
+| | before | after |
 |---|---|---|
-| `lem_machine_log` rows | **26,106** (most in the lab) | 295 |
-| log read, 3 runs | 0.84 / 0.10 / 0.20 s | 0.14 / 0.17 / 0.10 s |
-| other four timeline sources | all 0.08–0.15 s, no error | same |
-| `GET /api/equipment/<uid>/history` | **200, 200 entries** | 200, 200 entries |
+| Agilent GC 1 | 0 events | **60 events**, `source: labcore` |
+| Eraspec NIR | 28 events | 28 events, `source: snapshot` — unchanged, still free |
 
-So the data is there, readable, fast, and the endpoint returns it. Two facts
-that are probably the real story:
+**The cost, stated rather than buried.** The gutter's rule was zero LabCore ops
+on any request. It now costs **one read** when somebody opens the record of an
+instrument that has been quiet — which in this lab is most of them at any
+moment. It is human-triggered, never polled, and `select()` already reads that
+equipment's history on the same click, so it is one more read on a screen that
+was already making one. An instrument inside the window still pays nothing.
 
-1. **Agilent's newest event is `2026-08-27T00:08` — about 13 hours old.** Every
-   other instrument has events from this morning. It is the instrument the
-   "parsed nothing for 13 h" message in §7 is about.
-2. **Its 200 newest entries span only 8.5 hours**, because it writes five rows
-   per run. Any panel showing "the last 200 events" shows Agilent less than one
-   day while showing OptiMPP twenty days.
+**Rejected alternative:** partitioning the snapshot's event arm per machine
+(`ROW_NUMBER() OVER (PARTITION BY machine_uid …)`) would keep the zero-op rule.
+LabCore's SQLite is 3.49 and supports it, measured at 0.20s for 198 rows — but
+neither existing index serves that ordering, so it full-scans `lem_machine_log`
+every twelve seconds forever. At today's 42k rows that is fine; LabCore
+interrupts any read over 8s, and CLAUDE.md already records this table heading
+for a cliff rather than a slope. It would also need a new index on the
+production database.
 
-**The question:** which panel is empty — the **History** tab, the **Activity**
-feed on the overview, or the **QC checks** list? History returns 200 entries,
-so if that is the empty one it is a front-end bug and I will go straight to it.
+**A branch was written and then deleted.** A message for "the window clipped
+this instrument out" is unreachable once the fallback exists — `gutter_events`
+drops no rows, so an empty answer now means the equipment genuinely has none.
+It was removed along with its three passing tests: an unreachable branch with
+green tests reads as covered behaviour when nothing is covered.
 
----
+Tests: `tests/test_gutter_window.py` (11).
 
 ## Order of work
 

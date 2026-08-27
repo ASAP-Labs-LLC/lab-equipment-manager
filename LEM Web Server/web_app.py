@@ -3539,6 +3539,28 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # names the standard, so a person can see what it was resolved from
         # instead of taking the number on trust.
         standard_hours, standard_from = 0.0, ""
+        # CAN THE SNAPSHOT ACTUALLY ANSWER FOR THIS MACHINE?
+        #
+        # It holds the newest EVENT_LIMIT rows for the WHOLE lab, so "the
+        # snapshot exists" and "the snapshot has anything to say about this
+        # instrument" are different questions, and this route only ever asked
+        # the first. Measured on the live lab: sixty rows reach back about four
+        # hours, five of sixteen instruments own all of them, and Agilent GC 1
+        # — 26,106 log rows, more than anything else here — owned none and
+        # rendered an empty panel.
+        #
+        # So a clipped-out instrument falls through to the per-machine read
+        # below, which is this route's cold path and already written. It costs
+        # ONE LabCore op, only on opening the record of an instrument that has
+        # been quiet, on a click that already reads that equipment's history.
+        # An instrument inside the window still pays nothing.
+        covered = False
+        if tables is not None and not snapshots.table_error("event"):
+            from snapshot_service import events_from_tables as _efc
+            _all = _efc(tables, EVENT_LIMIT)
+            covered = (any(e["machine_uid"] == machine_uid for e in _all)
+                       or len(_all) < EVENT_LIMIT)
+
         if tables is not None:
             from snapshot_service import bench_config_from_tables
             config = bench_config_from_tables(tables, machine_uid)
@@ -3553,7 +3575,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if hours_source != "standard":
             standard_from = ""
 
-        if tables is not None:
+        if tables is not None and covered:
             # The snapshot tolerates one failed arm — right for the floor, where
             # a missing row costs one pill. Not right here, where the arm IS the
             # answer: an empty gutter says this instrument has done nothing,
@@ -3567,6 +3589,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
             rows = [e for e in everything
                     if e["machine_uid"] == machine_uid]
             complete = len(everything) < EVENT_LIMIT
+            # How far back THE WINDOW reaches, which is not how far back this
+            # instrument's slice of it reaches. See `horizon` below.
+            window_from = everything[-1]["ts"] if everything else None
             source = "snapshot"
             age = snapshots.get().get("age_seconds")
         else:
@@ -3580,6 +3605,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 return _labcore_unreadable(
                     exc, "this equipment's recent activity")
             complete = len(rows) < EVENT_LIMIT
+            # The cold path asks for THIS instrument only, so the window and
+            # the slice are the same list and its oldest row is the horizon.
+            window_from = rows[-1]["ts"] if rows else None
             source, age = "labcore", None
 
         events = gutter_events(rows, hours)
@@ -3595,7 +3623,26 @@ def create_app(gateway, admin_password: Optional[str] = None,
             "source": source,
             "snapshot_age_seconds": age,
             "complete": complete,
-            "covers_from": events[-1]["ts"] if events else None,
+            # HOW FAR BACK THIS ANSWER REACHES — a property of the WINDOW, not
+            # of this instrument's slice of it.
+            #
+            # It used to be `events[-1]["ts"] if events else None`, and that
+            # broke the panel in the one case the field exists for. The
+            # snapshot holds the newest EVENT_LIMIT rows for the WHOLE lab, so
+            # an instrument that has been silent while a busy neighbour filled
+            # the window owns NONE of it — and the horizon then collapsed to
+            # None, leaving the panel nothing to say but "nothing is recorded
+            # against this equipment", which is a sentence about the record.
+            #
+            # Measured on the live lab, 27 Aug: Agilent GC 1 holds 26,106 log
+            # rows, more than any other instrument here, and showed an empty
+            # gutter because its newest event was fourteen hours old and sixty
+            # rows of the lab reach back about four.
+            #
+            # It was also wrong when the instrument DID own rows: two events an
+            # hour apart inside a four-hour window reported a one-hour horizon,
+            # and a reader takes that as the limit of the record.
+            "covers_from": window_from,
         })
 
     NAMES_UNREAD = ("# NOTE: the equipment names could not be read from LabCore "

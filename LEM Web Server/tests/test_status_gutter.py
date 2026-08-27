@@ -493,8 +493,24 @@ class TestAFailedReadIsNeverAnEmptyGutter:
     def test_an_instrument_with_no_history_is_an_empty_list_and_a_200(
             self, app, gw, client):
         """Empty because nothing was logged is a real answer, and different
-        from the one above."""
+        from the one above.
+
+        `covers_from` USED TO BE None here and is now the window's own oldest
+        row (2026-08-27). It stopped being a property of this instrument's
+        slice and became a property of the answer, because the slice's version
+        went silent in exactly the case a reader needs it — an instrument that
+        owns none of a full window had no way to say how far back anything had
+        been looked at, so the panel could only claim the equipment had done
+        nothing. See `tests/test_gutter_window.py`.
+
+        For this case the change is a strict improvement: "nothing for this
+        equipment, and we looked back to the 20th" is a far stronger sentence
+        than "nothing, depth unknown". The window was not full here, so it
+        holds every row in the lab and that horizon is the real one.
+        """
         populate(app, gw)
         body = gutter(client, "nobody-here")
         assert body["events"] == []
-        assert body["covers_from"] is None
+        assert body["complete"] is True
+        # Known, and it is the window's — not this instrument's, which has none.
+        assert body["covers_from"]

@@ -3416,6 +3416,14 @@ function gutterEventHtml(e) {
 function gutterHtml(body) {
   const events = (body && body.events) || [];
   if (!events.length) {
+    /* The route now falls back to a per-machine read when the shared window
+     * cannot answer for this instrument, so "the window clipped this one out"
+     * is no longer a state the panel can be in — `gutter_events` drops no
+     * rows, so empty here means the equipment genuinely has no log rows.
+     * A branch for the clipped case was written and then removed: it could
+     * not be reached, and an unreachable branch with tests passing against it
+     * reads as covered behaviour when nothing is covered. See
+     * `tests/test_gutter_window.py`. */
     return '<p class="empty">Nothing is recorded against this equipment in '
       + 'this window.</p>';
   }
