@@ -3214,6 +3214,12 @@ async function select(m) {
       </div>
       <p class="ordernote" id="histOrder">Newest first.</p>
       <div class="scroller" id="tlList"><p class="empty">Loading…</p></div>
+      <!-- The record goes back as far as the record goes back. One press per
+           page, oldest-first, until the server says it has reached the start.
+           See loadMoreHistory() for why this is not one big fetch. -->
+      <div class="railact"><button class="tool" id="histMore">Load older
+        entries</button></div>
+      <p class="err" id="histMoreNote"></p>
     </div>`;
 
   /* The activity rail is the FEED when nothing is open, and it caches what it
@@ -3264,6 +3270,8 @@ async function select(m) {
    * hidden and shown. */
   $$('#railL .subtab').forEach(t => t.addEventListener('click',
     () => showQcSub(t.dataset.qcsub)));
+  const more = $('#histMore');
+  if (more) more.addEventListener('click', () => loadMoreHistory());
 
   drawTrend(m);
   loadUncertainty(m);
@@ -6320,9 +6328,21 @@ function paintTimeline() {
               .toLowerCase().includes(q)));
   const note = $('#histOrder');
   if (note) {
-    note.textContent = (kind || q)
-      ? `Newest first — showing ${shown.length} of ${all.length} entries.`
-      : 'Newest first.';
+    /* HOW MUCH OF THE RECORD IS ON SCREEN, and whether that is all of it.
+     * A count with no horizon reads as the whole history — which is the
+     * complaint this work started from. */
+    const reached = HISTORY_NOW.complete
+      ? ' This is the start of the record.'
+      : ' Older entries have not been loaded yet.';
+    note.textContent = ((kind || q)
+      ? `Newest first — showing ${shown.length} of ${all.length} loaded.`
+      : `Newest first — ${all.length} entries loaded.`) + reached;
+  }
+  /* The button retires itself only when the SERVER said there is no more. */
+  const more = $('#histMore');
+  if (more) {
+    more.hidden = !!HISTORY_NOW.complete;
+    more.textContent = 'Load older entries';
   }
   tl.innerHTML = (kind || q) && !shown.length
     ? '<p class="empty">Nothing in this history matches that.</p>'
@@ -6431,9 +6451,79 @@ async function loadHistory(m) {
     if (note) note.textContent = '';
     return;
   }
+  HISTORY_UID = m.machine_uid;
   HISTORY_NOW = hist;
   fillHistoryKinds(hist.entries || []);
   paintTimeline();
+}
+
+/* ── WALKING BACK THROUGH THE RECORD ──────────────────────────────────────
+ *
+ * Ryan: "I dont like that the history is cut off … make it actually show the
+ * entire database."
+ *
+ * It is not fetched in one piece, and that is not a compromise — it is the
+ * only version that works. Measured against live LabCore: one instrument holds
+ * 26,106 log rows, 13.8 MB. Handing a browser 13 MB of JSON and asking it to
+ * build 26,000 DOM nodes produces a page that cannot be scrolled, on the tab
+ * somebody opens during an assessment.
+ *
+ * So each press fetches the next page OLDER than the oldest row on screen and
+ * appends it. `before` is a timestamp rather than an offset, so nothing shifts
+ * under the walk if a bench writes a row while it is in progress — an offset
+ * would show one row twice and skip another. The server says `complete` when
+ * it has reached the start; the button then says so and stops, because "there
+ * is no more" and "I stopped asking" are different sentences.
+ */
+let HISTORY_UID = null;
+
+async function loadMoreHistory() {
+  const btn = $('#histMore');
+  if (!btn || !HISTORY_NOW || !HISTORY_UID) return;
+  const entries = HISTORY_NOW.entries || [];
+  /* THE SERVER'S CURSOR, never the last row's timestamp.
+   *
+   * `at` alone cannot address a row: whole-second stamps are ordinary in this
+   * log, so asking for rows older than a timestamp steps over every row that
+   * shares it. Walking one instrument that way found 21,854 of its 26,107
+   * rows and then said it had reached the start of the record — full pages,
+   * right order, nothing on screen able to show the hole. `next_before` is
+   * `ts|rowid` and lands exactly where the last page stopped. */
+  const oldest = HISTORY_NOW.next_before;
+  if (!oldest) return;
+  btn.disabled = true;
+  const was = btn.textContent;
+  btn.textContent = 'Reading…';
+  const uid = encodeURIComponent(HISTORY_UID);
+  const r = await fetch(
+    `/api/equipment/${uid}/history?limit=200&before=${encodeURIComponent(oldest)}`
+  ).catch(() => null);
+  btn.disabled = false;
+  const say = $('#histMoreNote');
+  if (!r || !r.ok) {
+    // A page that failed to load is NOT the end of the record, and the button
+    // must not turn into "that is everything" because a read timed out.
+    const b = r ? await r.json().catch(() => ({})) : {};
+    btn.textContent = was;
+    if (say) {
+      say.textContent = (b.error || 'LabCore could not be reached.')
+        + ' This is not the start of the record.';
+    }
+    return;
+  }
+  const page = await r.json();
+  if (say) say.textContent = '';
+  HISTORY_NOW = Object.assign({}, HISTORY_NOW, {
+    entries: entries.concat(page.entries || []),
+    next_before: page.next_before,
+    truncated: !page.complete,
+    complete: !!page.complete,
+    // Carried so the note under the list can say which copy answered.
+    source: page.source, mirrored_at: page.mirrored_at,
+  });
+  fillHistoryKinds(HISTORY_NOW.entries);
+  paintTimeline();
+  btn.textContent = was;
 }
 
 /* The fleet's open corrective actions — ONE read for the whole lab, and

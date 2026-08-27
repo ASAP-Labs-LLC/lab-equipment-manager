@@ -69,3 +69,7 @@ VERSION
 # would put lab documents in the history permanently.
 LEM Web Server/data/documents/
 LEM Web Server/data/standard-certificates/
+# The local copy of lem_machine_log. Regenerable in about a second from
+# LabCore, which stays the record; committing it would put months of lab
+# activity in the history and go stale immediately.
+LEM Web Server/data/log-mirror.sqlite3*

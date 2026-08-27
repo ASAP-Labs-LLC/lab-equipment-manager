@@ -176,6 +176,17 @@ def main(argv) -> int:
     # screen. Started before serving so the first page has something to show.
     snapshots = app.config["SNAPSHOTS"]
     snapshots.start()
+    # The local copy of lem_machine_log, refreshed every five minutes. Same
+    # rule as the snapshot: the factory builds it, the server owns its thread.
+    # The first pull is the whole table (1.00s / 18.9 MB measured on the live
+    # lab); every one after it is `WHERE rowid > ?` and costs almost nothing.
+    # Failing to start is never fatal — without it the deep reads fall back to
+    # LabCore exactly as they did before this existed.
+    try:
+        app.config["LOG_MIRROR_SERVICE"].start()
+    except Exception as exc:                            # noqa: BLE001
+        print("WARNING: the log mirror did not start (%s); History and Logs "
+              "will read LabCore directly." % exc)
     # Tell LabCore where the benches should push their liveness, and with what
     # token. Boot, not create_app: the factory must stay side-effect free. Never
     # fatal — with no live config, modules simply skip the push and the floor

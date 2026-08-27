@@ -2118,8 +2118,19 @@ if (!failed && typeof sandbox.paintTimeline === 'function'
         + 'empty history', /matches that/.test(shown()));
   el('#histQ').value = '';
   sandbox.paintTimeline();
-  claim('clearing the filters says the order and nothing else',
-        String(el('#histOrder').textContent).trim() === 'Newest first.');
+  /* The note said exactly "Newest first." when nothing was filtered. It now
+   * also carries how much of the record is loaded and whether that is the
+   * start of it, which is the complaint this work began from: a count with no
+   * horizon reads as the whole history. What it must still NOT do when no
+   * filter is applied is talk about a subset — "showing 3 of 40" under an
+   * unfiltered list is a claim that something is being held back. */
+  {
+    const note = String(el('#histOrder').textContent).trim();
+    claim('clearing the filters stops it talking about a subset',
+          /^Newest first/.test(note) && !/showing/i.test(note), note);
+    claim('…and it still says where the loaded record ends',
+          /start of the record|not been loaded/.test(note), note);
+  }
   /* THE STORED CONSTANT IS NEVER PRINTED. `level_move` is what the store
      writes into `test_name`; the row above it reads "level created". */
   claim('a level move reads in English, not as the stored constant',

@@ -1805,14 +1805,23 @@ class Timeline(list):
     """
 
     def __init__(self, entries=(), truncated: bool = False, note: str = "",
-                 limit: Optional[int] = None) -> None:
+                 limit: Optional[int] = None,
+                 next_before: Optional[str] = None) -> None:
         super().__init__(entries)
         self.truncated = bool(truncated)
         self.note = note
         self.limit = limit
+        #: Where the NEXT page starts, as `ts|rowid`. A bare timestamp cannot
+        #: address a row in this table — whole-second stamps are ordinary, so
+        #: `ts < cursor` steps over every row sharing the last second of a
+        #: page. Measured on the live lab before this existed: a walk of one
+        #: instrument found 21,854 of 26,107 rows and reported reaching the
+        #: start of the record.
+        self.next_before = next_before
 
     def to_dict(self) -> dict:
         return {"entries": [e.to_dict() for e in self], "count": len(self),
+                "next_before": self.next_before,
                 "truncated": self.truncated, "note": self.note,
                 "limit": self.limit}
 
@@ -1840,6 +1849,11 @@ class _JudgedRead:
         return getattr(self._gateway, name)
 
 
+#: "Every row, however many there are." A distinct value rather than `None`,
+#: which already means "the caller did not say" — one sentinel for two
+#: different questions is how `limit=all` came back with the default 200.
+ALL = "all"
+
 class EquipmentHistory:
     """One instrument's whole history, merged.
 
@@ -1859,7 +1873,17 @@ class EquipmentHistory:
     the one exception, because it means the record genuinely does not exist yet.
     """
 
-    LOG_LIMIT = 200
+    #: How deep the log read goes when the caller does not say. A DEFAULT, not
+    #: a ceiling — it used to be the latter, so `timeline(limit=5000)` still
+    #: came back with 200 log rows and reported itself truncated, and the
+    #: History tab could not show more of the record however hard it asked.
+    #: Ryan: "I dont like that the history is cut off … make it actually show
+    #: the entire database."
+    LOG_DEFAULT = 200
+
+    #: Kept as the old name so nothing that imported it breaks; it is the
+    #: default now and nothing reads it as a cap.
+    LOG_LIMIT = LOG_DEFAULT
 
     def __init__(self, gateway) -> None:
         self.gateway = gateway
@@ -1867,14 +1891,23 @@ class EquipmentHistory:
         self.corrections = CorrectionAuditStore(gateway)
 
     def timeline(self, machine_uid: str, limit: Optional[int] = None,
-                 newest_first: bool = True) -> Timeline:
+                 newest_first: bool = True, before: Optional[str] = None,
+                 depth: Optional[int] = None,
+                 log_rows: Optional[List[dict]] = None,
+                 log_cut: bool = False) -> Timeline:
         """Everything that happened to one instrument, and whether that is all
         of it.
 
         Raises `LabCoreUnavailable` if any source could not be read — see the
         class docstring for why that is better than a shorter list.
         """
-        log_rows, log_cut = self._log(machine_uid)
+        # `log_rows` handed in means the caller already has them — the local
+        # mirror, for a deep walk. The other four sources are still read live:
+        # corrective actions and PM completions are small, current, and not
+        # what made this expensive.
+        if log_rows is None:
+            log_rows, log_cut = self._log(machine_uid, depth=depth,
+                                          before=before)
         log = log_entries(log_rows)
         entries = merge_timeline(
             action_entries(self.actions.for_machine(machine_uid),
@@ -1898,10 +1931,19 @@ class EquipmentHistory:
             notes.append(f"Showing the most recent {self.LOG_LIMIT} log "
                          f"entries for this equipment; older runs, QC "
                          f"verdicts and status changes are not listed.")
+        # The cursor comes off the LOG, because the log is what is paged; the
+        # other four sources are small and read whole every time.
+        tail = log_rows[-1] if log_rows else None
+        cursor = None
+        if tail is not None and tail.get("rowid_src") is not None:
+            cursor = "%s|%s" % (tail.get("ts"), tail.get("rowid_src"))
+        elif tail is not None:
+            cursor = str(tail.get("ts") or "") or None
         return Timeline(entries, truncated=bool(limit_cut or log_cut),
-                        note=" ".join(notes), limit=limit)
+                        note=" ".join(notes), limit=limit, next_before=cursor)
 
-    def _log(self, machine_uid: str) -> Tuple[List[dict], bool]:
+    def _log(self, machine_uid: str, depth: Optional[int] = None,
+             before: Optional[str] = None) -> Tuple[List[dict], bool]:
         """The machine log, newest first, and whether it was cut short.
 
         Asks for one row more than it will show. Reading exactly `LOG_LIMIT`
@@ -1916,14 +1958,25 @@ class EquipmentHistory:
         out would be this page certifying an instrument's quiet week.
         """
         seam = _JudgedRead(self.gateway)
-        log_rows = MachineStateReader(seam).events(
-            machine_uid, self.LOG_LIMIT + 1)
+        # `None` meant BOTH "caller said nothing" and "caller wants
+        # everything", so `limit=all` quietly came back with the default 200 —
+        # a wrong answer that looks exactly like a right one. The string is the
+        # sentinel now, and the two cases cannot be confused.
+        want = self.LOG_DEFAULT if depth is None else (
+            None if depth == ALL else depth)
+        reader = MachineStateReader(seam)
+        if want is None:
+            # Everything. Asked for explicitly (`limit=all`), never by default.
+            log_rows = reader.events(machine_uid, None, before=before)
+            _answered(seam.answer, "reading lem_machine_log")
+            return log_rows, False
+        log_rows = reader.events(machine_uid, int(want) + 1, before=before)
         # The rows come from the reader; only the verdict comes from here. The
         # return value is deliberately discarded — `_answered` is called for
         # the exception it raises when the answer was not usable.
         _answered(seam.answer, "reading lem_machine_log")
-        if len(log_rows) > self.LOG_LIMIT:
-            return log_rows[:self.LOG_LIMIT], True
+        if len(log_rows) > int(want):
+            return log_rows[:int(want)], True
         return log_rows, False
 
     def _maintenance(self, machine_uid: str) -> List[dict]:

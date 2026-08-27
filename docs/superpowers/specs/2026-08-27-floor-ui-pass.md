@@ -279,3 +279,94 @@ Tests: `tests/test_gutter_window.py` (11).
 
 TDD throughout: the failing assertion first, then the markup. Where the ask is
 taste, the test guards the structure and the screenshot judges the look.
+
+---
+
+## 11. The whole record, in History and in Logs
+
+**Ask:** *"I dont like that the history is cut off, please at least in the
+history tab and in the logs tab make it actually show the entire database"*,
+then *"cant it pull it every 5 minutes? and just keep it local?"* and *"even if
+pagination is the best solution for load items that works for me too."*
+
+Both, because they solve different halves.
+
+### The caps
+
+| | was | now |
+|---|---|---|
+| `EquipmentHistory.LOG_LIMIT` | 200, a **ceiling** | `LOG_DEFAULT`, a default |
+| `/api/logs` | `min(limit, 2000)`, then 5000 deeper in | a default; `limit=all` serves the table |
+
+`LOG_LIMIT` was the worse of the two because a caller could not argue with it:
+`timeline(limit=5000)` still returned 200 log rows and reported itself
+truncated.
+
+### The database was never the constraint
+
+Measured against live LabCore:
+
+    lem_machine_log                    41,903 rows
+    the whole table, one read            1.00 s   18.9 MB
+    Agilent GC 1, all 26,106 rows        2.23 s   13.8 MB
+
+Both inside LabCore's 8 s interrupt. What could not take it is the **queue** —
+one channel at ~1.5 ops/sec shared with every bench's writes — and the
+**browser**: 19 MB of JSON and 42,000 DOM rows is not a page anybody scrolls.
+
+### The local copy (`log_mirror.py`)
+
+A SQLite file under `data/`, refreshed every five minutes by a daemon thread.
+First fill is the whole table (**1.7 s** measured end to end); every pull after
+it is `WHERE rowid > ?` and costs almost nothing.
+
+- **`rowid`, not `ts`, as the pull cursor.** `_audit` stamps to whole seconds
+  and ties are ordinary — a `ts >` cursor drops every row sharing the last
+  second it saw, and the counts still look right afterwards.
+- **A failed pull never shrinks it**, records why, and says so. A cache that
+  empties on a blip reports a lab with no history.
+- **LabCore stays the record.** Deletable at any moment; `RELEASING.md` already
+  calls `data/` regenerable cache.
+
+**Where it is used, and where it is not.** A plain open of either page still
+reads LabCore, so what appears is current to the second. The mirror serves the
+deep requests — `before=` and `limit=all` — which is where the cost was.
+
+    first page      0.40 s   from LabCore, fresh
+    page 2          0.32 s   from the mirror
+    limit=all       0.69 s   26,107 entries, zero LabCore ops
+
+### Two bugs found by measuring, not by testing
+
+**A full mirrored page claimed to be the last.** Walking Agilent, page two came
+back with 200 entries and `complete: true` — "this is the start of the record"
+with 25,000 rows behind it. The LabCore path asks for one row more than it will
+show; the mirror path was handed rows and told `log_cut = False`
+unconditionally. `complete` is the one claim this feature exists to make true.
+
+**The walk silently lost a sixth of the record.**
+
+    limit=all                   26,107 entries
+    walked in pages of 200      21,854 entries, complete: true
+
+The cursor was a bare `ts` asking for rows strictly older, so every row sharing
+a page's last second was stepped over — and this log is full of shared seconds
+(worst case measured: 22 runs stamped in one instant). Nothing on screen could
+have shown it: full pages, right order, rising count, and a walk that ended
+saying it had reached the beginning. The cursor is `ts|rowid` now, emitted by
+the server as `next_before`, and both readers compare on the compound.
+
+After: **131 pages, 26,107 entries, matches `limit=all` exactly.**
+
+### The UI
+
+- **History:** a *Load older entries* button that appends a page at a time and
+  retires itself only when the server says `complete`. The note under the list
+  says how much is loaded and whether that is the start of the record.
+- **Logs:** opens on 500 and quadruples per press until `limit=all`. A fresh
+  read rather than an append, because the filters can change between presses
+  and stitching a filtered page onto an unfiltered one shows rows that do not
+  match the boxes. Changing a filter resets the depth.
+- A page that failed to load never turns the button into "that is everything".
+
+Tests: `tests/test_log_mirror.py` (21), `tests/test_whole_record.py` (24).

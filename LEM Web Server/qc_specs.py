@@ -372,11 +372,36 @@ class MachineStateReader:
             }
         return out
 
-    def events(self, machine_uid: str, limit: int = 100) -> List[dict]:
-        res = self.gateway.read_sql(
-            "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
-            "FROM lem_machine_log WHERE machine_uid = ? "
-            "ORDER BY ts DESC LIMIT ?", [machine_uid, int(limit)])
+    def events(self, machine_uid: str, limit: Optional[int] = 100,
+               before: Optional[str] = None) -> List[dict]:
+        """This instrument's log, newest first.
+
+        `limit=None` means EVERYTHING, and is only ever reached by an explicit
+        `limit=all` from a caller who asked for the whole record — never by
+        default. `before` is a `ts`; rows strictly older come back, which is
+        what lets a page walk backwards without ever showing the cursor row
+        twice or stepping over it.
+        """
+        where, args = ["machine_uid = ?"], [machine_uid]
+        if before:
+            # `ts|rowid`, for the same reason the mirror uses one: whole-second
+            # stamps are ordinary here and a bare timestamp cursor steps over
+            # every row sharing the last second of a page.
+            ts, _, rid = str(before).partition("|")
+            if rid.isdigit():
+                where.append("(ts < ? OR (ts = ? AND rowid < ?))")
+                args.extend([ts, ts, int(rid)])
+            else:
+                where.append("ts < ?")
+                args.append(ts)
+        sql = ("SELECT rowid AS rowid_src, machine_uid, ts, kind, lab_id, "
+               "test_name, value, detail "
+               "FROM lem_machine_log WHERE " + " AND ".join(where)
+               + " ORDER BY ts DESC, rowid DESC")
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        res = self.gateway.read_sql(sql, args)
         # MISSING TABLE MAY DEGRADE TO EMPTY: no module has ever written a log
         # row, so this machine has no history.
         # ANYTHING ELSE RAISES. An empty history panel for an instrument with

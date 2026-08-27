@@ -1186,14 +1186,19 @@ class TestMinorRepairs:
         seen = {}
         real = equipment_history.MachineStateReader.events
 
-        def spy(self, machine_uid, limit=100):
+        def spy(self, machine_uid, limit=100, before=None):
+            # `before` arrived with the walk-the-record work (27 Aug); the spy
+            # has to accept the reader's real signature or it tests a call
+            # that no longer exists.
             seen["machine_uid"], seen["limit"] = machine_uid, limit
-            return real(self, machine_uid, limit)
+            seen["before"] = before
+            return real(self, machine_uid, limit, before=before)
 
         monkeypatch.setattr(equipment_history.MachineStateReader, "events", spy)
         out = EquipmentHistory(gw).timeline("m1")
         assert seen["machine_uid"] == "m1"
-        assert seen["limit"] == EquipmentHistory.LOG_LIMIT + 1
+        assert seen["limit"] == EquipmentHistory.LOG_DEFAULT + 1
+        assert seen["before"] is None, "a plain open must not page"
         assert [e.source for e in out] == ["log", "log"]
 
 

@@ -55,6 +55,7 @@
     <span class="spacer"></span>
     <span class="count" id="count"></span>
     <a class="tool" id="csv" href="/api/logs.csv">Export CSV</a>
+    <button class="tool" id="more" hidden>Load more</button>
     <span class="who" id="who" hidden></span>
     <button id="btnAuth" class="tool">Sign in</button>
   </header>
@@ -127,8 +128,27 @@ function query() {
 
 let machinesLoaded = false;
 
+/* HOW DEEP THIS PAGE READS.
+ *
+ * Ryan: "in the logs tab make it actually show the entire database." It used
+ * to be capped at 500 with a hard ceiling of 5000, so a lab with a longer log
+ * could not reach the rest of it from here at all — and the database was never
+ * the reason. Measured against live LabCore: the whole table is 41,903 rows
+ * and reads in 1.00 s.
+ *
+ * What cannot take the whole table is this page: 19 MB of JSON and 42,000
+ * table rows is not something a browser scrolls. So it opens on a page and
+ * deepens on request — `PAGE` doubles each press until `limit=all`, which the
+ * server now serves. Doubling rather than a fixed step because the answer to
+ * "how much is there" is different in every lab, and two presses should get a
+ * small one to its end.
+ */
+const FIRST_PAGE = 500;
+let PAGE = FIRST_PAGE;
+
 async function load() {
   const p = query();
+  if (PAGE) p.set('limit', PAGE === 'all' ? 'all' : String(PAGE));
   $('#csv').href = '/api/logs.csv' + (p.toString() ? '?' + p : '');
   const b = await fetch('/api/logs' + (p.toString() ? '?' + p : ''))
     .then(r => r.json()).catch(() => null);
@@ -191,14 +211,45 @@ async function load() {
       <td>${esc(e.by)}</td>
       <td class="det">${esc(detailText(e))}</td>
     </tr>`).join('');
-  $('#note').innerHTML = evs.length ? ''
+  /* WHETHER THIS IS THE WHOLE LOG, said rather than implied.
+   *
+   * A count on its own reads as the whole record — which is the complaint this
+   * work started from. The page knows it asked for at most `PAGE` rows, so a
+   * full page means there is probably more; a short one means the log ended.
+   * `limit=all` is the only case that can promise anything. */
+  const asked = PAGE === 'all' ? Infinity : PAGE;
+  const maybeMore = evs.length >= asked;
+  $('#note').innerHTML = evs.length
+    ? (maybeMore
+        ? `<p class="empty">Showing the newest ${evs.length}. There are older
+           entries than this.</p>`
+        : '<p class="empty">That is every entry matching these filters.</p>')
     : '<p class="empty">Nothing matches those filters.</p>';
+  const more = $('#more');
+  if (more) {
+    more.hidden = !maybeMore;
+    more.textContent = 'Load more';
+  }
+}
+
+/* Deepen and re-read. Deliberately a fresh read rather than an append: the
+ * filters can change between presses, and stitching a filtered page onto an
+ * unfiltered one shows rows that do not match what the boxes say. */
+async function deepen() {
+  const more = $('#more');
+  if (more) { more.disabled = true; more.textContent = 'Reading…'; }
+  PAGE = PAGE === 'all' ? 'all'
+       : (PAGE >= 20000 ? 'all' : PAGE * 4);
+  await load();
+  if (more) more.disabled = false;
 }
 
 let t = null;
-const debounced = () => { clearTimeout(t); t = setTimeout(load, 220); };
+const debounced = () => { clearTimeout(t); t = setTimeout(reload, 220); };
+const reload = () => { PAGE = FIRST_PAGE; return load(); };
 ['#fMachine', '#fKindSel', '#fSince', '#fUntil'].forEach(
-  s => $(s).addEventListener('change', load));
+  s => $(s).addEventListener('change', reload));
+$('#more').addEventListener('click', deepen);
 $('#fQuery').addEventListener('input', debounced);
 $('#clear').addEventListener('click', () => {
   ['#fMachine', '#fKindSel', '#fSince', '#fUntil', '#fQuery']

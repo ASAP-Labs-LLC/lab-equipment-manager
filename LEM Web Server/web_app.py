@@ -1353,6 +1353,35 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # refresh_soon() refreshes inline, so behaviour stays correct either way.
     app.config["SNAPSHOTS"] = snapshots
 
+    # ── the local copy of the log ─────────────────────────────────────────
+    #
+    # Ryan: "cant it pull it every 5 minutes? and just keep it local?" — asked
+    # about the History and Logs pages showing the whole record instead of the
+    # newest page of it, and it is the right shape.
+    #
+    # WHERE IT IS USED, and where it deliberately is not. A plain open of
+    # either page still reads LabCore, so what you see when the panel appears
+    # is current to the second. The mirror serves the DEEP requests — the
+    # walk backwards (`before=`) and `limit=all` — which is exactly where the
+    # cost was: one instrument's 26,106 rows measured 2.23s / 13.8 MB, and
+    # every one of those seconds is a write slot the benches are queued behind.
+    # Paying it once every five minutes instead of once per click is the whole
+    # point; paying it for the first page nobody complained about would be
+    # trading freshness for nothing.
+    #
+    # Same lifecycle rule as the snapshot: constructed here, started by the
+    # entry point, and correct with no thread at all — an unfilled mirror falls
+    # back to reading LabCore rather than reporting a lab with no history.
+    from log_mirror import LogMirror, LogMirrorService
+    log_mirror = LogMirror(
+        gateway,
+        path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
+                          "log-mirror.sqlite3"))
+    app.config["LOG_MIRROR"] = log_mirror
+    app.config["LOG_MIRROR_SERVICE"] = LogMirrorService(
+        log_mirror,
+        seconds=float(os.environ.get("LEM_LOG_MIRROR_SECONDS", "300")))
+
     # ── the equipment record: levels, documents, corrective actions ────
     #
     # Three stores that shipped fully tested and connected to nothing. Their
@@ -1368,8 +1397,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                      EquipmentDocumentStore, MAX_DOCUMENT_BYTES,
                                      content_disposition,
                                      document_counts_by_machine, read_upload)
-    from equipment_history import (ActionLifecycleError, CorrectionAuditStore,
-                                   EquipmentHistory)
+    from equipment_history import (ALL as HISTORY_ALL, ActionLifecycleError,
+                                   CorrectionAuditStore, EquipmentHistory)
     from levels import LevelStore
 
     from standard_documents import (CertificateRejected, CertificateStoreError,
@@ -2825,13 +2854,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
                               else until + "T99")
             except ValueError:
                 pass
-        limit = max(1, min(int(args.get("limit") or 500), 5000))
+        # `all` reads the whole table. The 5000 ceiling meant a lab with a
+        # longer log could not reach the rest of it from this page at all —
+        # and the database was never the reason: 41,903 rows measured at 1.00s.
+        _raw = str(args.get("limit") or "").strip()
+        limit = None if _raw.lower() == "all" else max(1, int(_raw or 500))
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         try:
+            sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                   f"detail FROM lem_machine_log {clause} ORDER BY ts DESC")
+            if limit is not None:
+                sql += " LIMIT ?"
             res = gateway.read_sql(
-                "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
-                f"FROM lem_machine_log {clause} ORDER BY ts DESC LIMIT ?",
-                params + [limit])
+                sql, params + ([limit] if limit is not None else []))
             # `labcore_rows`, not `res.get("error")` (2026-08-25). The verdict
             # was still hand-rolled here, in the file that imports the shared
             # rule and uses it three lines further down — so a refusal carrying
@@ -3057,7 +3092,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
         kind = (request.args.get("kind") or "").strip().lower()
         kinds = [kind] if kind in ("pm", "calibration") else ["pm",
                                                               "calibration"]
-        limit = max(1, min(int(request.args.get("limit") or 300), 2000))
+        # 2000 was a CEILING: a lab with more than that in its log could not
+        # see the rest from this page at all. It is a default now, and `all`
+        # serves the whole table — 41,903 rows read in 1.00s when measured, so
+        # the cap was never protecting the database.
+        _raw = (request.args.get("limit") or "").strip()
+        if _raw.lower() == "all":
+            limit = None
+        else:
+            try:
+                limit = max(1, int(_raw or 300))
+            except ValueError:
+                return jsonify({"error": "limit must be a number, or 'all'."}), 400
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
             "SELECT machine_uid, ts, kind, detail FROM lem_machine_log "
@@ -4292,19 +4338,78 @@ def create_app(gateway, admin_password: Optional[str] = None,
         polled page.
         """
         raw = (request.args.get("limit") or "").strip()
+        # `all` is the whole record, and it has to be asked for by name.
+        # Ryan: "make it actually show the entire database." Measured against
+        # live LabCore, one instrument's 26,106 rows read in 2.23s / 13.8 MB —
+        # affordable for a person who asked, never as a default on a panel.
+        everything = raw.lower() == "all"
         try:
-            limit = int(raw) if raw else None
+            limit = None if everything else (int(raw) if raw else None)
         except ValueError:
-            return jsonify({"error": "limit must be a number."}), 400
+            return jsonify({"error": "limit must be a number, or 'all'."}), 400
+        if limit is not None and limit < 1:
+            return jsonify({"error": "limit must be at least 1."}), 400
+        before = (request.args.get("before") or "").strip() or None
+
+        # THE DEEP READS COME FROM THE LOCAL COPY.
+        #
+        # A plain open still reads LabCore, so the panel is current when it
+        # appears. A walk backwards, or `limit=all`, is served from the mirror:
+        # that is where the cost was (26,106 rows at 2.23s, each second a write
+        # slot the benches queue behind) and where up-to-five-minutes-stale is
+        # invisible on a record that goes back months.
+        #
+        # An unfilled mirror falls through to LabCore rather than answering
+        # "this instrument has no history". The cache is not the record.
+        mirror = app.config.get("LOG_MIRROR")
+        deep = bool(everything or before)
+        mirrored = None
+        log_rows, log_cut = None, False
+        if deep and mirror is not None and mirror.state()["rows"]:
+            # ONE ROW MORE THAN WILL BE SHOWN, exactly as the LabCore path
+            # does. Reading exactly `limit` rows cannot tell you whether there
+            # were more — and the mirror path used to assume there were not, so
+            # a full page of 200 reported itself as the start of the record.
+            # Caught while walking Agilent GC 1's 26,106 rows against the live
+            # lab: page two said "complete" with twenty-five thousand behind
+            # it. `complete` is the one claim this whole feature exists to make
+            # true, so it is the one that may not be guessed.
+            want = None if everything else int(limit or 0)
+            log_rows = mirror.events(machine_uid=machine_uid,
+                                     limit=None if want is None else want + 1,
+                                     before=before)
+            if want is not None and len(log_rows) > want:
+                log_rows, log_cut = log_rows[:want], True
+            mirrored = mirror.state()["filled_at"]
+
         try:
-            timeline = equipment_history.timeline(machine_uid, limit=limit)
+            timeline = equipment_history.timeline(
+                machine_uid, limit=limit, before=before,
+                # The LOG read goes exactly as deep as the page asked for. It
+                # used to be pinned at LOG_DEFAULT whatever `limit` said, so a
+                # request for 400 entries got 200 log rows and called itself
+                # truncated.
+                depth=HISTORY_ALL if everything else limit,
+                log_rows=log_rows, log_cut=log_cut)
         except LabCoreError as exc:
             # `truncated` and `note` are a CLAIM ABOUT COMPLETENESS. A page that
             # drops the corrective actions during a blip and still says it is
             # showing everything tells a supervisor this instrument has nothing
             # open against it.
             return _labcore_unreadable(exc, "this equipment's history")
-        return jsonify(_history_in_words(timeline.to_dict()))
+        body = _history_in_words(timeline.to_dict())
+        # REACHING THE START OF THE RECORD IS THE ANSWER, so it is stated
+        # rather than left to be inferred from a page that came back shorter
+        # than the one that was asked for — which is also what a failed read
+        # looks like from the outside. `complete` is only ever present on an
+        # answer that was actually read to the end.
+        body["complete"] = not body.get("truncated")
+        # Which copy answered, and how old it is. Silence here would let a page
+        # present a five-minute-old walk as live without ever saying so.
+        body["source"] = "mirror" if mirrored else "labcore"
+        if mirrored:
+            body["mirrored_at"] = mirrored
+        return jsonify(body)
 
     def _history_in_words(payload: dict) -> dict:
         """The timeline, with its config entries said in English.
