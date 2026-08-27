@@ -256,7 +256,11 @@
      A lab with NO levels never renders it: there is no ladder, and a widget
      reading "1 of 1" over a lab that has never made a floor is an invitation
      to go looking for the others. */
-  .lvlnav{position:absolute;left:14px;top:14px;z-index:4;width:max-content;
+  /* Ryan: "on the right side of the map … show the levels that are visible,
+     highlight the current level, and have you able to click and select a
+     level." The highlight and the click already worked; it was on the left,
+     over the corner of the drawing. */
+  .lvlnav{position:absolute;right:14px;top:14px;z-index:4;width:max-content;
           max-width:min(210px,38%);
           background:rgba(10,13,18,.78);border:1px solid var(--edge);
           border-radius:9px;padding:7px 8px 6px}
@@ -4923,19 +4927,6 @@ function planSeeded(uid) {
 // is its flat status colour.
 const planFill = s => s === 'DEAD-LINE' ? 'url(#planHazard)' : col(s);
 
-// One prism: top face lightest, right mid, left darkest — single lamp, upper
-// left. Returns the roof, so the caller can hang things off it.
-function planPrism(g, gx, gy, w, d, h, z, shades) {
-  const corners = [[gx, gy], [gx + w, gy], [gx + w, gy + d], [gx, gy + d]];
-  const B = corners.map(([x, y]) => planIso(x, y, z));
-  const T = corners.map(([x, y]) => planIso(x, y, z + h));
-  const poly = (pts, fill) => planEl('polygon', {points: planPts(pts), fill}, g);
-  poly([T[3], T[2], B[2], B[3]], shades[2]);   // left wall
-  poly([T[1], T[2], B[2], B[1]], shades[1]);   // right wall
-  poly([T[0], T[1], T[2], T[3]], shades[0]);   // roof
-  return T;
-}
-
 /* Where the instruments stand.
  *
  * `m.pos` is null until somebody drags one — the layout is assigned
@@ -5108,37 +5099,28 @@ function planMachine(root, plates, m, gx, gy) {
     t.textContent = label;
   });
 
-  const A = ['url(#pmTop)', 'url(#pmRight)', 'url(#pmLeft)'];
-  const B = ['url(#pmTop2)', 'url(#pmRight2)', 'url(#pmLeft2)'];
-  const arch = Math.floor(rnd() * 4);
-  let top;
-  if (arch === 0) {            // column — a tall fractionating stack
-    top = planPrism(g, gx + .14, gy + .14, .72, .72, 40 + rnd() * 16, 0, A);
-    top = planPrism(g, gx + .28, gy + .28, .44, .44, 34 + rnd() * 24, 56, B);
-  } else if (arch === 1) {     // analyser cabinet with a service hatch
-    const h = 40 + rnd() * 14;
-    top = planPrism(g, gx + .05, gy + .05, .9, .9, h, 0, A);
-    planPrism(g, gx + .22, gy + .22, .34, .34, 12, h, B);
-  } else if (arch === 2) {     // bench unit with a chimney stack
-    top = planPrism(g, gx + .06, gy + .22, .86, .6, 34 + rnd() * 14, 0, A);
-    planPrism(g, gx + .6, gy + .04, .3, .28, 58 + rnd() * 18, 0, B);
-  } else {                     // twin-vessel bath
-    top = planPrism(g, gx + .05, gy + .1, .41, .8, 36 + rnd() * 14, 0, A);
-    planPrism(g, gx + .55, gy + .1, .41, .8, 28 + rnd() * 14, 0, B);
-  }
-
-  // lamp-side rim light along the top edge — sells the single light source
-  planEl('polyline', {points: planPts([top[0], top[1]]), stroke: '#5b6675',
-                      'stroke-width': 1.2, fill: 'none', opacity: .8}, g);
-
-  // instrument face — a lit readout panel on the operator side
-  const f = planIso(gx + .5, gy + 1.0);
-  planEl('rect', {x: f[0] - 19, y: f[1] - 34, width: 38, height: 14, rx: 2.5,
-                  fill: '#080b0f', stroke: '#3d4653', 'stroke-width': .9}, g);
-  planEl('rect', {x: f[0] - 15, y: f[1] - 30.5, width: 24 * (.35 + rnd() * .65),
-                  height: 2.4, rx: 1.2, fill: c, opacity: .9}, g);
-  planEl('rect', {x: f[0] - 15, y: f[1] - 26, width: 15 * (.3 + rnd() * .7),
-                  height: 2.4, rx: 1.2, fill: '#3f4a59'}, g);
+  /* NO SILHOUETTE, NO FACE.
+   *
+   * Ryan: "remove the building sillhoutes in the boxes", and remove the
+   * readout panel with them. Both were the isometric's furniture, and neither
+   * survives the camera going overhead.
+   *
+   * `planPrism` extruded one of four archetypes per instrument — a
+   * fractionating column, an analyser cabinet, a bench unit with a chimney, a
+   * twin-vessel bath — picked off a hash of the machine_uid. From a 3/4 view
+   * those read as equipment. From directly above they are grey blocks of
+   * arbitrary size covering the bay, and the shape never carried information
+   * anyway: the archetype was decorative, not something the instrument
+   * reported. The rim-light polyline went with them; it sold a single light
+   * source in a scene that no longer has one.
+   *
+   * The readout panel was a lit face on the operator side of a box that no
+   * longer has an operator side, and its coloured bar restated the status bar
+   * three lines below it at a size nobody could read.
+   *
+   * What is left is what the bay is FOR: the plinth, the status bar, and the
+   * three sub-status pills.
+   */
 
   // ── status bar: the machine's overall state as one wide lit strip across
   // the head of its bay, sitting above the three pills. Readable from across
@@ -5192,10 +5174,25 @@ function planMachine(root, plates, m, gx, gy) {
    * front and to the left is drawn later and its prisms cover the plate of the
    * one behind. A name that is only readable for some of the fleet is worse
    * than none, because it is not obvious which ones are missing. */
-  // Anchored left of the bay's centre line on purpose: the pill row runs down
-  // and to the RIGHT in this projection, so a sign centred under the bay ends
-  // up with CAL sitting on its shoulder.
-  const lp = planIso(gx + .34, gy + 1.52);
+  // TOP-LEFT OF THE BAY, reading left to right from the corner.
+  //
+  // Ryan: "have the equipment names be in the top left of the sample boxes."
+  // It used to hang BELOW the bay and centred, which was the right answer for
+  // the isometric — the pill row ran down and to the right in that projection,
+  // so a centred sign put CAL on its shoulder. Overhead there is no
+  // foreshortening to dodge, the bay is a plain rectangle, and a label in the
+  // corner is how every floor plan in the world is labelled.
+  //
+  // Left-anchored rather than centred, so a long name and a short one start on
+  // the same line down the column and the eye can run down it.
+  //
+  // INSIDE the bay, not above it. The first attempt put the plate above the
+  // bay's top edge, which is "top-left" of nothing on a grid where bays touch:
+  // the bottom row's names sat on top of the row above and covered its status
+  // bar and its PM and CAL pills. A label that hides the state of a DIFFERENT
+  // instrument is worse than one in an awkward place. The top third of the bay
+  // is empty now that the silhouettes are gone, so the name goes there.
+  const lp = planIso(gx - .11, gy + .06);
   const name = String(m.title || m.machine_uid).toUpperCase().slice(0, 16);
   const size = 13;
   const wide = name.length * size * .82 + 20;
@@ -5205,13 +5202,13 @@ function planMachine(root, plates, m, gx, gy) {
   const plate = planEl('g', {class: 'unit', tabindex: '0',
                              role: 'button', 'aria-label': label,
                              opacity: closed || !running ? .72 : 1}, plates);
-  planEl('rect', {x: lp[0] - wide / 2, y: lp[1] - size * .95, width: wide,
+  planEl('rect', {x: lp[0], y: lp[1] - size * .95, width: wide,
                   height: size * 1.62, rx: size * .34,
                   fill: sel ? 'rgba(255,138,61,.18)' : 'rgba(9,11,16,.86)',
                   stroke: sel ? 'var(--amber)' : '#3d4756',
                   'stroke-width': sel ? 1.6 : 1}, plate);
-  const txt = planEl('text', {x: lp[0], y: lp[1] + size * .34,
-                              'text-anchor': 'middle',
+  const txt = planEl('text', {x: lp[0] + 10, y: lp[1] + size * .34,
+                              'text-anchor': 'start',
                               fill: sel ? '#ffb37a' : '#d3dae6',
                               'font-size': size, 'font-weight': 800,
                               'letter-spacing': 1.9}, plate);

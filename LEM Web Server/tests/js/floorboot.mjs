@@ -3867,7 +3867,135 @@ async function checkIsometric() {
         tiltWrites === 1 && /PLAN_CAM\s*\.\s*tilt\s*=\s*PLAN_TILT\b/.test(src));
 }
 
+/* ---- THE BAY IS A PLAN, NOT A LITTLE BUILDING ---------------------------
+ *
+ * Ryan, 27 Aug, having asked for a flat top-down map: put the equipment names
+ * "in the top left of the sample boxes", "remove the building sillhoutes in
+ * the boxes", and remove the readout panel — the dark rounded rect with a
+ * coloured bar across it, drawn on the operator side of every bay.
+ *
+ * All three were the isometric's furniture. `planPrism` extruded one of four
+ * archetypes per instrument (a fractionating column, an analyser cabinet, a
+ * bench unit with a chimney, a twin-vessel bath) and those are exactly the
+ * silhouettes; the readout panel was a face drawn on a box that no longer has
+ * a face; the name plate hung BELOW the bay because the pill row ran down and
+ * to the right in a projection that no longer runs anywhere.
+ *
+ * Asserted structurally, because "looks flat" is not testable: no prisms are
+ * drawn, the function that drew them is gone rather than merely unused (the
+ * same rule the tilt solver is held to), no bay carries a <rect>, and the name
+ * plate's box sits at the bay's top-left corner.
+ */
+function checkFlatBays() {
+  const svg = el('#floorSimple');
+  const units = byClass(svg, 'simple-machine');
+  claim('there are instruments on the plan to look at', units.length > 0);
+
+  claim('the prism builder is gone, not just uncalled',
+        typeof sandbox.planPrism === 'undefined');
+  const prismCalls = [...src.matchAll(/\bplanPrism\s*\(/g)].length;
+  claim('…and nothing in the page still calls it', prismCalls === 0,
+        `${prismCalls} call(s) left in floor.html`);
+
+  /* The readout panel was the ONLY <rect> inside a bay — everything else on
+   * the plan is a polygon, because everything else was projected. So counting
+   * rects is an exact test for it and needs no class of its own. */
+  const isTag = (e, t) => String(e.tagName || '').toLowerCase() === t;
+  const rects = units.flatMap(u => walk(u).filter(e => isTag(e, 'rect')));
+  claim('no bay carries a readout panel', rects.length === 0,
+        `${rects.length} <rect> still drawn inside instrument groups`);
+
+  /* The name plate. It lives in its own layer above the machines, so it is
+   * found by class `unit` WITHOUT `simple-machine` — the distinction the
+   * plate's own comment explains. Its box must sit at the top-left of the bay
+   * it names: left of the bay's centre, and above the bay's top edge. */
+  const plinths = units.map(u => byClass(u, 'plinth')[0]).filter(Boolean)
+                       .map(absBox).filter(Boolean);
+  const plates = byClass(svg, 'unit')
+    .filter(u => !(u.getAttribute('class') || '').includes('simple-machine'));
+  claim('every instrument still has a name plate', plates.length === units.length,
+        `${plates.length} plates for ${units.length} instruments`);
+
+  const boxes = plates.map(pl => walk(pl).find(e => isTag(e, 'rect')))
+                      .filter(Boolean).map(absBox).filter(Boolean);
+  claim('…and each plate has a box to place', boxes.length === plates.length);
+
+  if (boxes.length && plinths.length === boxes.length) {
+    // Pair each plate with its nearest bay by x, which is enough on a grid.
+    const pairs = boxes.map(b => {
+      const bay = plinths.reduce((best, p) =>
+        Math.hypot(p.x0 - b.x0, p.y0 - b.y0)
+          < Math.hypot(best.x0 - b.x0, best.y0 - b.y0) ? p : best);
+      return {b, bay};
+    });
+    claim('the name sits at the LEFT of its bay, not centred under it',
+          pairs.every(({b, bay}) =>
+            b.x0 < bay.x0 + (bay.x1 - bay.x0) * 0.35),
+          pairs.map(({b, bay}) =>
+            ((b.x0 - bay.x0) / (bay.x1 - bay.x0)).toFixed(2)).join(' '));
+    claim('…and at the TOP of it, not below the bay',
+          pairs.every(({b, bay}) => b.y1 <= bay.y0 + (bay.y1 - bay.y0) * 0.5),
+          pairs.map(({b, bay}) =>
+            ((b.y0 - bay.y0) / (bay.y1 - bay.y0)).toFixed(2)).join(' '));
+
+    /* INSIDE the bay, not floating above it.
+     *
+     * The first version put the plate above the bay's top edge, which is
+     * "top-left" of nothing on a grid where bays touch: the bottom row's names
+     * landed on top of the row above, covering its status bar and its PM and
+     * CAL pills. A label that hides the state of a DIFFERENT instrument is
+     * worse than one in an awkward place. Ryan said "in the top left of the
+     * sample boxes" — in. */
+    claim('the plate sits INSIDE its bay, not over the one behind it',
+          pairs.every(({b, bay}) =>
+            b.y0 >= bay.y0 - 1 && b.x0 >= bay.x0 - 1 && b.x1 <= bay.x1 + 1),
+          pairs.map(({b, bay}) =>
+            `${(b.y0 - bay.y0).toFixed(0)}px above bay top`).join(' '));
+  }
+}
+
+/* ---- THE LEVEL PICKER IS ON THE RIGHT ----------------------------------
+ *
+ * Ryan: "on the right side of the map if there was a UI element to show the
+ * levels that are visible, highlight the current level, and have you able to
+ * click and select a level."
+ *
+ * Two of the three already worked — the rungs highlight the level in view and
+ * `levelNavGo` switches without a fetch. It was on the left, over the corner
+ * of the drawing. This asserts all three so the working two cannot be lost
+ * while the third is moved.
+ */
+function checkLevelPicker() {
+  const nav = el('#levelNav');
+  claim('the level picker exists', !!nav);
+  if (!nav) return;
+
+  /* `src` is the page's largest <script>, not the page — the stylesheet is not
+   * in it, and slicing on a missing '</style>' silently searched the script
+   * body instead. `html` is the whole file. */
+  const css = html.slice(0, html.indexOf('</style>'));
+  const rule = /\.lvlnav\s*\{[^}]*\}/.exec(css);
+  claim('it is pinned to the RIGHT of the stage',
+        !!rule && /(^|[;{])\s*right\s*:/.test(rule[0])
+        && !/(^|[;{])\s*left\s*:/.test(rule[0]),
+        rule ? rule[0].replace(/\s+/g, ' ') : 'no .lvlnav rule');
+
+  /* The other two thirds of the ask — the level in view is highlighted, and
+   * every other level is a button that switches to it without a fetch — were
+   * already true, and are already held about 2500 lines up where the harness
+   * has a three-level lab loaded: `aria-current="true"`, `class="rung on"`,
+   * "pressing a rung goes to that floor", "…and fires NO request doing it",
+   * and the single-level case where the one rung is deliberately NOT a button.
+   *
+   * This function runs at the tail, against whatever fixture the last check
+   * left behind — a one-level lab — so re-asserting them here would test the
+   * wrong state and say nothing the existing block does not already say
+   * better. Only the position is new, and only the position is checked. */
+}
+
 if (!failed) await checkIsometric();
+if (!failed) checkFlatBays();
+if (!failed) checkLevelPicker();
 
 console.log(failed ? '\nthe floor does not boot' : '\nthe floor boots');
 process.exit(failed ? 1 : 0);
