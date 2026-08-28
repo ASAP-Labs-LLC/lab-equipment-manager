@@ -254,3 +254,57 @@ class TestItKnowsWhetherItIsTheWholeRecord:
         st = mirror.state()
         assert st["max_rowid"] > 0
         assert st["rows"] == 5
+
+
+class TestItNoticesADifferentDatabase:
+    """The mirror is keyed by `rowid`, and rowids only ever go up. That is
+    exactly right while it is pointed at one LabCore and silently wrong the
+    moment it is not.
+
+    Found in a dev run, not by a test: a mirror file left over from an earlier
+    database had a higher `max_rowid` than the new one, so `WHERE rowid > ?`
+    matched nothing, the mirror reported itself full, and the QC wall rendered
+    "No QC has been recorded on any instrument" over a lab with 280 QC results.
+    Confidently wrong, and nothing anywhere would have said so.
+
+    It happens for real whenever LabCore is restored from backup, rebuilt, or
+    the server is pointed at a different instance — and on a wall display
+    nobody is there to notice the data stopped moving.
+    """
+
+    def test_a_shorter_source_means_a_different_database(self, gw, tmp_path):
+        path = str(tmp_path / "m.sqlite3")
+        _many(gw, 300)
+        LogMirror(gw, path=path).refresh()
+
+        fresh = FakeLabCoreGateway()          # a different, smaller LabCore
+        snapshot_service.SnapshotService(fresh).ensure_schema()
+        for i in range(5):
+            _log(fresh, "2026-09-%02dT09:00:00" % (i + 1))
+        m = LogMirror(fresh, path=path)
+        m.refresh()
+        assert m.state()["rows"] == 5, (
+            "the mirror kept 300 rows from a database it is no longer "
+            "pointed at, and reported itself current")
+
+    def test_and_the_rows_it_serves_are_the_new_ones(self, gw, tmp_path):
+        path = str(tmp_path / "m.sqlite3")
+        _many(gw, 300)
+        LogMirror(gw, path=path).refresh()
+        fresh = FakeLabCoreGateway()
+        snapshot_service.SnapshotService(fresh).ensure_schema()
+        _log(fresh, "2026-09-01T09:00:00", uid="brand-new")
+        m = LogMirror(fresh, path=path)
+        m.refresh()
+        assert [e["machine_uid"] for e in m.events()] == ["brand-new"]
+
+    def test_the_ordinary_case_still_only_pulls_what_is_new(self, gw, tmp_path):
+        """The reset must not fire on a healthy mirror, or every refresh
+        becomes a full re-read of the whole table."""
+        path = str(tmp_path / "m.sqlite3")
+        _many(gw, 200)
+        m = LogMirror(gw, path=path)
+        m.refresh()
+        _many(gw, 3, start=200)
+        assert m.refresh() == 3
+        assert m.state()["rows"] == 203

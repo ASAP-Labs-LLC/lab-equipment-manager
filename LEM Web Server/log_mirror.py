@@ -129,6 +129,7 @@ class LogMirror:
         return got
 
     def _pull(self) -> int:
+        self._reset_if_source_changed()
         total = 0
         while True:
             since = self.max_rowid()
@@ -154,6 +155,39 @@ class LogMirror:
             total += len(rows)
             if len(rows) < PULL_CHUNK:
                 return total
+
+    def _reset_if_source_changed(self) -> None:
+        """Throw the copy away if it is a copy of a different database.
+
+        THE CURSOR ONLY EVER GOES UP, which is exactly right while this is
+        pointed at one LabCore and silently wrong the moment it is not. Found
+        in a dev run: a mirror file left over from a bigger database had a
+        higher `max_rowid` than the new one, so `WHERE rowid > ?` matched
+        nothing, the mirror reported itself full and current, and the QC wall
+        rendered "No QC has been recorded on any instrument" over a lab with
+        280 QC results. Nothing anywhere would have said so.
+
+        It happens for real whenever LabCore is restored from backup, rebuilt,
+        or the server is pointed at another instance — and this feeds a wall
+        display, where nobody is standing there to notice the data stopped
+        moving.
+
+        The test is simply whether the source still HAS the row we stopped at.
+        An append-only log always does; a different database does not. One
+        cheap indexed lookup per refresh, against being confidently wrong for
+        as long as nobody restarts anything.
+        """
+        held = self.max_rowid()
+        if not held:
+            return
+        res = self.gateway.read_sql(
+            "SELECT COUNT(*) n FROM lem_machine_log WHERE rowid = ?", [held])
+        rows = self._rows(res)
+        if rows and int(list(rows[0].values())[0] or 0):
+            return                       # same database, carry on incrementally
+        with self._lock:
+            self._db.execute("DELETE FROM log")
+            self._db.commit()
 
     @staticmethod
     def _rows(res) -> List[dict]:

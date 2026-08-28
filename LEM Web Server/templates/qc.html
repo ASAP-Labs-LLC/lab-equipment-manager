@@ -1,0 +1,306 @@
+
+{#
+  THE QC WALL.
+
+  Ryan: "design it to run like a literal monitor, for viewing far away, and
+  just being locked on that screen."
+
+  Three rules follow from "monitor", and every choice below is one of them.
+
+  IT NEVER SCROLLS. A wall display with content below the fold is a wall
+  display that is lying by omission. What fits, fits; what does not, rotates on
+  a timer with a page indicator, worst first. Nobody is there to scroll.
+
+  IT IS READ FROM FOUR METRES. Nothing small carries meaning. Instrument names
+  are set large and heavy; the numbers that matter are large; the axis labels
+  that would be unreadable at that distance are simply not drawn, because the
+  shared scale below makes them unnecessary.
+
+  THE SIGNATURE: ONE SCALE ACROSS THE WHOLE WALL. Every chart is drawn
+  normalised to its own pass band — -1 is the lower spec limit, +1 the upper,
+  0 the target. So the band occupies the SAME horizontal zone on every card and
+  a single target rule runs across the entire wall. Sixteen charts in °C,
+  %m/m, cSt and kPa are not comparable any other way, and at this distance the
+  eye follows one continuous line far better than it reads twenty axes. This is
+  the lab's own metrology (deviation in band half-widths) used as the layout.
+
+  Fonts are the system stack, deliberately. This screen hangs on a LAN in a
+  laboratory and a webfont that fails to load mid-shift would take the
+  legibility of the whole wall with it.
+#}
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM — QC Wall</title>
+<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<style>
+  /* Darker than the working pages on purpose: the charts should be the only
+     lit thing in the room's peripheral vision. */
+  .wall{--wall-bg:#07080b;--rail:6px;
+        position:fixed;inset:0 0 0 var(--nav-w,64px);
+        background:var(--wall-bg);color:var(--ink);
+        display:flex;flex-direction:column;overflow:hidden}
+
+  .wall-head{display:flex;align-items:baseline;gap:26px;
+             padding:18px 26px 14px;border-bottom:1px solid var(--edge)}
+  .wall-head h1{margin:0;font:800 15px/1 var(--ui);letter-spacing:.34em;
+                text-transform:uppercase;color:var(--ink3)}
+  /* The thesis. Not a count of instruments — a count of what the lab can
+     currently evidence, which is the only sentence on this wall that is about
+     the business rather than the equipment. */
+  .thesis{font:700 26px/1.15 var(--ui);letter-spacing:-.01em;color:var(--ink)}
+  .thesis b{color:var(--amber)}
+  .thesis.clear b{color:var(--green)}
+  .wall-head .when{margin-left:auto;text-align:right;
+                   font:500 12px/1.45 var(--mono,ui-monospace);color:var(--ink3)}
+
+  .grid{flex:1;display:grid;gap:10px;padding:12px 26px 10px;min-height:0}
+
+  .card{position:relative;background:#0c0e13;border:1px solid var(--edge);
+        border-radius:10px;padding:12px 14px 8px 18px;
+        display:flex;flex-direction:column;min-height:0;overflow:hidden}
+  /* The rail is the state, at the size the room can see. */
+  .card::before{content:'';position:absolute;left:0;top:0;bottom:0;
+                width:var(--rail);background:var(--st);
+                border-radius:10px 0 0 10px}
+  .card.ok{--st:var(--green)}
+  .card.bad{--st:var(--red)}
+  .card.stale{--st:var(--brass)}
+  .card.few{--st:var(--ink3)}
+  /* Motion, once, and only here. Peripheral vision detects movement where it
+     does not detect colour, and the whole point of a wall display is being
+     seen by somebody who was not looking at it. */
+  .card.bad{animation:alarm 2.4s ease-in-out infinite}
+  @keyframes alarm{0%,100%{box-shadow:0 0 0 0 rgba(248,91,91,0)}
+                   50%{box-shadow:0 0 0 2px rgba(248,91,91,.55),
+                                 0 0 26px 0 rgba(248,91,91,.20)}}
+  @media (prefers-reduced-motion:reduce){.card.bad{animation:none;
+        box-shadow:0 0 0 2px rgba(248,91,91,.55)}}
+
+  .nm{display:flex;align-items:baseline;gap:10px;min-width:0}
+  .nm .t{font:800 clamp(15px,1.5vw,25px)/1.05 var(--ui);letter-spacing:-.015em;
+         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .nm .v{margin-left:auto;font:700 clamp(15px,1.5vw,25px)/1 var(--mono,ui-monospace);
+         color:var(--st);font-variant-numeric:tabular-nums}
+  /* ASTM vernacular reads best spaced out — it is a code, not a word. */
+  .mt{margin-top:2px;font:700 clamp(9px,.72vw,12px)/1.3 var(--ui);
+      letter-spacing:.2em;text-transform:uppercase;color:var(--ink3);
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .chart{flex:1;min-height:0;margin-top:6px}
+  .chart svg{width:100%;height:100%;display:block}
+
+  .foot{display:flex;align-items:center;gap:8px;margin-top:4px;
+        font:700 clamp(9px,.7vw,11.5px)/1 var(--ui);letter-spacing:.16em;
+        text-transform:uppercase;color:var(--st)}
+  .foot .ago{margin-left:auto;color:var(--ink3);letter-spacing:.06em}
+
+  .pips{display:flex;gap:7px;justify-content:center;align-items:center;
+        padding:0 0 12px}
+  .pips i{width:26px;height:3px;border-radius:2px;background:var(--edge)}
+  .pips i.on{background:var(--amber)}
+  .pips span{margin-left:12px;font:700 10px var(--ui);letter-spacing:.2em;
+             color:var(--ink3);text-transform:uppercase}
+
+  .msg{margin:auto;max-width:52ch;text-align:center;
+       font:600 20px/1.5 var(--ui);color:var(--ink2)}
+  .msg b{display:block;font-size:26px;color:var(--red);margin-bottom:10px}
+</style>
+</head>
+<body>
+<div class="frame">
+{% include '_nav.html' %}
+<div class="wall" id="wall">
+  <div class="wall-head">
+    <h1>QC Wall</h1>
+    <div class="thesis" id="thesis">Reading…</div>
+    <div class="when" id="when"></div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="pips" id="pips"></div>
+</div>
+
+<script>
+(function () {
+  const REFRESH_MS = 60000;   // the mirror moves every 5 min; this is unhurried
+  const PAGE_MS = 15000;      // long enough to actually read a page
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  let SERIES = [], PAGE = 0, PER = 12, FAILED = null;
+
+  /* HOW MANY FIT, rather than how many we wish fitted. Measured from the real
+     box, so a 1080p wall and a 4K one each get a grid whose cards are big
+     enough to read rather than a fixed count that is right on neither. */
+  function capacity() {
+    const box = $('#grid').getBoundingClientRect();
+    const cols = Math.max(2, Math.min(5, Math.round(box.width / 460)));
+    const rows = Math.max(1, Math.min(4, Math.round(box.height / 250)));
+    return {cols, rows, per: cols * rows};
+  }
+
+  /* FILL THE WALL. The grid is sized to what is actually on this page, not to
+     the capacity that decided how much to put on it — ten cards in a grid
+     built for twelve left a third of the screen dark, and dead space on a wall
+     display reads as "there is nothing more", which is a claim. Rows shrink to
+     fit the page so the cards grow into the room instead. */
+  function fit(shown, cols) {
+    const rows = Math.max(1, Math.ceil(shown / cols));
+    $('#grid').style.gridTemplateColumns = `repeat(${cols}, minmax(0,1fr))`;
+    $('#grid').style.gridTemplateRows = `repeat(${rows}, minmax(0,1fr))`;
+  }
+
+  /* One chart, on the shared normalised scale. `z` is deviation in band
+     half-widths: -1 and +1 are the spec limits whatever the units were, which
+     is what puts every card's band in the same place on the wall. */
+  /* CHART_H is measured from a real card, not assumed. The first version
+     stretched a fixed 300x100 viewBox to fill whatever shape the card turned
+     out to be, which is fine for horizontal rules and wrong for anything
+     round: every point marker came out an ellipse, and the last-point dot —
+     the one the room is meant to look at — was the most distorted of all.
+     Matching the viewBox to the box means no stretch and no distortion. */
+  let CHART_H = 100;
+  function measureChart() {
+    const c = document.querySelector('.chart');
+    if (!c) return;
+    const b = c.getBoundingClientRect();
+    if (b.width > 4 && b.height > 4) {
+      CHART_H = Math.max(40, Math.min(240, Math.round(300 * b.height / b.width)));
+    }
+  }
+
+  function chart(s) {
+    const W = 300, H = CHART_H, pad = 4;
+    const cap = 2.2;                       // beyond this the point is pinned
+    const zs = s.points.map(p => p.z).filter(z => z != null);
+    if (!zs.length) {
+      return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="no band recorded">
+        <text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="11"
+              fill="#5d6675">no pass band recorded</text></svg>`;
+    }
+    const y = z => H - pad - ((Math.max(-cap, Math.min(cap, z)) + cap)
+                              / (2 * cap)) * (H - pad * 2);
+    const x = i => pad + (s.points.length < 2 ? (W - pad * 2) / 2
+                          : (i * (W - pad * 2)) / (s.points.length - 1));
+    const band = `<rect x="0" y="${y(1).toFixed(1)}" width="${W}"
+        height="${(y(-1) - y(1)).toFixed(1)}" fill="rgba(33,192,113,.09)"/>`;
+    const edges = [1, -1].map(v =>
+      `<line x1="0" y1="${y(v).toFixed(1)}" x2="${W}" y2="${y(v).toFixed(1)}"
+             stroke="#21c071" stroke-width="1" stroke-dasharray="5 4"
+             opacity=".55"/>`).join('');
+    /* The rule the eye follows across the whole wall. */
+    const target = `<line x1="0" y1="${y(0).toFixed(1)}" x2="${W}"
+        y2="${y(0).toFixed(1)}" stroke="#8e97a8" stroke-width="1"
+        opacity=".45"/>`;
+    let d = '', started = false;
+    s.points.forEach((p, i) => {
+      if (p.z == null) return;
+      d += (started ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(p.z).toFixed(1) + ' ';
+      started = true;
+    });
+    const dots = s.points.map((p, i) => p.z == null ? '' :
+      `<circle cx="${x(i).toFixed(1)}" cy="${y(p.z).toFixed(1)}"
+         r="${i === s.points.length - 1 ? 4 : 2}"
+         fill="${p.in_spec === false ? '#f85b5b' : '#21c071'}"/>`).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" role="img"
+        aria-label="${esc(s.title)} ${esc(s.test_name)}, ${esc(s.state)}">
+      ${band}${edges}${target}
+      <path d="${d}" fill="none" stroke="#e8eaef" stroke-width="1.6"
+            stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      ${dots}</svg>`;
+  }
+
+  const CLS = {'IN CONTROL':'ok','OUT OF SPEC':'bad','STALE':'stale','TOO FEW':'few'};
+
+  function ago(h) {
+    if (h == null) return '';
+    if (h < 1) return Math.round(h * 60) + ' min ago';
+    if (h < 48) return h.toFixed(h < 10 ? 1 : 0) + ' h ago';
+    return Math.round(h / 24) + ' d ago';
+  }
+
+  function draw() {
+    const grid = $('#grid');
+    if (FAILED) {
+      grid.style.gridTemplateColumns = '1fr';
+      grid.innerHTML = `<p class="msg"><b>QC could not be read</b>${esc(FAILED)}
+        This wall is blank because the record could not be reached, not because
+        every instrument passed.</p>`;
+      $('#pips').innerHTML = '';
+      return;
+    }
+    if (!SERIES.length) {
+      grid.style.gridTemplateColumns = '1fr';
+      grid.innerHTML = `<p class="msg"><b>Nothing is being checked</b>
+        No QC has been recorded on any instrument. This wall is empty because
+        nothing is being checked, not because everything passed.</p>`;
+      $('#pips').innerHTML = '';
+      return;
+    }
+    const cap = capacity();
+    PER = cap.per;
+    const pages = Math.max(1, Math.ceil(SERIES.length / PER));
+    if (PAGE >= pages) PAGE = 0;
+    const shown = SERIES.slice(PAGE * PER, PAGE * PER + PER);
+    fit(shown.length, cap.cols);
+    grid.innerHTML = shown.map(s => `
+      <div class="card ${CLS[s.state] || 'few'}">
+        <div class="nm"><span class="t">${esc(s.title)}</span>
+          <span class="v">${s.last_value == null ? '—' : esc(s.last_value)}</span></div>
+        <div class="mt">${esc(s.test_name)}</div>
+        <div class="chart">${chart(s)}</div>
+        <div class="foot"><span>${esc(s.state)}</span>
+          <span class="ago">${esc(ago(s.age_hours))}</span></div>
+      </div>`).join('');
+    $('#pips').innerHTML = pages < 2 ? '' :
+      Array.from({length: pages}, (_, i) =>
+        `<i class="${i === PAGE ? 'on' : ''}"></i>`).join('')
+      + `<span>${PAGE + 1} of ${pages}</span>`;
+    // One correction pass: the cards have to exist before they can be
+    // measured, so the first paint uses the last known aspect and the second
+    // uses this page's. Guarded so it cannot recurse.
+    const was = CHART_H;
+    measureChart();
+    if (Math.abs(CHART_H - was) > 2) draw();
+  }
+
+  async function load() {
+    let r = null;
+    try { r = await fetch('/api/qc-wall'); } catch (e) { r = null; }
+    if (!r || !r.ok) {
+      const b = r ? await r.json().catch(() => ({})) : {};
+      FAILED = b.error || 'LabCore could not be reached.';
+      draw();
+      return;
+    }
+    const b = await r.json();
+    FAILED = null;
+    SERIES = b.series || [];
+    const dark = (b.methods_total || 0) - (b.methods_in_control || 0);
+    const th = $('#thesis');
+    th.className = 'thesis' + (dark ? '' : ' clear');
+    th.innerHTML = b.methods_total
+      ? (dark
+          ? `<b>${dark} of ${b.methods_total}</b> test methods are not in demonstrated control`
+          : `All <b>${b.methods_total}</b> test methods are in demonstrated control`)
+      : 'No QC recorded';
+    $('#when').innerHTML = (b.as_of
+      ? esc(String(b.as_of).slice(0, 16).replace('T', ' ')) : '')
+      + (b.source === 'mirror' ? '<br>local copy · 5 min' : '<br>live');
+    draw();
+  }
+
+  load();
+  setInterval(load, REFRESH_MS);
+  setInterval(() => { PAGE++; draw(); }, PAGE_MS);
+  addEventListener('resize', draw);
+})();
+</script>
+</div>
+</body>
+</html>

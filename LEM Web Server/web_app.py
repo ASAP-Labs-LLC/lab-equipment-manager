@@ -3537,6 +3537,168 @@ def create_app(gateway, admin_password: Optional[str] = None,
             out.append(_chart_series(qc_series.analyse(shown), shown.points))
         return jsonify({"series": sorted(out, key=lambda s: s["test_name"])})
 
+    # ── the QC wall ───────────────────────────────────────────────────
+    #
+    # Ryan: "another tab beneath logs called QC, where it just shows the QC
+    # history graph but for all the machines, design it to run like a literal
+    # monitor, for viewing far away, and just being locked on that screen."
+    #
+    # Two things about a monitor decide this route.
+    #
+    # IT POLLS FOREVER, so it may not cost LabCore anything. A page left open
+    # on a wall, refreshing, is precisely the load pattern the snapshot design
+    # exists to prevent — and unlike the floor, this one needs QC HISTORY,
+    # which is deep. It reads the local log mirror, which already holds every
+    # `lem_machine_log` row and refreshes every five minutes. Five minutes is
+    # invisible on a chart whose points are hours apart.
+    #
+    # NOBODY IS STANDING THERE TO INTERPRET IT. So it may never show a state it
+    # cannot justify: a failed read must not look like a calm lab, and a series
+    # too short to judge says TOO FEW rather than drawing a confident line
+    # through three dots.
+
+    #: Below this, a control chart is a picture rather than evidence. Three is
+    #: deliberately low — it is the point at which a TREND is visible at all,
+    #: not the point at which the statistics mean anything, which is what the
+    #: PROVISIONAL warning on the equipment panel is for.
+    WALL_MIN_POINTS = 3
+
+    #: How long a passing QC result keeps this chart current. Same default the
+    #: rest of LEM falls through to; a wall showing yesterday's green is worse
+    #: than a wall showing nothing, because it is confidently wrong.
+    WALL_STALE_HOURS = 24.0
+
+    @app.route("/api/qc-wall")
+    def api_qc_wall():
+        import qc_series
+        mirror = app.config.get("LOG_MIRROR")
+        rows, source, as_of = None, "labcore", None
+        if mirror is not None and mirror.state()["rows"]:
+            rows = [r for r in mirror.events() if r.get("kind") == "qc"]
+            source = "mirror"
+            as_of = mirror.state()["filled_at"]
+        if rows is None:
+            # Cold mirror. The wall is not allowed to be empty because a cache
+            # has not filled yet — LabCore is still the record.
+            try:
+                rows = _qc_events()
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "the lab's QC history")
+            as_of = _now().isoformat(timespec="seconds")
+
+        # NAMES, FROM THE SNAPSHOT — the wall's no-LabCore-ops rule applies to
+        # this read too. `lem_machine_status` carries the title and the floor's
+        # 12-second snapshot already holds it, so the wall costs nothing to
+        # refresh however long it hangs there. A uid is a poor thing to read
+        # from four metres, but failing to resolve one is never a reason to
+        # blank the wall: it falls back to the uid.
+        # `build_if_missing=False`. A wall display must never be the request
+        # that pays to build the first snapshot: it is a screen nobody is
+        # standing at, refreshing on a timer, and the whole rule here is that
+        # it costs LabCore nothing. If the snapshot has not built yet the wall
+        # simply shows uids until it has.
+        titles = {}
+        tables = (snapshots.tables()
+                  if snapshots.get(build_if_missing=False).get("ready")
+                  else None)
+        if tables:
+            for r in tables.get("status", []) or []:
+                uid, title = r.get("c1"), r.get("c2")
+                if uid and title:
+                    titles[uid] = title
+        if not titles:
+            # One small read, and only when the snapshot cannot answer — a
+            # name table, never the log. It is bounded by the instrument count
+            # and is what stops a cold wall being a wall of hex.
+            try:
+                res = gateway.read_sql(
+                    "SELECT machine_uid, title FROM lem_machine_status",
+                    timeout=30)
+                titles = {r["machine_uid"]: r["title"]
+                          for r in labcore_rows(res, missing_ok=True)
+                          if r.get("title")}
+            except LabCoreError:
+                titles = {}
+
+        now = _now()
+        out = []
+        for (uid, _name), series in qc_series.series_from_rows(rows).items():
+            pts = series.points[-CHART_POINTS:]
+            if not pts:
+                continue
+            band = series.pass_band
+            last = pts[-1]
+            age_h = None
+            if last.at is not None:
+                age_h = (now - last.at).total_seconds() / 3600.0
+
+            # THE STATE, in one word, in the order that decides what the room
+            # is told first. Out of spec outranks everything: an instrument
+            # whose last control result failed is the sentence on this wall.
+            if last.in_spec is False:
+                state = "OUT OF SPEC"
+            elif len(pts) < WALL_MIN_POINTS:
+                state = "TOO FEW"
+            elif age_h is not None and age_h > WALL_STALE_HOURS:
+                state = "STALE"
+            else:
+                state = "IN CONTROL"
+
+            # NORMALISED TO ITS OWN BAND, which is what lets one horizontal
+            # rule run across the whole wall: -1 is the lower limit, +1 the
+            # upper, 0 the target. Sixteen charts in °C, %m/m, cSt and kPa are
+            # not otherwise comparable at a glance, and at four metres nobody
+            # is reading axis labels.
+            half = None
+            if band is not None:
+                half = (float(band.high) - float(band.low)) / 2.0
+            def z(v):
+                if half in (None, 0) or band is None or v is None:
+                    return None
+                return (float(v) - float(band.expected)) / half
+
+            out.append({
+                "machine_uid": uid,
+                "title": titles.get(uid) or uid,
+                "test_name": series.test_name,
+                "state": state,
+                "n": len(pts),
+                "last_at": last.at.isoformat(timespec="seconds") if last.at else None,
+                "age_hours": None if age_h is None else round(age_h, 1),
+                "last_value": last.value,
+                "pass_band": None if band is None else {
+                    "low": band.low, "high": band.high, "expected": band.expected},
+                "points": [{"ts": p.at.isoformat(timespec="seconds") if p.at else None,
+                            "value": p.value, "z": z(p.value),
+                            "in_spec": p.in_spec} for p in pts],
+            })
+
+        # WORST FIRST, because nobody scrolls a wall. If it does not fit, what
+        # fits has to be what matters.
+        rank = {"OUT OF SPEC": 0, "STALE": 1, "TOO FEW": 2, "IN CONTROL": 3}
+        out.sort(key=lambda s: (rank.get(s["state"], 9),
+                                -(s["age_hours"] or 0), s["title"]))
+        methods = {s["test_name"] for s in out}
+        controlled = {s["test_name"] for s in out if s["state"] == "IN CONTROL"}
+        return jsonify({
+            "series": out,
+            "as_of": as_of,
+            "source": source,
+            "methods_total": len(methods),
+            "methods_in_control": len(controlled),
+            # An empty grid reads as "everything is fine". That is not the same
+            # sentence as "nothing is being checked", and on this screen the
+            # second one is the finding.
+            "nothing_checked": ("No QC has been recorded on any instrument. "
+                                "This wall is empty because nothing is being "
+                                "checked, not because everything passed."
+                                if not out else ""),
+        })
+
+    @app.route("/qc")
+    def page_qc_wall():
+        return render_template("qc.html")
+
     # ── the status gutter ─────────────────────────────────────────────
     # The events list with a colour band down its left: for each event, what
     # state the instrument was in while it happened. The derivation is
