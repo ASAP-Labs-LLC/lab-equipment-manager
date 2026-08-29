@@ -2263,10 +2263,28 @@ function searchWhere(hit) {
              : 'nothing stands on this level';
   }
   if (hit.kind === 'sample') {
+    /* A SAMPLE RUNS ON SEVERAL INSTRUMENTS, and saying one of them is worse
+     * than saying none — it reads as the whole of that sample's record.
+     *
+     * Ryan, on lab 38145: "it was ran but not on one machine." It ran on four
+     * (Eraspec NIR, Agilent GC 1, Multitek S, PAC Flash 1) and the answer said
+     * "ran on Eraspec NIR", because this branch returned early on
+     * `machine_title` and never reached the generic case below — which had
+     * been counting and naming correctly for every other kind of hit all
+     * along. Clicking then opened that one bench, so three quarters of the
+     * sample was unreachable as well as unsaid. */
     const meta = hit.meta || {};
     const what = [meta.test_name, meta.value].filter(Boolean).join(' ');
-    return (what ? what + ' · ' : '')
-      + (hit.machine_title ? 'ran on ' + hit.machine_title : 'no equipment named');
+    const lead = what ? what + ' · ' : '';
+    if (!n) {
+      return lead + (hit.machine_title ? 'ran on ' + hit.machine_title
+                                       : 'no equipment named');
+    }
+    if (n === 1) return lead + 'ran on ' + (names[0] || hit.machine_title
+                                            || 'one bench');
+    return lead + `ran on ${equipmentCount(n)}: ` + names.join(', ')
+      + (hit.machines_truncated ? ` and ${searchNum(n - names.length)} more`
+                                : '');
   }
   if (hit.kind === 'equipment') {
     const st = (hit.meta || {}).status;
@@ -2286,6 +2304,39 @@ function searchWhere(hit) {
  * 52px "EQUIPMENT" overflowed its cell and sat against the title, and a
  * fixed column wide enough for the longest kind spent that width on every
  * other row. It is coloured, so the kinds are still scannable down the list. */
+/* ONE ROW PER INSTRUMENT, for a sample that ran on several.
+ *
+ * A hit is a single <button>, so the four benches a sample ran on cannot be
+ * four controls inside one row. Naming them in the label (see `searchWhere`)
+ * makes the fact visible; it does not make the other three REACHABLE, and the
+ * click still opened whichever bench happened to be first — which for lab
+ * 38145 meant Eraspec NIR and no way to get to the Agilent, the Multitek or
+ * the PAC Flash.
+ *
+ * So the answer is expanded before anything reads it. Rendering, the keyboard
+ * cursor and the click handler all take `SEARCH_NOW.results`, so doing this
+ * once here keeps the three of them agreeing about what row 3 is — which they
+ * would not if the list were expanded at render time only.
+ */
+function expandSampleHits(answer) {
+  if (!answer || !Array.isArray(answer.results)) return answer;
+  const out = [];
+  answer.results.forEach(hit => {
+    const many = (hit && hit.kind === 'sample' && (hit.machines || []).length > 1)
+      ? hit.machines : null;
+    if (!many) { out.push(hit); return; }
+    many.forEach(m => out.push(Object.assign({}, hit, {
+      machine_uid: m.machine_uid || hit.machine_uid,
+      machine_title: m.title || hit.machine_title,
+      // Each row is now about ONE bench, so it must not keep claiming four.
+      machine_count: 1,
+      machines: [m],
+      machines_truncated: false,
+    })));
+  });
+  return Object.assign({}, answer, {results: out});
+}
+
 function searchHitHtml(hit, i) {
   const when = hit.ts ? String(hit.ts).slice(0, 16).replace('T', ' ') : '';
   return `
@@ -2366,7 +2417,7 @@ function closeSearch() {
  * same reason the level menu is: the tool row is `overflow-x:auto` and would
  * clip anything positioned inside it. */
 function searchShow(answer) {
-  SEARCH_NOW = answer;
+  SEARCH_NOW = expandSampleHits(answer);
   SEARCH_AT = -1;
   const panel = $('#findPanel'), box = $('#findQ');
   if (!panel || !box) return;

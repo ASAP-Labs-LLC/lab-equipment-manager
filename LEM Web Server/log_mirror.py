@@ -262,6 +262,22 @@ class LogMirror:
             cur = self._db.execute(" ".join(sql), args)
             return [dict(r) for r in cur.fetchall()]
 
+    def by_lab_id(self, lab_id: str, limit: int = 50) -> List[dict]:
+        """Every row for one sample, newest first. Local, exact, instant.
+
+        A Lab ID is an exact key and the mirror holds the WHOLE log, so this
+        answers over the entire record rather than over the newest slice of it
+        — which is the difference between "this sample was never tested" and
+        the truth.
+        """
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT rowid_src, machine_uid, ts, kind, lab_id, test_name, "
+                "value, detail FROM log WHERE lab_id = ? "
+                "ORDER BY ts DESC, rowid_src DESC LIMIT ?",
+                [str(lab_id), int(limit)])
+            return [dict(r) for r in cur.fetchall()]
+
     def count(self, machine_uid: Optional[str] = None) -> int:
         sql = "SELECT COUNT(*) n FROM log"
         args: list = []

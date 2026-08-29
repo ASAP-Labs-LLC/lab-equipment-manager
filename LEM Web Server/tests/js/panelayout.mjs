@@ -250,5 +250,108 @@ claim('the QC standards library can upload a certificate',
   }
 }
 
+// ── a sample that ran on several instruments says so ─────────────────────
+//
+// Ryan, 28 Aug: "i cant find 38145, it was ran but not on one machine" —
+// meaning it ran on more than one and LEM showed it on one.
+//
+// Lab 38145 really did run on four instruments (Eraspec NIR, Agilent GC 1,
+// Multitek S, PAC Flash 1) and `/api/search` says so: the hit carries
+// `machine_count: 4` and a `machines` array. `searchWhere()` threw that away.
+// Its `sample` branch returned early naming only `machine_title`, so the
+// answer read "ran on Eraspec NIR" — and clicking it opened that one bench,
+// which is how three quarters of a sample's record became invisible.
+//
+// Every other kind of hit in the same function already gets this right
+// ("on 4 pieces of equipment · 3 named here: …"). The sample branch simply
+// never reached it.
+{
+  const at = html.indexOf('function searchWhere(');
+  const body = at === -1 ? '' : html.slice(at, html.indexOf('\n}', at) + 2);
+  claim('there is a searchWhere() to judge', !!body);
+
+  if (body) {
+    const fn = new Function(`
+      const equipmentCount = n => n + ' pieces of equipment';
+      const levelName = () => 'Ground Floor';
+      const searchNum = n => String(n);
+      ${body}; return searchWhere;`)();
+
+    const hit = (over = {}) => Object.assign({
+      kind: 'sample', id: '38145', label: '38145',
+      machine_count: 4, machine_title: 'Eraspec NIR',
+      machine_uid: '5345176988c2',
+      machines: [{title: 'Eraspec NIR', machine_uid: '5345176988c2'},
+                 {title: 'Agilent GC 1', machine_uid: 'bf8e64b59f12'},
+                 {title: 'Multitek S', machine_uid: '300f71750e3e'},
+                 {title: 'PAC Flash 1', machine_uid: '5fd04c0031f9'}],
+      meta: {test_name: 'Sulfur', value: '1.131'},
+    }, over);
+
+    const many = fn(hit());
+    claim('a sample on four instruments does not read as one',
+      !/^.*ran on Eraspec NIR$/.test(many), many);
+    claim('…it says how many ran it',
+      /4/.test(many), many);
+    claim('…and names the others, not just the first',
+      /Agilent GC 1/.test(many) && /Multitek S/.test(many), many);
+    claim('…while still saying what was measured',
+      /Sulfur/.test(many), many);
+
+    // The ordinary case must not grow a count it does not need.
+    const one = fn(hit({machine_count: 1,
+                        machines: [{title: 'Eraspec NIR'}]}));
+    claim('a sample that ran on one instrument still reads simply',
+      /Eraspec NIR/.test(one) && !/\b4\b/.test(one), one);
+
+    // A sample whose equipment is not named must not claim a count either.
+    const none = fn(hit({machine_count: 0, machine_title: '', machines: []}));
+    claim('a sample with no equipment named says so',
+      /no equipment named/.test(none), none);
+  }
+}
+
+// ── …and each instrument is reachable, not just nameable ─────────────────
+{
+  const at = html.indexOf('function expandSampleHits(');
+  const body = at === -1 ? '' : html.slice(at, html.indexOf('\n}', at) + 2);
+  claim('there is an expandSampleHits() to judge', !!body);
+
+  if (body) {
+    const fn = new Function(`${body}; return expandSampleHits;`)();
+    const machines = [{title: 'Eraspec NIR', machine_uid: 'a'},
+                      {title: 'Agilent GC 1', machine_uid: 'b'},
+                      {title: 'Multitek S', machine_uid: 'c'},
+                      {title: 'PAC Flash 1', machine_uid: 'd'}];
+    const out = fn({results: [
+      {kind: 'sample', label: '38145', machine_count: 4,
+       machine_uid: 'a', machine_title: 'Eraspec NIR', machines},
+      {kind: 'equipment', label: 'PAC Flash 2', machine_count: 1,
+       machines: [{title: 'PAC Flash 2', machine_uid: 'e'}]},
+    ]});
+
+    claim('a sample on four instruments becomes four reachable rows',
+      out.results.length === 5, `${out.results.length} rows`);
+    claim('…each pointing at its own bench',
+      ['a','b','c','d'].every(u =>
+        out.results.some(r => r.kind === 'sample' && r.machine_uid === u)),
+      out.results.filter(r => r.kind === 'sample').map(r => r.machine_uid).join());
+    claim('…and no row still claiming to be all four',
+      out.results.filter(r => r.kind === 'sample')
+                 .every(r => r.machine_count === 1));
+    claim('a hit that is not a sample is left alone',
+      out.results.some(r => r.kind === 'equipment' && r.machines.length === 1));
+
+    // One bench, one row. Expanding a single-machine sample would be churn.
+    const one = fn({results: [{kind: 'sample', label: '1', machine_count: 1,
+                               machines: [{title: 'X', machine_uid: 'x'}]}]});
+    claim('a sample on one instrument stays one row',
+      one.results.length === 1);
+    // A malformed answer must not throw inside the search box.
+    claim('a missing results array is handled rather than thrown on',
+      fn({}) && fn(null) === null);
+  }
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

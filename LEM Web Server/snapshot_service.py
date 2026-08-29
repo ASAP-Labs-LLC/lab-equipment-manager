@@ -314,6 +314,21 @@ SCHEMA_DDL = (
     "ON lem_machine_log(ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_lem_log_uid_kind_ts "
     "ON lem_machine_log(machine_uid, kind, ts DESC)",
+    # LOOKING A SAMPLE UP BY LAB ID (2026-08-28). Neither index above helps:
+    # `lab_id` is not the leading column of either, so `WHERE lab_id = ?` was a
+    # full scan of the whole table across the share. That was survivable at
+    # 41,905 rows and stopped being survivable at 214,714 — measured against
+    # the live lab the day the history import landed:
+    #
+    #   SELECT ... FROM lem_machine_log WHERE lab_id = '38145'
+    #   -> Read cancelled after 8s to protect the write queue
+    #      (query too slow — likely an unindexed scan)
+    #
+    # Which is the cliff the comment above this block already warned about.
+    # `ts DESC` rides along so the common question — this sample, newest first
+    # — is answered from the index without a sort.
+    "CREATE INDEX IF NOT EXISTS idx_lem_log_lab_ts "
+    "ON lem_machine_log(lab_id, ts DESC)",
     # `lem_maintenance` is keyed on `uid` and read by `machine_uid` everywhere —
     # maintenance_store._rows, the module's MAINTENANCE_QUERY, the fleet page.
     # The index lives here rather than in the station module because this is the

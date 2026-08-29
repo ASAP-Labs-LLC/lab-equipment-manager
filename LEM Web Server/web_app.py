@@ -4876,6 +4876,65 @@ def create_app(gateway, admin_password: Optional[str] = None,
         answer = lab_search.search(query, _search_index_for(snap), limit=limit)
         answer["warming"] = False
         answer["age_seconds"] = snap.get("age_seconds")
+
+        # AN EXACT LAB ID IS NOT A FUZZY SEARCH TERM.
+        #
+        # The corpus is the newest SEARCH_CORPUS_ROWS rows of the log. That was
+        # most of the table at 41,905 rows; after the history import it is
+        # 214,714, so the same 20,000 reaches back about ten days — measured on
+        # the live lab, to 2026-08-18. Every sample older than that answered
+        # `no_match`, which reads as "this sample was never tested" and is the
+        # reason Ryan could not find a sample he had run.
+        #
+        # A Lab ID is an exact key, so it is looked up rather than hoped for.
+        # One indexed point read (`idx_lem_log_lab_ts`), and only when the
+        # corpus came up empty AND the query is all digits — a word search stays
+        # inside the corpus, or every keystroke becomes a query against a
+        # 200,000-row table.
+        #
+        # A FAILED LOOKUP IS NOT AN ABSENT SAMPLE. If the read is refused the
+        # answer says so instead of confirming the `no_match`, because that is
+        # the sentence this whole route exists not to say wrongly.
+        if (answer.get("state") == lab_search.STATE_NO_MATCH
+                and query.strip().isdigit()):
+            # THE MIRROR FIRST, because it holds the WHOLE log locally and
+            # answers in microseconds. Against LabCore the same lookup was
+            # measured at 8-17 s on the live lab and was being cancelled
+            # outright ("query too slow — likely an unindexed scan"), so the
+            # local copy is not merely faster here, it is the difference
+            # between an answer and a denial.
+            rows, mirror = None, app.config.get("LOG_MIRROR")
+            if mirror is not None and mirror.state()["rows"]:
+                rows = mirror.by_lab_id(query.strip())
+            if rows is None:
+                try:
+                    res = gateway.read_sql(
+                        "SELECT machine_uid, ts, kind, lab_id, test_name, value "
+                        "FROM lem_machine_log WHERE lab_id = ? "
+                        "ORDER BY ts DESC LIMIT 50", [query.strip()],
+                        timeout=30)
+                    rows = labcore_rows(res, missing_ok=True)
+                except LabCoreError as exc:
+                    rows = None
+                    answer["corpus"] = dict(answer.get("corpus") or {},
+                                            stale=True, error=str(exc))
+            if rows:
+                titles = _machine_list()
+                by_uid = {m.get("machine_uid"): m.get("title")
+                          for m in titles} if titles else {}
+                answer["state"] = lab_search.STATE_OK
+                answer["beyond_corpus"] = True
+                hits = [{
+                    "kind": "sample", "lab_id": r.get("lab_id"),
+                    "machine_uid": r.get("machine_uid"),
+                    "title": by_uid.get(r.get("machine_uid"))
+                             or r.get("machine_uid"),
+                    "test_name": r.get("test_name"), "value": r.get("value"),
+                    "at": r.get("ts"), "why": "Lab ID",
+                } for r in rows]
+                answer["results"] = hits
+                answer["hits"] = hits
+                answer["matched"] = len(hits)
         # What "not found" actually means here. The corpus is the newest
         # SEARCH_CORPUS_ROWS log records; at the ceiling, or before the first
         # corpus read lands, "no such sample" is really "not in what I can
