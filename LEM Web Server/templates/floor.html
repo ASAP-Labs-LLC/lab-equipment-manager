@@ -545,6 +545,14 @@
   .stats>.lim,.stats>.trendkeys{padding:0 7px}
   .stats>*:last-child{padding-bottom:7px;
     border:1px solid #191d25;border-top:none;border-radius:0 0 8px 8px}
+  /* One small turning mark, and a line of text doing the real work. */
+  .fbusy{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+  .fbusy .spin{width:13px;height:13px;border-radius:50%;flex:none;
+               border:2px solid var(--edge);border-top-color:var(--amber);
+               animation:fspin .7s linear infinite}
+  @keyframes fspin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){
+    .fbusy .spin{animation:none;border-top-color:var(--amber);opacity:.7}}
   .railact{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
   /* The actions at the TOP of the QC tab sit above a rule instead of below
      one, so they read as the tab's controls rather than as its footer. */
@@ -2416,17 +2424,39 @@ function closeSearch() {
 /* Draw an answer and open the panel. The panel is `position:fixed`, for the
  * same reason the level menu is: the tool row is `overflow-x:auto` and would
  * clip anything positioned inside it. */
+/* The panel, while an answer is on its way. Deliberately NOT a bare spinner:
+ * it says WHAT is being searched, because the whole record is a lot to look
+ * through and "still going" is more reassuring than a turning shape. */
+function searchShowBusy(q) {
+  const panel = $('#findPanel'), box = $('#findQ');
+  if (!panel || !box) return;
+  panel.innerHTML = '<div class="fstate fbusy"><i class="spin"></i>'
+    + `<b>Searching the whole record</b> for ${esc(q)}…`
+    + '<span class="fhint">Every result LEM holds, not just the recent ones.</span>'
+    + '</div>';
+  const r = box.getBoundingClientRect();
+  panel.style.left = r.left + 'px';
+  panel.style.top = (r.bottom + 6) + 'px';
+  panel.hidden = false;
+  box.setAttribute('aria-busy', 'true');
+}
+
 function searchShow(answer) {
+  /* ONE LIST, drawn and clicked. `SEARCH_NOW` held the expanded answer while
+   * the panel was drawn from the original, so the cursor and the click handler
+   * counted four rows where the screen showed one — a wasted fix and a real
+   * hazard, because the two disagreed about which row was row 2. */
   SEARCH_NOW = expandSampleHits(answer);
   SEARCH_AT = -1;
   const panel = $('#findPanel'), box = $('#findQ');
   if (!panel || !box) return;
-  panel.innerHTML = searchPanelHtml(answer);
+  panel.innerHTML = searchPanelHtml(SEARCH_NOW);
   const r = box.getBoundingClientRect();
   panel.style.left = r.left + 'px';
   panel.style.top = (r.bottom + 6) + 'px';
   panel.hidden = false;
   box.setAttribute('aria-expanded', 'true');
+  box.removeAttribute('aria-busy');
   box.removeAttribute('aria-activedescendant');
 }
 
@@ -2509,8 +2539,21 @@ function searchTyped() {
 async function runSearch(q) {
   SEARCH_ASKED = q;
   const seq = ++SEARCH_SEQ;
+  /* SAY IT IS WORKING. Ryan: "maybe a loading bar or gif so that it doesnt
+   * just look like it gave up." Searching the whole record can take a moment,
+   * and a box that shows the previous answer while a new one is in flight is
+   * indistinguishable from a box that has stopped responding.
+   *
+   * Shown only after a beat, so a fast answer never flashes a spinner — the
+   * flicker reads as instability, which is its own kind of "something is
+   * wrong". Cancelled the moment the answer lands, and by the newer query if
+   * one arrives first. */
+  const spin = setTimeout(() => {
+    if (seq === SEARCH_SEQ) searchShowBusy(q);
+  }, 180);
   const res = await fetch('/api/search?q=' + encodeURIComponent(q))
     .catch(() => null);
+  clearTimeout(spin);
   // A slower answer to an older query must never overwrite a newer one — that
   // is a search box showing results for something nobody typed last.
   if (seq !== SEARCH_SEQ) return;

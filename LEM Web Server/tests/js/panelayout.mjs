@@ -353,5 +353,55 @@ claim('the QC standards library can upload a certificate',
   }
 }
 
+// ── the expansion has to reach the screen ────────────────────────────────
+//
+// `searchShow` stored the EXPANDED answer in SEARCH_NOW and then rendered the
+// ORIGINAL one. So the click handler and the keyboard cursor saw four rows
+// while the panel drew one, which is both a wasted fix and a real hazard: the
+// two lists disagreed about what row 2 was.
+{
+  const at = html.indexOf('function searchShow(');
+  const body = at === -1 ? '' : html.slice(at, html.indexOf('\n}', at) + 2);
+  claim('there is a searchShow() to judge', !!body);
+  claim('the panel renders the SAME list the cursor and clicks use',
+    !/searchPanelHtml\(answer\)/.test(body),
+    'searchPanelHtml(answer) draws the un-expanded answer');
+  claim('…which is the one stored in SEARCH_NOW',
+    /searchPanelHtml\(SEARCH_NOW\)/.test(body), body.slice(0, 220));
+}
+
+// ── a search in flight says so ───────────────────────────────────────────
+//
+// Ryan: "maybe a loading bar or gif so that it doesnt just look like it gave
+// up." The box showed the previous answer while a new one was in flight,
+// which is indistinguishable from a box that has stopped responding.
+{
+  const at = html.indexOf('function searchShowBusy(');
+  const body = at === -1 ? '' : html.slice(at, html.indexOf('\n}', at) + 2);
+  claim('there is a busy state to show', !!body);
+  claim('it names what is being searched, not just that something is',
+    /Searching the whole record/.test(body), body.slice(0, 200));
+  claim('…and marks the box busy for a screen reader',
+    /aria-busy/.test(body));
+
+  const run = html.slice(html.indexOf('async function runSearch('),
+                         html.indexOf('async function runSearch(') + 1400);
+  claim('a fast answer does not flash it',
+    /setTimeout\(/.test(run), 'shown immediately, so every keystroke flickers');
+  claim('and it is cancelled when the answer lands',
+    /clearTimeout\(spin\)/.test(run));
+  claim('a stale request cannot draw over a newer one',
+    /seq === SEARCH_SEQ/.test(run));
+
+  const show = html.slice(html.indexOf('function searchShow(answer)'),
+                          html.indexOf('function searchShow(answer)') + 900);
+  claim('the busy flag is cleared when results arrive',
+    /removeAttribute\('aria-busy'\)/.test(show));
+
+  const css = html.slice(0, html.indexOf('</style>'));
+  claim('the spinner respects prefers-reduced-motion',
+    /prefers-reduced-motion[\s\S]{0,220}\.fbusy\s+\.spin/.test(css));
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

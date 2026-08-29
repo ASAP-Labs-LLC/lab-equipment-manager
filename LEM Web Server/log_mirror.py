@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS log (
 );
 CREATE INDEX IF NOT EXISTS idx_log_uid_ts ON log(machine_uid, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_log_ts ON log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_log_lab ON log(lab_id);
+CREATE INDEX IF NOT EXISTS idx_log_test ON log(test_name);
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 """
 
@@ -276,6 +278,47 @@ class LogMirror:
                 "value, detail FROM log WHERE lab_id = ? "
                 "ORDER BY ts DESC, rowid_src DESC LIMIT ?",
                 [str(lab_id), int(limit)])
+            return [dict(r) for r in cur.fetchall()]
+
+    def search(self, term: str, limit: int = 200) -> List[dict]:
+        """Every row matching `term`, over the WHOLE record, newest first.
+
+        Ryan: *"have it search through all time"*. `lab_search`'s in-memory
+        index is folded from the newest `SEARCH_CORPUS_ROWS` (20,000) log rows
+        — most of the table before the history import and about ten days after
+        it. Anything older than that was not in the haystack, which is why a
+        sample somebody had run came back as "no match".
+
+        This searches the local copy instead, which holds every row. It is one
+        indexed query against a file on this machine, so covering all time
+        costs less than the ten-day window did over the network.
+
+        WHAT IS MATCHED: lab_id, test_name, value and machine_uid. Deliberately
+        not `detail` — it is a JSON blob per row and a LIKE over 214,000 of
+        them turns a keystroke into a table scan, for hits nobody is looking
+        for.
+
+        `%` and `_` are escaped. A person typing one is asking for that
+        character, and `_` is ordinary inside a method name; treated as a
+        wildcard it silently widens the search instead of narrowing it.
+        """
+        term = (term or "").strip()
+        if not term:
+            # A blank query over the whole log is not a search result, it is a
+            # denial of service with a scrollbar.
+            return []
+        esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = "%" + esc + "%"
+        with self._lock:
+            cur = self._db.execute(
+                "SELECT rowid_src, machine_uid, ts, kind, lab_id, test_name, "
+                "value, detail FROM log WHERE "
+                "  lab_id    LIKE ? ESCAPE '\\' "
+                "  OR test_name LIKE ? ESCAPE '\\' "
+                "  OR value     LIKE ? ESCAPE '\\' "
+                "  OR machine_uid LIKE ? ESCAPE '\\' "
+                "ORDER BY ts DESC, rowid_src DESC LIMIT ?",
+                [like, like, like, like, int(limit)])
             return [dict(r) for r in cur.fetchall()]
 
     def count(self, machine_uid: Optional[str] = None) -> int:

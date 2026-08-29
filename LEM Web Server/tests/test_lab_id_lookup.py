@@ -197,19 +197,59 @@ class TestASampleOlderThanTheSearchWindowIsStillFound:
         body = _client(gw, tmp_path).get("/api/search?q=99999").get_json() or {}
         assert body.get("state") == "no_match", body.get("state")
 
-    def test_a_non_numeric_query_does_not_trigger_a_lookup(self, gw, tmp_path):
-        """Only an exact Lab ID earns a direct read. "flash" is a fuzzy term
-        and must stay inside the corpus, or every keystroke becomes a query
-        against a 200,000-row table."""
+    def test_a_word_search_never_queries_labcore(self, gw, tmp_path):
+        """The rule is about LABCORE, not about looking things up.
+
+        This test used to assert that a word search did no lookup at all.
+        That was the right intent — a query against a 200,000-row table on
+        every keystroke is the load pattern the whole snapshot design exists
+        to prevent — but it pinned the mechanism rather than the intent. A word
+        search DOES search now, over the whole record, against the local
+        mirror: one indexed query on a file on this machine, and zero LabCore
+        ops. What must never happen is the network read.
+        """
         self._old_sample(gw)
+        app = create_app(gw, secret="t", documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
+        app.config["LOG_MIRROR"].refresh()
+        c = app.test_client()
+        with c.session_transaction() as s:
+            s["user"] = "ryan"
         hits = {"n": 0}
         real = gw.read_sql
 
         def counted(sql, args=None, **kw):
-            if "lab_id = ?" in sql:
+            if "lem_machine_log" in sql:
                 hits["n"] += 1
             return real(sql, args, **kw)
 
+        # Warm the snapshot FIRST. With no poller running it builds inline on
+        # the first request, and that build reads the log — so counting from
+        # cold measures the test harness rather than the search.
+        c.get("/api/search?q=warmup")
         gw.read_sql = counted
-        _client(gw, tmp_path).get("/api/search?q=flash")
-        assert hits["n"] == 0, "a word search did a Lab ID lookup"
+        c.get("/api/search?q=Sulfur")
+        assert hits["n"] == 0, (
+            "a keystroke reached LabCore; the mirror is why it need not")
+
+    def test_a_word_search_reaches_the_whole_record(self, gw, tmp_path,
+                                                   monkeypatch):
+        """The point of the change: an old row is findable by name, not only
+        by Lab ID."""
+        import web_app
+        monkeypatch.setattr(web_app, "SEARCH_CORPUS_ROWS", 10)
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+               "test_name, value, detail) VALUES ('multitek-s', "
+               "'2025-03-04T09:00:00', 'run', '30001', "
+               "'ASTM D5453 - Sulfur', '1.131', '{}')")
+        self._old_sample(gw, lab_id="30002")
+        app = create_app(gw, secret="t", documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
+        app.config["LOG_MIRROR"].refresh()
+        c = app.test_client()
+        with c.session_transaction() as s:
+            s["user"] = "ryan"
+        body = c.get("/api/search?q=D5453").get_json() or {}
+        hits = body.get("results") or []
+        assert hits, "a method name from March 2025 was not searchable"
+        assert body.get("searched_all_time")

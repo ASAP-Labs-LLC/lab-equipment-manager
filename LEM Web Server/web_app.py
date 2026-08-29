@@ -4895,46 +4895,6 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # A FAILED LOOKUP IS NOT AN ABSENT SAMPLE. If the read is refused the
         # answer says so instead of confirming the `no_match`, because that is
         # the sentence this whole route exists not to say wrongly.
-        if (answer.get("state") == lab_search.STATE_NO_MATCH
-                and query.strip().isdigit()):
-            # THE MIRROR FIRST, because it holds the WHOLE log locally and
-            # answers in microseconds. Against LabCore the same lookup was
-            # measured at 8-17 s on the live lab and was being cancelled
-            # outright ("query too slow — likely an unindexed scan"), so the
-            # local copy is not merely faster here, it is the difference
-            # between an answer and a denial.
-            rows, mirror = None, app.config.get("LOG_MIRROR")
-            if mirror is not None and mirror.state()["rows"]:
-                rows = mirror.by_lab_id(query.strip())
-            if rows is None:
-                try:
-                    res = gateway.read_sql(
-                        "SELECT machine_uid, ts, kind, lab_id, test_name, value "
-                        "FROM lem_machine_log WHERE lab_id = ? "
-                        "ORDER BY ts DESC LIMIT 50", [query.strip()],
-                        timeout=30)
-                    rows = labcore_rows(res, missing_ok=True)
-                except LabCoreError as exc:
-                    rows = None
-                    answer["corpus"] = dict(answer.get("corpus") or {},
-                                            stale=True, error=str(exc))
-            if rows:
-                titles = _machine_list()
-                by_uid = {m.get("machine_uid"): m.get("title")
-                          for m in titles} if titles else {}
-                answer["state"] = lab_search.STATE_OK
-                answer["beyond_corpus"] = True
-                hits = [{
-                    "kind": "sample", "lab_id": r.get("lab_id"),
-                    "machine_uid": r.get("machine_uid"),
-                    "title": by_uid.get(r.get("machine_uid"))
-                             or r.get("machine_uid"),
-                    "test_name": r.get("test_name"), "value": r.get("value"),
-                    "at": r.get("ts"), "why": "Lab ID",
-                } for r in rows]
-                answer["results"] = hits
-                answer["hits"] = hits
-                answer["matched"] = len(hits)
         # What "not found" actually means here. The corpus is the newest
         # SEARCH_CORPUS_ROWS log records; at the ceiling, or before the first
         # corpus read lands, "no such sample" is really "not in what I can
@@ -4949,6 +4909,78 @@ def create_app(gateway, admin_password: Optional[str] = None,
             "refreshed_at": (_corpus["at"].isoformat()
                              if _corpus["at"] else ""),
         }
+
+        # SEARCH THE WHOLE RECORD, not the newest slice of it.
+        #
+        # Ryan: "have it search through all time". The corpus is the newest
+        # SEARCH_CORPUS_ROWS log rows — most of the table before the history
+        # import, about ten days after it — so a method, a value or a sample
+        # older than that was never in the haystack. The mirror holds every
+        # row locally, so this covers all time and costs less than the ten-day
+        # window did over the network.
+        #
+        # It runs whenever the corpus came up short: no match at all, or a
+        # match from a corpus that is admittedly clipped. A word search is
+        # allowed now too — it is one indexed query against a local file, not
+        # a LabCore op.
+        corpus_clipped = bool((answer.get("corpus") or {}).get("truncated"))
+        if (answer.get("state") == lab_search.STATE_NO_MATCH
+                or corpus_clipped):
+            # THE MIRROR FIRST, because it holds the WHOLE log locally and
+            # answers in microseconds. Against LabCore the same lookup was
+            # measured at 8-17 s on the live lab and was being cancelled
+            # outright ("query too slow — likely an unindexed scan"), so the
+            # local copy is not merely faster here, it is the difference
+            # between an answer and a denial.
+            rows, mirror = None, app.config.get("LOG_MIRROR")
+            if mirror is not None and mirror.state()["rows"]:
+                rows = (mirror.by_lab_id(query.strip())
+                        if query.strip().isdigit()
+                        else mirror.search(query.strip()))
+            if rows is None:
+                try:
+                    res = gateway.read_sql(
+                        "SELECT machine_uid, ts, kind, lab_id, test_name, value "
+                        "FROM lem_machine_log WHERE lab_id = ? "
+                        "ORDER BY ts DESC LIMIT 50", [query.strip()],
+                        timeout=30)
+                    rows = labcore_rows(res, missing_ok=True)
+                except LabCoreError as exc:
+                    rows = None
+                    answer["corpus"] = dict(answer.get("corpus") or {},
+                                            stale=True, error=str(exc))
+            if rows:
+                # Merge rather than replace: the corpus also holds instruments,
+                # levels and standards, and those hits are not in the log.
+                keep = [h for h in (answer.get("results") or [])
+                        if h.get("kind") != "sample"]
+                titles = _machine_list()
+                by_uid = {m.get("machine_uid"): m.get("title")
+                          for m in titles} if titles else {}
+                answer["state"] = lab_search.STATE_OK
+                answer["beyond_corpus"] = True
+                hits = [{
+                    "kind": "sample", "lab_id": r.get("lab_id"),
+                    "machine_uid": r.get("machine_uid"),
+                    "title": by_uid.get(r.get("machine_uid"))
+                             or r.get("machine_uid"),
+                    "test_name": r.get("test_name"), "value": r.get("value"),
+                    "at": r.get("ts"), "why": "Lab ID",
+                } for r in rows]
+                # One row per (sample, instrument), newest first, which is
+                # what `expandSampleHits` produces on the floor for a corpus
+                # hit — so the two paths look the same on screen.
+                seen, merged = set(), []
+                for h in hits:
+                    key = (h["lab_id"], h["machine_uid"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(h)
+                answer["results"] = keep + merged
+                answer["hits"] = answer["results"]
+                answer["matched"] = len(answer["results"])
+                answer["searched_all_time"] = True
         return jsonify(answer)
 
 

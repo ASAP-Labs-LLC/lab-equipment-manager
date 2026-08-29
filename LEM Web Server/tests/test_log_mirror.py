@@ -308,3 +308,87 @@ class TestItNoticesADifferentDatabase:
         _many(gw, 3, start=200)
         assert m.refresh() == 3
         assert m.state()["rows"] == 203
+
+
+class TestSearchingTheWholeRecord:
+    """Search over ALL time, not the newest slice of it.
+
+    Ryan: *"I assume its because we are searching from before we imported all
+    171000 results. So its having a hard time searching past that. Can we fix
+    that, have it search through all time"* — right, and broader than the Lab
+    ID fix that went out in v3.4.1.
+
+    `lab_search` folds an in-memory index from the snapshot. Instruments and
+    levels are complete because they are small; the EVENT rows are the newest
+    `SEARCH_CORPUS_ROWS` (20,000) of the log. That was most of the table at
+    41,905 rows and reaches back about ten days at 214,714 — so a method name,
+    a value or a sample older than that was not in the haystack at all.
+
+    The mirror already holds every row. Searching it is one indexed query
+    against a local SQLite file, so "all time" costs less than the ten-day
+    window did.
+    """
+
+    def test_it_finds_a_row_older_than_any_search_window(self, gw, mirror):
+        _log(gw, "2025-01-04T09:00:00", uid="agilent-gc-1")
+        _many(gw, 500)                       # newer traffic on top of it
+        mirror.refresh()
+        hits = mirror.search("agilent-gc-1")
+        assert hits, "a row from January was invisible under 500 newer ones"
+        assert hits[0]["machine_uid"] == "agilent-gc-1"
+
+    def test_it_matches_a_lab_id(self, gw, mirror):
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+               "test_name, value, detail) VALUES ('m', '2025-02-02T09:00:00', "
+               "'run', '38145', 'Sulfur', '1.131', '{}')")
+        mirror.refresh()
+        assert [h["lab_id"] for h in mirror.search("38145")] == ["38145"]
+
+    def test_it_matches_a_test_name(self, gw, mirror):
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+               "test_name, value, detail) VALUES ('m', '2025-02-02T09:00:00', "
+               "'run', '900', 'ASTM D5453 - Sulfur', '1.1', '{}')")
+        mirror.refresh()
+        assert mirror.search("D5453")
+
+    def test_newest_first(self, gw, mirror):
+        for d in ("2025-01-01", "2026-01-01", "2024-01-01"):
+            gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, "
+                   "lab_id, test_name, value, detail) VALUES ('m', ?, 'run', "
+                   "'77', 'Sulfur', '1', '{}')", [d + "T09:00:00"])
+        mirror.refresh()
+        got = [h["ts"][:4] for h in mirror.search("77")]
+        assert got == ["2026", "2025", "2024"], got
+
+    def test_a_term_that_matches_nothing_is_empty_not_everything(self, gw,
+                                                                 mirror):
+        _many(gw, 50)
+        mirror.refresh()
+        assert mirror.search("zzzz-no-such-thing") == []
+
+    def test_an_empty_term_matches_nothing_rather_than_the_whole_log(
+            self, gw, mirror):
+        """A blank query returning 214,000 rows is not a search result, it is
+        a denial of service with a scrollbar."""
+        _many(gw, 50)
+        mirror.refresh()
+        assert mirror.search("") == []
+        assert mirror.search("   ") == []
+
+    def test_the_limit_is_honoured(self, gw, mirror):
+        _many(gw, 300)
+        mirror.refresh()
+        assert len(mirror.search("agilent-gc-1", limit=25)) == 25
+
+    def test_a_wildcard_is_matched_literally(self, gw, mirror):
+        """`%` and `_` are LIKE metacharacters. A user typing one is asking
+        for that character, not for "match anything" — and `_` in particular
+        is ordinary in a method name."""
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+               "test_name, value, detail) VALUES ('m', '2025-02-02T09:00:00', "
+               "'run', '901', 'Flash_Point', '60', '{}')")
+        _many(gw, 20)
+        mirror.refresh()
+        assert [h["test_name"] for h in mirror.search("Flash_Point")] == \
+            ["Flash_Point"]
+        assert mirror.search("%") == []
