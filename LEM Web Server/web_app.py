@@ -2951,7 +2951,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 failed["at"] = True
             return []
 
-    def _log_entries(args, failed=None, unnamed=None) -> list:
+    def _log_entries(args, failed=None, unnamed=None, searched=None) -> list:
         # TWO FLAGS, NOT ONE (2026-08-25). `_titles()` reaches LabCore when the
         # snapshot has not built, and it raises rather than shrugging — but a
         # missing NAME and a missing EVENT are different facts and folding them
@@ -2973,8 +2973,66 @@ def create_app(gateway, admin_password: Optional[str] = None,
             elif failed is not None:
                 failed["at"] = True
         needle = (args.get("q") or "").strip().lower()
+
+        # A SEARCH SEARCHES THE LOG, not the page of it that was fetched.
+        #
+        # This used to ask LabCore for the newest `limit` rows and then grep
+        # THOSE in Python, so every match older than the fetched page did not
+        # exist as far as the page was concerned. Measured on the live lab:
+        # "Flash" returned 2 events out of a 214,714-row log holding thousands
+        # of flash rows — and the flash instruments looked absent, because
+        # their rows are not in the newest 500 of a lab where one instrument
+        # writes constantly.
+        #
+        # With a term, the whole record is searched in the local mirror, with
+        # the machine/kind/date filters IN the query so narrowing by instrument
+        # narrows the search. Without one this is a paged listing and stays
+        # exactly as it was: the whole log is not an answer to "show me the
+        # log". A cold mirror falls through to the old path rather than to an
+        # empty page — the mirror is a cache, never the record.
+        mirror = app.config.get("LOG_MIRROR")
+        searched_all = False
+        rows = _log_rows(args, failed=failed)
+
+        if needle and mirror is not None and mirror.state()["rows"]:
+            # BOTH SOURCES, because each is missing something the other has.
+            #
+            # The mirror holds the whole record but is refreshed every five
+            # minutes, so it can be behind by a few rows — and a search for a
+            # sample run two minutes ago must still find it. The LabCore page
+            # is current to the second but is only the newest `limit` rows,
+            # which is the entire bug being fixed here. Merging costs the same
+            # read the page was already doing.
+            raw = str(args.get("limit") or "").strip()
+            lim = None if raw.lower() == "all" else max(1, int(raw or 500))
+            deep = mirror.query(
+                term=needle,
+                machine_uid=(args.get("machine") or "").strip(),
+                kind=(args.get("kind") or "").strip(),
+                since=(args.get("since") or "").strip(),
+                until=(args.get("until") or "").strip(),
+                limit=lim if lim is not None else 100000)
+            # The live page still has to be filtered — it was fetched without
+            # the term. Dedupe on what identifies a row to a reader; `rowid` is
+            # not in the LabCore page's columns.
+            def _key(r):
+                return (str(r.get("machine_uid") or ""), str(r.get("ts") or ""),
+                        str(r.get("kind") or ""), str(r.get("lab_id") or ""),
+                        str(r.get("test_name") or ""), str(r.get("value") or ""))
+            seen = {_key(r) for r in deep}
+            fresh = [r for r in rows
+                     if needle in " ".join(
+                         str(r.get(k) or "") for k in
+                         ("lab_id", "test_name", "value", "kind", "detail")
+                     ).lower() and _key(r) not in seen]
+            rows = sorted(deep + fresh,
+                          key=lambda r: str(r.get("ts") or ""), reverse=True)
+            if lim is not None:
+                rows = rows[:lim]
+            searched_all = True
+
         out = []
-        for row in _log_rows(args, failed=failed):
+        for row in rows:
             raw_detail = row.get("detail") or ""
             try:
                 detail = json.loads(raw_detail or "{}")
@@ -3011,9 +3069,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 hay = " ".join([entry["machine_title"], entry["lab_id"],
                                 entry["test_name"], entry["value"],
                                 entry["kind"], raw_detail]).lower()
-                if needle not in hay:
+                # The mirror already applied the term in SQL; re-applying it
+                # here would drop rows that matched on a column this haystack
+                # does not carry.
+                if not searched_all and needle not in hay:
                     continue
             out.append(entry)
+        if searched is not None:
+            searched["all_time"] = searched_all
         return out
 
     @app.route("/api/logs")
@@ -3022,7 +3085,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # reads time out behind it, and "no events" is a confident wrong answer
         # about a lab that has plenty.
         failed = {"at": False}
-        entries = _log_entries(request.args, failed=failed)
+        searched = {"all_time": False}
+        entries = _log_entries(request.args, failed=failed, searched=searched)
 
         # "The read failed" and "this lab has no log yet" are two facts, and
         # this used to answer `[]` to both — judged with `res.get("error")`,
@@ -3061,7 +3125,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # it had been read.
             _page_drop("logkinds")
         out = {"events": entries, "kinds": kinds,
-               "kinds_known": not kinds_failed["at"]}
+               "kinds_known": not kinds_failed["at"],
+               # Whether this was a search of the WHOLE record or a page
+               # listing. "12 matches" over the newest 500 rows and over
+               # 214,000 are different sentences, and the page says which.
+               "searched_all_time": searched["all_time"]}
         if failed["at"]:
             out["error"] = ("LabCore did not answer in time — its write queue is "
                             "busy. This list may be incomplete; try again shortly.")

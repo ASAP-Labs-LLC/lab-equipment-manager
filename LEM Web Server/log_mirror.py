@@ -321,6 +321,55 @@ class LogMirror:
                 [like, like, like, like, int(limit)])
             return [dict(r) for r in cur.fetchall()]
 
+    def query(self, term: str = "", machine_uid: str = "", kind: str = "",
+              since: str = "", until: str = "",
+              limit: int = 500) -> List[dict]:
+        """The Logs page's question, answered over the WHOLE record.
+
+        `_log_entries` used to fetch the newest `limit` rows from LabCore and
+        then grep those in Python, so a search only ever saw the page that
+        happened to be fetched. Measured on the live lab: "Flash" returned 2
+        events out of a 214,714-row log holding thousands of flash rows, and
+        the flash instruments looked absent because their rows are not in the
+        newest 500 of a lab where one instrument writes constantly.
+
+        Here the filters go INTO the query, so narrowing by instrument narrows
+        the search rather than narrowing what gets grepped.
+        """
+        where, args = [], []
+        if machine_uid:
+            where.append("machine_uid = ?")
+            args.append(machine_uid)
+        if kind:
+            where.append("kind = ?")
+            args.append(kind)
+        if since:
+            where.append("ts >= ?")
+            args.append(since)
+        if until:
+            # Inclusive of the whole day when a bare date is given, the same
+            # rule the LabCore path follows.
+            where.append("ts < ?")
+            args.append(until if len(until) > 10 else until + "T99")
+        term = (term or "").strip()
+        if term:
+            esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = "%" + esc + "%"
+            where.append("(lab_id LIKE ? ESCAPE '\\' "
+                         "OR test_name LIKE ? ESCAPE '\\' "
+                         "OR value LIKE ? ESCAPE '\\' "
+                         "OR kind LIKE ? ESCAPE '\\' "
+                         "OR detail LIKE ? ESCAPE '\\')")
+            args += [like] * 5
+        sql = ("SELECT rowid_src, machine_uid, ts, kind, lab_id, test_name, "
+               "value, detail FROM log")
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC, rowid_src DESC LIMIT ?"
+        args.append(int(limit))
+        with self._lock:
+            return [dict(r) for r in self._db.execute(sql, args).fetchall()]
+
     def count(self, machine_uid: Optional[str] = None) -> int:
         sql = "SELECT COUNT(*) n FROM log"
         args: list = []

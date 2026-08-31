@@ -44,6 +44,13 @@
      text-transform:uppercase;color:var(--ink3);border:1px solid var(--edge);
      background:#12161d;white-space:nowrap}
   .det{font-family:var(--ui);font-size:11.5px}
+  /* One small turning mark; the sentence does the real work. */
+  .busy{display:flex;align-items:center;gap:9px}
+  .busy .spin{width:13px;height:13px;border-radius:50%;flex:none;
+              border:2px solid var(--edge);border-top-color:var(--amber);
+              animation:lspin .7s linear infinite}
+  @keyframes lspin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion:reduce){.busy .spin{animation:none;opacity:.7}}
 </style>
 </head>
 <body>
@@ -146,12 +153,36 @@ let machinesLoaded = false;
 const FIRST_PAGE = 500;
 let PAGE = FIRST_PAGE;
 
+/* SAY IT IS WORKING. Ryan: "the loading bar ... still sucks."
+ *
+ * This page kept the previous table on screen while a new answer was in
+ * flight, so a slow search looked exactly like a search that had given up —
+ * and a search now goes through the whole record, so it takes a moment on
+ * purpose. Shown after a beat, so a fast answer never flashes; cancelled when
+ * the answer lands; never drawn by a request that has been superseded. */
+let LOAD_SEQ = 0;
+
+function showBusy(what) {
+  const n = document.getElementById('note');
+  if (!n) return;
+  n.innerHTML = '<p class="empty busy"><i class="spin"></i>'
+    + (what ? `Searching every record for <b>${esc(what)}</b>…`
+            : 'Reading the log…')
+    + '</p>';
+}
+
 async function load() {
+  const seq = ++LOAD_SEQ;
+  const q0 = $('#fQuery').value.trim();
+  const spin = setTimeout(() => { if (seq === LOAD_SEQ) showBusy(q0); }, 180);
   const p = query();
   if (PAGE) p.set('limit', PAGE === 'all' ? 'all' : String(PAGE));
   $('#csv').href = '/api/logs.csv' + (p.toString() ? '?' + p : '');
   const b = await fetch('/api/logs' + (p.toString() ? '?' + p : ''))
     .then(r => r.json()).catch(() => null);
+  clearTimeout(spin);
+  // A slower answer to an older query must never overwrite a newer one.
+  if (seq !== LOAD_SEQ) return;
   if (!b) {
     $('#rows').innerHTML = '';
     $('#note').innerHTML = '<p class="empty">Can\'t reach LabCore. '
@@ -218,13 +249,24 @@ async function load() {
    * full page means there is probably more; a short one means the log ended.
    * `limit=all` is the only case that can promise anything. */
   const asked = PAGE === 'all' ? Infinity : PAGE;
-  const maybeMore = evs.length >= asked;
+  // A SEARCH IS NOT A PAGE. When the whole record was searched, "showing the
+  // newest N" is the wrong sentence — there is nothing older to load, because
+  // everything was already looked at.
+  const searchedAll = !!b.searched_all_time;
+  const maybeMore = !searchedAll && evs.length >= asked;
   $('#note').innerHTML = evs.length
     ? (maybeMore
         ? `<p class="empty">Showing the newest ${evs.length}. There are older
            entries than this.</p>`
-        : '<p class="empty">That is every entry matching these filters.</p>')
-    : '<p class="empty">Nothing matches those filters.</p>';
+        : (searchedAll
+            ? `<p class="empty">${evs.length} match${evs.length === 1 ? '' : 'es'}
+               across the whole record — every entry LEM holds, not just the
+               recent ones.</p>`
+            : '<p class="empty">That is every entry matching these filters.</p>'))
+    : (searchedAll
+        ? '<p class="empty">Nothing anywhere in the record matches that. This '
+          + 'searched every entry, not just the recent ones.</p>'
+        : '<p class="empty">Nothing matches those filters.</p>');
   const more = $('#more');
   if (more) {
     more.hidden = !maybeMore;
