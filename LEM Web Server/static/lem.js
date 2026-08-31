@@ -202,6 +202,100 @@ window.LEM = (function () {
     else setTimeout(go, 1200);
   }
 
+  /* ── A POLL MUST NOT TYPE OVER SOMEBODY ────────────────────────────────
+   *
+   * Ryan, 31 Aug 2026: "if you are entering data via the UI its really slow,
+   * so like by the time the website polls and refreshes, it will like stutter
+   * and delete any other data that was written that hasn't saved yet it will
+   * also unselect text field" — and later: "the stuttering is mainly the
+   * checklist experience, especially on mobile."
+   *
+   * Every page here refreshes on a timer and repaints by replacing a
+   * container's innerHTML. That is fine for a page being READ and destructive
+   * for one being typed into: the DOM under the caret is thrown away, so the
+   * value goes, the focus goes, and any sibling field somebody filled in but
+   * has not yet saved goes with them. On a checklist round that is somebody's
+   * morning. On a phone it is worse — losing focus closes the keyboard and
+   * throws the scroll position away, which is the "stutter".
+   *
+   * Deliberately not "repaint more cleverly". Diffing the DOM is a large
+   * change to five pages and would still move the caret in exactly the cases
+   * that matter. What a person needs is simpler: WHILE I AM TYPING, LEAVE THE
+   * PAGE ALONE, and catch up the moment I am done.
+   *
+   * BUSY IS TWO QUESTIONS, and only checking the first is why this kind of bug
+   * survives: (1) is the caret in here, and (2) does any field hold something
+   * that has not been saved. The second is the one that loses OTHER people's
+   * work — a field filled in and tabbed out of has no focus to protect it.
+   *
+   * `doc` is injected so this is testable without a browser.
+   */
+  var liveEdit = (function () {
+    var held = new WeakMap();          // container -> the repaint it is owed
+
+    function dirty(el) {
+      // What was RENDERED is the value attribute; what is there now is
+      // `.value`. They differ exactly when somebody has typed and not saved.
+      if (el.isContentEditable) return true;
+      var was = el.getAttribute ? el.getAttribute('value') : null;
+      var now = el.value == null ? '' : String(el.value);
+      return now !== String(was == null ? '' : was);
+    }
+
+    function busy(root, doc) {
+      if (!root) return false;
+      doc = doc || (typeof document !== 'undefined' ? document : null);
+      var active = doc && doc.activeElement;
+      if (active && root.contains && root.contains(active)
+          && active !== root) {
+        return true;                   // the caret is in here
+      }
+      var fields = root.querySelectorAll
+        ? root.querySelectorAll('input, textarea, select') : [];
+      for (var i = 0; i < fields.length; i++) {
+        if (dirty(fields[i])) return true;   // typed, not yet saved
+      }
+      return false;
+    }
+
+    /* Run `paint` now, or remember it until the field is left. Repeated calls
+     * while somebody types collapse to ONE repaint — three polls landing
+     * during a long note should not produce three repaints when it ends. */
+    function defer(root, paint, doc) {
+      if (!busy(root, doc)) { paint(); return false; }
+      held.set(root, paint);
+      return true;
+    }
+
+    /* Somebody left the field. Pay what is owed, if anything. */
+    function release(root, doc) {
+      var paint = held.get(root);
+      if (!paint) return false;
+      if (busy(root, doc)) return false;   // moved to another field in here
+      held.delete(root);
+      paint();
+      return true;
+    }
+
+    /* Wire a container once: repaints hold while it is being typed into and
+     * land when it is not. `focusout` rather than `blur` because blur does not
+     * bubble, and a frame's delay so focus moving BETWEEN two fields in the
+     * same container does not count as leaving it. */
+    function watch(root, doc) {
+      if (!root || !root.addEventListener) return;
+      root.addEventListener('focusout', function () {
+        window.setTimeout(function () { release(root, doc); }, 0);
+      });
+      root.addEventListener('change', function () {
+        window.setTimeout(function () { release(root, doc); }, 0);
+      });
+    }
+
+    return {busy: busy, defer: defer, release: release, watch: watch,
+            dirty: dirty};
+  })();
+
   return {live: live, get: get, fresh: fresh, bust: bust, prefetch: prefetch,
-          failure: failure, send: send, MAX_AGE: DEFAULT_MAX_AGE};
+          failure: failure, send: send, liveEdit: liveEdit,
+          MAX_AGE: DEFAULT_MAX_AGE};
 })();

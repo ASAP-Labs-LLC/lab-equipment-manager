@@ -1947,6 +1947,68 @@ def create_app(gateway, admin_password: Optional[str] = None,
                         "units": item.units if item else "",
                         "text": item.text if item else ""})
 
+    @app.route("/api/checklists/trends")
+    def api_checklist_trends():
+        """Every numeric checklist item and its readings, in one answer.
+
+        Ryan: "put a page of the checklists page with all the checklist
+        'trend' items being visible as like a dashboard too."
+
+        ONE READ, not one per item. Twenty numeric items across four rounds is
+        twenty LabCore ops if each trend fetches itself, behind the same queue
+        the benches write through, on a page somebody leaves open.
+
+        IT DOES NOT INVENT A VERDICT. No checklist item has a spec band —
+        nobody has told LEM what a good nitrogen pressure is — so nothing here
+        is coloured pass or fail. What it can say honestly is movement and
+        recency, and an item nobody has written down is the finding this page
+        exists to make.
+        """
+        try:
+            lists = checklist_store.all()
+            readings = checklist_store.all_values()
+        except LabCoreError as exc:
+            # A flat, empty trend is a claim about a cylinder nobody has been
+            # reading. The per-item route already refuses rather than draw one;
+            # the dashboard must not undo that.
+            return _labcore_unreadable(exc, "the checklist readings")
+
+        out = []
+        for cl in lists:
+            for item in cl.items:
+                if item.entry_type != "number":
+                    continue           # a note is not a series
+                points = readings.get((cl.uid, item.uid), [])
+                last = points[-1] if points else None
+                first = points[0] if points else None
+                out.append({
+                    "checklist_uid": cl.uid,
+                    "checklist": cl.name,
+                    "slot": cl.slot,
+                    "item_uid": item.uid,
+                    "text": item.text,
+                    "units": item.units or "",
+                    "points": points,
+                    "n": len(points),
+                    "last_value": last["value"] if last else None,
+                    "last_at": last["day"] if last else "",
+                    "last_by": last["user"] if last else "",
+                    "first_at": first["day"] if first else "",
+                })
+
+        # Never written comes first: it is the only thing on this page that is
+        # a finding rather than a reading. After that, oldest reading first —
+        # the one drifting out of anybody's attention.
+        out.sort(key=lambda t: (1 if t["n"] else 0, t["last_at"], t["text"]))
+        return jsonify({"trends": out, "day": _today(),
+                        "counts": {"items": len(out),
+                                   "never_written": sum(1 for t in out
+                                                        if not t["n"])}})
+
+    @app.route("/checklists/trends")
+    def page_checklist_trends():
+        return render_template("checklist_trends.html")
+
     @app.route("/api/checklists/import-v4", methods=["POST"])
     def api_import_v4_checklists():
         """Bring the old LEM's rounds across from lab_manager_config.json."""

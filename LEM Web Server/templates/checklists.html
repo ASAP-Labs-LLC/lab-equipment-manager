@@ -162,6 +162,9 @@
   <header class="bar">
     <h1 class="sign">LEM <b>·</b> Checklists</h1>
     <span class="spacer"></span>
+    <!-- Every numeric item on one screen. The per-item trend link answers
+         "what did this read"; this answers "is anything drifting". -->
+    <a class="tool" href="/checklists/trends">Trends</a>
     <span class="due num" id="today"></span>
     <span class="who" id="who" hidden></span>
     <button id="btnAuth" class="tool">Sign in</button>
@@ -361,7 +364,44 @@ function itemHtml(cl, item, state) {
     </div>`;
 }
 
+/* THE POLL DOES NOT TYPE OVER ANYBODY.
+ *
+ * Ryan: "if you are entering data via the UI … by the time the website polls
+ * and refreshes, it will like stutter and delete any other data that was
+ * written that hasn't saved yet it will also unselect text field" — and "the
+ * stuttering is mainly the checklist experience, especially on mobile."
+ *
+ * This page repaints `#lists` wholesale every 30 seconds, and the round is
+ * exactly the thing somebody is typing into. On a phone it is worse than
+ * losing a value: the focus goes, so the keyboard closes and the page jumps.
+ *
+ * So a repaint that would land on somebody mid-entry is HELD — `LEM.liveEdit`
+ * knows both "the caret is in here" and "a field holds something unsaved" —
+ * and paid the moment they leave the field. `paintNow` is the real repaint;
+ * `render` is the thing everything else calls and is now allowed to wait.
+ */
 function render() {
+  const box = document.getElementById('lists');
+  if (box && LEM.liveEdit.defer(box, paintNow)) return;
+  paintNow();
+}
+
+function paintNow() {
+  if (!DATA) return;
+  /* Scroll is part of what the operator had, and on a phone it is most of it:
+   * a repaint that jumps a long round back to the top is the "stutter". */
+  const box = document.getElementById('lists');
+  const top = box ? box.scrollTop : 0;
+  const y = window.scrollY;
+  try {
+    paintLists();
+  } finally {
+    if (box) box.scrollTop = top;
+    window.scrollTo(0, y);
+  }
+}
+
+function paintLists() {
   if (!DATA) return;
   const all = DATA.checklists || [];
   const pr = slot => {
@@ -1034,6 +1074,9 @@ $('#impGo').addEventListener('click', () => runImport(false));
 $('#trendClose').addEventListener('click', () => $('#trendDlg').close());
 
 load();
+/* Pay any held repaint the moment the operator leaves a field, so the page is
+ * never more than one interaction stale — and never repaints under them. */
+LEM.liveEdit.watch(document.getElementById('lists'));
 setInterval(load, 30000);
 LEM.prefetch(['/api/machines', '/api/maintenance']);          // another screen may be ticking too
 </script>

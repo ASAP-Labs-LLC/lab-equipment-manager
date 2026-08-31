@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEM — Checklist trends</title>
+<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+{#
+  EVERY CHECKLIST READING ON ONE SCREEN.
+
+  Ryan: "put a page of the checklists page with all the checklist 'trend' items
+  being visible as like a dashboard too."
+
+  The rounds already collect numbers — a nitrogen pressure, a bath temperature
+  — and each had a per-item trend behind a small link. One at a time answers
+  "what did this read"; nobody was able to ask "is anything drifting".
+
+  WHAT THIS PAGE MAY NOT DO. No checklist item has a spec band: nobody has told
+  LEM what a good nitrogen pressure is. So nothing here is coloured pass or
+  fail, and there is no band drawn behind any line — that would be LEM
+  inventing a limit and an operator reading it as one. The QC wall can colour
+  because a QC standard states its own band; this cannot, and the difference is
+  the point.
+
+  WHAT IT CAN SAY. Movement, and recency. The sparkline shows the shape, the
+  number shows where it is now, the delta shows which way it went, and an item
+  nobody has written down leads the page — that is the only finding a checklist
+  dashboard can honestly make, and it is exactly what a round exists to catch.
+#}
+<style>
+  .wrap{padding:16px 18px 32px;max-width:1500px}
+  .head{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;
+        margin-bottom:4px}
+  .head h2{margin:0;font:800 15px/1 var(--ui);letter-spacing:.28em;
+           text-transform:uppercase;color:var(--ink3)}
+  .thesis{font:700 20px/1.3 var(--ui);color:var(--ink);letter-spacing:-.01em}
+  .thesis b{color:var(--amber)}
+  .thesis.clear b{color:var(--green)}
+  .sub{color:var(--ink3);font-size:12px;margin:2px 0 14px}
+
+  .grid{display:grid;gap:10px;
+        grid-template-columns:repeat(auto-fill,minmax(270px,1fr))}
+  .t{background:#0c0e13;border:1px solid var(--edge);border-radius:10px;
+     padding:11px 13px 9px;display:flex;flex-direction:column;min-width:0}
+  /* The only state this page has: written, or never written. */
+  .t.blank{border-color:#3a3320;background:#12100b}
+
+  .t .nm{font:700 14px/1.25 var(--ui);color:var(--ink);
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t .of{font:700 9px/1.4 var(--ui);letter-spacing:.16em;
+         text-transform:uppercase;color:var(--ink3);margin-top:1px;
+         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .t .now{display:flex;align-items:baseline;gap:7px;margin-top:7px}
+  .t .val{font:700 24px/1 var(--mono,ui-monospace);color:var(--ink);
+          font-variant-numeric:tabular-nums}
+  .t .un{font-size:11px;color:var(--ink3)}
+  .t .dl{margin-left:auto;font:700 11px/1 var(--mono,ui-monospace)}
+  .t .dl.up{color:var(--brass)} .t .dl.dn{color:#7fb2ff}
+  .t .dl.flat{color:var(--ink3)}
+  .spark{height:44px;margin:8px 0 4px}
+  .spark svg{width:100%;height:100%;display:block}
+  .t .ft{display:flex;gap:8px;font:600 10px/1.3 var(--ui);color:var(--ink3);
+         letter-spacing:.05em}
+  .t .ft .who{margin-left:auto;overflow:hidden;text-overflow:ellipsis;
+              white-space:nowrap;max-width:45%}
+  .t .none{margin:10px 0 6px;font:600 12px/1.4 var(--ui);color:var(--brass)}
+
+  .empty{color:var(--ink2);padding:22px 0}
+  @media (max-width:520px){
+    .grid{grid-template-columns:1fr}
+    .wrap{padding:12px 12px 28px}
+  }
+</style>
+</head>
+<body>
+<div class="frame">
+{% include '_nav.html' %}
+<div class="pane">
+  <header class="bar">
+    <h1 class="sign">LEM <b>·</b> Checklist trends</h1>
+    <span class="spacer"></span>
+    <a class="tool" href="/checklists">Back to today's round</a>
+  </header>
+  <main class="wrap">
+    <div class="head">
+      <h2>Readings</h2>
+      <div class="thesis" id="thesis">Reading…</div>
+    </div>
+    <p class="sub" id="sub"></p>
+    <div class="grid" id="grid"></div>
+  </main>
+</div>
+</div>
+
+<script>
+(function () {
+  const $ = s => document.querySelector(s);
+  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  /* A sparkline, and deliberately NOTHING behind it. The QC wall draws a pass
+   * band because a QC standard states one; a checklist item does not, so a
+   * band here would be a limit LEM invented and an operator would read it as
+   * one. The line, the last point, and nothing else. */
+  function spark(points) {
+    const W = 240, H = 44, pad = 5;
+    const vals = points.map(p => Number(p.value)).filter(Number.isFinite);
+    if (vals.length < 2) {
+      return `<svg viewBox="0 0 ${W} ${H}" role="img"
+        aria-label="${vals.length ? 'one reading' : 'no readings'}">
+        <text x="${W / 2}" y="${H / 2 + 3}" text-anchor="middle" font-size="10"
+              fill="#5d6675">${vals.length ? 'one reading so far'
+                                           : 'nothing recorded'}</text></svg>`;
+    }
+    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const span = (hi - lo) || 1;
+    const x = i => pad + (i * (W - pad * 2)) / (vals.length - 1);
+    const y = v => H - pad - ((v - lo) / span) * (H - pad * 2);
+    const d = vals.map((v, i) =>
+      `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
+    const last = vals.length - 1;
+    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
+        aria-label="${vals.length} readings">
+      <path d="${d}" fill="none" stroke="var(--amber)" stroke-width="1.6"
+            stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
+      <circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}"
+              r="2.6" fill="var(--amber)"/></svg>`;
+  }
+
+  function delta(points) {
+    const v = points.map(p => Number(p.value)).filter(Number.isFinite);
+    if (v.length < 2) return null;
+    const d = v[v.length - 1] - v[v.length - 2];
+    if (!d) return {cls: 'flat', text: 'no change'};
+    const n = Math.abs(d) < 1 ? Math.abs(d).toFixed(2)
+                              : Math.abs(d).toFixed(1);
+    return {cls: d > 0 ? 'up' : 'dn', text: (d > 0 ? '▲ ' : '▼ ') + n};
+  }
+
+  /* THE SCALE, SAID OUT LOUD.
+   *
+   * A sparkline fits its own range to the box, which is what makes the shape
+   * readable — and means a bath temperature moving 0.15 °C draws exactly as
+   * dramatically as a cylinder draining 300 psi. On a lab screen that reads as
+   * instability, and nobody can tell the two apart without a number.
+   *
+   * So the footer says the span the line covers. Cheap, honest, and it makes
+   * the auto-scaling safe rather than removing it. */
+  function rangeOf(t) {
+    const v = (t.points || []).map(p => Number(p.value)).filter(Number.isFinite);
+    if (v.length < 2) return '';
+    const lo = Math.min(...v), hi = Math.max(...v);
+    if (lo === hi) return ' · unchanged at ' + lo;
+    const dp = (hi - lo) < 10 ? 2 : 0;
+    return ` · ${lo.toFixed(dp)}–${hi.toFixed(dp)}`;
+  }
+
+  function card(t) {
+    const d = delta(t.points || []);
+    if (!t.n) {
+      return `<div class="t blank">
+        <div class="nm">${esc(t.text)}</div>
+        <div class="of">${esc(t.checklist)} · ${esc(t.slot)}</div>
+        <p class="none">Nobody has written this down.</p>
+        <div class="ft"><span>no readings on record</span></div>
+      </div>`;
+    }
+    return `<div class="t">
+      <div class="nm">${esc(t.text)}</div>
+      <div class="of">${esc(t.checklist)} · ${esc(t.slot)}</div>
+      <div class="now"><span class="val">${esc(t.last_value)}</span>
+        ${t.units ? `<span class="un">${esc(t.units)}</span>` : ''}
+        ${d ? `<span class="dl ${d.cls}">${esc(d.text)}</span>` : ''}</div>
+      <div class="spark">${spark(t.points || [])}</div>
+      <div class="ft"><span>${esc(t.n)} reading${t.n === 1 ? '' : 's'}
+        · last ${esc(t.last_at)}${rangeOf(t)}</span>
+        ${t.last_by ? `<span class="who">${esc(t.last_by)}</span>` : ''}</div>
+    </div>`;
+  }
+
+  async function load() {
+    const r = await fetch('/api/checklists/trends').catch(() => null);
+    if (!r || !r.ok) {
+      const b = r ? await r.json().catch(() => ({})) : {};
+      $('#thesis').textContent = 'Readings could not be read';
+      $('#sub').textContent = (b.error || 'LabCore could not be reached.')
+        + ' This page is blank because the record could not be reached, not '
+        + 'because nothing has been recorded.';
+      $('#grid').innerHTML = '';
+      return;
+    }
+    const b = await r.json();
+    const trends = b.trends || [];
+    const blank = (b.counts || {}).never_written || 0;
+    const th = $('#thesis');
+    th.className = 'thesis' + (blank ? '' : ' clear');
+    th.innerHTML = !trends.length
+      ? 'No checklist item asks for a number yet'
+      : (blank
+          ? `<b>${blank} of ${trends.length}</b> readings have never been written down`
+          : `All <b>${trends.length}</b> readings are being kept`);
+    $('#sub').textContent = trends.length
+      ? 'Checklist items that ask for a number. These have no specification '
+        + 'band, so nothing here is a pass or a fail — only what was written '
+        + 'and when.'
+      : 'Give a checklist item the type “number” and its readings will trend '
+        + 'here.';
+    $('#grid').innerHTML = trends.map(card).join('');
+  }
+
+  load();
+  setInterval(load, 60000);
+})();
+</script>
+</body>
+</html>

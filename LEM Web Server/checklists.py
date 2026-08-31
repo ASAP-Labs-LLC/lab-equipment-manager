@@ -441,6 +441,40 @@ class ChecklistStore:
             "value=excluded.value",
             [day, checklist_uid, item_uid, 1 if text else 0, user, stamp, text])
 
+    def all_values(self, limit_per_item: int = 180) -> Dict[tuple, List[dict]]:
+        """Every numeric item's readings, in ONE read, keyed by
+        `(checklist_uid, item_uid)`.
+
+        The dashboard shows every trend at once. Built from `values()` that
+        would be one LabCore op per item — twenty numeric items across four
+        rounds is twenty round trips behind the same queue the benches write
+        through, on a page somebody leaves open. This is one.
+
+        Same rules as `values()`: unreadable entries are dropped rather than
+        guessed at, and an outage raises instead of returning empty, because a
+        flat chart reads as "nobody has ever measured this".
+        """
+        out: Dict[tuple, List[dict]] = {}
+        for row in self._read(
+                "SELECT checklist_uid, item_uid, day, value, user "
+                "FROM lem_checklist_state "
+                "WHERE value IS NOT NULL AND TRIM(value) != '' "
+                "ORDER BY day"):
+            try:
+                number = float(str(row.get("value")).strip())
+            except (TypeError, ValueError):
+                continue
+            key = (str(row.get("checklist_uid") or ""),
+                   str(row.get("item_uid") or ""))
+            out.setdefault(key, []).append(
+                {"day": str(row.get("day") or ""), "value": number,
+                 "user": str(row.get("user") or "")})
+        for key, points in out.items():
+            points.sort(key=lambda p: p["day"])
+            if len(points) > limit_per_item:
+                out[key] = points[-limit_per_item:]
+        return out
+
     def values(self, checklist_uid: str, item_uid: str,
                limit: int = 180) -> List[dict]:
         """A numeric item's readings over time, oldest first — the reason
