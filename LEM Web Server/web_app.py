@@ -1795,9 +1795,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     # ── checklists: opening and closing rounds ─────────────────────────
     from checklists import (Checklist, ChecklistStore, ChecklistWriteError,
-                           active_items, completion)
+                           Tracked, TrackedStore, active_items, completion,
+                           normalise_tracked_name)
 
     checklist_store = ChecklistStore(gateway)
+    tracked_store = TrackedStore(gateway)
 
     def _today() -> str:
         return _now().date().isoformat()
@@ -1947,6 +1949,201 @@ def create_app(gateway, admin_password: Optional[str] = None,
                         "units": item.units if item else "",
                         "text": item.text if item else ""})
 
+    # ── the things a round measures ──────────────────────────────────
+    #
+    # Ryan: "Opening and closing need to intersect. So we have to make the
+    # things that are trending into an object (with a minimum and a maximum
+    # volume) and then you can put in 'track' and select the object you want
+    # to track."
+    #
+    # A reading never moves. It stays in `lem_checklist_state` keyed by
+    # (checklist_uid, item_uid); what changes is that the trends read groups on
+    # what an item TRACKS. So the conversion is reversible and no history is
+    # rewritten, which is the only safe way to do this to a compliance record.
+
+    def _tracked_number(body, key):
+        raw = body.get(key)
+        if raw is None or str(raw).strip() == "":
+            return None
+        return float(str(raw).strip())
+
+    @app.route("/api/tracked")
+    def api_tracked_list():
+        try:
+            return jsonify({"tracked": [t.to_dict()
+                                        for t in tracked_store.all()]})
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the tracked items")
+
+    @app.route("/api/tracked", methods=["POST"])
+    @app.route("/api/tracked/<uid>", methods=["POST"])
+    def api_tracked_save(uid=""):
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        existing = None
+        if uid:
+            try:
+                existing = tracked_store.get(uid)
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "that tracked item")
+            if existing is None:
+                return jsonify({"error": "No such tracked item."}), 404
+        try:
+            # An edit leaves out what it is not changing; a create starts blank.
+            lo = (_tracked_number(body, "min") if "min" in body
+                  else (existing.min_value if existing else None))
+            hi = (_tracked_number(body, "max") if "max" in body
+                  else (existing.max_value if existing else None))
+        except ValueError:
+            return jsonify({"error": "A minimum and a maximum have to be "
+                                     "numbers, or left blank."}), 400
+        name = body.get("name", existing.name if existing else "")
+        units = body.get("units", existing.units if existing else "")
+        try:
+            saved = tracked_store.save(
+                Tracked(uid=uid, name=str(name or ""), units=str(units or ""),
+                        min_value=lo, max_value=hi),
+                who=session.get("user", ""))
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "that tracked item")
+        _audit("tracked saved", "", {"tracked": saved.uid, "name": saved.name,
+                                     "min": saved.min_value,
+                                     "max": saved.max_value})
+        return jsonify({"ok": True, "tracked": saved.to_dict()})
+
+    @app.route("/api/tracked/<uid>", methods=["DELETE"])
+    def api_tracked_delete(uid):
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        try:
+            gone = tracked_store.delete(uid)
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "that tracked item")
+        # Items still pointing at it fall back to their own series, which is
+        # the pre-conversion behaviour rather than a hole.
+        _audit("tracked deleted", "", {"tracked": uid})
+        return jsonify({"ok": True, "deleted": gone})
+
+    @app.route("/api/checklists/<uid>/track", methods=["POST"])
+    def api_checklist_track(uid):
+        """Point one checklist item at a tracked thing, or unpoint it."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        item_uid = str(body.get("item_uid") or "").strip()
+        tracked_uid = str(body.get("tracked_uid") or "").strip()
+        try:
+            checklist = checklist_store.get(uid)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "that checklist")
+        if checklist is None:
+            return jsonify({"error": "No such checklist."}), 404
+        item = next((i for i in checklist.items if i.uid == item_uid), None)
+        if item is None:
+            return jsonify({"error": "No such item."}), 404
+        if item.entry_type != "number":
+            return jsonify({"error": f"“{item.text}” does not record a "
+                                     f"number, so there is nothing to "
+                                     f"track."}), 400
+        if tracked_uid:
+            try:
+                if tracked_store.get(tracked_uid) is None:
+                    return jsonify({"error": "No such tracked item."}), 404
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "that tracked item")
+        item.track_uid = tracked_uid
+        try:
+            checklist_store.save(checklist)
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "that checklist")
+        _audit("checklist item tracked", "",
+               {"checklist": checklist.name, "item": item.text,
+                "tracked": tracked_uid})
+        return jsonify({"ok": True, "checklist": checklist.to_dict()})
+
+    @app.route("/api/tracked/convert", methods=["POST"])
+    def api_tracked_convert():
+        """Turn the numeric items already on the rounds into tracked things.
+
+        Ryan: "convert the exist checklists with matching names into those
+        objects with history." Items are grouped by name with case and spacing
+        normalised — somebody typed "Nitrogen  Pressure" into one round and
+        "nitrogen pressure" into another, months apart, and they are the same
+        cylinder.
+
+        NO READING IS TOUCHED. The items are pointed at a new object; the merge
+        happens on read. `dry_run` reports what it would do and writes nothing,
+        because this runs against a live compliance record.
+        """
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        dry = bool(body.get("dry_run"))
+        try:
+            lists = checklist_store.all()
+            existing = {normalise_tracked_name(t.name): t
+                        for t in tracked_store.all()}
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the rounds")
+
+        groups = {}
+        for cl in lists:
+            for item in cl.items:
+                if item.entry_type != "number":
+                    continue           # a note is not a thing to track
+                key = normalise_tracked_name(item.text)
+                if not key:
+                    continue
+                groups.setdefault(key, []).append((cl, item))
+
+        would_create = [k for k in groups if k not in existing]
+        if dry:
+            return jsonify({
+                "dry_run": True,
+                "would_create": len(would_create),
+                "would_link": sum(len(v) for v in groups.values()),
+                "groups": [{"name": groups[k][0][1].text,
+                            "items": [{"checklist": cl.name, "slot": cl.slot,
+                                       "text": it.text, "units": it.units}
+                                      for cl, it in groups[k]]}
+                           for k in sorted(groups)],
+            })
+
+        created, linked, touched = 0, 0, {}
+        for key, members in groups.items():
+            tracked = existing.get(key)
+            if tracked is None:
+                first = members[0][1]
+                try:
+                    tracked = tracked_store.save(
+                        Tracked(name=first.text, units=first.units),
+                        who=session.get("user", ""))
+                except (ValueError, LabCoreError) as exc:
+                    return _labcore_failed(exc, "a tracked item") \
+                        if isinstance(exc, LabCoreError) else \
+                        (jsonify({"error": str(exc)}), 400)
+                existing[key] = tracked
+                created += 1
+            for cl, item in members:
+                if item.track_uid == tracked.uid:
+                    continue           # already pointed there; re-runnable
+                item.track_uid = tracked.uid
+                touched[cl.uid] = cl
+                linked += 1
+        try:
+            for cl in touched.values():
+                checklist_store.save(cl)
+        except LabCoreError as exc:
+            return _labcore_failed(
+                exc, "the rounds",
+                "Some items may already point at their tracked thing. "
+                "Re-running is safe — it skips the ones already linked.")
+        _audit("tracked converted", "", {"created": created, "linked": linked})
+        return jsonify({"ok": True, "created": created, "linked": linked})
+
     @app.route("/api/checklists/trends")
     def api_checklist_trends():
         """Every numeric checklist item and its readings, in one answer.
@@ -1967,17 +2164,89 @@ def create_app(gateway, admin_password: Optional[str] = None,
         try:
             lists = checklist_store.all()
             readings = checklist_store.all_values()
+            tracked = {t.uid: t for t in tracked_store.all()}
         except LabCoreError as exc:
             # A flat, empty trend is a claim about a cylinder nobody has been
             # reading. The per-item route already refuses rather than draw one;
             # the dashboard must not undo that.
             return _labcore_unreadable(exc, "the checklist readings")
 
+        # ONE SERIES PER THING, not per line of a round.
+        #
+        # An item pointing at a tracked thing contributes its readings to that
+        # thing's series; an item pointing at nothing keeps its own, exactly as
+        # before. Nothing was moved to make this true — the readings are still
+        # filed under the item that recorded them, and this is the read that
+        # puts them together.
+        merged = {}
+        for cl in lists:
+            for item in cl.items:
+                if item.entry_type != "number" or not item.track_uid:
+                    continue
+                thing = tracked.get(item.track_uid)
+                if thing is None:
+                    continue           # deleted: falls back to its own series
+                slot = merged.setdefault(thing.uid, {
+                    "thing": thing, "points": [], "rounds": []})
+                # WHICH ROUND a reading came from, carried on the point.
+                #
+                # A reading records a `day` and no time, so two readings on
+                # one day cannot be ordered by the data alone — and the whole
+                # point of merging opening and closing is that a day now HAS
+                # two. The round is the only thing that knows which came
+                # first, so it rides along and orders them.
+                for point in readings.get((cl.uid, item.uid), []):
+                    slot["points"].append(
+                        dict(point, round=cl.name, slot=cl.slot))
+                if cl.name not in slot["rounds"]:
+                    slot["rounds"].append(cl.name)
+
+        #: When in the day a round happens. Only the order matters, and an
+        #: unrecognised slot sits between the two named ones rather than
+        #: claiming to be first or last.
+        SLOT_ORDER = {"opening": 0, "morning": 1, "midday": 4, "other": 5,
+                      "afternoon": 7, "evening": 8, "closing": 9}
+
         out = []
+        for uid, slot in merged.items():
+            thing = slot["thing"]
+            points = sorted(
+                slot["points"],
+                key=lambda p: (p["day"],
+                               SLOT_ORDER.get(str(p.get("slot") or ""), 5),
+                               str(p.get("round") or "")))
+            last = points[-1] if points else None
+            out.append({
+                "tracked_uid": uid,
+                "checklist": " · ".join(slot["rounds"]),
+                "rounds": slot["rounds"],
+                "slot": "tracked",
+                "item_uid": "",
+                "text": thing.name,
+                "units": thing.units,
+                "min": thing.min_value,
+                "max": thing.max_value,
+                # Limits somebody entered are not LEM inventing one, so this
+                # may now say what a reading IS. Without limits it still says
+                # nothing, which is the rule that has not changed.
+                "state": thing.judge(last["value"]) if last
+                         else ("NO READING" if (thing.min_value is not None
+                                                or thing.max_value is not None)
+                               else "NO LIMITS SET"),
+                "points": points,
+                "n": len(points),
+                "last_value": last["value"] if last else None,
+                "last_at": last["day"] if last else "",
+                "last_by": last["user"] if last else "",
+                "first_at": points[0]["day"] if points else "",
+            })
+
         for cl in lists:
             for item in cl.items:
                 if item.entry_type != "number":
                     continue           # a note is not a series
+                if item.track_uid and item.track_uid in tracked:
+                    continue           # counted once, under the thing it feeds
                 points = readings.get((cl.uid, item.uid), [])
                 last = points[-1] if points else None
                 first = points[0] if points else None

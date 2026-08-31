@@ -116,12 +116,23 @@ class ChecklistItem:
     # Levels" and recorded nothing, so nobody could see a cylinder trending down.
     entry_type: str = "none"           # "none" | "number" | "text"
     units: str = ""                    # shown beside the field, e.g. PSI
+    # WHAT THIS ITEM IS MEASURING, when it is measuring a thing rather than
+    # keeping its own private series. Ryan: "Opening and closing need to
+    # intersect." A nitrogen cylinder read on both rounds is ONE cylinder; two
+    # items sharing a name were two unrelated trends, and the interesting fact
+    # — that it is going down — lived in neither of them.
+    #
+    # Empty means what it always meant: this item owns its readings. Nothing is
+    # forced into an object, and clearing this puts the item back exactly as it
+    # was, because no reading is ever moved (see TrackedStore).
+    track_uid: str = ""
 
     def to_dict(self) -> dict:
         return {"uid": self.uid, "text": self.text,
                 "days_active": [int(d) for d in self.days_active],
                 "item_type": self.item_type, "parent_uid": self.parent_uid,
-                "entry_type": self.entry_type, "units": self.units}
+                "entry_type": self.entry_type, "units": self.units,
+                "track_uid": self.track_uid}
 
     @classmethod
     def from_dict(cls, data: dict) -> "ChecklistItem":
@@ -141,7 +152,10 @@ class ChecklistItem:
                    entry_type=(str(data.get("entry_type") or "none")
                                if str(data.get("entry_type") or "none")
                                in ENTRY_TYPES else "none"),
-                   units=str(data.get("units") or ""))
+                   units=str(data.get("units") or ""),
+                   # Absent on every item written before this existed, which
+                   # reads correctly as "owns its own series".
+                   track_uid=str(data.get("track_uid") or ""))
 
     def counts_towards_completion(self) -> bool:
         """A heading isn't work — counting it makes a finished round read 80%."""
@@ -201,6 +215,166 @@ def completion(items: Sequence[ChecklistItem],
                   if (state or {}).get(i.uid, {}).get("checked"))
     pct = round(100 * checked / total) if total else 0
     return checked, total, pct
+
+
+TRACKED_DDL = (
+    "CREATE TABLE IF NOT EXISTS lem_tracked ("
+    "uid TEXT PRIMARY KEY, name TEXT NOT NULL, units TEXT, "
+    "min_value TEXT, max_value TEXT, updated_at TEXT, updated_by TEXT)"
+)
+
+
+def normalise_tracked_name(name: str) -> str:
+    """The key two rounds are matched on: case and spacing do not make two
+    cylinders. "Nitrogen  Pressure" and "nitrogen pressure" are the same
+    thing and somebody typed them into two different rounds months apart."""
+    return " ".join(str(name or "").split()).casefold()
+
+
+@dataclass
+class Tracked:
+    """A thing being measured, rather than a line on a round.
+
+    Ryan: "make the things that are trending into an object (with a minimum
+    and a maximum volume) and then you can put in 'track' and select the
+    object you want to track."
+
+    The limits are OPTIONAL and stored as text. A thing worth tracking before
+    anybody has decided its limits is still worth tracking — it simply cannot
+    be out of range yet, and a `0.0` default would silently become a minimum
+    nobody set.
+    """
+
+    uid: str = ""
+    name: str = ""
+    units: str = ""
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
+    updated_at: str = ""
+    updated_by: str = ""
+
+    def to_dict(self) -> dict:
+        return {"uid": self.uid, "name": self.name, "units": self.units,
+                "min": self.min_value, "max": self.max_value,
+                "updated_at": self.updated_at, "updated_by": self.updated_by}
+
+    def judge(self, value) -> str:
+        """What this reading is, in the words the dashboard prints.
+
+        Until an operator sets limits nothing is judged — that rule has not
+        changed, it has only stopped applying to things somebody HAS set
+        limits on. An operator-supplied bound is not LEM inventing one.
+        """
+        if self.min_value is None and self.max_value is None:
+            return "NO LIMITS SET"
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return "NO READING"
+        if self.min_value is not None and v < self.min_value:
+            return "BELOW MINIMUM"
+        if self.max_value is not None and v > self.max_value:
+            return "ABOVE MAXIMUM"
+        return "IN RANGE"
+
+
+class TrackedStore:
+    """The tracked things. Readings are NOT stored here.
+
+    A reading stays exactly where it was written, in `lem_checklist_state`
+    keyed by `(checklist_uid, item_uid)`. Grouping happens when the trends are
+    read, on what the item TRACKS. That is what makes this conversion safe on a
+    compliance record: nothing is rewritten, and clearing `track_uid` puts
+    every series back the way it was.
+    """
+
+    def __init__(self, gateway) -> None:
+        self.gateway = gateway
+        self._ready = False
+
+    def _write(self, sql, args=None):
+        """Confirmed, and a transport failure is a write failure — the same
+        shape `ChecklistStore._write` uses, for the same reason: a dropped
+        write that reported success is how a limit somebody set disappears."""
+        try:
+            res = self.gateway.sql(sql, args or [])
+        except Exception as exc:                          # noqa: BLE001
+            raise ChecklistWriteError(
+                f"LabCore could not be written to ({type(exc).__name__}: "
+                f"{exc})") from exc
+        return confirm_write(res)
+
+    def _read(self, sql, args=None) -> List[dict]:
+        try:
+            res = self.gateway.read_sql(sql, args or [])
+        except Exception as exc:                          # noqa: BLE001
+            raise LabCoreUnavailable(
+                f"LabCore could not be read ({type(exc).__name__}: {exc})"
+            ) from exc
+        return read_rows(res, missing_ok=True)
+
+    def ensure_schema(self) -> None:
+        """Declared from the WRITE paths only, for the reason the checklist
+        store's own `ensure_schema` documents at length: a refused DDL must
+        never take down a page that only wanted to read."""
+        if self._ready:
+            return
+        self._write(TRACKED_DDL)
+        self._ready = True
+
+    @staticmethod
+    def _number(raw) -> Optional[float]:
+        if raw is None or str(raw).strip() == "":
+            return None
+        return float(str(raw).strip())
+
+    def all(self) -> List["Tracked"]:
+        out = []
+        for row in self._read(
+                "SELECT uid, name, units, min_value, max_value, updated_at, "
+                "updated_by FROM lem_tracked ORDER BY name"):
+            try:
+                lo = self._number(row.get("min_value"))
+                hi = self._number(row.get("max_value"))
+            except ValueError:
+                lo = hi = None      # stored junk is no limit, never a wrong one
+            out.append(Tracked(
+                uid=str(row.get("uid") or ""), name=str(row.get("name") or ""),
+                units=str(row.get("units") or ""), min_value=lo, max_value=hi,
+                updated_at=str(row.get("updated_at") or ""),
+                updated_by=str(row.get("updated_by") or "")))
+        return out
+
+    def get(self, uid: str) -> Optional["Tracked"]:
+        return next((t for t in self.all() if t.uid == uid), None)
+
+    def save(self, tracked: "Tracked", who: str = "") -> "Tracked":
+        name = " ".join(str(tracked.name or "").split())
+        if not name:
+            raise ValueError("A tracked thing needs a name.")
+        lo, hi = tracked.min_value, tracked.max_value
+        if lo is not None and hi is not None and lo > hi:
+            # Reversed limits make every reading simultaneously too high and
+            # too low, so the page would report everything as failing.
+            raise ValueError(
+                f"The minimum ({lo}) is above the maximum ({hi}).")
+        self.ensure_schema()
+        uid = tracked.uid or uuid.uuid4().hex[:12]
+        now = datetime.now().isoformat(timespec="seconds")
+        self._write(
+            "INSERT OR REPLACE INTO lem_tracked (uid, name, units, min_value, "
+            "max_value, updated_at, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [uid, name, str(tracked.units or ""),
+             "" if lo is None else repr(float(lo)),
+             "" if hi is None else repr(float(hi)), now, who])
+        return Tracked(uid=uid, name=name, units=tracked.units or "",
+                       min_value=lo, max_value=hi, updated_at=now,
+                       updated_by=who)
+
+    def delete(self, uid: str) -> int:
+        self.ensure_schema()
+        return wrote_rows(self._write(
+            "DELETE FROM lem_tracked WHERE uid = ?", [uid]))
 
 
 class ChecklistStore:

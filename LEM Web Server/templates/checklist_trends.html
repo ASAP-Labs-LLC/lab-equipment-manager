@@ -66,6 +66,14 @@
               white-space:nowrap;max-width:45%}
   .t .none{margin:10px 0 6px;font:600 12px/1.4 var(--ui);color:var(--brass)}
 
+  /* The state, only where limits exist to justify one. */
+  .t.s-ok{border-left:3px solid var(--green)}
+  .t.s-bad{border-left:3px solid var(--red);background:#140e0e}
+  .t .st{margin-top:5px;font:800 9.5px/1 var(--ui);letter-spacing:.16em;
+         text-transform:uppercase;color:var(--ink3)}
+  .t.s-ok .st{color:var(--green)}
+  .t.s-bad .st{color:var(--red)}
+  .t .miss{color:var(--brass);font-weight:700}
   .empty{color:var(--ink2);padding:22px 0}
   @media (max-width:520px){
     .grid{grid-template-columns:1fr}
@@ -99,11 +107,31 @@
   const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
     c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
-  /* A sparkline, and deliberately NOTHING behind it. The QC wall draws a pass
-   * band because a QC standard states one; a checklist item does not, so a
-   * band here would be a limit LEM invented and an operator would read it as
-   * one. The line, the last point, and nothing else. */
-  function spark(points) {
+  /* A DAY APART, in days. Readings carry a `day` and no time, which is all
+   * the ordering there is — and it is enough to know a day was skipped. */
+  function dayGap(a, b) {
+    const t0 = Date.parse(a + 'T00:00:00'), t1 = Date.parse(b + 'T00:00:00');
+    if (isNaN(t0) || isNaN(t1)) return 0;
+    return Math.round((t1 - t0) / 86400000);
+  }
+
+  /* The sparkline.
+   *
+   * A BAND ONLY IF SOMEBODY SET ONE. Until these limits existed this page was
+   * forbidden to draw a band, because it would have been LEM inventing a limit
+   * and an operator reading it as one. An operator-entered minimum and maximum
+   * is not invented, so it is drawn — and where nobody has set limits, nothing
+   * is drawn, which is the same rule it always was.
+   *
+   * A SKIPPED DAY IS DOTTED. Ryan: "skipped days should also reflect on the
+   * graph with dotted lines." A solid line between Monday and Friday claims
+   * four readings that were never taken; the shape is a guess and it should
+   * look like one. Segments spanning more than a day are dashed, so the eye
+   * reads continuity where there was continuity and a bridge where there was
+   * a gap.
+   */
+  function spark(t) {
+    const points = t.points || [];
     const W = 240, H = 44, pad = 5;
     const vals = points.map(p => Number(p.value)).filter(Number.isFinite);
     if (vals.length < 2) {
@@ -113,19 +141,67 @@
               fill="#5d6675">${vals.length ? 'one reading so far'
                                            : 'nothing recorded'}</text></svg>`;
     }
-    const lo = Math.min(...vals), hi = Math.max(...vals);
+    const lo0 = Math.min(...vals), hi0 = Math.max(...vals);
+    // The band has to FIT, or a reading outside it would be drawn inside.
+    const lim = [];
+    if (t.min != null) lim.push(Number(t.min));
+    if (t.max != null) lim.push(Number(t.max));
+    const lo = Math.min(lo0, ...lim), hi = Math.max(hi0, ...lim);
     const span = (hi - lo) || 1;
     const x = i => pad + (i * (W - pad * 2)) / (vals.length - 1);
     const y = v => H - pad - ((v - lo) / span) * (H - pad * 2);
-    const d = vals.map((v, i) =>
-      `${i ? 'L' : 'M'} ${x(i).toFixed(1)} ${y(v).toFixed(1)}`).join(' ');
-    const last = vals.length - 1;
+
+    let band = '';
+    if (t.min != null || t.max != null) {
+      const top = t.max != null ? y(Number(t.max)) : pad;
+      const bot = t.min != null ? y(Number(t.min)) : H - pad;
+      band = `<rect x="0" y="${top.toFixed(1)}" width="${W}"
+        height="${Math.max(0, bot - top).toFixed(1)}"
+        fill="rgba(33,192,113,.10)"/>`
+        + [t.max != null ? Number(t.max) : null,
+           t.min != null ? Number(t.min) : null].filter(v => v != null).map(v =>
+          `<line x1="0" y1="${y(v).toFixed(1)}" x2="${W}" y2="${y(v).toFixed(1)}"
+                 stroke="#21c071" stroke-width="1" stroke-dasharray="5 4"
+                 opacity=".55"/>`).join('');
+    }
+
+    /* One <path> per segment rather than one for the line, because a dashed
+     * stretch and a solid one cannot be the same path. */
+    let segs = '';
+    for (let i = 1; i < points.length; i++) {
+      const gap = dayGap(points[i - 1].day, points[i].day);
+      const dashed = gap > 1;
+      segs += `<path d="M ${x(i - 1).toFixed(1)} ${y(vals[i - 1]).toFixed(1)}
+        L ${x(i).toFixed(1)} ${y(vals[i]).toFixed(1)}" fill="none"
+        stroke="var(--amber)" stroke-width="1.6" stroke-linecap="round"
+        ${dashed ? 'stroke-dasharray="2 3" opacity=".6"' : ''}
+        vector-effect="non-scaling-stroke"/>`;
+    }
+    const dots = points.map((p, i) => {
+      const v = Number(p.value);
+      if (!Number.isFinite(v)) return '';
+      const out = (t.min != null && v < Number(t.min))
+               || (t.max != null && v > Number(t.max));
+      return `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}"
+        r="${i === points.length - 1 ? 2.8 : 1.8}"
+        fill="${out ? 'var(--red)' : 'var(--amber)'}"><title>${
+        esc(p.day)}${p.round ? ' · ' + esc(p.round) : ''} — ${esc(p.value)}
+        </title></circle>`;
+    }).join('');
     return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
-        aria-label="${vals.length} readings">
-      <path d="${d}" fill="none" stroke="var(--amber)" stroke-width="1.6"
-            stroke-linejoin="round" vector-effect="non-scaling-stroke"/>
-      <circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}"
-              r="2.6" fill="var(--amber)"/></svg>`;
+        aria-label="${vals.length} readings">${band}${segs}${dots}</svg>`;
+  }
+
+  /* How many days of this series had no reading at all. Said in words under
+   * the chart, because a dotted line shows THAT one happened and not how
+   * many. */
+  function skipped(points) {
+    let n = 0;
+    for (let i = 1; i < points.length; i++) {
+      const g = dayGap(points[i - 1].day, points[i].day);
+      if (g > 1) n += g - 1;
+    }
+    return n;
   }
 
   function delta(points) {
@@ -166,15 +242,27 @@
         <div class="ft"><span>no readings on record</span></div>
       </div>`;
     }
-    return `<div class="t">
+    const ST = {'IN RANGE':'ok', 'BELOW MINIMUM':'bad', 'ABOVE MAXIMUM':'bad',
+                'NO LIMITS SET':'plain', 'NO READING':'plain'};
+    const cls = ST[t.state] || 'plain';
+    const miss = skipped(t.points || []);
+    const lim = (t.min != null || t.max != null)
+      ? `${t.min != null ? esc(t.min) : '—'} to ${t.max != null ? esc(t.max) : '—'}`
+      : '';
+    return `<div class="t s-${cls}">
       <div class="nm">${esc(t.text)}</div>
-      <div class="of">${esc(t.checklist)} · ${esc(t.slot)}</div>
+      <div class="of">${esc(t.checklist)}${lim ? ' · ' + esc(lim)
+        + (t.units ? ' ' + esc(t.units) : '') : ''}</div>
       <div class="now"><span class="val">${esc(t.last_value)}</span>
         ${t.units ? `<span class="un">${esc(t.units)}</span>` : ''}
         ${d ? `<span class="dl ${d.cls}">${esc(d.text)}</span>` : ''}</div>
-      <div class="spark">${spark(t.points || [])}</div>
+      <div class="spark">${spark(t)}</div>
+      ${t.state && t.state !== 'NO LIMITS SET'
+        ? `<div class="st">${esc(t.state)}</div>` : ''}
       <div class="ft"><span>${esc(t.n)} reading${t.n === 1 ? '' : 's'}
-        · last ${esc(t.last_at)}${rangeOf(t)}</span>
+        · last ${esc(t.last_at)}${rangeOf(t)}${miss
+          ? ` · <b class="miss">${miss} day${miss === 1 ? '' : 's'} skipped</b>`
+          : ''}</span>
         ${t.last_by ? `<span class="who">${esc(t.last_by)}</span>` : ''}</div>
     </div>`;
   }
@@ -200,12 +288,24 @@
       : (blank
           ? `<b>${blank} of ${trends.length}</b> readings have never been written down`
           : `All <b>${trends.length}</b> readings are being kept`);
-    $('#sub').textContent = trends.length
-      ? 'Checklist items that ask for a number. These have no specification '
-        + 'band, so nothing here is a pass or a fail — only what was written '
-        + 'and when.'
-      : 'Give a checklist item the type “number” and its readings will trend '
-        + 'here.';
+    /* THE CAPTION HAS TO MATCH THE CARDS.
+     *
+     * It used to say "these have no specification band, so nothing here is a
+     * pass or a fail" — true when nothing had limits, and flatly contradicted
+     * by a card reading BELOW MINIMUM the moment somebody set some. A page
+     * that argues with itself is worse than one that says less, so it counts
+     * what actually has limits and says that. */
+    const withLimits = trends.filter(t => t.min != null || t.max != null).length;
+    $('#sub').textContent = !trends.length
+      ? 'Give a checklist item the type “number” and its readings will trend '
+        + 'here. Point two rounds at the same tracked item and they share one '
+        + 'series.'
+      : withLimits === 0
+        ? 'None of these has a minimum or a maximum set, so nothing here is a '
+          + 'pass or a fail — only what was written and when.'
+        : `${withLimits} of ${trends.length} have limits set and can be out of `
+          + 'range. The rest show only what was written and when. A dotted '
+          + 'line bridges days nobody recorded.';
     $('#grid').innerHTML = trends.map(card).join('');
   }
 
