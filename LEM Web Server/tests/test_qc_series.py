@@ -1175,7 +1175,13 @@ class TestSelfFittedLimitsAreMarkedAndDoNotDiagnose:
         v = qs.violations(pts(vals))
         assert [(x.rule, x.indices) for x in v] == [(qs.RULE_2OF3_2S, (10, 11))]
         assert v[0].provisional is True
-        assert "provisional" in v[0].message.lower()
+        # The FLAG is the fact; the paragraph that used to be appended to the
+        # message was removed on Ryan's instruction (1 Sep 2026) because it
+        # repeated on every finding of every chart. Anything reading this
+        # programmatically — the payload, the panel's chip — is unaffected,
+        # which is exactly why the flag is what this asserts.
+        assert "provisional" not in v[0].message.lower(), (
+            "the prose came back; the flag is what carries this now")
 
     def test_the_same_finding_against_supplied_limits_is_firm(self):
         v = qs.violations(pts([100.0] * 10 + [50.0, 50.0]), limits=LIM)

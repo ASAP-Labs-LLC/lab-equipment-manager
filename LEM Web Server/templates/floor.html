@@ -2819,16 +2819,13 @@ function trendSeriesHtml(s) {
       : `${cov.n_calibrations} calibration${cov.n_calibrations === 1 ? '' : 's'}`,
   ].filter(Boolean).join(' · ');
 
-  /* WITH NO QUALIFICATION LIMITS THE CHART IS GRADING ITSELF. The zones are
-   * fitted to the very points they judge, so every finding comes back
-   * provisional — and a provisional alarm presented as fact is worse than no
-   * alarm. This is the sentence that stops somebody acting on it. */
-  const provisional = s.self_fitted ? `
-      <p class="prov"><b>Provisional</b> — these control zones were computed
-      from the same ${trendNum(obs.n, 0)} results they are judging (no
-      qualification limits exist for this equipment yet), so anything they
-      find has to be confirmed against fixed limits before it is acted on.</p>`
-    : '';
+  /* The self-fitted PARAGRAPH was removed on Ryan's instruction (1 Sep 2026).
+   * It appeared on every self-fitted chart and, with the same sentence also
+   * appended to every violation, said the same thing three times on one card.
+   * The FACT survives: `s.self_fitted` still reaches this page, the finding
+   * still carries its `provisional` chip, and `spread basis` still says what
+   * the spread was computed from. */
+  const provisional = '';
 
   const violations = (s.violations || []).map(v => `
       <p class="viol"><span class="rule">${esc(v.rule)}</span>
@@ -2946,7 +2943,13 @@ function uncertaintyLine(body) {
   // this line is the last thing between an unsigned number and a wall display.
   const approved = (body.estimates || []).filter(e => e && e.approved_at);
   if (!approved.length) {
-    return {cls: 'none', text: 'no approved estimate on file'};
+    // NOTHING TO SHOW MEANS NOTHING SHOWN. Ryan asked for this line gone
+    // (1 Sep 2026). It was written as a stated absence because a BLANK VALUE
+    // beside a "U" label reads as "uncertainty is zero" — but hiding the whole
+    // row is not a blank value, it is the absence of a claim, which is the
+    // honest rendering of having no approved estimate. A failed READ is a
+    // different thing and is still shown: see the `failed` branch above.
+    return {cls: 'none', text: ''};
   }
   // One instrument can carry several measurands. The panel has one line, so it
   // shows the widest — the one that governs what this equipment can claim —
@@ -2992,9 +2995,12 @@ async function loadUncertainty(m) {
     }
   }
   const line = uncertaintyLine(body);
+  // An empty line is not drawn at all — no label, no row, no gap.
+  box.hidden = !line.text;
   box.className = `meta num urow ${line.cls}`;
-  box.innerHTML = `<span class="ulab">U</span>`
-    + `<span class="uval">${esc(line.text)}</span>`;
+  box.innerHTML = line.text
+    ? `<span class="ulab">U</span><span class="uval">${esc(line.text)}</span>`
+    : '';
   if (line.title) box.title = line.title;
 }
 

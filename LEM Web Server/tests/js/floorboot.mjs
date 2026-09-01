@@ -3461,19 +3461,33 @@ if (!failed) {
    * quote is absent and the warning still has to be there. */
   const own = html.split(SERIES.violations[0].message).join(' ')
     .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
-  claim('a self-fitted chart says IN ITS OWN WORDS that its limits came from '
-        + 'these same results',
-        /self-fitted|fitted to|computed from the same|these same results|no qualification/
-          .test(own));
+  /* THE PARAGRAPH IS GONE, THE MARK IS NOT (1 Sep 2026).
+   *
+   * Ryan asked for the self-fitted explanation removed everywhere: it was
+   * printed once as a boxed paragraph AND appended to every violation
+   * message, so one card could say the same thing three times and the finding
+   * it qualified got lost inside it.
+   *
+   * What must survive is the MARK — `provisional` on the finding, drawn as a
+   * chip beside it — because a provisional alarm presented as fact is still
+   * worse than no alarm. So this now asserts the opposite of what it did: the
+   * prose is absent, and the mark is present. */
+  claim('the self-fitted paragraph is gone',
+        !/computed from the same results they are judging|no qualification limits/
+          .test(own), own.slice(0, 160));
   claim('…and marks the finding provisional, in its own words, rather than '
         + 'stating it as fact', /provisional/.test(own));
   /* And with nothing to quote at all: no violations, still self-fitted. */
   const quiet = String(sandbox.trendSeriesHtml(
     Object.assign({}, SERIES, {violations: [], in_control: true})) || '')
     .replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').toLowerCase();
-  claim('…and says it even when there is no violation to quote it inside of',
-        /provisional/.test(quiet)
-        && /computed from the same|these same results|self-fitted|no qualification/
+  /* A self-fitted chart with NOTHING to flag: it must still render, and still
+   * not have grown the paragraph back. There is no `provisional` chip here
+   * because there is no finding to mark — the chip belongs to a violation. */
+  claim('…and a self-fitted chart with no findings still renders, still '
+        + 'without the paragraph',
+        quiet.length > 0
+        && !/computed from the same results they are judging|no qualification limits/
              .test(quiet));
   claim('…and the violation the module found is actually drawn',
         /1_3s|3s control limit|beyond the lower/.test(low));

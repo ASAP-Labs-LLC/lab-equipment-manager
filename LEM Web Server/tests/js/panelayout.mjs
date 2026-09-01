@@ -223,13 +223,26 @@ claim('the QC standards library can upload a certificate',
     claim('an unapproved estimate is not reported as the number',
       !/1\.24/.test(un.text), un.text);
 
-    // Blank reads as "uncertainty is zero", which is the one value it can
-    // never be.
+    /* NOTHING TO SHOW MEANS NOTHING SHOWN (1 Sep 2026).
+     *
+     * This used to require a stated absence — "no approved estimate on file" —
+     * because a BLANK VALUE beside a "U" label reads as "uncertainty is zero",
+     * which is the one value it can never be. Ryan asked for the line gone.
+     *
+     * Hiding the whole row is not the failure that rule guarded against: an
+     * empty value under a label is a claim, an absent row is not. So the text
+     * is empty AND the caller must draw nothing at all — the second half is
+     * what keeps this honest, and it is asserted on the renderer below. */
     const none = fn({estimates: []});
-    claim('no estimate says so rather than rendering empty',
-      !!none.text.trim(), 'empty node');
-    claim('and it is marked as an absence, not as a value',
+    claim('no estimate renders nothing at all',
+      none.text === '', JSON.stringify(none.text));
+    claim('…and is still marked an absence rather than a value',
       none.cls === 'none', none.cls);
+
+    const load = html.slice(html.indexOf('async function loadUncertainty('),
+                            html.indexOf('async function loadUncertainty(') + 900);
+    claim('…and the row itself is hidden, not left as an empty label',
+      /box\.hidden\s*=\s*!line\.text/.test(load), load.slice(0, 200));
 
     // `test_the_interim_route_is_labelled_as_interim`: an interim target must
     // never be presented as a measured u(Rw).

@@ -581,13 +581,18 @@ def _side_of_mean(value: float, mean: float) -> str:
     return ""
 
 
-# Appended to every message derived from limits that were fitted to the points
-# being judged. One sentence, printed beside the chart, and it has to say the
-# thing plainly: the comparison had no independent reference.
-_PROVISIONAL = (" PROVISIONAL: these limits were computed from the same "
-                "results they are judging, so this instrument has no "
-                "qualification limits to be out of control against. Confirm "
-                "against fixed limits before acting on it.")
+# The prose that used to be appended to every self-fitted finding was removed
+# on Ryan's instruction (1 Sep 2026) — "remove ... everywhere". It said the
+# limits were computed from the results they judge, which is true and was
+# repeated on every violation of every chart, to the point of drowning the
+# finding it was qualifying.
+#
+# THE FACT ITSELF IS NOT GONE. `RuleViolation.provisional` still carries it,
+# the payload still reports it, and the panel still draws its `provisional`
+# chip beside the finding. What went is the paragraph, not the flag — so
+# anything reading this programmatically is unaffected, and a reader still
+# sees the finding marked rather than stated as fact.
+_PROVISIONAL = ""
 
 
 def _one_beyond_3s(points: Sequence[QcPoint], limits: ControlLimits, *,
