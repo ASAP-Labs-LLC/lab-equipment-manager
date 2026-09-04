@@ -1368,7 +1368,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if mirror is None:
             return None
         try:
-            if not mirror.state().get("rows"):
+            state = mirror.state()
+            # `filled_at`, NOT `rows`. The pull walks the log oldest-first in
+            # chunks, so a copy part-way through its FIRST fill holds rows —
+            # just the wrong end of them. After v3.8.0 shipped, that copy held
+            # the retired AO25 verdicts and none of the current AF26 ones, and
+            # the floor spent the fill telling the lab that Multitek S and NS
+            # had never been checked against the standard they had both run
+            # that afternoon. `filled_at` is stamped only when a pull has run
+            # to exhaustion, so it is the flag that means "this copy is whole"
+            # and is the only one on which a NEGATIVE claim can rest.
+            if not state.get("rows") or not state.get("filled_at"):
                 return None
             return mirror.latest_qc()
         except Exception:

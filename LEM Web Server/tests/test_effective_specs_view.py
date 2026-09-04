@@ -397,3 +397,64 @@ class TestTheLogIsTheRecordAndTheSpecIsACache:
         client.application.config["LOG_MIRROR"] = self.mirror(gw, [])
         spec = flash(client)["effective_specs"][0]
         assert spec["last_qc_value"] == pytest.approx(2.875)
+
+
+class TestAHalfFilledCopyIsNotEvidence:
+    """Seen on the floor minutes after v3.8.0 went out.
+
+    `LogMirror._pull` walks the log by rowid, OLDEST FIRST, in 20k chunks, and
+    a fresh release starts with an empty copy. So for the first few minutes
+    after a deploy the copy holds the oldest rows and none of the newest —
+    which for a changed standard means it holds the RETIRED lot's verdicts and
+    not one of the current lot's. That is indistinguishable, to a check that
+    only asks "is there a row for this standard", from a bench that genuinely
+    has not run its new standard yet.
+
+    The floor duly told the lab that Multitek S and NS had never been checked
+    against AF26, about two instruments that had been checked that afternoon.
+    It corrected itself when the fill completed. A false "no QC on file" on a
+    17025 floor is not something to leave on a timer, and it would recur on
+    every single release.
+
+    `rows > 0` was the wrong question. `filled_at` is only stamped when a pull
+    has run to exhaustion, so it is the one that means "this copy is whole".
+    """
+
+    def mirror_mid_pull(self, gw):
+        """A copy holding only the retired lot's rows, as a first fill does."""
+        import os, tempfile
+        from log_mirror import LogMirror
+        gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
+               "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
+               "test_name TEXT, value TEXT, detail TEXT)")
+        gw.sql("INSERT INTO lem_machine_log VALUES ('5fd04c0031f9',"
+               "'2026-08-24T19:58:10','qc','AO25',"
+               "'ASTM D7236/D7094 - Flash Point Closed cup (small scale)',"
+               "'4.87','{\"in_spec\": true}')")
+        m = LogMirror(gw, path=os.path.join(tempfile.mkdtemp(), "m.sqlite3"))
+        m.refresh()
+        # The newest rows have not arrived yet: that is what mid-pull IS.
+        m._set_meta("filled_at", "")
+        return m
+
+    def test_a_copy_still_filling_leaves_the_bench_alone(self, gw, client):
+        publish(gw, sample_id="AF26", low=2.08, high=3.44, expected=2.76,
+                last_qc_at="2026-09-02T17:06:41", last_qc_value=2.875,
+                last_qc_in_spec=1)
+        client.application.config["LOG_MIRROR"] = self.mirror_mid_pull(gw)
+        spec = flash(client)["effective_specs"][0]
+        # NOT withheld, and not captioned "last check was on AO25".
+        assert spec["last_qc_value"] == pytest.approx(2.875)
+        assert spec["last_qc_superseded_by"] == ""
+
+    def test_a_complete_copy_is_still_trusted(self, gw, client):
+        # The guard must not make the whole feature inert.
+        m = self.mirror_mid_pull(gw)
+        m._set_meta("filled_at", "2026-09-04T01:25:12")
+        publish(gw, sample_id="AF26", low=2.08, high=3.44, expected=2.76,
+                last_qc_at="2026-08-24T19:58:10", last_qc_value=4.87,
+                last_qc_in_spec=1)
+        client.application.config["LOG_MIRROR"] = m
+        spec = flash(client)["effective_specs"][0]
+        assert spec["last_qc_value"] is None
+        assert spec["last_qc_superseded_by"] == "AO25"
