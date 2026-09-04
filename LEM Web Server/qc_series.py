@@ -285,56 +285,113 @@ def _band(detail: Dict[str, Any]) -> Optional[PassBand]:
 
 
 def series_from_rows(
-        rows: Iterable[Dict[str, Any]]) -> Dict[Tuple[str, str], QcSeries]:
-    """Every (machine_uid, test_name) series in one pass over the rows."""
-    rows = list(rows or ())
-    grouped: Dict[Tuple[str, str], List[QcPoint]] = {}
-    for point in points_from_rows(rows):
-        grouped.setdefault((point.machine_uid, point.test_name), []).append(point)
+        rows: Iterable[Dict[str, Any]]) -> Dict[Tuple[str, str, str], QcSeries]:
+    """Every (machine_uid, test_name, sample_id) series in one pass.
 
-    # The band is taken from the NEWEST row that carries one: a standard gets
-    # re-certified and the band moves, and the chart has to be drawn against
-    # the limits in force now. Read off the rows in time order for the same
-    # reason the points are.
+    THE STANDARD IS PART OF THE SERIES' IDENTITY, not a caption on it. A
+    control chart is a statement about one material measured repeatedly; two
+    materials on one chart is not a wide chart, it is a meaningless one.
+
+    This keyed on (machine_uid, test_name) until 3 Sep 2026. The sulfur
+    standard moved AO25 -> AF26 the day before, and 36 AO25 readings around
+    4.99 were pooled with one AF26 reading of 2.875 into a single fitted
+    process: mean 4.934, 3s zones 3.545..6.323. The band had correctly
+    followed the newest row down to 2.08..3.44; the points had not. The good
+    2.875 was then reported as a 3s excursion telling the lab to hold every
+    result since the last good check. Eleven series across ten instruments
+    were in that state.
+
+    A row with no `lab_id` cannot say which material it measured, so it gets
+    its own `""` series rather than being folded into a named one — the same
+    rule as everywhere else here: unknown is never "the same as the last one".
+    """
+    rows = list(rows or ())
+    grouped: Dict[Tuple[str, str, str], List[QcPoint]] = {}
+    for point in points_from_rows(rows):
+        grouped.setdefault(
+            (point.machine_uid, point.test_name, point.lab_id), []).append(point)
+
+    # The band is taken from the NEWEST row of THAT standard that carries one:
+    # a lot gets re-assayed and the band moves, and the chart has to be drawn
+    # against the limits in force for the material it is charting. Scoped to
+    # the key, so the new standard's certificate can no longer be hung on the
+    # retired standard's points — which would restate verdicts already
+    # reported (17025 7.11.3) and make every historical result read out of
+    # spec against a band it was never judged by.
     #
     # `_is_qc_row` again, and it is not belt-and-braces: `points_from_rows`
     # drops a PM completion but this loop used not to, so a maintenance record
     # sharing the machine and the test name overwrote the certificate's band
-    # with its own (0 - 0.001) and the sample id with its own. Every result in
-    # the series then read out of spec against limits from a PM record.
-    bands: Dict[Tuple[str, str], PassBand] = {}
-    samples: Dict[Tuple[str, str], str] = {}
+    # with its own (0 - 0.001). Every result in the series then read out of
+    # spec against limits from a PM record.
+    bands: Dict[Tuple[str, str, str], PassBand] = {}
     for r in sorted((r for r in rows if _is_qc_row(r)),
                     key=lambda r: str(r.get("ts") or "")):
         key = (str(r.get("machine_uid") or ""),
-               str(r.get("test_name") or "").strip())
+               str(r.get("test_name") or "").strip(),
+               str(r.get("lab_id") or ""))
         if key not in grouped:
             continue
         band = _band(_detail(r.get("detail")))
         if band is not None:
             bands[key] = band
-        if r.get("lab_id"):
-            samples[key] = str(r.get("lab_id"))
 
     return {key: QcSeries(machine_uid=key[0], test_name=key[1],
                           points=tuple(pts), pass_band=bands.get(key),
-                          sample_id=samples.get(key, ""))
+                          sample_id=key[2])
             for key, pts in grouped.items()}
 
 
+def _newest_point_at(series: "QcSeries") -> Optional[datetime]:
+    """When this series last had a result, or None if nothing is datable."""
+    stamps = [p.at for p in series.points if p.at is not None]
+    return max(stamps) if stamps else None
+
+
+def current_series(by_key: Dict[Tuple[str, str, str], QcSeries],
+                   machine_uid: str, test_name: str) -> Optional[QcSeries]:
+    """The standard this machine is checking this test against NOW.
+
+    The one holding the most recent result. A retired standard's series stops
+    receiving points at the changeover, so "newest last point" is what
+    "current" means without needing a second table to declare it — and it
+    keeps working for a bench that was moved back onto a previous lot.
+
+    Ties break on the sample id so the answer is stable rather than dependent
+    on dict ordering: two standards holding results at the same instant is a
+    changeover mid-batch, and either answer is defensible, but flapping
+    between them on successive polls is not.
+    """
+    candidates = [s for (uid, name, _sid), s in by_key.items()
+                  if uid == machine_uid and name == test_name]
+    if not candidates:
+        return None
+    return max(candidates,
+               key=lambda s: ((_newest_point_at(s) or datetime.min),
+                              s.sample_id))
+
+
 def series_for(rows: Iterable[Dict[str, Any]], machine_uid: str,
-               test_name: str) -> QcSeries:
+               test_name: str,
+               sample_id: Optional[str] = None) -> QcSeries:
     """One series by name. An unknown test is an EMPTY series, not an error.
+
+    `sample_id` omitted means the standard in use NOW — see `current_series`.
+    That default is what keeps a caller who does not know about standards
+    (`uncertainty.read_series`) from silently pooling two materials into one
+    u(Rw), which is a signed record and far worse than a wrong chart.
 
     "No QC recorded for that test" is an answer an operator acts on, and the
     same rule the rest of this tree follows: a missing row is emptiness, a
     failed read is an exception, and the two are never confused.
     """
-    found = series_from_rows(rows).get((machine_uid, test_name))
-    return found or QcSeries(machine_uid=machine_uid, test_name=test_name)
+    by_key = series_from_rows(rows)
+    found = (by_key.get((machine_uid, test_name, sample_id))
+             if sample_id is not None
+             else current_series(by_key, machine_uid, test_name))
+    return found or QcSeries(machine_uid=machine_uid, test_name=test_name,
+                             sample_id=sample_id or "")
 
-
-# ── the divisor ──────────────────────────────────────────────────────────────
 
 def mean_and_s(values: Sequence[float]) -> Tuple[Optional[float], Optional[float]]:
     """Mean and SAMPLE standard deviation, the n-1 divisor.
@@ -436,6 +493,60 @@ def control_limits(values: Sequence[float]) -> Optional[ControlLimits]:
         return None
     mean, s = mean_and_s(values)
     return ControlLimits(n=len(values), mean=mean, s=s)
+
+
+
+def certificate_limits(band: Optional[PassBand],
+                       std_dev: Optional[float] = None,
+                       k: Optional[float] = None) -> Optional[ControlLimits]:
+    """Control limits centred on the CERTIFICATE, not on what the bench did.
+
+    The centre is the standard's assigned value and the spread is the
+    standard's sigma, so the chart asks "has this instrument moved away from
+    the reference?" rather than "is this instrument consistent with itself?".
+    A self-fitted chart cannot answer the first question at all: a bench
+    reading half a unit high, consistently, is dead-centre on its own mean and
+    in perfect control of the wrong number.
+
+    `ControlLimits` has argued for this since it was written — "a moving
+    target that absorbs the very drift the chart exists to show" — and
+    `analyse()` has always accepted supplied limits. Nothing ever supplied
+    any, so every chart in this lab was self-fitted until 3 Sep 2026.
+
+    SIGMA, IN ORDER OF AUTHORITY:
+
+      `std_dev`   the certificate's own figure, off `lem_machine_specs`. Used
+                  whenever it is given, because a stored `low`/`high` is
+                  rounded for display and the certificate is not.
+      `k`         with the recorded band: sigma = (high - low) / 2k. The QC
+                  log's `detail` records expected/low/high but NOT std_dev or
+                  k, so a row on its own cannot say what sigma was, and this
+                  is how a chart drawn straight from the log recovers it.
+      neither     None. A retired standard whose spec row is gone gets its
+                  points and its band and no zones — inventing a sigma would
+                  put a fabricated control limit on a record an assessor
+                  reads, which is worse than an incomplete chart.
+
+    `n=0` is deliberate and load-bearing. `n` means "how many results this `s`
+    was computed from", and a certificate's sigma was computed from none of
+    this lab's results. `df` floors to 0, and `SeriesAnalysis.spread_basis`
+    then reports UNKNOWN rather than borrowing the coverage of the points
+    being judged — the `s_n`/`s_df` confusion that class already documents.
+    """
+    if band is None or band.expected is None:
+        return None
+    sigma = std_dev if std_dev is not None else (
+        (float(band.high) - float(band.low)) / (2.0 * float(k))
+        if k not in (None, 0) else None)
+    if sigma is None:
+        return None
+    sigma = _float(sigma)
+    # A zero or negative sigma is not a tight instrument, it is a bad record:
+    # every zone collapses onto the centre line and every result that is not
+    # exactly the assigned value fires a 3s finding.
+    if sigma is None or sigma <= 0:
+        return None
+    return ControlLimits(n=0, mean=float(band.expected), s=sigma)
 
 
 # ── out-of-control rules ─────────────────────────────────────────────────────

@@ -1344,7 +1344,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
         gateway,
         interval=float(os.environ.get("LEM_SNAPSHOT_SECONDS", "12")),
         builder=lambda tables: build_machines(tables, _now(), _beat_is_fresh,
-                                             STATUS_COLORS))
+                                              STATUS_COLORS,
+                                              last_qc=_mirrored_last_qc()))
     # Deliberately NOT started here. An app factory that spawns a thread gives
     # every caller a background refresher it did not ask for — and the old
     # `if not app.config["TESTING"]` guard could never work, because a test sets
@@ -1352,6 +1353,26 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # owns the lifecycle: web_server.pyw calls start(). Without a poller,
     # refresh_soon() refreshes inline, so behaviour stays correct either way.
     app.config["SNAPSHOTS"] = snapshots
+
+    def _mirrored_last_qc():
+        """The newest QC verdict per (machine, test) from the local log copy.
+
+        None on ANY doubt — no mirror yet, nothing pulled, or a read that
+        failed. None means unknown to `build_machines`, which then leaves each
+        bench's published spec exactly as it is. Returning {} instead would
+        say "no QC has ever been run on anything" and blank the QC panel for
+        the whole lab the first time this copy was cold, which is the
+        failed-read-is-not-an-empty-result rule in its most expensive form.
+        """
+        mirror = app.config.get("LOG_MIRROR")
+        if mirror is None:
+            return None
+        try:
+            if not mirror.state().get("rows"):
+                return None
+            return mirror.latest_qc()
+        except Exception:
+            return None
 
     # ── the local copy of the log ─────────────────────────────────────────
     #
@@ -3798,6 +3819,21 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # logged anything.
         return labcore_rows(res)
 
+    def _opt_float(raw):
+        """A number LabCore stored, or None. NEVER 0.0 for a missing one.
+
+        `std_dev` and `k` come back as TEXT through the queue, and a zero sigma
+        collapses every control zone onto the centre line — so "the column was
+        NULL" has to stay distinguishable from "the certificate says zero",
+        which `certificate_limits` then refuses on its own.
+        """
+        if raw is None or raw == "":
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
     # How many results a control chart shows. The analysis runs on exactly
     # these points, never on the whole history — see `_chart_series`.
     CHART_POINTS = 60
@@ -3921,8 +3957,42 @@ def create_app(gateway, admin_password: Optional[str] = None,
             events = _qc_events(machine_uid)
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "this equipment's QC history")
+
+        # THE CERTIFICATE'S SIGMA, which the log does not carry. `qc_log_detail`
+        # on the bench records expected/low/high and not std_dev or k, so the
+        # centre and spread of the control limits have to come from the spec
+        # the module publishes. One small indexed read per panel open — this is
+        # an operator opening an instrument, not a wall on a timer.
+        #
+        # A FAILED READ IS NOT AN ABSENT CERTIFICATE. "No certificate on file"
+        # and "could not read the certificate" draw the same empty chart and
+        # mean opposite things, so the answer says which, the same way the CSV
+        # export says when it could not resolve names.
+        certs, cert_read = {}, "ok"
+        try:
+            res = gateway.read_sql(
+                "SELECT test_name, sample_id, std_dev, k FROM lem_machine_specs "
+                "WHERE machine_uid = ?", [machine_uid])
+            for r in labcore_rows(res, missing_ok=True):
+                certs[(str(r.get("test_name") or ""),
+                       str(r.get("sample_id") or ""))] = (r.get("std_dev"),
+                                                          r.get("k"))
+        except LabCoreError:
+            cert_read = "unreadable"
+
+        by_key = qc_series.series_from_rows(events)
+        # Which standard each test is on NOW, so a retired lot's chart is
+        # served as history rather than as this instrument's current control.
+        current = {}
+        for (uid, name, _sid) in by_key:
+            if uid != machine_uid or name in current:
+                continue
+            found = qc_series.current_series(by_key, uid, name)
+            if found is not None:
+                current[name] = found.sample_id
+
         out = []
-        for (uid, _name), series in qc_series.series_from_rows(events).items():
+        for (uid, name, sample_id), series in by_key.items():
             if uid != machine_uid:
                 continue                       # already filtered in SQL; cheap
             # TRUNCATE, THEN ANALYSE. A violation's `indices` are positions in
@@ -3933,8 +4003,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 machine_uid=series.machine_uid, test_name=series.test_name,
                 points=series.points[-CHART_POINTS:],
                 pass_band=series.pass_band, sample_id=series.sample_id)
-            out.append(_chart_series(qc_series.analyse(shown), shown.points))
-        return jsonify({"series": sorted(out, key=lambda s: s["test_name"])})
+            std_dev, k = certs.get((name, sample_id), (None, None))
+            limits = qc_series.certificate_limits(
+                shown.pass_band, std_dev=_opt_float(std_dev),
+                k=_opt_float(k))
+            row = _chart_series(qc_series.analyse(shown, limits), shown.points)
+            row["superseded"] = current.get(name, sample_id) != sample_id
+            row["limits_source"] = ("certificate" if limits is not None
+                                    else "unreadable" if cert_read != "ok"
+                                    else "none")
+            out.append(row)
+        return jsonify({"series": sorted(
+            out, key=lambda s: (s["superseded"], s["test_name"],
+                                s["sample_id"]))})
 
     # ── the QC wall ───────────────────────────────────────────────────
     #
@@ -4021,7 +4102,23 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
         now = _now()
         out = []
-        for (uid, _name), series in qc_series.series_from_rows(rows).items():
+        by_key = qc_series.series_from_rows(rows)
+        # ONE CARD PER INSTRUMENT AND METHOD, showing the standard it is on
+        # NOW. A changeover starts a new chart (see `series_from_rows`), so a
+        # retired lot's series is still in here — but a wall is read from four
+        # metres by somebody walking past, and a card for a material the lab
+        # stopped using is not a thing that room can act on. The history stays
+        # on the equipment panel, which is where somebody is actually looking
+        # into it.
+        wanted = set()
+        for (uid, name, _sid) in by_key:
+            found = qc_series.current_series(by_key, uid, name)
+            if found is not None:
+                wanted.add((uid, name, found.sample_id))
+
+        for (uid, _name, _sid), series in by_key.items():
+            if (uid, _name, _sid) not in wanted:
+                continue
             pts = series.points[-CHART_POINTS:]
             if not pts:
                 continue

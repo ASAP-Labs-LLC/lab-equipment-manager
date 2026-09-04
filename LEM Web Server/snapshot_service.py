@@ -28,6 +28,7 @@ data without saying how old it is, is how a stopped module passes for a live one
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1181,8 +1182,21 @@ def bench_config_from_tables(tables: Dict[str, List[dict]],
 
 
 def build_machines(tables: Dict[str, List[dict]], now: datetime,
-                   beat_is_fresh, status_colors: dict) -> dict:
-    """Raw batched rows → the /api/machines payload."""
+                   beat_is_fresh, status_colors: dict,
+                   last_qc: Optional[Dict[tuple, dict]] = None) -> dict:
+    """Raw batched rows → the /api/machines payload.
+
+    `last_qc` is the newest QC verdict per (machine_uid, test_name) out of
+    the local log copy — `LogMirror.latest_qc`. It is what says which
+    STANDARD a remembered verdict was made against, which the snapshot
+    cannot answer on its own: the `event` arm is the newest 60 rows
+    lab-wide of every kind, and a GROUP BY over the whole log in the
+    batched read would be the unindexed SMB scan that blocks the lab.
+
+    None means the copy could not be consulted, and that is UNKNOWN, not
+    'no QC has ever been run' — the specs are then left exactly as the
+    bench published them.
+    """
     from qc_specs import QcSpec
 
     schedule = schedule_from_tables(tables)
@@ -1221,20 +1235,135 @@ def build_machines(tables: Dict[str, List[dict]], now: datetime,
         except (TypeError, ValueError):
             return None
 
+    # WHICH STANDARD EACH REMEMBERED VERDICT WAS ACTUALLY MADE AGAINST.
+    #
+    # `lem_machine_specs.last_qc_*` is the bench's cache of its own last
+    # verdict, and `carry_last_qc` there copies it across a change of standard
+    # (it matches on test name and knows nothing about the material). Live on
+    # 3 Sep 2026 that put Multitek S's 24-Aug AO25 reading of 4.87 on its AF26
+    # spec, under AF26's 2.08..3.44 band, flagged "in spec" — three true
+    # fields making one false sentence, and the same stale verdict is what
+    # `evaluate_machine` judges on between parses.
+    #
+    # The log records the `lab_id` of every verdict, so the floor can check the
+    # cache against the record rather than waiting for a module release. The
+    # `event` arm already carries it; no new arm, no extra read.
+    # Two indexes, not a scan. The second-precision one exists because the
+    # miss is the COMMON case here — a verdict older than the event cap is
+    # never in this table at all — and a linear walk on every miss is 18 specs
+    # times the whole event window on every snapshot parse.
+    qc_standard: Dict[tuple, str] = {}
+    qc_standard_sec: Dict[tuple, str] = {}
+    for r in tables.get("event") or []:
+        if str(_f(r, "c3")) != "qc":
+            continue
+        name = str(_f(r, "c5"))
+        if not name:
+            continue
+        uid, ts, lab_id = str(_f(r, "c1")), str(_f(r, "c2")), str(_f(r, "c4"))
+        qc_standard.setdefault((uid, name, ts), lab_id)
+        qc_standard_sec.setdefault((uid, name, ts[:19]), lab_id)
+
+    def _verdict_standard(uid, test_name, at):
+        """The standard the verdict AT that instant was measured against.
+
+        None means the log cannot account for it — the event arm is capped, so
+        a verdict older than the window simply is not in here. NOT EVIDENCE OF
+        A MISMATCH: withholding a reading on unknown would blank the panel for
+        every instrument whose last QC predates the cap, which is the
+        failed-read-is-not-an-empty-result rule in its display form.
+
+        Matched on the exact timestamp the module wrote to both rows, then on
+        second precision, because the two fields are written from one datetime
+        and a formatting difference between them should not read as a change
+        of material.
+        """
+        if not at:
+            return None
+        exact = qc_standard.get((uid, test_name, at))
+        if exact is not None:
+            return exact
+        return qc_standard_sec.get((uid, test_name, at[:19]))
+
     effective: Dict[str, list] = {}
     for r in tables.get("espec") or []:
         at, _sep, flag = str(_f(r, "c9")).partition("|")
-        effective.setdefault(str(_f(r, "c1")), []).append({
-            "test_name": str(_f(r, "c2")),
+        uid, test_name = str(_f(r, "c1")), str(_f(r, "c2"))
+        sample_id = str(_f(r, "c7"))
+        # THE LAST CONTROL RESULT AGAINST THE STANDARD THIS SPEC NAMES.
+        #
+        # `last_qc_*` on the spec is the bench's cache of its own last verdict,
+        # and `carry_last_qc` there copies it across a change of standard — it
+        # matches on test name and knows nothing about the material. Live on
+        # 3 Sep 2026 that put Multitek S's 24-Aug AO25 reading of 4.87 under
+        # AF26's 2.08..3.44 band, marked "in spec", while the bench's real
+        # AF26 result of 2.875 sat in the log unread.
+        #
+        # The log is the record and the cache is a cache, so where the copy can
+        # answer, the copy wins. Three outcomes, and the third is the one that
+        # keeps this safe:
+        #
+        #   a verdict on THIS standard      -> show it; it is the record
+        #   none here, but one on another   -> the changeover: nothing has been
+        #                                      run against the new standard yet
+        #   nothing for this test at all    -> UNKNOWN. The copy fills
+        #                                      incrementally, so silence is not
+        #                                      evidence, and the bench's own
+        #                                      published spec stands.
+        #
+        # Two earlier versions of this compared the NEWEST verdict's standard
+        # instead, and both passed Multitek S straight through: its newest
+        # verdict really was on AF26. Only replaying real production rows
+        # showed it — the fixtures agreed with the bug twice.
+        against, on_this = None, None
+        if last_qc is not None and sample_id:
+            on_this = last_qc.get((uid, test_name, sample_id))
+            if on_this is None:
+                others = [v for (m, t, sid), v in last_qc.items()
+                          if m == uid and t == test_name and sid != sample_id]
+                if others:
+                    against = max(others, key=lambda v: v["ts"])["lab_id"]
+        # The event arm is the SECOND source, not merely the no-mirror case: a
+        # copy that is filled can still hold nothing about this instrument and
+        # test, and the arm's sixty rows are exactly where a verdict written
+        # moments ago will be. Consulted whenever the copy gave no positive
+        # answer either way.
+        if against is None and on_this is None:
+            against = _verdict_standard(uid, test_name, at)
+
+        stale = bool(sample_id) and against is not None and against != sample_id
+        value = _num(str(_f(r, "c8")).split("~")[0])
+        # Three states, not two: in spec, out of spec, or never measured.
+        in_spec = None if flag.strip() == "" else bool(int(float(flag)))
+        shown_at = at
+        if stale:
+            value, in_spec, shown_at = None, None, ""
+        elif on_this is not None:
+            value = _num(on_this.get("value"))
+            shown_at = on_this.get("ts") or at
+            try:
+                detail = json.loads(on_this.get("detail") or "{}")
+            except (TypeError, ValueError):
+                detail = {}
+            recorded = detail.get("in_spec") if isinstance(detail, dict) else None
+            # The verdict the bench RECORDED, never one recomputed against
+            # today's band: it was judged with the correction in force at the
+            # time, and 17025 7.11.3 does not restate a reported result. A row
+            # whose detail will not parse keeps its reading and loses its
+            # verdict, which is the tri-state this tree uses everywhere.
+            in_spec = None if recorded is None else bool(recorded)
+        effective.setdefault(uid, []).append({
+            "test_name": test_name,
             "low": _num(_f(r, "c3")), "high": _num(_f(r, "c4")),
             "expected": _num(_f(r, "c5")), "units": str(_f(r, "c6")),
-            "sample_id": str(_f(r, "c7")),
-            "last_qc_value": _num(str(_f(r, "c8")).split("~")[0]),
+            "sample_id": sample_id,
+            "last_qc_value": value,
             "correction": _num(str(_f(r, "c8")).partition("~")[2]) or 0.0,
-            "last_qc_at": at,
-            # Three states, not two: in spec, out of spec, or never measured.
-            "last_qc_in_spec": (None if flag.strip() == ""
-                                else bool(int(float(flag)))),
+            "last_qc_at": shown_at,
+            "last_qc_in_spec": in_spec,
+            # So the panel can say WHY there is no reading, rather than
+            # implying this instrument has simply never been checked.
+            "last_qc_superseded_by": against if stale else "",
         })
 
     subs = {str(_f(r, "c1")): {"qc": str(_f(r, "c2")) or "UNKNOWN",

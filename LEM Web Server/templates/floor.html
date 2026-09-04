@@ -2833,8 +2833,10 @@ function trendSeriesHtml(s) {
         ${esc(v.message || '')}</p>`).join('');
 
   return `
-      <div class="qc trendrow">
-        <div class="n"><span>${esc(s.test_name)}</span>
+      <div class="qc trendrow${s.superseded ? ' retired' : ''}">
+        <div class="n"><span>${esc(s.test_name)}${s.superseded
+          ? ` <span class="pmark">retired standard ${esc(s.sample_id)}</span>`
+          : ''}</span>
           <span class="val" style="color:${last.in_spec === false ? 'var(--red)'
             : last.in_spec === true ? 'var(--green)' : 'var(--ink3)'}">${
             esc(String(last.value == null ? '—' : last.value))}</span></div>
@@ -2882,18 +2884,30 @@ function trendSeriesHtml(s) {
                    : 'none recorded'}</span>
           <span class="ktarget"><i></i>target ${band ? trendNum(band.expected, 1)
                                                      : '—'}</span>
-          <span class="kzone"><i></i>Shewhart zones — this equipment's own
-            spread${zoneText ? ': ' + zoneText : ' (not enough results)'}</span>
-          <span class="kmean"><i></i>observed mean ${trendNum(obs.mean)}
-            · s ${trendNum(obs.s, 3)} · n ${trendNum(obs.n, 0)}
-            · df ${trendNum(obs.df, 0)}</span>
+          <span class="kzone"><i></i>${s.limits_source === 'certificate'
+            ? `control limits — the standard's assigned value ${
+                trendNum(obs.mean)} ± its own s`
+            : "Shewhart zones — this equipment's own spread"}${
+            zoneText ? ': ' + zoneText
+            : s.limits_source === 'unreadable'
+              ? ' — the certificate could not be read, so none are drawn'
+              : ' (no certificate on file)'}</span>
+          <span class="kmean"><i></i>${s.limits_source === 'certificate'
+            ? `assigned value ${trendNum(obs.mean)} · certificate s ${
+                trendNum(obs.s, 3)} — from the standard, not from these results`
+            : `observed mean ${trendNum(obs.mean)} · s ${trendNum(obs.s, 3)}
+               · n ${trendNum(obs.n, 0)} · df ${trendNum(obs.df, 0)}`}</span>
         </div>
-        <div class="trendkeys"><span>${band && zones['3s']
-          ? (s.zones_within_band
-             ? 'The 3s zones fall inside the pass band.'
-             : 'The 3s zones reach past the pass band — this equipment’s '
-               + 'own spread is wider than the standard allows for.')
-          : 'Zones and band cannot be compared here.'}</span></div>
+        <div class="trendkeys"><span>${!(band && zones['3s'])
+          ? 'Zones and band cannot be compared here.'
+          : s.limits_source === 'certificate'
+            ? 'Both come from the same certificate, so the pass band is its '
+              + 'own k and the zones are 3s — the band sits inside the 3s '
+              + 'zone by arithmetic, and says nothing about this equipment.'
+            : (s.zones_within_band
+               ? 'The 3s zones fall inside the pass band.'
+               : 'The 3s zones reach past the pass band — this equipment’s '
+                 + 'own spread is wider than the standard allows for.')}</span></div>
         <p class="caveat">${esc(cov.caveat || 'No coverage was reported for this spread.')}</p>
         <div class="trendkeys"><span>spread basis: ${esc(s.spread_basis || '—')}${
           covCounts ? ' · ' + esc(covCounts) : ''}</span></div>
@@ -3135,9 +3149,13 @@ function qcChecksHtml(m) {
               Number(s.correction).toFixed(2)}</b>` : ''}</span>
           <span style="color:${col}">${
             ok === true ? 'in spec' : ok === false ? 'OUT OF SPEC'
-            : 'not yet measured'}${
+            : s.last_qc_superseded_by
+              ? 'not yet run against ' + esc(s.sample_id)
+              : 'not yet measured'}${
             s.last_qc_at ? ' · ' + esc(s.last_qc_at.slice(0, 16).replace('T', ' '))
-                         : ''}</span></div>
+                         : s.last_qc_superseded_by
+                           ? ' · last check was on ' + esc(s.last_qc_superseded_by)
+                           : ''}</span></div>
       </div>`;
     }).join('');
   }

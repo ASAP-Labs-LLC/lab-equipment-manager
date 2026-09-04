@@ -141,30 +141,38 @@ class TestPointsFromRows:
 
 
 class TestSeriesFromRows:
-    def test_one_series_per_machine_and_test(self):
+    def test_one_series_per_machine_test_and_standard(self):
+        # The standard is the third part of the key — see
+        # `TestAChangeoverStartsANewChart` for why it has to be.
         rows = (rows_at_hourly([1.0, 2.0], test_name="Flash Point")
                 + rows_at_hourly([3.0], test_name="Cloud Point")
                 + rows_at_hourly([4.0], test_name="Flash Point",
                                  machine_uid="m2"))
         got = qs.series_from_rows(rows)
-        assert set(got) == {("m1", "Flash Point"), ("m1", "Cloud Point"),
-                            ("m2", "Flash Point")}
-        assert [p.value for p in got[("m1", "Flash Point")].points] == [1.0, 2.0]
+        assert set(got) == {("m1", "Flash Point", "AO25"),
+                            ("m1", "Cloud Point", "AO25"),
+                            ("m2", "Flash Point", "AO25")}
+        assert [p.value for p in
+                got[("m1", "Flash Point", "AO25")].points] == [1.0, 2.0]
 
     def test_the_pass_band_is_the_latest_one_the_log_carries(self):
-        # A standard gets re-certified; the band moves. The chart draws the one
-        # in force now, which is the newest row's, not the first row's.
+        # The SAME lot re-assayed: the band moves and the chart draws the
+        # one in force now, the newest row's, not the first row's. A move
+        # to a DIFFERENT standard is not this — that starts a new chart
+        # rather than moving this one's band. Both rows are AO25.
         rows = [row("2026-08-20T08:00:00", 63.0,
                     detail={"low": 61.0, "high": 65.0, "expected": 63.0}),
                 row("2026-08-20T09:00:00", 63.5,
                     detail={"low": 62.0, "high": 66.0, "expected": 64.0})]
-        band = qs.series_from_rows(rows)[("m1", "Flash Point")].pass_band
+        band = qs.series_from_rows(rows)[
+            ("m1", "Flash Point", "AO25")].pass_band
         assert (band.low, band.high, band.expected) == (62.0, 66.0, 64.0)
 
     def test_a_series_with_no_band_in_the_log_has_no_pass_band(self):
         # Not a band of (0, 0) — a spec nobody recorded is unknown, and a zero
         # width band would report every result out of spec.
-        s = qs.series_from_rows(rows_at_hourly([1.0, 2.0]))[("m1", "Flash Point")]
+        s = qs.series_from_rows(
+            rows_at_hourly([1.0, 2.0]))[("m1", "Flash Point", "AO25")]
         assert s.pass_band is None
 
     def test_series_for_picks_one_out(self):
@@ -196,7 +204,7 @@ class TestSeriesFromRows:
         pm["kind"] = "pm"
         rows.append(pm)
 
-        s = qs.series_from_rows(rows)[("m1", "Flash Point")]
+        s = qs.series_from_rows(rows)[("m1", "Flash Point", "AO25")]
         assert list(s.values) == [63.7, 63.8]
         assert (s.pass_band.low, s.pass_band.high) == (61.6, 65.8)
         assert s.sample_id == "AO25"
@@ -1350,3 +1358,206 @@ class TestTheDefaultPathCannotFireFirmlyExceptOnATrend:
                                                             limits=fixed)}
             for values in self.charts(60))
         assert fired_shift is True
+
+
+# ── a changeover starts a new chart ──────────────────────────────────────────
+#
+# Found live on 3 Sep 2026. The sulfur standard moved AO25 -> AF26 on 2 Sep.
+# `series_from_rows` keyed on (machine_uid, test_name) alone, so 36 AO25
+# readings around 4.99 were pooled with the single AF26 reading of 2.875 and
+# fitted as ONE process. The band correctly followed the newest row to AF26's
+# 2.08..3.44; the points did not. The consequences on the floor:
+#
+#   observed mean 4.934, s 0.463, 3s zones 3.545..6.323
+#   -> the good 2.875 was flagged 1_3s BELOW the lower control limit, with
+#      "Hold every result since the last good check and investigate before
+#      this instrument reports again" printed in red under the chart.
+#
+# A control chart is a statement about ONE material measured repeatedly. Two
+# materials on one chart is not a wide chart, it is a meaningless one, and the
+# lab is judged against it. The standard's Lab ID is therefore part of the
+# series' identity, not a label hung on it afterwards.
+#
+# Ryan, 3 Sep: "new QC sample means new QC chart."
+
+class TestAChangeoverStartsANewChart:
+    def test_a_new_standard_gets_its_own_series(self):
+        rows = (rows_at_hourly([5.0, 5.1], lab_id="AO25", day="2026-08-20")
+                + rows_at_hourly([2.9], lab_id="AF26", day="2026-09-02"))
+        got = qs.series_from_rows(rows)
+        assert set(got) == {("m1", "Flash Point", "AO25"),
+                            ("m1", "Flash Point", "AF26")}
+
+    def test_the_retired_standard_keeps_its_own_points(self):
+        rows = (rows_at_hourly([5.0, 5.1], lab_id="AO25", day="2026-08-20")
+                + rows_at_hourly([2.9], lab_id="AF26", day="2026-09-02"))
+        got = qs.series_from_rows(rows)
+        assert list(got[("m1", "Flash Point", "AO25")].values) == [5.0, 5.1]
+        assert list(got[("m1", "Flash Point", "AF26")].values) == [2.9]
+
+    def test_each_series_keeps_the_band_of_ITS_OWN_standard(self):
+        # The old chart is record. Redrawing it against the new certificate's
+        # limits would restate verdicts already reported (17025 7.11.3) and
+        # would make every historical point read out of spec.
+        old = {"in_spec": True, "low": 4.73, "high": 7.13, "expected": 5.93}
+        new = {"in_spec": True, "low": 2.08, "high": 3.44, "expected": 2.76}
+        rows = [row("2026-08-20T08:00:00", 5.0, lab_id="AO25", detail=old),
+                row("2026-09-02T17:06:41", 2.875, lab_id="AF26", detail=new)]
+        got = qs.series_from_rows(rows)
+        ao = got[("m1", "Flash Point", "AO25")].pass_band
+        af = got[("m1", "Flash Point", "AF26")].pass_band
+        assert (ao.low, ao.high, ao.expected) == (4.73, 7.13, 5.93)
+        assert (af.low, af.high, af.expected) == (2.08, 3.44, 2.76)
+
+    def test_a_retired_series_is_not_relabelled_with_the_current_standard(self):
+        # The old code took the LAST lab_id it saw for the whole series, so a
+        # month of AO25 results was captioned "std AF26" on the panel.
+        rows = (rows_at_hourly([5.0], lab_id="AO25", day="2026-08-20")
+                + rows_at_hourly([2.9], lab_id="AF26", day="2026-09-02"))
+        got = qs.series_from_rows(rows)
+        assert got[("m1", "Flash Point", "AO25")].sample_id == "AO25"
+        assert got[("m1", "Flash Point", "AF26")].sample_id == "AF26"
+
+    def test_series_for_defaults_to_the_standard_in_use_now(self):
+        # `uncertainty.read_series` calls this with (machine, test) and no
+        # standard. Pooling two materials there is the same contamination as
+        # on the chart, and u(Rw) is a signed record.
+        rows = (rows_at_hourly([5.0, 5.1], lab_id="AO25", day="2026-08-20")
+                + rows_at_hourly([2.9], lab_id="AF26", day="2026-09-02"))
+        s = qs.series_for(rows, "m1", "Flash Point")
+        assert s.sample_id == "AF26"
+        assert list(s.values) == [2.9]
+
+    def test_series_for_can_still_be_asked_for_a_retired_standard(self):
+        rows = (rows_at_hourly([5.0, 5.1], lab_id="AO25", day="2026-08-20")
+                + rows_at_hourly([2.9], lab_id="AF26", day="2026-09-02"))
+        s = qs.series_for(rows, "m1", "Flash Point", sample_id="AO25")
+        assert list(s.values) == [5.0, 5.1]
+
+    def test_the_multitek_S_shape_that_started_this(self):
+        # The real series, 3 Sep 2026: 36 AO25 readings then one AF26 at 2.875.
+        # Pooled, the mean is 4.934 and 2.875 sits below the lower 3s limit of
+        # 3.545. Split, the AF26 chart contains exactly the one reading it
+        # should and cannot inherit the retired material's centre.
+        ao25 = rows_at_hourly([4.981, 4.858, 5.071, 5.175, 4.926, 4.926,
+                               5.175, 4.981, 4.858, 5.071, 4.959, 4.832],
+                              lab_id="AO25", day="2026-08-20")
+        af26 = [row("2026-09-02T17:06:41", 2.875, lab_id="AF26",
+                    detail={"in_spec": True, "low": 2.08, "high": 3.44,
+                            "expected": 2.76})]
+        got = qs.series_from_rows(ao25 + af26)
+        current = got[("m1", "Flash Point", "AF26")]
+        assert list(current.values) == [2.875]
+        assert qs.analyse(current).violations == ()
+
+
+# ── the centre line is the certificate, never the observed mean ──────────────
+#
+# `ControlLimits` has always argued for this in its own docstring: "A lab
+# normally FIXES its limits from a qualification period and then judges later
+# results against them, rather than recomputing the mean every time a point
+# arrives — which is a moving target that absorbs the very drift the chart
+# exists to show." `analyse()` has always taken supplied limits. Nothing ever
+# supplied any, so every chart in this lab was self-fitted.
+#
+# A self-fitted centre cannot detect the one thing an assessor asks a control
+# chart about: has this instrument MOVED away from the reference value? An
+# instrument reading 0.5 mg/kg high, consistently, is dead-centre on its own
+# mean and perfectly in control of the wrong number.
+#
+# Ryan, 3 Sep: "make the QC not based on the mean anymore." The centre is the
+# certificate's assigned value; the spread is the certificate's std_dev.
+#
+# `n=0` on these limits is deliberate and load-bearing. `n` means "how many
+# results this s was computed from", and a certificate's sigma was computed
+# from none of THIS lab's results. `df` therefore floors to 0, `self_fitted`
+# is False, and `spread_basis` reports UNKNOWN rather than borrowing the
+# coverage of the points being judged — the s_n/s_df confusion SeriesAnalysis
+# already documents.
+
+class TestLimitsComeFromTheCertificate:
+    AF26 = qs.PassBand(low=2.08, high=3.44, expected=2.76)   # k=2, sd=0.34
+
+    def test_the_centre_is_the_assigned_value_not_the_observed_mean(self):
+        lim = qs.certificate_limits(self.AF26, std_dev=0.34)
+        assert lim.mean == 2.76
+
+    def test_sigma_is_the_certificates_not_the_benchs_scatter(self):
+        lim = qs.certificate_limits(self.AF26, std_dev=0.34)
+        assert lim.s == 0.34
+        assert lim.zone(1) == pytest.approx((2.42, 3.10))
+        assert lim.zone(2) == pytest.approx((2.08, 3.44))   # == the pass band
+        assert lim.zone(3) == pytest.approx((1.74, 3.78))
+
+    def test_sigma_can_be_recovered_from_the_band_when_only_k_is_known(self):
+        # The QC log's detail records expected/low/high but NOT std_dev or k,
+        # so a row on its own cannot say what sigma was. Half the band over k
+        # recovers it exactly: 2.08..3.44 at k=2 is 0.68/2 = 0.34.
+        lim = qs.certificate_limits(self.AF26, k=2.0)
+        assert lim.s == pytest.approx(0.34)
+        assert lim.mean == 2.76
+
+    def test_an_explicit_std_dev_beats_one_derived_from_the_band(self):
+        # The route reads std_dev straight off lem_machine_specs. A band that
+        # disagrees with it is a rounding artefact in the stored low/high, not
+        # a second opinion about the certificate.
+        lim = qs.certificate_limits(self.AF26, std_dev=0.34, k=7.0)
+        assert lim.s == 0.34
+
+    def test_no_sigma_and_no_k_is_no_limits_rather_than_a_guess(self):
+        # A retired standard whose spec row is gone. Drawing zones off an
+        # invented sigma would be a fabricated control limit on a record an
+        # assessor reads.
+        assert qs.certificate_limits(self.AF26) is None
+
+    def test_no_band_at_all_is_no_limits(self):
+        assert qs.certificate_limits(None, std_dev=0.34) is None
+
+    def test_a_band_with_no_assigned_value_has_no_centre_to_use(self):
+        assert qs.certificate_limits(
+            qs.PassBand(low=2.08, high=3.44), std_dev=0.34) is None
+
+    def test_sigma_has_no_degrees_of_freedom_from_these_results(self):
+        lim = qs.certificate_limits(self.AF26, std_dev=0.34)
+        assert (lim.n, lim.df) == (0, 0)
+
+    def test_findings_against_a_certificate_are_firm_not_provisional(self):
+        # Self-fitted limits make every finding provisional, because the
+        # points wrote the limits they are judged by. A certificate did not
+        # come from these points, so a breach of it is a firm finding — and
+        # the shift rule, which is suppressed when self-fitted, is live.
+        pts = qs.points_from_rows(rows_at_hourly([2.7, 2.8, 9.9]))
+        got = qs.analyse(qs.QcSeries(machine_uid="m1", test_name="Flash Point",
+                                     points=pts, pass_band=self.AF26,
+                                     sample_id="AF26"),
+                         limits=qs.certificate_limits(self.AF26, std_dev=0.34))
+        assert got.self_fitted is False
+        assert [v.rule for v in got.violations] == [qs.RULE_1_3S]
+        assert got.firm_violations == got.violations
+
+    def test_a_bench_reading_consistently_high_is_no_longer_in_control(self):
+        # THE CASE A SELF-FITTED CHART CANNOT SEE. Eight readings all ~0.6
+        # above the assigned value, tightly clustered. Fitted to themselves
+        # they are a model process: dead on their own mean, tiny s, nothing
+        # fires. Against the certificate they are a bench that has moved.
+        drifted = [3.35, 3.37, 3.36, 3.38, 3.35, 3.39, 3.36, 3.37]
+        pts = qs.points_from_rows(rows_at_hourly(drifted))
+        series = qs.QcSeries(machine_uid="m1", test_name="Flash Point",
+                             points=pts, pass_band=self.AF26, sample_id="AF26")
+        assert qs.analyse(series).violations == ()          # self-fitted: blind
+        against_cert = qs.analyse(
+            series, limits=qs.certificate_limits(self.AF26, std_dev=0.34))
+        assert against_cert.violations != ()
+
+    def test_the_multitek_S_reading_that_was_wrongly_condemned(self):
+        # 2.875 against AF26 (2.76 +/- 0.34) is 0.34 sigma high — inside 1s.
+        # The pooled self-fitted chart called it a 3s excursion and told the
+        # lab to hold every result since the last good check.
+        pts = qs.points_from_rows([row("2026-09-02T17:06:41", 2.875,
+                                       lab_id="AF26")])
+        got = qs.analyse(qs.QcSeries(machine_uid="m1", test_name="Flash Point",
+                                     points=pts, pass_band=self.AF26,
+                                     sample_id="AF26"),
+                         limits=qs.certificate_limits(self.AF26, std_dev=0.34))
+        assert got.violations == ()
+        assert got.mean == 2.76

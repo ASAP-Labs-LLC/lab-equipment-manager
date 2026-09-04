@@ -38,11 +38,12 @@ it is behind, and says so — a cache that empties itself during a blip reports 
 lab with no history, and on a 17025 panel that is a statement about the record.
 """
 
+import json
 import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 from labcore_result import LabCoreError, LabCoreUnavailable
 
@@ -83,6 +84,23 @@ CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _failed(detail) -> bool:
+    """Did the bench record this reading as OUT OF SPEC?
+
+    Only an explicit False counts. A detail that will not parse, or one with
+    no verdict in it, is UNKNOWN and never a failure — inventing one would put
+    a red reading on a panel about a row whose formatting was wrong.
+    """
+    if isinstance(detail, dict):
+        parsed = detail
+    else:
+        try:
+            parsed = json.loads(detail or "{}")
+        except (TypeError, ValueError):
+            return False
+    return isinstance(parsed, dict) and parsed.get("in_spec") is False
 
 
 class LogMirror:
@@ -384,6 +402,65 @@ class LogMirror:
             row = self._db.execute(
                 "SELECT COALESCE(MAX(rowid_src), 0) m FROM log").fetchone()
             return int(row["m"])
+
+    def latest_qc(self) -> Dict[tuple, dict]:
+        """The newest QC verdict per (machine_uid, test_name), from the copy.
+
+        WHICH STANDARD a verdict was made against is the thing the floor cannot
+        otherwise know. `lem_machine_specs.last_qc_*` is the bench's own cache
+        of its last verdict and `carry_last_qc` there carries it across a
+        change of standard, so on 3 Sep 2026 Multitek S showed a 24-Aug AO25
+        reading under AF26's band, marked in spec.
+
+        It is answered from here rather than from the snapshot for two reasons.
+        The snapshot's `event` arm is the newest 60 rows LAB-WIDE, of every
+        kind, so a QC verdict from last week is simply not in it. And a
+        `GROUP BY` over `lem_machine_log` in the batched read would be an
+        unindexed scan of 220k rows on the SMB share, which is the exact
+        pattern that trips LabCore's 8-second watchdog and blocks every write
+        in the building — see LOG_INDEX_DDL on the bench. This file is local.
+
+        KEYED BY THE STANDARD TOO — (machine_uid, test_name, lab_id) — because
+        the question is not "what was measured last" but "has this instrument
+        ever been checked against the standard it is assigned NOW". Keying on
+        (machine, test) alone answers the first, and the first is useless here:
+        Multitek S's newest verdict WAS against AF26, so a newest-only check
+        found no disagreement and passed the 24-Aug AO25 reading straight
+        through. That flaw survived one end-to-end run and was caught only by
+        replaying real rows a second time.
+
+        An empty answer means the copy has not filled yet, and the caller must
+        treat that as UNKNOWN rather than as "no QC has ever been run".
+        """
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT machine_uid, test_name, ts, lab_id, value, detail "
+                "FROM log WHERE kind = 'qc' AND test_name != '' "
+                "ORDER BY ts, rowid_src").fetchall()
+        out: Dict[tuple, dict] = {}
+        for r in rows:
+            uid, test_name, ts, lab_id, value, detail = (
+                r["machine_uid"], r["test_name"], r["ts"], r["lab_id"],
+                r["value"], r["detail"])
+            key = (str(uid or ""), str(test_name or ""), str(lab_id or ""))
+            ts = str(ts or "")
+            row = {"ts": ts, "lab_id": str(lab_id or ""),
+                   "value": value, "detail": detail}
+            was = out.get(key)
+            # Ascending, so a later timestamp simply wins.
+            if was is None or ts > was["ts"]:
+                out[key] = row
+                continue
+            # A TIE IS A BATCH, AND A FAILURE IN IT IS THE VERDICT. A bench
+            # logs a whole print at one instant: Multitek NS wrote seven
+            # readings at 17:05:14 on 3 Sep, six around 2.79 and one at 5.248
+            # that put it on RED. Taking whichever row happened to be last
+            # made the panel say "2.78 · in spec" underneath a red dot, about
+            # the very batch that failed. Same precedence as everywhere else
+            # here — RED outranks GREEN — so a recorded failure wins the tie.
+            if ts == was["ts"] and _failed(detail) and not _failed(was["detail"]):
+                out[key] = row
+        return out
 
     def state(self) -> dict:
         """What this mirror is, so a page can say it rather than imply it."""
