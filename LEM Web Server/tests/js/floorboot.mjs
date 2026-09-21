@@ -2893,8 +2893,16 @@ if (!failed) {
   sandbox.showTip(machine, {x: 400, y: 300});
   const tip = el('#tip').innerHTML;
   claim('the hover tip never renders NaN', !/NaN/.test(tip));
+  /* 2026-09-21: the band reads low – TARGET – high at two decimals, with the
+   * target the large one (Ryan: the number a person hovering came for was the
+   * smallest thing on the card, and the centre was not there at all). The
+   * claim is still about the numbers RENDERED, whichever list they came off. */
   claim('…and draws the effective band the module published',
-        /-16\.0\s*…\s*-12\.0/.test(tip));
+        /-16\.00[\s\S]*?-12\.00/.test(tip));
+  claim('…with the target it was published around, between the limits',
+        /-16\.00[\s\S]*?-14\.00[\s\S]*?-12\.00/.test(tip));
+  claim('…and the whole test name, not sixteen characters of it',
+        /Cloud Point/.test(tip));
 
   /* A machine whose only QC is an override — qc_specs populated,
    * effective_specs empty, which is exactly what a bench that has not

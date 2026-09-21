@@ -87,6 +87,23 @@
   .qc .lim > span{white-space:nowrap;min-width:0;overflow:hidden;
                   text-overflow:ellipsis}
   .qc .val{float:right;font-family:var(--mono);font-size:12px}
+  /* A standard's row reads low – TARGET – high: the certified value is the
+     point of the row, so it is the emphasised one. */
+  .qc .lim .lim3{display:inline-flex;align-items:baseline;gap:5px}
+  .qc .lim .lim3 .tg{color:var(--amber);font-weight:800;font-size:12px}
+  .qc .lim .lim3 .dash,.qc .lim .lim3 .un{color:var(--ink3)}
+
+  /* Signed out looks signed out. The header carries a read-only pill, Sign in
+     is outlined in amber, and every control that changes the lab is dimmed
+     but still answers a click — with the sign-in prompt — because a dead
+     button is indistinguishable from a broken one. */
+  .bar .who{font-size:10px;color:var(--ink3);white-space:nowrap}
+  .bar .who .ro{color:var(--amber);font-weight:800;letter-spacing:.12em;
+                text-transform:uppercase}
+  .tool.attn{border-color:var(--amber);color:var(--amber);
+             box-shadow:0 0 0 1px rgba(255,170,60,.25)}
+  body.anon .gated{opacity:.45;filter:saturate(.25);cursor:not-allowed}
+  body.anon .gated:hover{opacity:.7}
 
   /* ── one flagged piece of equipment in the rail ──
      This card used to put the reason, the level name and the corrective-action
@@ -313,6 +330,17 @@
   .tip .row{display:flex;justify-content:space-between;gap:14px;font-size:11px;
             padding:2px 0;color:var(--ink2)}
   .tip .row b{color:var(--ink);font-family:var(--mono);font-weight:500}
+  /* The band is what a person hovering came for: what should this instrument
+     read, and how far either side is still fine. The target is the headline,
+     the limits flank it, and the status rows above stay small. */
+  .tip .band{margin-top:7px;padding-top:6px;border-top:1px solid var(--edge)}
+  .tip .bn{font-size:10px;color:var(--ink3);margin-bottom:2px;white-space:nowrap}
+  .tip .lim3{display:flex;align-items:baseline;gap:7px;font-family:var(--mono);
+             font-size:14px;color:var(--ink);white-space:nowrap}
+  .tip .lim3 .tg{font-size:22px;font-weight:800;color:var(--amber);line-height:1}
+  .tip .lim3 .dash{color:var(--ink3)}
+  .tip .lim3 .un{font-size:10px;color:var(--ink3);margin-left:2px}
+  .tip .lim3.none{font-size:10px;color:var(--ink3);font-family:var(--ui)}
 
   .legend{position:absolute;left:16px;bottom:14px;display:flex;gap:12px;
           align-items:center;font-size:10px;color:var(--ink3);
@@ -908,12 +936,12 @@
          lab — where the picker and the steppers are hidden, because there is
          nothing to pick and nowhere to step, and this is the only way to make
          the first level. -->
-    <button class="tool" id="btnLevels"
+    <button class="tool gated" id="btnLevels"
             title="Create, rename and delete levels, and choose the one the
 floor opens on">Levels…</button>
     <span class="sep"></span>
     <button id="btnQc" class="tool">QC samples</button>
-    <button id="btnHours" class="tool"
+    <button id="btnHours" class="tool gated"
             title="Working days and holidays — when silence is expected">Lab hours</button>
     <a class="tool" id="btnExport" href="/api/export/qc.csv"
        title="Every QC check across the lab, as CSV">Export</a>
@@ -921,7 +949,7 @@ floor opens on">Levels…</button>
     <button id="btnMax" class="tool"
             title="Maximal map — hide the side panels (Esc to leave)"
             aria-label="Maximal map view">⤢ Max map</button>
-    <button id="btnLock" class="tool"
+    <button id="btnLock" class="tool gated"
             title="Lock or unlock the floor layout">Locked</button>
     <button id="btnArrange" class="tool"
             title="Move equipment around the site, or lay the whole floor out at once">⇄ Arrange</button>
@@ -1077,7 +1105,8 @@ view stops the 3D renderer entirely, so it costs a bench PC almost nothing.">▦
     <div class="sheet">
       <div class="row" style="justify-content:space-between;align-items:baseline">
         <h3 class="sign">QC samples</h3>
-        <button class="tool" id="qcNew">New standard</button>
+        <button class="tool gated" id="qcNew"
+                title="Sign in to add a standard">New standard</button>
       </div>
       <p class="sub">A standard is defined once and shared by every piece of
        equipment.
@@ -2093,6 +2122,19 @@ function panelSignature(m) {
   ]);
 }
 
+/* One band, drawn one way everywhere: low, then the TARGET large, then high,
+ * then the unit. A standard IS its certified value and the span is derived
+ * from it, so the centre is the headline and the limits flank it. Used by the
+ * hover tip, the QC library and the assign sheet, so a person reads the same
+ * shape in all three. A value the row does not carry is a dash, never "NaN". */
+function bandHtml(low, expected, high, units) {
+  const n = v => Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—';
+  return `<span class="lim3"><span class="lo">${n(low)}</span><span class="dash">–</span>`
+    + `<b class="tg">${n(expected)}</b><span class="dash">–</span>`
+    + `<span class="hi">${n(high)}</span>`
+    + (units ? `<span class="un">${esc(units)}</span>` : '') + `</span>`;
+}
+
 // `at` is a viewport point — the pointer, or the world's own projection of the
 // instrument. The tip is positioned inside .stage, so it has to come back to
 // stage-relative coordinates.
@@ -2113,11 +2155,16 @@ function showTip(m, at) {
    * override exists. That arithmetic is the module's, it is the number the
    * pass/fail boundary is drawn at, and a second copy of it on the floor is
    * exactly the drift `spec_band`'s own docstring exists to prevent. A row
-   * with no published band shows its name and no numbers. */
-  const spec = (m.effective_specs || [])[0] || (m.qc_specs || [])[0];
-  const band = spec && Number.isFinite(Number(spec.low))
-                    && Number.isFinite(Number(spec.high))
-    ? `${Number(spec.low).toFixed(1)}…${Number(spec.high).toFixed(1)}` : '—';
+   * with no published band shows its name and no numbers.
+   *
+   * EVERY published band, not the first, with the whole test name and the
+   * target in the middle: what should this instrument read, and how far either
+   * side is still fine, is the one thing a person hovering came for, and it
+   * was the smallest line on the card, cut at 16 characters, with no centre. */
+  const bands = (m.effective_specs || []).filter(s =>
+    s && Number.isFinite(Number(s.low)) && Number.isFinite(Number(s.high)));
+  const unpublished = bands.length ? []
+    : (m.qc_specs || []).filter(s => s && s.test_name);
   $('#tip').innerHTML = `
     <div class="hd">${esc(m.title)}</div>
     <div class="bd">
@@ -2133,8 +2180,12 @@ function showTip(m, at) {
       <div class="row"><span>Last data</span><b>${esc(ago(m.last_activity))}</b></div>
       <div class="row"><span>Last QC</span><b>${
         lastQcAt(m) ? esc(ago(lastQcAt(m))) : '—'}</b></div>
-      ${spec ? `<div class="row"><span>${esc(String(spec.test_name || '').slice(0, 16))}</span>
-        <b>${band}</b></div>` : ''}
+      ${bands.map(s => `<div class="band">
+        <div class="bn">${esc(String(s.test_name || ''))}</div>
+        ${bandHtml(s.low, s.expected, s.high, s.units)}</div>`).join('')}
+      ${unpublished.map(s => `<div class="band">
+        <div class="bn">${esc(String(s.test_name || ''))}</div>
+        <span class="lim3 none">no band published yet</span></div>`).join('')}
     </div>`;
   const tip = $('#tip');
   tip.style.left = px + 'px'; tip.style.top = py + 'px';
@@ -3257,7 +3308,7 @@ async function select(m) {
            on a five-method instrument you scrolled past fifty lines of
            statistics to reach them. -->
       <div class="railact railact-top">
-        <button class="tool" id="actQc">Assign QC samples…</button>
+        <button class="tool gated" id="actQc">Assign QC samples…</button>
         <button class="tool" id="actQcLib">QC standards library…</button>
       </div>
 
@@ -4040,12 +4091,14 @@ function renderQcLib() {
       <div class="n">${esc(s.name)}
         <span style="color:var(--accent)">· ${esc(s.sample_id_val)}</span>
         <span class="val">
-          <button class="tool" data-editsample="${esc(s.name)}">Edit</button>
-          <button class="tool" data-changeover="${esc(s.name)}">Changeover</button>
+          <button class="tool gated" data-editsample="${esc(s.name)}"
+                  title="Sign in to change this standard">Edit</button>
+          <button class="tool gated" data-changeover="${esc(s.name)}"
+                  title="Sign in to change over to a new lot">Changeover</button>
         </span></div>
       ${(s.tests || []).map(t => `<div class="lim" style="padding:3px 0">
         <span>${esc(t.name)}</span>
-        <span>${Number(t.low).toFixed(2)} … ${Number(t.high).toFixed(2)} ${esc(t.units || '')}</span>
+        ${bandHtml(t.low, t.expected, t.high, t.units)}
       </div>`).join('') || '<div class="lim"><span>No tests yet.</span></div>'}
     </div>`).join('')
     : '<p class="empty">No standards yet. Add one, then assign it to '
@@ -5761,12 +5814,20 @@ $('#btnLock').addEventListener('click', async () => {
 });
 
 function paintTools() {
+  // Signed out looks signed out. The header used to go quiet (the span was
+  // hidden) and Sign in looked like any other tool, so a person could stand
+  // at a read-only screen pressing buttons that did nothing and not know why.
+  // `body.anon` is what dims every `.gated` control below.
+  document.body.classList.toggle('anon', !AUTHED);
   const who = $('#who');
-  who.hidden = !AUTHED;
+  who.hidden = false;
+  who.classList.toggle('anon', !AUTHED);
   who.innerHTML = AUTHED
-    ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
+    ? `signed in <b>${esc(WHO || 'unknown')}</b>`
+    : `<span class="ro">read-only</span> · sign in to make changes`;
   $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
   $('#btnAuth').classList.toggle('live', AUTHED);
+  $('#btnAuth').classList.toggle('attn', !AUTHED);
   const q = $('#btnQuality');
   if (q && WORLD) {
     const mode = WORLD.engine.qualityMode;
@@ -7095,8 +7156,8 @@ function openMenu(m, evt) {
   menu.innerHTML = `
     <div class="mt">${esc(m.title)}</div>
     <button data-act="open">Open record</button>
-    <button data-act="qc" ${AUTHED ? '' : 'disabled'}>Assign QC samples…</button>
-    <button data-act="corr" ${AUTHED ? '' : 'disabled'}>Correction factors…</button>
+    <button class="gated" data-act="qc" ${AUTHED ? '' : 'disabled'}>Assign QC samples…</button>
+    <button class="gated" data-act="corr" ${AUTHED ? '' : 'disabled'}>Correction factors…</button>
     <button data-act="maint">PM &amp; calibration…</button>
     <button data-act="docs">Documents…</button>
     <button data-act="hist">History &amp; corrective actions…</button>
@@ -7289,8 +7350,8 @@ function openQcSheet(m) {
       <label><input type="checkbox" value="${esc(s.name)}||${esc(t.name)}"
         ${chosen.has(`${s.name}||${t.name}`) ? 'checked' : ''}>
         ${esc(t.name)}
-        <span style="margin-left:auto;color:var(--ink3);font-family:var(--mono);font-size:10.5px">
-        ${Number(t.low).toFixed(2)}…${Number(t.high).toFixed(2)}</span></label>`).join('')}
+        <span style="margin-left:auto;font-size:10.5px">
+        ${bandHtml(t.low, t.expected, t.high, t.units)}</span></label>`).join('')}
   `).join('') : '<p class="empty" style="padding:10px">No QC samples defined yet. ' +
       'Add one under Stations &amp; QC first.</p>';
   $('#qcSheet').dataset.uid = m.machine_uid;

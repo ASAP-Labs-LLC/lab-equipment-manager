@@ -236,6 +236,38 @@ feature to do anything.
 Tests: `tests/test_qc_standard_window.py` (49),
 `LEM Station Module/tests/test_qc_standard_window.py` (34).
 
+## The band reads min – TARGET – max, and signed out looks signed out (2026-09-21)
+
+Ryan, with two screenshots: hovering an instrument showed
+"ASTM D7236/D7094  52.3…58.0" in 11px at the bottom of the tip — the one
+number a person hovering wants was the smallest thing on the card, the name
+was cut at 16 characters and the target was not there at all — and the QC
+samples library showed "52.28 … 57.96 C", a span with no centre. A standard IS
+its certified value; the span is derived from it.
+
+- **`bandHtml(low, expected, high, units)`** in `floor.html` is the one way a
+  band is drawn: low, then the target large in amber, then high, then the
+  unit, at two decimals; a value the row does not carry is a dash, never NaN.
+  The hover tip (every PUBLISHED band on the instrument, whole test name), the
+  QC library rows and the assign sheet all call it. The tip still reads bands
+  off `effective_specs` only — the module's published arithmetic — and shows
+  a name without numbers for a per-machine override that has not published.
+- **Readable signed out.** The library's reads were always public
+  (`/api/qc-samples`, `/api/test-names`); `test_floor_bands_and_readonly.py`
+  pins that, and that opening the library never asks for a login.
+- **Signed out looks signed out.** `paintTools` puts `anon` on `<body>`, the
+  header says *read-only · sign in to make changes* instead of hiding the
+  `who` span, Sign in carries `.attn` (amber), and every control that changes
+  the lab carries `gated` — dimmed under `body.anon` but still clickable,
+  because clicking is how you find out what to do (they open the sign-in
+  prompt) and because opening a standard read-only is deliberately allowed
+  (`test_floor_ui.py::test_opening_a_standard_does_not_silently_require_auth`).
+  `pointer-events:none` is asserted absent: a dead button is indistinguishable
+  from a broken one.
+
+MINOR: no `lem_*` column, no `/api/live` change, no verdict rule; the bench
+does not move.
+
 ## The live road: benches push, LabCore records (2026-08-05)
 
 Two roads carrying **different facts**, not the same fact at two speeds.
