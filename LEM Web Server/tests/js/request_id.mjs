@@ -137,5 +137,31 @@ const BODY = {test_name: 'Flash', correction: '0.5'};
   check('bust() keeps the pending id', h.sent[2].id, h.sent[0].id);
 }
 
+// 9. round 3's critic: a kept id must not turn a LATER change into a false
+//    "saved". Save 0.5 (answer lost, id kept), save 0.6 (200), save 0.5
+//    again: the page does reuse the kept id (it cannot tell a late retry from
+//    a new press), so the SERVER refuses the stale replay with 409
+//    superseded (tests/test_correction_transaction.py). What the page must
+//    do with that 409: show the server's sentence, report NOT ok, and drop
+//    the id, so the next press is a new change that really saves 0.5.
+{
+  const sentence = 'This request already set the correction for \u201cFlash\u201d to 0.5, ' +
+    'but a later change replaced it: the correction in force is 0.6. ' +
+    'Nothing was changed now. Press Save again to make it 0.5.';
+  const h = harness([{status: 500, body: {}}, {status: 200, body: {ok: true}},
+                     {status: 409, body: {error: sentence, superseded: true, in_force: 0.6}},
+                     {status: 200, body: {ok: true}}]);
+  await h.LEM.send(URL1, {body: BODY});
+  await h.LEM.send(URL1, {body: {test_name: 'Flash', correction: '0.6'}});
+  const third = await h.LEM.send(URL1, {body: BODY});
+  check('the third press did carry the kept id (why the server must check)', h.sent[2].id, h.sent[0].id);
+  check('the stale replay is not reported as saved', [third.ok, third.replayed], [false, false]);
+  check('the sentence is the server\'s', third.error.startsWith(sentence), true);
+  check('the superseded flag reaches the page', third.body.superseded, true);
+  const fourth = await h.LEM.send(URL1, {body: BODY});
+  check('pressing again is a NEW change', fourth.ok && h.sent[3].id !== h.sent[0].id, true);
+  check('and nothing is left kept', [...h.store.keys()].filter(k => k.startsWith('lemrid:')), []);
+}
+
 console.log(fails ? `\n${fails} FAILED` : '\nall ok');
 process.exit(fails ? 1 : 0);

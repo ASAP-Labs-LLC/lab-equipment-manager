@@ -1331,7 +1331,8 @@ def create_app(gateway, labcore_gateway=None,
             res = gateway.sql(sql, args or [])
         except Exception as exc:                    # transport, not logic
             raise LabCoreUnavailable(
-                "LabCore could not be written to ({0}: {1})".format(
+                "{0} could not be written to ({1}: {2})".format(
+                    "the LEM store" if is_local_store(gateway) else "LabCore",
                     type(exc).__name__, exc)) from exc
         return check_write(res, what=what)
 
@@ -1373,9 +1374,21 @@ def create_app(gateway, labcore_gateway=None,
             super().__init__("already done")
             self.response = response
 
-    def _replay(rid: str):
+    def _replay(rid: str, still_true=None):
         """The stored answer to THIS request if it was already done, a 422
-        if the id was used for a different request, or None.
+        if the id was used for a different request, a 409 if it was done but
+        a later change has since made its answer false, or None.
+
+        `still_true(answer) -> None | (in_force, sentence)`: a replayed 200
+        is read by the page as "this is the state now", and the ledger only
+        knows "this is what that request did". The two agree until somebody
+        changes the same thing again: round 3's critic saved 0.5 (answer
+        lost), saved 0.6, then saved 0.5 again with the page's kept id and
+        was told "correction 0.5" while 0.6 was in force. So the route says
+        what its answer claims about the record, the record is asked, and a
+        claim that is no longer true is never replayed. Nothing is done
+        either: it may be a genuine late retry, and doing it again would
+        overwrite a colleague's later change without a word.
 
         A ledger that cannot be READ is not "not done yet": doing the work
         again on a blip is the duplicate this exists to prevent, so it raises
@@ -1403,20 +1416,33 @@ def create_app(gateway, labcore_gateway=None,
                 "request_id_reused": True})
             response.status_code = 422
             return response
+        status = int(row.get("status") or 200)
+        if still_true is not None and 200 <= status < 300:
+            try:
+                answer = json.loads(row.get("body") or "{}")
+            except ValueError:
+                answer = {}
+            stale = still_true(answer)
+            if stale is not None:
+                in_force, sentence = stale
+                response = jsonify({"error": sentence, "superseded": True,
+                                    "in_force": in_force})
+                response.status_code = 409
+                return response
         response = app.response_class(
-            row.get("body") or "{}", status=int(row.get("status") or 200),
+            row.get("body") or "{}", status=status,
             mimetype="application/json")
         response.headers["X-Request-Replayed"] = "true"
         return response
 
-    def _claim(rid: str) -> None:
+    def _claim(rid: str, still_true=None) -> None:
         """Inside the transaction, before any write: if this id is in the
         ledger now, another copy of the request committed while this one
         waited for the writer. BEGIN IMMEDIATE makes this look-up and the
         ledger INSERT one serialised step, so a burst of identical retries
         is one change and N true answers, never a primary-key clash
         reported as "NOT saved" about a save that landed."""
-        done = _replay(rid)
+        done = _replay(rid, still_true)
         if done is not None:
             raise _AlreadyDone(done)
 
@@ -1442,6 +1468,31 @@ def create_app(gateway, labcore_gateway=None,
              json.dumps({"action": action, "by": session.get("user", ""),
                          **(detail or {})})],
             what="the log line for this change was NOT written")
+
+    def _rolled_back(exc, what: str):
+        """The answer for a correction transaction on the LEM store that did
+        not commit, whatever the reason: a refusal, a raised transport error,
+        a disk error, a bug in a step. JSON, never Flask's HTML 500.
+
+        Worded for what is TRUE of a rolled-back local transaction, which is
+        not what `_labcore_failed` says about a queue: the state is known
+        (nothing changed; `what` says what is still in force), and the
+        database is LEM's own, not LabCore. 503 because pressing again is
+        the right next step, and `retryable` because the same request id is
+        safe to send again: nothing was recorded under it."""
+        logger.warning("correction transaction rolled back: %s: %s",
+                       type(exc).__name__, exc)
+        reason = getattr(exc, "reason", None) or str(exc) or type(exc).__name__
+        return jsonify({
+            "error": "{0}{1}. The LEM store did not commit the change "
+                     "({2}), so all of it was rolled back: nothing was "
+                     "changed and nothing was recorded. Try again in a "
+                     "moment.".format(what[:1].upper(), what[1:],
+                                      str(reason)[:160]),
+            "detail": "{0}: {1}".format(type(exc).__name__, exc),
+            "saved": False, "retry": True, "retryable": True,
+            "store": "rolled_back",
+        }), 503
 
     def _not_saved(exc, what: str):
         """Re-word a refusal raised inside a rolled-back transaction: whatever
@@ -5340,8 +5391,9 @@ def create_app(gateway, labcore_gateway=None,
             # this bench produces, and "a bit" would silently become 0.0.
             return jsonify({"error": f"{raw!r} is not a number."}), 400
         rid = _request_id()
+        still = _correction_still(machine_uid, test_name, correction)
         try:
-            replay = _replay(rid)
+            replay = _replay(rid, still)
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "whether this save was already made")
         if replay is not None:
@@ -5350,7 +5402,7 @@ def create_app(gateway, labcore_gateway=None,
         previous = existing["correction"] if existing else 0.0
         if transactional:
             return _save_correction_in_one_transaction(
-                machine_uid, test_name, correction, previous, body, rid)
+                machine_uid, test_name, correction, previous, body, rid, still)
         # THE write this whole guard exists for. `corrected = raw + correction`
         # is applied to EVERY measurement this bench takes — before the QC
         # verdict, before the LabCore write, before anything is displayed — so a
@@ -5419,8 +5471,40 @@ def create_app(gateway, labcore_gateway=None,
         return jsonify({"ok": True, "test_name": test_name,
                         "correction": correction})
 
+    def _fmt_factor(v) -> str:
+        return "{0:g}".format(float(v))
+
+    def _correction_still(machine_uid, test_name, want):
+        """`still_true` for the correction routes (see `_replay`): the
+        answer claimed `want` is in force (None: that no correction is).
+        Reads the factor table, which every change goes through, with or
+        without an id, so a change made by an older page counts as well."""
+        def check(_answer):
+            now = _corrections(machine_uid).get(test_name)
+            have = None if now is None else now["correction"]
+            if have == want:
+                return None
+            if want is None:
+                did = "removed the correction for “{0}”".format(test_name)
+            else:
+                did = "set the correction for “{0}” to {1}".format(
+                    test_name, _fmt_factor(want))
+            if have is None:
+                now_txt = "no correction for “{0}” is in force".format(test_name)
+            else:
+                now_txt = "the correction in force is {0}".format(
+                    _fmt_factor(have))
+            again = ("Press Remove again to remove it." if want is None else
+                     "Press Save again to make it {0}.".format(
+                         _fmt_factor(want)))
+            return have, ("This request already {0}, but a later change "
+                          "replaced it: {1}. Nothing was changed now. {2}"
+                          ).format(did, now_txt, again)
+        return check
+
     def _save_correction_in_one_transaction(machine_uid, test_name,
-                                            correction, previous, body, rid):
+                                            correction, previous, body, rid,
+                                            still=None):
         """Factor, receipt, log line and ledger row: one commit (W2).
 
         Every step RAISES here, unlike `_record_correction_change` and
@@ -5437,7 +5521,7 @@ def create_app(gateway, labcore_gateway=None,
         _corrections_schema()
         try:
             with gateway.transaction():
-                _claim(rid)
+                _claim(rid, still)
                 # Re-read under the writer: what the receipt calls "previous"
                 # is what this commit replaces, not what was there when the
                 # request arrived and another save may since have changed.
@@ -5467,11 +5551,16 @@ def create_app(gateway, labcore_gateway=None,
                 _ledger(rid, answer)
         except _AlreadyDone as done:
             return done.response
-        except LabCoreUnavailable as exc:
-            return _labcore_failed(
-                exc, "the correction factor for “{0}”".format(test_name))
         except LabCoreRefused as exc:
+            # A step's statement was REFUSED with a reason (busy, or broken
+            # and not worth retrying): `refusal_response` keeps that
+            # distinction and the Retry-After, worded as NOT saved.
             _not_saved(exc, what)
+        except Exception as exc:                        # noqa: BLE001
+            # Anything else inside BEGIN IMMEDIATE … COMMIT — a raised
+            # transport or disk error, a bug in a step — was rolled back by
+            # the store too, and gets the same true sentence, as JSON.
+            return _rolled_back(exc, what)
         # Committed. Only now is there anything for a bench to re-read.
         app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
         _page_drop("logkinds")
@@ -5484,8 +5573,9 @@ def create_app(gateway, labcore_gateway=None,
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         rid = _request_id()
+        still = _correction_still(machine_uid, test_name, None)
         try:
-            replay = _replay(rid)
+            replay = _replay(rid, still)
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "whether this removal was already "
                                             "made")
@@ -5508,7 +5598,7 @@ def create_app(gateway, labcore_gateway=None,
             snapshots.ensure_schema()
             try:
                 with gateway.transaction():
-                    _claim(rid)
+                    _claim(rid, still)
                     existing = _corrections(machine_uid).get(test_name)
                     if existing is None:
                         # Removed by another request while this one waited
@@ -5538,11 +5628,10 @@ def create_app(gateway, labcore_gateway=None,
                     _ledger(rid, answer)
             except _AlreadyDone as done:
                 return done.response
-            except LabCoreUnavailable as exc:
-                return _labcore_failed(
-                    exc, "removing the correction for “{0}”".format(test_name))
             except LabCoreRefused as exc:
                 _not_saved(exc, what)
+            except Exception as exc:                    # noqa: BLE001
+                return _rolled_back(exc, what)
             app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
             _page_drop("logkinds")
             snapshots.refresh_soon()

@@ -5984,11 +5984,21 @@ async function saveCorrection(btn) {
   const r = await LEM.send(`/api/machines/${uid}/corrections`, {
     body: {test_name: test, correction: value},
     fallback: 'The correction was not confirmed.'});
-  if (!r.ok) { $('#corrErr').textContent = r.error; return; }
+  if (!r.ok) { $('#corrErr').textContent = r.error; await superseded(r); return; }
   $('#corrErr').textContent = '';
   LEM.bust('/api/machines');
   await renderCorrections();
   load();
+}
+
+// A 409 "superseded": an earlier copy of this change did land, and a later
+// change has since replaced it. The sentence above says what is in force; the
+// list under it must say the same, so it is re-read now rather than left
+// showing the value the person is being told is no longer there.
+async function superseded(r) {
+  if (!(r.body && r.body.superseded)) return;
+  LEM.bust('/api/machines');
+  await renderCorrections();
 }
 
 async function deleteCorrection(btn) {
@@ -5998,7 +6008,7 @@ async function deleteCorrection(btn) {
   const r = await LEM.send(
     `/api/machines/${uid}/corrections/${encodeURIComponent(test)}`,
     {method: 'DELETE', fallback: 'The removal was not confirmed.'});
-  if (!r.ok) { $('#corrErr').textContent = r.error; return; }
+  if (!r.ok) { $('#corrErr').textContent = r.error; await superseded(r); return; }
   LEM.bust('/api/machines');
   await renderCorrections();
   load();
