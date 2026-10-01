@@ -1394,7 +1394,8 @@
     "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
-    "cell_dup_lands": 0
+    "cell_dup_lands": 0,
+    "suppressed_rereads": 15
    },
    "v4_spec": "0/0 · 0/0 · 0/0"
   },
@@ -2330,7 +2331,7 @@
    "v4_spec": "0/0 (blind; source waits)"
   },
   "T5": {
-   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9_source": "none: the scenario needs a v4 capability (kill_not_reached)",
    "v3.9": null,
    "v4": {
     "lost": 0,
@@ -2338,7 +2339,8 @@
     "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
-    "cell_dup_lands": 0
+    "cell_dup_lands": 0,
+    "tail_repaired": true
    },
    "v4_spec": "0/0; tail repaired"
   },
