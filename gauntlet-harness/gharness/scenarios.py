@@ -96,6 +96,31 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         c.settle()
         return c.tally("K8r serial", "kill between a frame completing and its fsync")
 
+    # ── power loss mid-append (§3.1, §9.2 T5) ───────────────────────────────
+    @new("T5")
+    def t5():
+        """The process dies after the journal write and before its fsync, and
+        the power cut leaves only part of the last line on disk. The restart
+        must cut the torn line off (and keep it aside), re-deliver what the
+        surviving lines hold, and read the torn reading again from the file:
+        0 lost, 0 doubled."""
+        c = W()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.emit(3)
+        c.kill_at("after_journal_before_fsync")
+        c.before_next_restart(c.tear_journal_tail)
+        c.poll()
+        c.assert_killed("after_journal_before_fsync")
+        if not c.torn:
+            raise RuntimeError("T5 tore nothing — it measured nothing")
+        for _ in range(2):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("T5 single_csv", "power loss mid-append: the last journal line torn")
+        t.update(c.journal_check())
+        return t
+
     # ── file shapes (§4) ────────────────────────────────────────────────────
     def line(lab, val):
         return "%s,%s\n" % (lab, val)
@@ -414,7 +439,6 @@ V4_ONLY = {
     "T3": "store restored from a backup: a 409 cursor answer from /api/v2 sync (P7, P11)",
     "T4": "journal deletion with the server reachable: /checkpoint (P1, P7, P8)",
     "T4b": "journal deleted with both roads down: blind mode (P1, P8)",
-    "T5": "power loss mid-append: a torn journal tail to repair (P1)",
     "CF1": "the LabCore factor replica, `config_rev:<uid>` in lem_meta (P8, P9)",
     "CF2": "a factor change while both roads are dark: replica + held readings (P8, P9)",
     "U1": "adoption at the first v4 start (P4)",

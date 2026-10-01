@@ -58,11 +58,13 @@ def test_an_armed_kill_that_is_never_reached_is_an_error(W, loaded):
     from gharness.world import KillNeverReached
     c = W()
     c.emit(3)
-    c.kill_at("after_journal_before_cursor")
+    # A point this worktree has plumbing for but no call site yet: the
+    # combined guard read comes with P3. (P1's journal points are reached now —
+    # K1b, K8r and T5 kill through them.)
+    c.kill_at("after_combined_read")
     c.poll()
     with pytest.raises(KillNeverReached) as e:
-        c.assert_killed("after_journal_before_cursor")
-    # this worktree HAS the plumbing (the call sites come with P1)
+        c.assert_killed("after_combined_read")
     assert "never called" in str(e.value)
 
 

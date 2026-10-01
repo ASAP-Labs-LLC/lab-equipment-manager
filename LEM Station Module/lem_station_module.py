@@ -19,18 +19,23 @@ resolve stringized annotations for a module missing from sys.modules.
 """
 import ast
 import csv
+import hashlib
 import io
 import json
 import operator
 import os
 import re
+import secrets
 import shutil
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -61,7 +66,12 @@ TIMESTAMP_KEYS = ("parsed_date", "parsed_time")
 # methods, or "__raw__" would be written to LabCore as a test name.
 RAW_KEY = "__raw__"
 CORRECTION_KEY = "__corrections__"
-RESERVED_ROW_KEYS = (LAB_ID_KEY, RAW_KEY, CORRECTION_KEY) + TIMESTAMP_KEYS
+# The journal record a row came from ("epoch:seq"), so the results road can
+# tell the journal which readings it has finished with. Bookkeeping, never a
+# measurement: reserved, so no consumer writes it as a test name, a log value
+# or a CSV column. See "The bench journal".
+JOURNAL_KEY = "__journal__"
+RESERVED_ROW_KEYS = (LAB_ID_KEY, RAW_KEY, CORRECTION_KEY, JOURNAL_KEY) + TIMESTAMP_KEYS
 # "manual" is the bench with no parser: an older instrument that prints to paper
 # or to nothing at all, whose readings the operator types in. It ingests nothing
 # — everything after the row is the same path a parsed print takes.
@@ -428,6 +438,839 @@ class FrameAssembler:
                 and t - self._last_feed > self.idle_gap)
 
 
+# ── The bench journal (transfer v4 §3) ───────────────────────────────────────
+#
+# THE BENCH'S OWN CUSTODY OF EVERY READING. Until v4 a reading lived in this
+# module's memory from the moment it came off the instrument until LabCore
+# accepted it, and a LabStation restart, a crash or a reboot at shift change in
+# that window took it with no trace. Phase 1 measured it on the real v3.9.0
+# module: kill a serial bench after the frames are read and before the log
+# write, and three readings are in no store at all (K8); kill it while readings
+# wait for their sample to be logged in, and three results never reach LabCore
+# (K9). A serial frame has no other copy — the instrument does not print twice.
+#
+# So every reading is appended here, fsync'd, BEFORE anything downstream acts
+# on it — before the log row, before the result, before the source is treated
+# as consumed — and a restart re-delivers whatever the journal says was never
+# delivered. The journal is plain files because LabStation intercepts
+# `import sqlite3` in custom modules (transfer-map §5); stdlib only.
+#
+#   <labstation_dir()>/lem_journal/<uid>/
+#     journal.meta      {"epoch","acked","durable","created","module",
+#                        "last_v2_handshake", ...}           atomic replace
+#     seg-000001.jsonl  records, one per line; a new segment at 4 MB
+#     known.idx         replay-suppression keys of pruned segments
+#     bench.key         the per-bench token (§6.4), written once
+#     torn-*.bin        bytes cut off a torn tail, kept for a human
+#
+# A record is canonical JSON (sorted keys) with a CRC32 of exactly those bytes
+# appended as its last field. Records are numbered per bench under an EPOCH,
+# minted only when journal.meta is created: the server keeps one cursor per
+# (uid, epoch), so a new epoch says "this bench numbers from 1 again" and must
+# never happen for any reason other than the meta file being gone.
+
+MODULE_VERSION = "4.0.0-dev"
+
+JOURNAL_DIRNAME = "lem_journal"
+JOURNAL_META_NAME = "journal.meta"
+JOURNAL_KEY_NAME = "bench.key"
+JOURNAL_KNOWN_NAME = "known.idx"
+# A segment is the unit retention deletes. 4 MB is ten thousand ordinary
+# readings: small enough that a pruned file is a few days of a busy bench,
+# large enough that the folder never holds thousands of files.
+JOURNAL_SEGMENT_BYTES = 4 * 1024 * 1024
+# The bench is an independent second copy for this long after a server backup
+# has the record (§3.4). Nothing younger is pruned except under disk pressure.
+JOURNAL_RETENTION_DAYS = 30
+JOURNAL_PRUNE_EVERY = timedelta(hours=1)
+_MB = 1024 * 1024
+# §3.4's disk policy. Warn at 200 MB not yet acknowledged by LEM, or at 80 % of
+# a 500 MB budget. At 1 GB unacknowledged, or under 1 GB free on the disk,
+# prune durable segments early; if that is not enough, PAUSE FILE INGEST — the
+# instrument's file still holds those bytes. Serial and manual readings are
+# never paused: they have no other copy. Nothing is ever dropped.
+JOURNAL_LIMITS = {"warn_unacked": 200 * _MB, "budget": 500 * _MB,
+                  "warn_fraction": 0.8, "pause_unacked": 1024 * _MB,
+                  "min_free": 1024 * _MB}
+# Windows refuses os.replace while another process (an antivirus scan, a
+# backup agent, Explorer's preview) holds the target open — a sharing
+# violation, surfaced as PermissionError, that clears in milliseconds.
+REPLACE_RETRIES = 3
+REPLACE_RETRY_SECONDS = 0.05
+
+_SEGMENT_RE = re.compile(r"^seg-(\d{6,})\.jsonl$")
+# `,"crc":"xxxxxxxx"}` then the newline. Anchored at the very end: only a
+# complete line was ever written and fsync'd as a whole.
+_CRC_TAIL = re.compile(rb',"crc":"([0-9a-f]{8})"\}\n\Z')
+_DIGEST_ZERO = "0" * 64
+
+
+class JournalError(Exception):
+    """The journal could not do what was asked. Never swallowed into "empty":
+    a journal that cannot be read is not a journal with nothing in it."""
+
+
+def _sleep(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def journal_root() -> str:
+    """Where every bench's journal lives. LEM_JOURNAL_DIR overrides it (the
+    gate and tests point it at a temp folder); otherwise LabStation's own data
+    directory, which survives LabStation updates."""
+    override = os.environ.get("LEM_JOURNAL_DIR")
+    if override:
+        return override
+    return os.path.join(labstation_dir(), JOURNAL_DIRNAME)
+
+
+def journal_dir(machine_uid: str) -> str:
+    return os.path.join(journal_root(), _sanitize_filename(machine_uid))
+
+
+def canonical_body(body: dict) -> bytes:
+    return json.dumps(body, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, default=str).encode("utf-8")
+
+
+def journal_line(body: dict) -> bytes:
+    """One record as it is written: the canonical body with its CRC32 appended
+    as the last field. Another program can verify a line without this module:
+    take the line, drop `,"crc":"…"` and the newline, close the brace, CRC it."""
+    if "crc" in body:
+        raise ValueError("a journal record may not carry its own 'crc' field")
+    raw = canonical_body(body)
+    if not raw.endswith(b"}") or raw == b"{}":
+        raise ValueError("a journal record is a non-empty JSON object")
+    return raw[:-1] + b',"crc":"%08x"}\n' % (zlib.crc32(raw) & 0xffffffff)
+
+
+def _line_body(line: bytes) -> Optional[bytes]:
+    """The canonical body bytes of a line whose CRC checks, else None."""
+    m = _CRC_TAIL.search(line)
+    if m is None:
+        return None
+    raw = line[:m.start()] + b"}"
+    if (zlib.crc32(raw) & 0xffffffff) != int(m.group(1), 16):
+        return None
+    return raw
+
+
+def parse_journal_line(line: bytes) -> Optional[dict]:
+    """A record, or None if the line is torn, damaged or not a record. A
+    flipped byte anywhere is None, never a different reading."""
+    raw = _line_body(line)
+    if raw is None:
+        return None
+    try:
+        body = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if (not isinstance(body, dict) or not isinstance(body.get("seq"), int)
+            or not isinstance(body.get("epoch"), str) or not body.get("kind")):
+        return None
+    return body
+
+
+def running_digest(previous_hex: str, body: bytes) -> str:
+    """One step of the reconciliation digest (§3.1): sha256(previous || body).
+
+    A chain rather than one long hash because both ends must carry it across
+    a restart — the bench after old segments are pruned, the server between
+    two syncs — and only a hex value can be saved. The server computes exactly
+    this over the canonical bodies it stored, from d0 = 64 zeros."""
+    return hashlib.sha256(bytes.fromhex(previous_hex) + body).hexdigest()
+
+
+def _local_ts() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _poll_ts(now: datetime) -> str:
+    """A poll's time as a record's `ts`: bench local time WITH its UTC offset
+    (§3.2), so a record read on another machine is not an hour out."""
+    try:
+        return now.astimezone().isoformat(timespec="seconds")
+    except (ValueError, OSError, OverflowError):
+        return _local_ts()
+
+
+# The module re-evaluates the disk policy at most this often: it lists the
+# journal folder and asks the OS for free space.
+JOURNAL_DISK_CHECK_SECONDS = 60.0
+
+# ONE journal object per journal folder per process. Two module instances on
+# one canvas bound to the same instrument would otherwise each number records
+# from their own counter into the same files — two records with one seq, and a
+# server that keeps the first of any (uid, epoch, seq) would silently drop the
+# second. Shared, they number through one lock, and the second instance's
+# re-read of the same file is suppressed by the first's keys instead of being
+# logged twice. Released at module shutdown; a process that dies releases
+# everything, which is the point of a journal.
+_OPEN_JOURNALS: Dict[str, list] = {}
+_OPEN_JOURNALS_LOCK = threading.Lock()
+
+
+def acquire_journal(machine_uid: str) -> "BenchJournal":
+    directory = journal_dir(machine_uid)
+    key = os.path.normcase(os.path.realpath(directory))
+    with _OPEN_JOURNALS_LOCK:
+        entry = _OPEN_JOURNALS.get(key)
+        if entry is not None:
+            entry[1] += 1
+            return entry[0]
+        journal = BenchJournal(directory, machine_uid)
+        _OPEN_JOURNALS[key] = [journal, 1]
+        return journal
+
+
+def release_journal(journal: "BenchJournal") -> None:
+    with _OPEN_JOURNALS_LOCK:
+        for key, entry in list(_OPEN_JOURNALS.items()):
+            if entry[0] is journal:
+                entry[1] -= 1
+                if entry[1] <= 0:
+                    del _OPEN_JOURNALS[key]
+                    journal.close()
+                return
+
+
+def _fsync_dir(path: str, fsync=None) -> None:
+    """Make a create/rename/delete in `path` durable. POSIX only: Windows has
+    no way to open a directory for fsync, and NTFS journals the metadata."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        (fsync or os.fsync)(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def atomic_write(path: str, data: bytes, fsync=None, mode: Optional[int] = None) -> None:
+    """Write `.tmp`, fsync it, then os.replace — so a reader sees the old file
+    or the new one, never half of either. A Windows sharing violation on the
+    replace is retried REPLACE_RETRIES times, REPLACE_RETRY_SECONDS apart."""
+    fsync = fsync or os.fsync
+    tmp = path + ".tmp"
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+        fd = os.open(tmp, flags, mode if mode is not None else 0o666)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            fsync(f.fileno())
+        if mode is not None:
+            os.chmod(tmp, mode)
+        for attempt in range(REPLACE_RETRIES + 1):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == REPLACE_RETRIES:
+                    raise
+                _sleep(REPLACE_RETRY_SECONDS)
+    except Exception:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    _fsync_dir(os.path.dirname(path) or ".", fsync)
+
+
+class BenchJournal:
+    """One bench's journal. Thread-safe: the serial reader thread appends
+    frames while the poll worker appends readings.
+
+    State kept in memory is only what a restart needs: the replay-suppression
+    keys (`known`), the frames no poll has consumed yet, and the readings not
+    yet both PROJECTED (their machine-log row landed) and SETTLED (the results
+    road is done with them). Everything else is on disk."""
+
+    def __init__(self, directory: str, uid: str,
+                 segment_bytes: int = JOURNAL_SEGMENT_BYTES,
+                 disk_usage=None, limits: Optional[dict] = None,
+                 fsync=None) -> None:
+        self.dir = directory
+        self.uid = uid
+        self.segment_bytes = int(segment_bytes)
+        self.limits = dict(JOURNAL_LIMITS)
+        self.limits.update(limits or {})
+        self._disk_usage = disk_usage or shutil.disk_usage
+        self._fsync = fsync or os.fsync
+        self._lock = threading.RLock()
+        self.notices: List[str] = []      # said once to the operator
+        self.repairs: List[dict] = []     # torn tails cut on open
+        self.corrupt_lines = 0            # damaged lines skipped (not torn)
+        self.had_history = False          # records existed when opened
+        self.recovery_done = False        # the module's re-delivery has run
+        self.pause_files = False          # disk policy: file ingest paused
+        self._known: set = set()
+        self._frames: "OrderedDict[str, tuple]" = OrderedDict()
+        self._runs: "OrderedDict[str, dict]" = OrderedDict()
+        self._segments: List[dict] = []
+        self._meta: dict = {}
+        self.epoch = ""
+        self._seq = 0
+        self._frame_no = 0
+        self.acked = 0
+        self.durable = 0
+        self._digest_at = (0, _DIGEST_ZERO)
+        self._last_prune: Optional[datetime] = None
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError as exc:
+            raise JournalError(f"cannot create the journal folder {directory}: "
+                               f"{exc}") from exc
+        with self._lock:
+            self._open()
+
+    # ── opening ──────────────────────────────────────────────────────────────
+
+    def _meta_path(self) -> str:
+        return os.path.join(self.dir, JOURNAL_META_NAME)
+
+    def _segment_files(self) -> List[tuple]:
+        out = []
+        try:
+            names = os.listdir(self.dir)
+        except OSError as exc:
+            raise JournalError(f"cannot list the journal folder: {exc}") from exc
+        for name in names:
+            m = _SEGMENT_RE.match(name)
+            if m:
+                out.append((int(m.group(1)), os.path.join(self.dir, name)))
+        return sorted(out)
+
+    def _read_meta(self) -> tuple:
+        """("ok", dict) | ("missing", None) | ("bad", reason)."""
+        path = self._meta_path()
+        if not os.path.exists(path):
+            return "missing", None
+        try:
+            with open(path, "rb") as f:
+                meta = json.loads(f.read().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            return "bad", str(exc)
+        if not isinstance(meta, dict) or not isinstance(meta.get("epoch"), str) \
+                or not meta.get("epoch"):
+            return "bad", "no epoch in it"
+        return "ok", meta
+
+    def _open(self) -> None:
+        status, meta = self._read_meta()
+        per_epoch_seq: Dict[str, int] = {}
+        per_epoch_frame: Dict[str, int] = {}
+        last_epoch = None
+        segs = self._segment_files()
+        for idx, (n, path) in enumerate(segs):
+            seg = {"n": n, "path": path, "size": 0, "seqs": {}}
+            self._segments.append(seg)
+            for body in self._load_segment(seg, last=(idx == len(segs) - 1)):
+                self.had_history = True
+                ep, seq = body["epoch"], body["seq"]
+                last_epoch = ep
+                prev = per_epoch_seq.get(ep)
+                if prev is not None and seq != prev + 1:
+                    self.notices.append(
+                        f"Journal records of epoch {ep} jump from seq {prev} "
+                        f"to {seq}; the journal has been damaged.")
+                per_epoch_seq[ep] = max(prev or 0, seq)
+                if body.get("kind") == "frame":
+                    per_epoch_frame[ep] = max(per_epoch_frame.get(ep, 0),
+                                              int(body.get("frame_no") or 0))
+                self._apply(body, seg)
+        self._load_known()
+        if status == "ok":
+            self._meta = meta
+        elif status == "missing":
+            self._meta = {"epoch": secrets.token_hex(8), "acked": 0,
+                          "durable": 0, "created": _local_ts(),
+                          "module": MODULE_VERSION, "last_v2_handshake": None,
+                          "uid": self.uid}
+            self._write_meta()
+        else:
+            if last_epoch is None:
+                raise JournalError(
+                    f"journal.meta in {self.dir} cannot be read ({meta}) and "
+                    "there are no records to rebuild it from; refusing to "
+                    "guess this bench's epoch")
+            # Rebuilt, not re-minted: the records say which epoch they are.
+            # acked and durable restart at 0 — the conservative direction:
+            # the next sync resends and the server dedupes; nothing is pruned
+            # until a backup is confirmed again.
+            self._meta = {"epoch": last_epoch, "acked": 0, "durable": 0,
+                          "created": _local_ts(), "module": MODULE_VERSION,
+                          "last_v2_handshake": None, "uid": self.uid,
+                          "rebuilt": _local_ts()}
+            self._write_meta()
+            self.notices.append(
+                f"This bench's journal.meta could not be read ({meta}); it was "
+                f"rebuilt from the records (epoch {last_epoch}).")
+        self.epoch = self._meta["epoch"]
+        self.acked = int(self._meta.get("acked") or 0)
+        self.durable = int(self._meta.get("durable") or 0)
+        self._seq = max(per_epoch_seq.get(self.epoch, 0),
+                        int(self._meta.get("pruned_seq") or 0))
+        self._frame_no = max(per_epoch_frame.get(self.epoch, 0),
+                             int(self._meta.get("pruned_frame") or 0))
+        if self._meta.get("digest_seq"):
+            self._digest_at = (int(self._meta["digest_seq"]),
+                               str(self._meta.get("digest") or _DIGEST_ZERO))
+
+    def _load_segment(self, seg: dict, last: bool):
+        """Yield the segment's valid records. In the LAST segment the first bad
+        line is a torn tail: everything from it on is cut and kept aside. In
+        any other segment a bad line is damage: skipped, counted, said."""
+        try:
+            with open(seg["path"], "rb") as f:
+                data = f.read()
+        except OSError as exc:
+            raise JournalError(f"cannot read {seg['path']}: {exc}") from exc
+        pos = 0
+        while pos < len(data):
+            nl = data.find(b"\n", pos)
+            line = data[pos:] if nl < 0 else data[pos:nl + 1]
+            body = parse_journal_line(line)
+            if body is None:
+                if last:
+                    self._cut_tail(seg, data, pos)
+                    seg["size"] = pos
+                    return
+                self.corrupt_lines += 1
+                self.notices.append(
+                    f"A damaged line in {os.path.basename(seg['path'])} at byte "
+                    f"{pos} was skipped; the records around it are intact.")
+                pos += len(line)
+                continue
+            seg["seqs"][body["epoch"]] = max(seg["seqs"].get(body["epoch"], 0),
+                                             body["seq"])
+            yield body
+            pos += len(line)
+        seg["size"] = len(data)
+
+    def _cut_tail(self, seg: dict, data: bytes, pos: int) -> None:
+        cut = data[pos:]
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        aside = os.path.join(self.dir, f"torn-{seg['n']:06d}-{stamp}-{pos}.bin")
+        try:
+            with open(aside, "wb") as f:
+                f.write(cut)
+                f.flush()
+                self._fsync(f.fileno())
+            with open(seg["path"], "r+b") as f:
+                f.truncate(pos)
+                f.flush()
+                self._fsync(f.fileno())
+        except OSError as exc:
+            raise JournalError(f"cannot repair the torn tail of "
+                               f"{seg['path']}: {exc}") from exc
+        self.repairs.append({"segment": seg["n"], "at": pos,
+                             "cut_bytes": len(cut), "kept_in": aside})
+        self.notices.append(
+            f"The journal's last write was cut short (power loss?): "
+            f"{len(cut)} byte(s) were set aside in {os.path.basename(aside)} "
+            "and the readings in them will be read again from the instrument.")
+
+    def _load_known(self) -> None:
+        path = os.path.join(self.dir, JOURNAL_KNOWN_NAME)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    key = line.strip()
+                    if key:
+                        self._known.add(key)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise JournalError(f"cannot read {path}: {exc}") from exc
+
+    def _apply(self, body: dict, seg: dict) -> None:
+        kind = body.get("kind")
+        ref = f"{body['epoch']}:{body['seq']}"
+        if kind == "frame":
+            self._frames[str(body.get("pk"))] = (str(body.get("text") or ""),
+                                                 seg["n"])
+        elif kind == "consumed":
+            for pk in body.get("pks") or ():
+                self._known.add(str(pk))
+                self._frames.pop(str(pk), None)
+        elif kind == "run":
+            pk = body.get("pk")
+            if pk:
+                self._known.add(str(pk))
+                self._frames.pop(str(pk), None)
+            self._runs[ref] = {"ref": ref, "rec": body, "projected": False,
+                               "settled": False, "segment": seg["n"]}
+        elif kind in ("projected", "settled"):
+            for r in body.get("of") or ():
+                run = self._runs.get(str(r))
+                if run is None:
+                    continue
+                run[kind] = True
+                if run["projected"] and run["settled"]:
+                    del self._runs[str(r)]
+
+    def _write_meta(self) -> None:
+        try:
+            atomic_write(self._meta_path(), canonical_body(self._meta),
+                         fsync=self._fsync)
+        except OSError as exc:
+            raise JournalError(f"cannot write journal.meta: {exc}") from exc
+
+    # ── appending ────────────────────────────────────────────────────────────
+
+    def _segment_for(self, nbytes: int) -> dict:
+        last = self._segments[-1] if self._segments else None
+        if last is not None and (last["size"] == 0
+                                 or last["size"] + nbytes <= self.segment_bytes):
+            return last
+        n = (last["n"] + 1) if last else 1
+        path = os.path.join(self.dir, "seg-%06d.jsonl" % n)
+        try:
+            with open(path, "ab"):
+                pass
+        except OSError as exc:
+            raise JournalError(f"cannot create {path}: {exc}") from exc
+        _fsync_dir(self.dir, self._fsync)
+        seg = {"n": n, "path": path, "size": 0, "seqs": {}}
+        self._segments.append(seg)
+        return seg
+
+    def append(self, records: List[dict], ts: Optional[str] = None) -> List[str]:
+        """Append records and fsync ONCE. Returns their refs ("epoch:seq").
+
+        Nothing is appended for an empty list — an idle poll costs the disk
+        nothing. A failure leaves neither a partial line nor a hole in the
+        numbering: the file is cut back and the error raised."""
+        if not records:
+            return []
+        with self._lock:
+            seq = self._seq
+            stamp = ts or _local_ts()
+            bodies, lines = [], []
+            for rec in records:
+                body = dict(rec)
+                seq += 1
+                body["seq"] = seq
+                body["epoch"] = self.epoch
+                body["uid"] = self.uid
+                body.setdefault("ts", stamp)
+                body.setdefault("module", MODULE_VERSION)
+                lines.append(journal_line(body))
+                bodies.append(body)
+            data = b"".join(lines)
+            seg = self._segment_for(len(data))
+            start = seg["size"]
+            try:
+                with open(seg["path"], "ab") as f:
+                    f.write(data)
+                    f.flush()
+                    # A process kill here leaves the bytes in the OS cache and
+                    # they reach the disk; a power loss may tear them (T5).
+                    globals()["fault_point"]("after_journal_before_fsync")
+                    self._fsync(f.fileno())
+            except Exception as exc:
+                self._cut_back(seg, start)
+                raise JournalError(f"journal append failed: {exc}") from exc
+            seg["size"] = start + len(data)
+            self._seq = seq
+            seg["seqs"][self.epoch] = seq
+            for body in bodies:
+                if body.get("kind") == "frame":
+                    self._frame_no = max(self._frame_no,
+                                         int(body.get("frame_no") or 0))
+                self._apply(body, seg)
+            return [f"{self.epoch}:{b['seq']}" for b in bodies]
+
+    def _cut_back(self, seg: dict, size: int) -> None:
+        try:
+            with open(seg["path"], "r+b") as f:
+                f.truncate(size)
+        except OSError:
+            # The next open finds the partial line and cuts it as a torn tail.
+            pass
+
+    def append_frame(self, text: str, ts: Optional[str] = None) -> str:
+        """Journal one completed serial frame. Returns its replay key
+        (epoch, frame number) — numbers are never reused within an epoch."""
+        with self._lock:
+            n = self._frame_no + 1
+            pk = f"f:{self.epoch}:{n}"
+            self.append([{"kind": "frame", "pk": pk, "frame_no": n,
+                          "text": text}], ts=ts)
+            return pk
+
+    def mark_projected(self, refs) -> List[str]:
+        return self._mark("projected", refs)
+
+    def mark_settled(self, refs) -> List[str]:
+        return self._mark("settled", refs)
+
+    def _mark(self, kind: str, refs) -> List[str]:
+        with self._lock:
+            todo = []
+            for ref in refs or ():
+                run = self._runs.get(str(ref))
+                if run is not None and not run[kind] and str(ref) not in todo:
+                    todo.append(str(ref))
+            if not todo:
+                return []
+            self.append([{"kind": kind, "of": todo}])
+            return todo
+
+    # ── what a restart needs ─────────────────────────────────────────────────
+
+    def known(self, pk) -> bool:
+        with self._lock:
+            return bool(pk) and str(pk) in self._known
+
+    def pending_frames(self) -> List[tuple]:
+        """Frames journaled and never consumed by a poll, oldest first."""
+        with self._lock:
+            return [(pk, text) for pk, (text, _n) in self._frames.items()]
+
+    def open_runs(self) -> List[dict]:
+        """Readings not yet both projected and settled, oldest first."""
+        with self._lock:
+            return [{"ref": r["ref"], "rec": r["rec"],
+                     "projected": r["projected"], "settled": r["settled"]}
+                    for r in self._runs.values()]
+
+    def next_seq(self) -> int:
+        with self._lock:
+            return self._seq + 1
+
+    def set_acked(self, acked: int, durable: Optional[int] = None) -> None:
+        with self._lock:
+            self.acked = int(acked)
+            if durable is not None:
+                self.durable = int(durable)
+            self._meta["acked"] = self.acked
+            self._meta["durable"] = self.durable
+            self._write_meta()
+
+    def note_v2_handshake(self, when: Optional[str] = None) -> None:
+        with self._lock:
+            self._meta["last_v2_handshake"] = when or _local_ts()
+            self._write_meta()
+
+    # ── reading back ─────────────────────────────────────────────────────────
+
+    def _scan(self) -> List[dict]:
+        """Every valid record on disk, in file order."""
+        out = []
+        with self._lock:
+            for seg in self._segments:
+                try:
+                    with open(seg["path"], "rb") as f:
+                        data = f.read(seg["size"])
+                except OSError as exc:
+                    raise JournalError(f"cannot read {seg['path']}: {exc}") from exc
+                for line in data.splitlines(True):
+                    body = parse_journal_line(line)
+                    if body is not None:
+                        out.append(body)
+        return out
+
+    def digest(self, through: Optional[int] = None) -> str:
+        """The reconciliation digest of this epoch's records 1..`through`
+        (default: acked). See `running_digest`."""
+        with self._lock:
+            through = self.acked if through is None else int(through)
+            base_seq, base = self._digest_at
+            pruned_seq = int(self._meta.get("digest_seq") or 0)
+            if through < base_seq:
+                if through < pruned_seq:
+                    raise JournalError(
+                        f"records up to seq {pruned_seq} have been pruned; the "
+                        f"digest through {through} can no longer be computed")
+                base_seq = pruned_seq
+                base = str(self._meta.get("digest") or _DIGEST_ZERO)
+            d, seq = base, base_seq
+            for seg in self._segments:
+                if seg["seqs"].get(self.epoch, 0) <= base_seq:
+                    continue
+                with open(seg["path"], "rb") as f:
+                    data = f.read(seg["size"])
+                for line in data.splitlines(True):
+                    raw = _line_body(line)
+                    if raw is None:
+                        continue
+                    body = json.loads(raw.decode("utf-8"))
+                    if body.get("epoch") != self.epoch:
+                        continue
+                    s = body.get("seq")
+                    if not isinstance(s, int) or s <= seq or s > through:
+                        continue
+                    d, seq = running_digest(d, raw), s
+            if seq != through and through > 0:
+                raise JournalError(f"the journal does not hold seq {seq + 1}"
+                                   f"..{through} of epoch {self.epoch}")
+            self._digest_at = (seq, d)
+            return d
+
+    # ── bench.key ────────────────────────────────────────────────────────────
+
+    def read_bench_key(self) -> Optional[str]:
+        path = os.path.join(self.dir, JOURNAL_KEY_NAME)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return f.read().strip() or None
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise JournalError(f"cannot read bench.key: {exc}") from exc
+
+    def write_bench_key(self, token: str) -> None:
+        """Written ONCE, at enrolment, readable only by this user. A second
+        write is a re-enrolment — an admin decision on the server, not this
+        file's to make."""
+        path = os.path.join(self.dir, JOURNAL_KEY_NAME)
+        with self._lock:
+            if os.path.exists(path):
+                raise JournalError("bench.key already exists; re-enrolment "
+                                   "needs an admin on the LEM server")
+            try:
+                atomic_write(path, (str(token).strip() + "\n").encode("utf-8"),
+                             fsync=self._fsync, mode=0o600)
+            except OSError as exc:
+                raise JournalError(f"cannot write bench.key: {exc}") from exc
+
+    # ── retention and disk ───────────────────────────────────────────────────
+
+    def _segment_busy(self, seg: dict) -> bool:
+        n = seg["n"]
+        return (any(r["segment"] == n for r in self._runs.values())
+                or any(sn == n for _t, sn in self._frames.values()))
+
+    def prune(self, now: datetime, early: bool = False) -> int:
+        """Delete whole segments the bench no longer needs to hold: every
+        record in them is in a completed server backup (<= durable), nothing
+        in them is still owed to LabCore or unread by a poll, and they are
+        older than JOURNAL_RETENTION_DAYS (`early` lifts the age test only, for
+        the disk policy). Only a prefix is pruned, and the segment being
+        written to never is. Their replay keys go to known.idx first."""
+        removed = 0
+        with self._lock:
+            limit = now.timestamp() - JOURNAL_RETENTION_DAYS * 86400
+            for seg in list(self._segments[:-1]):
+                epochs = seg["seqs"]
+                if set(epochs) - {self.epoch}:
+                    break     # an older epoch's records: durability unknown
+                if epochs.get(self.epoch, 0) > self.durable:
+                    break
+                if self._segment_busy(seg):
+                    break
+                try:
+                    mtime = os.path.getmtime(seg["path"])
+                except OSError:
+                    break
+                if not early and mtime > limit:
+                    break
+                keys, last_seq, last_frame = [], 0, 0
+                with open(seg["path"], "rb") as f:
+                    data = f.read(seg["size"])
+                for line in data.splitlines(True):
+                    body = parse_journal_line(line)
+                    if body is None:
+                        continue
+                    last_seq = max(last_seq, body["seq"])
+                    if body.get("kind") == "run" and body.get("pk"):
+                        keys.append(str(body["pk"]))
+                    elif body.get("kind") == "consumed":
+                        keys.extend(str(k) for k in body.get("pks") or ())
+                    elif body.get("kind") == "frame":
+                        last_frame = max(last_frame, int(body.get("frame_no") or 0))
+                d = self.digest(last_seq) if last_seq else None
+                if keys:
+                    with open(os.path.join(self.dir, JOURNAL_KNOWN_NAME), "ab") as f:
+                        f.write("".join(k + "\n" for k in keys).encode("utf-8"))
+                        f.flush()
+                        self._fsync(f.fileno())
+                if last_seq:
+                    self._meta["pruned_seq"] = max(
+                        int(self._meta.get("pruned_seq") or 0), last_seq)
+                    self._meta["digest_seq"] = last_seq
+                    self._meta["digest"] = d
+                if last_frame:
+                    self._meta["pruned_frame"] = max(
+                        int(self._meta.get("pruned_frame") or 0), last_frame)
+                self._write_meta()
+                os.remove(seg["path"])
+                self._segments.remove(seg)
+                removed += 1
+            if removed:
+                _fsync_dir(self.dir, self._fsync)
+        return removed
+
+    def disk_state(self) -> dict:
+        with self._lock:
+            journal_bytes = sum(s["size"] for s in self._segments)
+            unacked = sum(s["size"] for s in self._segments
+                          if s["seqs"].get(self.epoch, 0) > self.acked
+                          or set(s["seqs"]) - {self.epoch})
+            try:
+                free = int(self._disk_usage(self.dir).free)
+            except (OSError, AttributeError, TypeError, ValueError):
+                free = None
+            lim = self.limits
+            hard = (unacked >= lim["pause_unacked"]
+                    or (free is not None and free < lim["min_free"]))
+            warn = (unacked >= lim["warn_unacked"]
+                    or journal_bytes >= lim["budget"] * lim["warn_fraction"])
+            return {"journal_bytes": journal_bytes, "unacked_bytes": unacked,
+                    "free_bytes": free, "hard": hard,
+                    "level": "pause" if hard else ("warn" if warn else "ok")}
+
+    def enforce_disk_policy(self, now: datetime) -> dict:
+        """§3.4, applied: prune what retention allows (hourly); under disk
+        pressure prune durable segments early; if that is not enough, pause
+        FILE ingest. Returns the state with a sentence for the operator."""
+        with self._lock:
+            if (self._last_prune is None
+                    or now - self._last_prune >= JOURNAL_PRUNE_EVERY):
+                self._last_prune = now
+                self.prune(now)
+            st = self.disk_state()
+            st["pruned_early"] = 0
+            if st["hard"]:
+                st["pruned_early"] = self.prune(now, early=True)
+                st = dict(self.disk_state(), pruned_early=st["pruned_early"])
+            self.pause_files = st["hard"]
+            st["pause_files"] = st["hard"]
+            mb = st["unacked_bytes"] / _MB
+            parts = []
+            if st["hard"]:
+                st["level"] = "pause_files"
+                why = (f"{mb:.0f} MB not yet confirmed by LEM"
+                       if st["unacked_bytes"] >= self.limits["pause_unacked"]
+                       else "the disk is nearly full")
+                parts.append(
+                    f"Bench journal: {why} — reading the instrument FILE is "
+                    "paused (the file keeps the data); serial and typed "
+                    "readings are still recorded. Nothing is lost.")
+            elif st["level"] == "warn":
+                parts.append(
+                    f"Bench journal: {mb:.0f} MB waiting for LEM to confirm it "
+                    "(nothing is lost; check this PC can reach LEM).")
+            if st["free_bytes"] is None:
+                parts.append("Free disk space on this PC is unknown (the check "
+                             "failed); the journal keeps recording.")
+            st["message"] = " ".join(parts)
+            return st
+
+    def close(self) -> None:
+        """Nothing is held open between appends; kept for symmetry."""
+        return None
+
+
 # ── The machine universe: one standardized event log per machine ─────────────
 #
 # Everything the machine does lands in lem_machine_log so the LEM web app
@@ -534,12 +1377,28 @@ LOG_EVENT_LIMIT = 20000
 LOG_BATCH_ROWS = 100
 
 
+LOG_INSERT_SQL = ("INSERT INTO lem_machine_log "
+                  "(machine_uid, ts, kind, lab_id, test_name, value, detail) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?)")
+
+
+class _LogEntry(tuple):
+    """A queued machine-log record — `(sql, args)` like every other entry —
+    that also knows which journal record it belongs to, so the drain can tell
+    the journal when that reading's record has landed."""
+    ref = None
+
+
+def _log_entry(args: list, ref: Optional[str]) -> "_LogEntry":
+    entry = _LogEntry((LOG_INSERT_SQL, list(args)))
+    entry.ref = ref
+    return entry
+
+
 def build_log_insert(machine_uid: str, kind: str, ts: datetime,
                      lab_id: str = "", test_name: str = "",
                      value: str = "", detail: Optional[dict] = None) -> tuple:
-    sql = ("INSERT INTO lem_machine_log "
-           "(machine_uid, ts, kind, lab_id, test_name, value, detail) "
-           "VALUES (?, ?, ?, ?, ?, ?, ?)")
+    sql = LOG_INSERT_SQL
     # A name that is ENTIRELY whitespace is stored as '', because that is what
     # it means: no method was named. This is the write half of the pair that
     # let LAST_QC_QUERY stop calling TRIM (see there) — the read predicate can
@@ -1723,18 +2582,107 @@ def tail_new_text(path: str, last_position: int) -> tuple:
     If the file shrank (rotated/truncated), restart from the beginning.
     Returns (new_text, new_position).
     """
-    size = os.path.getsize(path)
-    if last_position > size:
-        last_position = 0
-    with open(path, "rb") as f:
-        f.seek(last_position)
-        data = f.read()
-        new_position = f.tell()
+    data, _start, new_position, _identity = _read_tail(path, last_position)
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         text = data.decode("cp1252", errors="replace")
     return text, new_position
+
+
+def _read_tail(path: str, last_position: int) -> tuple:
+    """(bytes appended since last_position, the offset they start at, the new
+    position, the file's identity). If the file shrank (rotated/truncated),
+    from the beginning. The one place a tailed file is read."""
+    size = os.path.getsize(path)
+    if last_position > size:
+        last_position = 0
+    with open(path, "rb") as f:
+        identity = file_identity(os.fstat(f.fileno()))
+        f.seek(last_position)
+        data = f.read()
+        new_position = f.tell()
+    return data, last_position, new_position, identity
+
+
+class _Print(str):
+    """A device print that carries its journal replay key.
+
+    A str in every other respect, so everything downstream of the ingest —
+    the parser, the template capture, the recent-prints list — treats it
+    exactly as before. `pk` is what the journal's store check compares; `src`
+    and `lh` say what a file line's key was made of (transfer v4 §4.1)."""
+    pk = None
+    src = None
+    lh = None
+
+
+def _keyed(text: str, pk: Optional[str], src: Optional[str] = None,
+           lh: Optional[str] = None) -> "_Print":
+    out = _Print(text)
+    out.pk, out.src, out.lh = pk, src, lh
+    return out
+
+
+_BYTE_LINE = re.compile(rb"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+\Z")
+
+
+def file_identity(st) -> str:
+    """Which FILE this is, as opposed to which path (§4.1's file_id): device
+    and inode, plus the creation time where the platform keeps one. A file
+    rotated away and replaced by a new one under the same name is a different
+    file, and its lines are new readings even where they repeat the old file's
+    bytes at the same offsets (X2: the same QC standards printed again at the
+    top of a new file). Windows has kept a real st_ino since Python 3.5; on a
+    filesystem that reports 0 the creation time (st_ctime there) still tells
+    two files apart."""
+    birth = getattr(st, "st_birthtime", None)
+    if birth is None and os.name == "nt":
+        birth = st.st_ctime
+    return "%s:%s:%s" % (st.st_dev, st.st_ino,
+                         "" if birth is None else repr(float(birth)))
+
+
+def file_line_key(src: str, offset: int, part: int, line_hash: str) -> str:
+    """The replay key of one line of a tailed file: WHERE it is (the file —
+    path and identity — and the byte offset the line starts at) and WHAT it is
+    (its hash). A restarted bench re-reading its file from a stale offset
+    meets the same line at the same offset — the same key, not a new reading.
+    An instrument that prints the same sample and value again writes it at a
+    NEW offset — a new key, a new reading, as it must be.
+
+    The key only ever SUPPRESSES what the offset logic has already decided to
+    read; it never causes a read. So when it cannot recognise a line (a file
+    replaced by a copy of itself), the bench does what it did before v4."""
+    return hashlib.sha256(f"{src}\0{offset}\0{part}\0{line_hash}".encode(
+        "utf-8")).hexdigest()[:32]
+
+
+def tail_new_lines(path: str, last_position: int) -> tuple:
+    """`tail_new_text`, line by line and keyed: ([(offset, part, text,
+    line_hash)], new_position, file identity) for every non-blank line
+    appended since `last_position`. The texts are exactly `tail_new_text`'s
+    `text.splitlines()` minus the blank ones, so the parser sees what it
+    always saw; `offset` is the byte at which the line starts."""
+    data, last_position, new_position, identity = _read_tail(path,
+                                                             last_position)
+    try:
+        data.decode("utf-8")
+        encoding = "utf-8"
+    except UnicodeDecodeError:
+        encoding = "cp1252"
+    out = []
+    for m in _BYTE_LINE.finditer(data):
+        chunk = m.group()
+        if not chunk:
+            continue
+        body = chunk.rstrip(b"\r\n")
+        line_hash = hashlib.sha256(body).hexdigest()[:32]
+        text = chunk.decode(encoding, errors="replace")
+        for part, piece in enumerate(text.splitlines()):
+            if piece.strip():
+                out.append((last_position + m.start(), part, piece, line_hash))
+    return out, new_position, identity
 
 
 # ── Status evaluation (ported from LEM V5.0 data_source.evaluate_box) ────────
@@ -2050,6 +2998,48 @@ def run_log_detail(row: dict) -> dict:
         detail["raw"] = raw
         detail["corrections"] = applied
     return detail
+
+
+def run_log_events(machine: "Machine", rows: List[dict], operator,
+                   calibration_id) -> List[tuple]:
+    """The machine-log records a poll's rows make, in order:
+    (row, kind, lab_id, test_name, value, detail).
+
+    One place, because two callers need the identical answer: the journal
+    records them with the reading (so a restart can re-deliver exactly the
+    rows it would have written), and `_queue_run_events` queues them. See that
+    method for the rules — a QC standard's print logs its 'qc' verdicts and not
+    a 'run', and falls back to a 'run' when no verdict is readable."""
+    out = []
+    for row in rows:
+        lab_id = str(row.get(LAB_ID_KEY) or "").strip()
+        # RESERVED_ROW_KEYS, not just the Lab ID and timestamps: a corrected row
+        # carries its raw readings and offsets, and those are not measurements.
+        raw_by_test = row_raw(row)
+        verdicts = []
+        for spec in machine.tests:
+            if not spec.sample_id:
+                continue
+            if lab_id.lower() != spec.sample_id.strip().lower():
+                continue
+            value = _safe_float(_ci_lookup(row, spec.value_col))
+            if value is None:
+                continue
+            # Already corrected at the parse boundary — adding spec.correction
+            # here would apply it a second time.
+            raw = raw_by_test.get(spec.value_col,
+                                  raw_by_test.get(spec.name, value))
+            verdicts.append((spec, raw, value))
+        if not verdicts:
+            out.append((row, "run", lab_id, "", "", run_log_detail(row)))
+            continue
+        for spec, raw, value in verdicts:
+            # `value` is the corrected number the verdict was made on; the
+            # detail carries the raw reading and the offset when there is one.
+            out.append((row, "qc", lab_id, spec.name, f"{value:g}",
+                        qc_log_detail(spec, raw, value, operator=operator,
+                                      calibration_id=calibration_id)))
+    return out
 
 
 # ── Whose sample is this? ────────────────────────────────────────────────────
@@ -4118,23 +5108,59 @@ def _win_serial_settings(machine) -> tuple:
     )
 
 
-class _RawSerialReader:
+class _FrameSink:
+    """Where a reader puts a COMPLETED frame: through `on_frame` first — the
+    module's journal, which fsyncs it and hands back the frame tagged with its
+    replay key — and only then onto the deque the poll drains.
+
+    That order is the serial half of the custody argument (transfer v4 §3.3).
+    A serial frame has no other copy: the instrument does not print twice, so
+    a frame that sat in memory waiting for the next poll was lost to any kill
+    in between (K8: 3 of 3). Journaled here, on the reader's own thread, the
+    residual is the one frame whose fsync a kill interrupts (K8r: exactly 1).
+
+    A journal that fails never costs the frame: it still goes on the deque,
+    untagged, and the poll journals it with the rest of its readings."""
+
+    _on_frame = None
+
+    def _complete(self, frames: List[str]) -> None:
+        for frame in frames:
+            if self._on_frame is not None and frame.strip():
+                try:
+                    frame = self._on_frame(frame)
+                except Exception:
+                    pass
+            self._frames.append(frame)
+
+
+class _RawSerialReader(_FrameSink):
     """Dependency-free serial reader on a daemon thread.
 
     Windows: CreateFile + SetCommState/SetCommTimeouts + ReadFile (ctypes).
     POSIX:   os.open + termios raw mode + select.
-    Completed frames accumulate in a thread-safe deque; the poll drains
-    them via take_frames(). Errors land in self.error."""
+    Completed frames are journaled (see `_FrameSink`) and accumulate in a
+    thread-safe deque; the poll drains them via take_frames(). Errors land in
+    self.error.
 
-    def __init__(self, machine) -> None:
+    `port` replaces the OS backend with any object that has `read() -> bytes`
+    (returning b"" when nothing arrived) and `close()`: the gate and the tests
+    drive the reader's real frame handling through it."""
+
+    def __init__(self, machine, on_frame=None, port=None) -> None:
         import threading
         self._machine = machine
         self._assembler = FrameAssembler(idle_gap=machine.idle_gap)
         self._frames: deque = deque()
+        self._on_frame = on_frame
         self._stop = None
         self.error: Optional[str] = None
         self._stop = threading.Event()
-        if os.name == "nt":
+        self._port = port
+        if port is not None:
+            self._handle = None
+            self._fd = None
+        elif os.name == "nt":
             self._handle = self._open_windows(machine)
             self._fd = None
         else:
@@ -4281,22 +5307,37 @@ class _RawSerialReader:
 
     # ── Shared read loop ──────────────────────────────────────────────────
 
+    def _on_bytes(self, data: bytes, now: float) -> None:
+        """Bytes arrived at `now`: completes the frame an idle gap ended."""
+        self._complete(self._assembler.feed(data, now))
+
+    def _on_idle(self, now: float) -> None:
+        """Nothing arrived: a frame silent for the idle gap is complete."""
+        if self._assembler.idle_since(now):
+            self._complete(self._assembler.flush())
+
     def _run(self) -> None:
         import time
         try:
             while not self._stop.is_set():
-                data = (self._read_windows() if self._handle is not None
-                        else self._read_posix())
+                if self._port is not None:
+                    data = self._port.read()
+                elif self._handle is not None:
+                    data = self._read_windows()
+                else:
+                    data = self._read_posix()
                 now = time.monotonic()
                 if data:
-                    self._frames.extend(self._assembler.feed(data, now))
-                elif self._assembler.idle_since(now):
-                    self._frames.extend(self._assembler.flush())
+                    self._on_bytes(data, now)
+                else:
+                    self._on_idle(now)
         except Exception as exc:
             self.error = f"Serial read error: {exc}"
         finally:
             try:
-                if self._handle is not None:
+                if self._port is not None:
+                    self._port.close()
+                elif self._handle is not None:
                     ctypes, _, _, _ = self._win_api()
                     ctypes.windll.kernel32.CloseHandle(self._handle)
                 elif self._fd is not None:
@@ -4305,15 +5346,17 @@ class _RawSerialReader:
                 pass
 
 
-class _QtSerialReader:
+class _QtSerialReader(_FrameSink):
     """QtSerialPort-backed reader (preferred when the add-on is present).
-    Same take_frames()/close()/error interface as _RawSerialReader."""
+    Same take_frames()/close()/error interface as _RawSerialReader, and the
+    same journaling of each completed frame (see `_FrameSink`)."""
 
-    def __init__(self, machine) -> None:
+    def __init__(self, machine, on_frame=None) -> None:
         from PySide6 import QtSerialPort
         self.error: Optional[str] = None
         self._assembler = FrameAssembler(idle_gap=machine.idle_gap)
         self._frames: deque = deque()
+        self._on_frame = on_frame
         port = QtSerialPort.QSerialPort(machine.com_port)
         port.setBaudRate(int(machine.baud_rate))
         parity_map = {
@@ -4352,12 +5395,12 @@ class _QtSerialReader:
     def _on_data(self) -> None:
         import time
         data = bytes(self._port.readAll().data())
-        self._frames.extend(self._assembler.feed(data, time.monotonic()))
+        self._complete(self._assembler.feed(data, time.monotonic()))
 
     def take_frames(self) -> List[str]:
         import time
         if self._assembler.idle_since(time.monotonic()):
-            self._frames.extend(self._assembler.flush())
+            self._complete(self._assembler.flush())
         frames = []
         while self._frames:
             frames.append(self._frames.popleft())
@@ -4561,6 +5604,26 @@ class LEMStationModule:
         self._log_road_open = True
         self._recent_prints_raw: deque = deque(maxlen=self.RECENT_PRINTS)
         self._serial_reader = None
+        # ── the bench journal (see "The bench journal") ──
+        # Opened lazily for the bound uid, from the poll worker or the serial
+        # reader's thread, under this lock. `_journal_error` is why there is
+        # none, when there is none: said on the status line, never read as
+        # "nothing to keep".
+        self._journal_lock = threading.RLock()
+        self._journal = None
+        self._journal_uid = ""
+        self._journal_error = ""
+        # {journal ref: log rows of that reading still to land}; at zero the
+        # reading is marked PROJECTED.
+        self._journal_unprojected: dict = {}
+        # Refs a cap threw out of the results road this process: NOT settled.
+        self._journal_dropped: set = set()
+        # Frames a previous process journaled and no poll consumed.
+        self._journal_carry: list = []
+        self._journal_disk_state = None
+        self._journal_disk_checked = None
+        # Prints the store check dropped because the journal already held them.
+        self._journal_suppressed = 0
         self._last_status_pushed = None  # (uid, status, reason) last written
         self._config_read_at = None      # when QC/PM config last ANSWERED
         self._corrections_read_at = None  # when the factors last ANSWERED
@@ -5020,10 +6083,364 @@ class LEMStationModule:
                                         list(self._history), now)
         self._show_outcome(payload)
 
+    # ── The bench journal: custody of every reading (transfer v4 §3) ─────────
+    #
+    # Five touch points, and the order between them is the whole argument:
+    #
+    #   reader thread   a completed serial frame is journaled before the poll
+    #                   can take it                    (`_journal_serial_frame`)
+    #   poll, first     whatever a previous process left owed is queued again
+    #                                                  (`_journal_recover_once`)
+    #   poll, intake    prints the journal already holds are dropped
+    #                                                  (`_journal_intake`)
+    #   poll, (a)       the readings are appended + fsync'd, THEN queued
+    #                                                  (`_journal_poll`)
+    #   afterwards      the drain marks a reading PROJECTED when its log rows
+    #                   land; the results road marks it SETTLED when it is
+    #                   done with it          (`_journal_landed`, `_settle`)
+    #
+    # A reading not both projected and settled is re-delivered by the next
+    # process. Every helper here tolerates a module built without __init__
+    # (the tests' stand-ins), because the roads that call them do.
+
+    def _journal_for(self, machine) -> Optional["BenchJournal"]:
+        """The journal of the bound machine, opened on first use. None when
+        the machine has no uid (nothing to key a journal on) or the journal
+        cannot be opened — `_journal_error` then says why."""
+        uid = str(getattr(machine, "uid", "") or "") if machine is not None else ""
+        if not uid:
+            return None
+        lock = getattr(self, "_journal_lock", None)
+        if lock is None:
+            lock = self._journal_lock = threading.RLock()
+        with lock:
+            journal = getattr(self, "_journal", None)
+            if journal is not None and getattr(self, "_journal_uid", "") == uid:
+                return journal
+            # Kept for the module's life, per uid: rebinding A → B → A must
+            # find A's journal as it left it, or A's owed readings would be
+            # re-queued a second time on top of the ones still pending here.
+            held = getattr(self, "_journals", None)
+            if held is None:
+                held = self._journals = {}
+            journal = held.get(uid)
+            if journal is None:
+                try:
+                    journal = acquire_journal(uid)
+                except (JournalError, OSError, ValueError) as exc:
+                    self._journal = None
+                    self._journal_uid = ""
+                    self._journal_error = str(exc) or exc.__class__.__name__
+                    return None
+                held[uid] = journal
+            self._journal = journal
+            self._journal_uid = uid
+            self._journal_error = ""
+            return journal
+
+    def _release_journals(self) -> None:
+        lock = getattr(self, "_journal_lock", None) or threading.RLock()
+        with lock:
+            for journal in (getattr(self, "_journals", None) or {}).values():
+                release_journal(journal)
+            self._journals = {}
+            self._journal = None
+            self._journal_uid = ""
+
+    def _journal_holds_files(self, machine) -> bool:
+        """Must a FILE source wait this poll? Only when the disk policy has
+        paused file ingest.
+
+        NOT when the journal cannot be opened at all (an unwritable LabStation
+        folder, a permissions change). Waiting there would stop every result
+        on the bench over a local fault the lab can live with for a day, and
+        an unwritable data folder has never been allowed to stop processing
+        (test_v3's latest-result test pins exactly that). The bench carries on
+        the way it did before the journal existed — straight to LabCore, no
+        copy kept, a restart may re-read the file — and says so on the status
+        line every poll until the journal opens again."""
+        if not str(getattr(machine, "uid", "") or ""):
+            return False
+        journal = self._journal_for(machine)
+        if journal is None:
+            return False
+        return bool(self._journal_disk(journal).get("pause_files"))
+
+    def _journal_disk(self, journal) -> dict:
+        """The disk policy's state, re-evaluated at most once a minute — it
+        lists the folder and asks the OS for free space."""
+        state = getattr(self, "_journal_disk_state", None)
+        checked = getattr(self, "_journal_disk_checked", None)
+        now = time.monotonic()
+        if state is None or checked is None \
+                or now - checked >= JOURNAL_DISK_CHECK_SECONDS:
+            try:
+                state = journal.enforce_disk_policy(datetime.now())
+            except (JournalError, OSError) as exc:
+                state = {"pause_files": journal.pause_files,
+                         "message": f"Bench journal: the disk check failed "
+                                    f"({exc}); the last decision stands."}
+            self._journal_disk_state = state
+            self._journal_disk_checked = now
+        return state
+
+    def _journal_status(self, machine) -> str:
+        """One sentence about the journal for the status line, or ""."""
+        uid = str(getattr(machine, "uid", "") or "") if machine is not None else ""
+        if not uid:
+            return ""
+        journal = getattr(self, "_journal", None)
+        if journal is None or getattr(self, "_journal_uid", "") != uid:
+            error = getattr(self, "_journal_error", "")
+            if not error:
+                return ""
+            return (f"Bench journal unavailable ({error}) — readings go "
+                    "straight to LabCore with NO copy kept at this bench"
+                    + (", and a restart may read the file again"
+                       if machine.source_type in ("single_csv", "multi_csv")
+                       else "") + ".")
+        parts = []
+        while journal.notices:
+            parts.append(journal.notices.pop(0))
+        state = getattr(self, "_journal_disk_state", None) or {}
+        if state.get("message"):
+            parts.append(state["message"])
+        return " ".join(parts)
+
+    def _journal_recover_once(self, machine, journal, messages) -> None:
+        """Re-deliver what a previous process left owed. Once per journal.
+
+        A reading whose log rows never landed is queued again — the rows it
+        was journaled with, original timestamps and all. A reading the results
+        road never finished with goes back on it, at the front. A frame the
+        reader journaled and no poll consumed is carried into the next poll
+        that reads. And when the journal has history it is this bench's
+        custody, so the LabCore held-results mirror is not read back on top of
+        it: two custodians for one reading is how a reading gets filed twice."""
+        if journal.recovery_done:
+            return
+        journal.recovery_done = True
+        counts = getattr(self, "_journal_unprojected", None)
+        if counts is None:
+            counts = self._journal_unprojected = {}
+        entries, backlog, no_logs, no_row = [], [], [], []
+        for run in journal.open_runs():
+            rec, ref = run["rec"], run["ref"]
+            if not run["projected"]:
+                logs = [a for a in rec.get("log") or () if isinstance(a, list)]
+                if logs:
+                    entries.extend(_log_entry(args, ref) for args in logs)
+                    counts[ref] = len(logs)
+                else:
+                    no_logs.append(ref)
+            if not run["settled"]:
+                row = rec.get("row")
+                if isinstance(row, dict) and row:
+                    row = dict(row)
+                    row[JOURNAL_KEY] = ref
+                    backlog.append(row)
+                else:
+                    no_row.append(ref)
+        try:
+            journal.mark_projected(no_logs)
+            journal.mark_settled(no_row)
+        except JournalError:
+            pass
+        if entries:
+            self._pending_events.extendleft(reversed(entries))
+        if backlog:
+            with self._results_lock:
+                self._identity_backlog = backlog + list(self._identity_backlog)
+        if journal.had_history:
+            self._held_restored = True
+        self._journal_carry = [_keyed(text, pk, src="serial")
+                               for pk, text in journal.pending_frames()]
+        owed = len({e.ref for e in entries} | {r[JOURNAL_KEY] for r in backlog})
+        if owed or self._journal_carry:
+            messages.append(
+                f"Picked up {owed + len(self._journal_carry)} reading(s) this "
+                "bench had journaled but not yet delivered; sending them now.")
+
+    def _journal_intake(self, journal, prints) -> list:
+        """The store check: carried frames first, then this poll's prints,
+        minus every print whose key the journal already holds (or that
+        appears twice — the reader and the carry can both hand one over)."""
+        carry = list(getattr(self, "_journal_carry", None) or [])
+        self._journal_carry = []
+        out, seen = [], set()
+        for text in carry + list(prints):
+            pk = getattr(text, "pk", None)
+            if pk:
+                if pk in seen:
+                    continue
+                if journal.known(pk):
+                    # Counted, because suppression makes a re-read harmless to
+                    # the RECORD but not free: a bench re-reading its whole file
+                    # every poll is a cost nobody would otherwise see, and this
+                    # number is what "replays stopped" looks like on the floor.
+                    self._journal_suppressed = \
+                        getattr(self, "_journal_suppressed", 0) + 1
+                    continue
+                seen.add(pk)
+            out.append(text)
+        return out
+
+    def _journal_poll(self, machine, journal, prints, rows, sources, now,
+                      messages) -> bool:
+        """(a): append this poll's readings in ONE fsync'd write, then queue
+        their log rows tagged with the record they came from. Returns whether
+        they were journaled; False leaves the caller on today's road."""
+        produced = {getattr(src, "pk", None) for src in sources
+                    if src is not None}
+        idle = [text.pk for text in prints
+                if getattr(text, "pk", None) and text.pk not in produced]
+        if not rows and not idle:
+            return False
+        self._fault_point("before_journal")
+        operator = self._current_operator()
+        calibration_id = getattr(self, "_calibration_epoch", None)
+        logs: Dict[int, list] = {}
+        for row, kind, lab_id, test_name, value, detail in run_log_events(
+                machine, rows, operator, calibration_id):
+            logs.setdefault(id(row), []).append(build_log_insert(
+                machine.uid, kind, now, lab_id=lab_id, test_name=test_name,
+                value=value, detail=detail)[1])
+        # Prints that made no row are consumed FIRST in the write, so a torn
+        # tail can only ever cut readings — never the note that a header line
+        # was read, which would let it come back as one.
+        records = [{"kind": "consumed", "pks": idle}] if idle else []
+        for row, src in zip(rows, sources):
+            detail = run_log_detail(row)
+            records.append({
+                "kind": "run",
+                "origin": "live" if src is not None else "manual",
+                "src": getattr(src, "src", None) or machine.source_type,
+                "pk": getattr(src, "pk", None),
+                "lh": getattr(src, "lh", None),
+                "line": str(src) if src is not None else None,
+                "lab_id": str(row.get(LAB_ID_KEY) or "").strip(),
+                "values": detail.get("values") or {},
+                "raw": detail.get("raw") or {},
+                "corrections": detail.get("corrections") or {},
+                "row": {k: v for k, v in row.items() if k != JOURNAL_KEY},
+                "log": logs.get(id(row), []),
+            })
+        try:
+            refs = journal.append(records, ts=_poll_ts(now))
+        except JournalError as exc:
+            messages.append(f"Bench journal write failed ({exc}); this poll's "
+                            "readings go to LabCore with no copy kept at the "
+                            "bench.")
+            return False
+        self._fault_point("after_journal_before_cursor")
+        counts = getattr(self, "_journal_unprojected", None)
+        if counts is None:
+            counts = self._journal_unprojected = {}
+        lock = self._journal_lock_or_new()
+        for row, ref in zip(rows, refs[1:] if idle else refs):
+            row[JOURNAL_KEY] = ref
+            args_list = logs.get(id(row), [])
+            if args_list:
+                # Counted BEFORE queued: a drain on another worker that lands
+                # an entry the instant it is queued must find its count.
+                with lock:
+                    counts[ref] = len(args_list)
+            for args in args_list:
+                if len(self._pending_events) >= LOG_EVENT_LIMIT:
+                    # Refused, as `_log_event` refuses — but kept: the count
+                    # never reaches zero, the reading stays unprojected in the
+                    # journal, and the next process writes it.
+                    self._events_dropped += 1
+                    continue
+                self._pending_events.append(_log_entry(args, ref))
+        return True
+
+    def _journal_landed(self, batch) -> None:
+        """The drain got `batch` into lem_machine_log: a reading all of whose
+        rows have now landed is PROJECTED. A mark that fails to write costs a
+        re-sent row after the next restart, never a reading."""
+        counts = getattr(self, "_journal_unprojected", None)
+        if not counts:
+            return
+        done = []
+        # Under the journal lock: an operator's note drains on its own worker
+        # while a poll may be draining too.
+        with self._journal_lock_or_new():
+            for entry in batch:
+                ref = getattr(entry, "ref", None)
+                if ref is None or ref not in counts:
+                    continue
+                counts[ref] -= 1
+                if counts[ref] <= 0:
+                    del counts[ref]
+                    done.append(ref)
+        if done:
+            self._journal_mark("projected", done)
+
+    def _journal_lock_or_new(self):
+        lock = getattr(self, "_journal_lock", None)
+        if lock is None:
+            lock = self._journal_lock = threading.RLock()
+        return lock
+
+    def _journal_mark(self, kind: str, refs) -> None:
+        """Mark refs in whichever of this module's journals holds them (a
+        journal ignores refs it does not hold — a rebinding can leave a
+        reading of the previous instrument in flight)."""
+        journals = list((getattr(self, "_journals", None) or {}).values())
+        current = getattr(self, "_journal", None)
+        if current is not None and current not in journals:
+            journals.append(current)
+        for journal in journals:
+            try:
+                (journal.mark_projected if kind == "projected"
+                 else journal.mark_settled)(refs)
+            except JournalError:
+                # Unmarked means re-offered after a restart: a re-sent row or
+                # cell, never a lost reading.
+                pass
+
+    def _journal_note_dropped(self, rows) -> None:
+        """A cap threw these rows off the results road. They are NOT settled:
+        the journal keeps them owed, and the next process offers them again."""
+        dropped = getattr(self, "_journal_dropped", None)
+        if dropped is None:
+            dropped = self._journal_dropped = set()
+        for row in rows or ():
+            if isinstance(row, dict) and row.get(JOURNAL_KEY):
+                dropped.add(row[JOURNAL_KEY])
+
+    def _journal_settle(self, refs) -> None:
+        """The results road has decided on `refs`: those not back in its
+        custody — filed, given up after seven days, carrying no Lab ID, or a
+        QC standard's check — are SETTLED. Held, backlogged, parked or
+        cap-dropped readings are not."""
+        if not refs:
+            return
+        with self._results_lock:
+            custody = {row.get(JOURNAL_KEY)
+                       for row in (list(self._held_rows)
+                                   + list(self._identity_backlog)
+                                   + list(self._parked_rows))
+                       if isinstance(row, dict)}
+        dropped = getattr(self, "_journal_dropped", None) or set()
+        settled = set(refs) - custody - dropped
+        if dropped:
+            dropped.difference_update(refs)
+        if settled:
+            self._journal_mark("settled", sorted(settled))
+
     # ── Ingestion (thread-safe half: no widget access) ────────────────────
 
     def _ingest(self, machine: Machine):
         """Collect new device prints. Returns (machine, prints, error)."""
+        # The disk policy can pause FILE ingest (§3.4): the file keeps the
+        # bytes and the offset does not move, so nothing is lost by waiting,
+        # and the status line says why. Serial and manual are never held back
+        # here — they have no other copy.
+        if (machine.source_type in ("single_csv", "multi_csv")
+                and self._journal_holds_files(machine)):
+            return machine, [], None
         if machine.source_type == "multi_csv":
             return self._ingest_multi(machine)
         if machine.source_type == "serial":
@@ -5043,12 +6460,17 @@ class LEMStationModule:
 
     def _ingest_single(self, machine: Machine):
         try:
-            text, pos = tail_new_text(machine.csv_path, machine.last_position)
+            lines, pos, identity = tail_new_lines(machine.csv_path,
+                                                  machine.last_position)
         except OSError as exc:
             return machine, [], f"File error: {exc}"
-        if not text.strip():
+        if not lines:
             return machine, [], None
-        prints = [line for line in text.splitlines() if line.strip()]
+        src = ("file:" + os.path.normcase(os.path.abspath(machine.csv_path))
+               + "#" + identity)
+        prints = [_keyed(text, file_line_key(src, offset, part, line_hash),
+                         src=src, lh=line_hash)
+                  for offset, part, text, line_hash in lines]
         # Advance only after a successful read so no print is ever lost.
         machine.last_position = pos
         return machine, prints, None
@@ -5098,16 +6520,11 @@ class LEMStationModule:
         """RS-232 source: reports framed by idle gaps on the wire. The
         reader (QtSerialPort when available, raw ctypes/termios otherwise)
         collects bytes continuously; polls drain the completed frames."""
-        if not machine.com_port:
+        if self._serial_reader is None and not machine.com_port:
             return machine, [], "No COM port configured — set one in ⚙ settings."
         if self._serial_reader is None:
             try:
-                if _qt_serial_available():
-                    self._serial_reader = _QtSerialReader(machine)
-                else:
-                    reader = _RawSerialReader(machine)
-                    reader.start()
-                    self._serial_reader = reader
+                self._serial_reader = self._open_serial_reader(machine)
             except OSError as exc:
                 self._serial_reader = None
                 return machine, [], f"Could not open {machine.com_port}: {exc}"
@@ -5118,6 +6535,48 @@ class LEMStationModule:
             return machine, [], error
         frames = [f for f in reader.take_frames() if f.strip()]
         return machine, frames, None
+
+    def _open_serial_reader(self, machine: Machine, port=None):
+        """A reader for this machine whose every completed frame is journaled
+        on the reader's own path before the poll can take it (see
+        `_FrameSink`). Given `port`, the OS backend is replaced and no thread
+        is started: the caller drives `_on_bytes` / `_on_idle` itself."""
+        on_frame = self._journal_serial_frame
+        if port is not None:
+            return _RawSerialReader(machine, on_frame=on_frame, port=port)
+        # Constructed with the machine alone — the readers' long-standing
+        # contract — and handed the journal before any byte can arrive: the
+        # raw reader's thread has not started, and the Qt reader's readyRead
+        # cannot fire until this call returns to the event loop.
+        if _qt_serial_available():
+            reader = _QtSerialReader(machine)
+            reader._on_frame = on_frame
+            return reader
+        reader = _RawSerialReader(machine)
+        reader._on_frame = on_frame
+        reader.start()
+        return reader
+
+    def _journal_serial_frame(self, frame: str) -> str:
+        """Journal one completed serial frame. Runs on the READER's thread.
+
+        Returns the frame tagged with its replay key, or untagged if there is
+        no journal to put it in — then the poll journals it with the rest of
+        its readings, which is today's custody and no worse. The fault point
+        sits between completion and the fsync: a kill there is the one frame
+        the stated residual allows (K8r)."""
+        machine = self._machine
+        if machine is None or not frame.strip():
+            return frame
+        journal = self._journal_for(machine)
+        if journal is None:
+            return frame
+        self._fault_point("serial_frame_complete_before_fsync")
+        try:
+            pk = journal.append_frame(frame)
+        except (JournalError, OSError, ValueError):
+            return frame
+        return _keyed(frame, pk, src="serial")
 
     def _close_serial(self) -> None:
         if self._serial_reader is not None:
@@ -5582,6 +7041,19 @@ class LEMStationModule:
         if machine is not None:
             self._refresh_calibration_epoch(machine, now)
 
+        # The bench journal. Whatever a previous process left owed is queued
+        # again first (once per journal); then, on a poll that read something,
+        # every print the journal already holds is dropped before anything
+        # parses it — a re-read is not a new reading, and a replayed QC print
+        # never renews freshness (§3.3, "store check before QC evaluation").
+        journal = self._journal_for(machine) if machine is not None else None
+        if journal is not None:
+            self._journal_recover_once(machine, journal, messages)
+            if not error:
+                prints = self._journal_intake(journal, prints)
+                payload["raw_prints"] = list(prints)
+        payload["journal"] = self._journal_status(machine)
+
         if error:
             evaluation = MachineEvaluation(status=STATUS_UNKNOWN, reason=error)
             payload["evaluation"] = self._labcore_sync(
@@ -5599,6 +7071,11 @@ class LEMStationModule:
         # entry is never a template; there is no parser to configure.
         if prints and not machine.mappings and manual_rows is None:
             machine.template = prints[0]
+            # Consumed, as it was before the journal: a template is not a
+            # reading, and must not come back as one after a restart.
+            if journal is not None:
+                self._journal_poll(machine, journal, prints, [], [], now,
+                                   messages)
             payload["template_captured"] = True
             payload["evaluation"] = MachineEvaluation(
                 status=STATUS_UNKNOWN,
@@ -5608,11 +7085,13 @@ class LEMStationModule:
             return self._pushed(payload)
 
         rows = list(manual_rows or [])
+        sources = [None] * len(rows)          # typed rows have no print
         for text in prints:
             result = parse_print(machine, text)
             if not result.lab_id and not result.values:
                 continue
             rows.append(result.to_row(now))
+            sources.append(text)
         # THE point at which corrections are applied — every measurement on every
         # print, before anything else sees it. Downstream (QC verdict, the result
         # written to LabCore, the history, the card, the CSV) all read the corrected
@@ -5620,10 +7099,16 @@ class LEMStationModule:
         # ISO/IEC 17025:2017 §7.8.2 (the reported result must be the measurement
         # result) and §7.5.1 (records sufficient to reconstruct it).
         rows = apply_row_corrections(rows, machine.corrections)
+        # (a) of §3.3: the readings go into the journal, fsync'd, before ANY
+        # of them goes anywhere else. Only if that fails do they take today's
+        # road with no copy kept at the bench — said, never silent.
+        journaled = journal is not None and self._journal_poll(
+            machine, journal, prints, rows, sources, now, messages)
         payload["rows"] = rows
         combined = history_snapshot + rows
         if rows:
-            self._queue_run_events(machine, rows, now)
+            if not journaled:
+                self._queue_run_events(machine, rows, now)
             try:
                 new_name = latest_result_filename(machine.title)
                 # Machine renamed → remove the file written under the old
@@ -5728,7 +7213,8 @@ class LEMStationModule:
         # ever hear about those readings.
         parts = [part for part in ([payload.get("given_up")]
                                    + self._take_losses()
-                                   + [payload.get("notice"),
+                                   + [payload.get("journal"),
+                                      payload.get("notice"),
                                       (payload["messages"] or [""])[-1]])
                  if part]
         if parts:
@@ -6263,6 +7749,10 @@ class LEMStationModule:
             # deferred reading indistinguishable from an unplaceable one.
             untried_rows = {id(row) for row in untried}
             retry = list(self._retry_ops)
+            # The journaled readings this step is about to decide on. Whatever
+            # is not back in custody when it is done has been settled.
+            journal_refs = {row.get(JOURNAL_KEY) for row in waiting
+                            if isinstance(row, dict)} - {None}
 
         # Before anything is held: a reading that names no sample cannot be
         # filed by waiting. See "A print with no Lab ID names no sample".
@@ -6450,6 +7940,7 @@ class LEMStationModule:
             # happened at all.
             if len(backlog) > IDENTITY_BACKLOG_LIMIT:
                 lost = backlog[:len(backlog) - IDENTITY_BACKLOG_LIMIT]
+                self._journal_note_dropped(lost)
                 self._report_loss(
                     f"{len(lost)} reading(s) for "
                     f"{', '.join(row_lab_ids(lost)[:3])} were dropped before "
@@ -6483,6 +7974,7 @@ class LEMStationModule:
         # path (`_reevaluate_and_show`) has no payload to read it off.
         self._held_notice = describe_held(self._held_rows, ambiguous, unknown,
                                           self._identity_backlog)
+        self._journal_settle(journal_refs)
         return {"identities": identities, "filed": filed, "stored": True,
                 "notice": self._held_notice, "given_up": given_up}
 
@@ -6574,6 +8066,7 @@ class LEMStationModule:
             self._parked_rows = kept[-HELD_ROW_LIMIT:]
         if not dropped:
             return list(rows)
+        self._journal_note_dropped(dropped)
         # `_log_home()` rather than the flat sentence, and this is the notice
         # that needed it most: `_park` is only ever reached because LabCore was
         # unreachable, so the drain has not run and the records are still here.
@@ -6647,6 +8140,7 @@ class LEMStationModule:
         self._parked_rows = []
         rows, dropped = cap_held_rows(rows)
         if dropped:
+            self._journal_note_dropped(dropped)
             # Named for what it is. It used to say "dropped from the retry
             # queue", which is a different queue (`_retry_ops`, ops LabCore
             # refused) and sends whoever reads it looking for a write that was
@@ -7545,6 +9039,8 @@ class LEMStationModule:
                 self._pending_events.extendleft(reversed(batch))
                 raise
             refused = refusal_reason(result)
+            if not refused:
+                self._journal_landed(batch)
             if refused:
                 self._pending_events.extendleft(reversed(batch))
                 already_closed = not self._log_road_open
@@ -7604,38 +9100,10 @@ class LEMStationModule:
         """
         operator = self._current_operator()
         calibration_id = getattr(self, "_calibration_epoch", None)
-        for row in rows:
-            lab_id = str(row.get(LAB_ID_KEY) or "").strip()
-            # RESERVED_ROW_KEYS, not just the Lab ID and timestamps: a corrected row
-            # carries its raw readings and offsets, and those are not measurements.
-            raw_by_test = row_raw(row)
-            verdicts = []
-            for spec in machine.tests:
-                if not spec.sample_id:
-                    continue
-                if lab_id.lower() != spec.sample_id.strip().lower():
-                    continue
-                value = _safe_float(_ci_lookup(row, spec.value_col))
-                if value is None:
-                    continue
-                # Already corrected at the parse boundary — adding spec.correction
-                # here would apply it a second time.
-                raw = raw_by_test.get(spec.value_col,
-                                      raw_by_test.get(spec.name, value))
-                verdicts.append((spec, raw, value))
-            if not verdicts:
-                self._log_event("run", lab_id=lab_id,
-                                detail=run_log_detail(row), now=now)
-                continue
-            for spec, raw, value in verdicts:
-                # `value` is the corrected number the verdict was made on; the
-                # detail carries the raw reading and the offset when there is one.
-                self._log_event(
-                    "qc", lab_id=lab_id, test_name=spec.name,
-                    value=f"{value:g}",
-                    detail=qc_log_detail(spec, raw, value, operator=operator,
-                                         calibration_id=calibration_id),
-                    now=now)
+        for _row, kind, lab_id, test_name, value, detail in run_log_events(
+                machine, rows, operator, calibration_id):
+            self._log_event(kind, lab_id=lab_id, test_name=test_name,
+                            value=value, detail=detail, now=now)
 
     def _flush_events_now(self) -> None:
         """Drain queued events outside a poll (comments, overrides, PM/Cal).
@@ -7919,7 +9387,7 @@ class LEMStationModule:
             summary = ", ".join(
                 f"{k}={v}" for k, v in row.items()
                 if k not in TIMESTAMP_KEYS
-                and k not in (RAW_KEY, CORRECTION_KEY))
+                and k not in (RAW_KEY, CORRECTION_KEY, JOURNAL_KEY))
             for col, text in enumerate((when, summary)):
                 table.setItem(i, col, QtWidgets.QTableWidgetItem(text))
 
@@ -8413,6 +9881,7 @@ class LEMStationModule:
         self._pulse_timer.stop()
         self._bind_retry_timer.stop()
         self._close_serial()
+        self._release_journals()
 
 
 def _shrink_font(widget: QtWidgets.QWidget, factor: float,
