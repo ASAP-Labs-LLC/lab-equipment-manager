@@ -67,10 +67,31 @@ def test_apply_source_edits_a_copy_and_never_the_tree(tmp_path):
     assert "new_position = f.tell()" not in mutated
 
 
-def test_a_pattern_with_no_match_is_unavailable_and_copies_nothing(tmp_path):
-    dst, n = MU.apply_source("unique_seq_off", WORKTREE, str(tmp_path / "copy"))
+def test_a_pattern_with_no_match_is_unavailable_and_copies_nothing(
+        tmp_path, monkeypatch):
+    # A pattern that names no code. This used to borrow `unique_seq_off`,
+    # which named code nobody had written — until P6 wrote it (below).
+    monkeypatch.setitem(MU.MUTATIONS, "names_nothing", {
+        "kind": "source", "owner": "P99", "what": "matches no LEM source",
+        "pattern": r"THIS_TEXT_IS_IN_NO_LEM_SOURCE_FILE", "replace": "x"})
+    dst, n = MU.apply_source("names_nothing", WORKTREE, str(tmp_path / "copy"))
     assert (dst, n) == (None, 0)
     assert not (tmp_path / "copy").exists()
+
+
+def test_unique_seq_off_is_available_once_p6_has_landed(tmp_path):
+    """P6 owns it: the store's `ux_log_bench` unique index exists in this
+    worktree now, exactly once, and the mutation turns it into a plain
+    index in the copy — and only the copy."""
+    store_src = os.path.join(WORKTREE, "LEM Web Server", "lem_store.py")
+    before = open(store_src, encoding="utf-8").read()
+    dst, n = MU.apply_source("unique_seq_off", WORKTREE, str(tmp_path / "copy"))
+    assert n == 1
+    mutated = open(os.path.join(dst, "LEM Web Server", "lem_store.py"),
+                   encoding="utf-8").read()
+    assert "CREATE INDEX IF NOT EXISTS ux_log_bench" in mutated
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_log_bench" not in mutated
+    assert open(store_src, encoding="utf-8").read() == before
 
 
 def test_verdict():
