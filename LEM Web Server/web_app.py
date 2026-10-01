@@ -1173,6 +1173,95 @@ def create_app(gateway, admin_password: Optional[str] = None,
         yet — this page says so rather than pretending."""
         return render_template("checklists.html", active="/checklists")
 
+    # ── the shell (ia-final §2) ───────────────────────────────────────
+    # What the sidebar foot, the rail badges and the words strip say on first
+    # paint, read from memory only (ui_shell). Once per request: _layout.html
+    # and _shell.html both ask, and the answer must be the same in both.
+    @app.template_global("shell_state")
+    def _shell_state() -> dict:
+        cached = getattr(g, "_lem_shell", None)
+        if cached is not None:
+            return cached
+        import ui_shell
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                                 STATUS_COLORS) if snap.get("ready") else None)
+        status = ui_shell.shell_status(snap, merged)
+        state, words = ui_shell.record_words(status)
+        has_quality = any(r.rule == "/quality" for r in app.url_map.iter_rules())
+        user = session.get("user") or ""
+        out = dict(status, nav=ui_shell.nav_items(has_quality),
+                   fleet_text=ui_shell.fleet_text(status["fleet"]),
+                   record_state=state, record_text=words, user=user)
+        g._lem_shell = out
+        return out
+
+    def _diagnostics() -> list:
+        """Settings › Diagnostics: the /healthz facts, each said as a sentence.
+
+        Memory and the local log copy only — no LabCore op. Every row has a
+        "could not tell" wording distinct from its "nothing there" wording.
+        """
+        def _local_hm(iso: str) -> str:
+            # the mirror stamps UTC; the lab reads its own clock
+            try:
+                at = datetime.fromisoformat(iso)
+                if at.tzinfo is not None:
+                    at = at.astimezone()
+                return at.strftime("%d %b %H:%M") if at.date() != datetime.now().date() \
+                    else at.strftime("%H:%M")
+            except (TypeError, ValueError):
+                return iso
+        rows = [{"label": "Version", "glyph": "", "value": APP_VERSION,
+                 "note": "the same string /healthz reports"}]
+        online = getattr(snapshots, "_online", None)
+        rows.append({"label": "LabCore",
+                     "glyph": "never" if online is None else ("final" if online else "error"),
+                     "value": ("Not asked yet" if online is None
+                               else "Reachable" if online else "Not answering"),
+                     "note": ""})
+        snap = snapshots.get(build_if_missing=False)
+        if snap.get("ready"):
+            at = (snap.get("built_at") or "")[11:19]
+            rows.append({"label": "Instrument record", "glyph": "held" if snap.get("stale") else "final",
+                         "value": "Read at " + at if at else "Read",
+                         "note": ("the last refresh failed: " + str(snap.get("error"))[:120])
+                                 if snap.get("error") else
+                                 "refreshed every %d s" % int(getattr(snapshots, "interval", 12))})
+        else:
+            err = snap.get("error")
+            rows.append({"label": "Instrument record", "glyph": "error" if err else "never",
+                         "value": "Could not be read" if err else "Not read yet",
+                         "note": str(err)[:120] if err else ""})
+        try:
+            mstate = app.config["LOG_MIRROR"].state()
+            n = int(mstate.get("rows") or 0)
+            filled = str(mstate.get("filled_at") or "")
+            why = mstate.get("stale_reason") or ""
+            rows.append({"label": "Log copy",
+                         "glyph": "held" if (why or not n) else "final",
+                         "value": ("{:,} rows".format(n) if n else "Empty: filling from LabCore"),
+                         "note": why or (("filled " + _local_hm(filled)) if filled else "")})
+        except Exception as exc:                    # a local file; say it, never 0
+            rows.append({"label": "Log copy", "glyph": "error",
+                         "value": "Could not be read", "note": str(exc)[:120]})
+        waiting = len(audit_spool)
+        rows.append({"label": "Correction audit", "glyph": "held" if waiting else "final",
+                     "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
+                               if waiting else "Nothing waiting"),
+                     "note": ("oldest " + str(audit_spool.oldest())) if waiting else ""})
+        return rows
+
+    @app.route("/settings")
+    def page_settings():
+        """Settings › This browser (and a read-only Diagnostics)."""
+        return render_template("settings.html", nav="settings", diag=_diagnostics())
+
+    @app.route("/help")
+    def page_help():
+        return render_template("help.html", nav="help")
+
     @app.route("/stations")
     @app.route("/dashboard")
     def retired_pages():

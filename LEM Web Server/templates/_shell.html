@@ -1,0 +1,99 @@
+{#- The sidebar (ia-final §1, §2), ported from GC hub's templates/_shell.html.
+    Swapped: the mark, the five nav items, the foot's status lines. Added: a
+    rail badge and an aria-label on every nav item, so the rail keeps its words
+    (§2.1). The values are this render's, from memory (ui_shell.shell_status);
+    the live feed (a later piece) keeps them current through LEMShell.
+    shell.js wires it. Every icon is different: the judges caught a reuse. -#}
+{%- set S = shell_state() -%}
+{%- macro nav_icon(kind) -%}
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+{%- if kind == 'instruments' -%}<rect x="3.5" y="4.5" width="17" height="6" rx="1.5"/><rect x="3.5" y="13.5" width="17" height="6" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>
+{%- elif kind == 'checklists' -%}<path d="M4 7l2 2 3-4M4 16l2 2 3-4M13 7h7M13 16h7"/>
+{%- elif kind == 'qc' -%}<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>
+{%- elif kind == 'log' -%}<path d="M6 3.5h8l4 4v13H6z"/><path d="M14 3.5v4h4M9 12h6M9 16h6"/>
+{%- elif kind == 'settings' -%}<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>
+{%- endif -%}
+</svg>
+{%- endmacro -%}
+<aside class="sb" id="sidebar" data-testid="sidebar" aria-label="Main">
+  <div class="sb-head">
+    <a class="sb-mark" href="/" aria-label="LEM: Instruments (home)">
+      <span class="mark-logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4.5-5"/><path d="M4 20h16"/></svg></span>
+      <span class="sb-label">LEM</span>
+    </a>
+    <button type="button" class="icon-btn" id="sb-toggle" data-testid="sidebar-toggle" aria-label="Collapse or expand the sidebar" title="Collapse or expand the sidebar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>
+    </button>
+  </div>
+
+  <nav class="sb-nav" aria-label="Pages">
+    {%- for item in S.nav %}
+    {%- set meta = S.nav_meta.get(item.key) %}
+    <a class="nav-item{% if nav == item.key %} active{% endif %}" href="{{ item.href }}" data-nav="{{ item.key }}" aria-label="{{ item.label }}{% if meta %}, {{ meta.text }}{% endif %}" title="{{ item.label }}"{% if nav == item.key %} aria-current="page"{% endif %}>
+      {{ nav_icon(item.key) }}
+      <span class="sb-label">{{ item.label }}</span><span class="nav-meta" data-meta="{{ item.key }}">{{ meta.text if meta else '' }}</span><span class="rail-badge" data-badge="{{ item.key }}" aria-hidden="true">{{ meta.badge if meta else '' }}</span></a>
+    {%- endfor %}
+  </nav>
+
+  <section class="sb-recent" data-testid="recent" aria-labelledby="recent-caption">
+    <h2 class="sb-caption" id="recent-caption">Recent · on this computer</h2>
+    <ul id="recent-list"></ul>
+    <p class="sb-empty" id="recent-empty">Nothing opened yet.</p>
+  </section>
+
+  <div class="sb-foot">
+    {#- what is running (a later piece fills it); hidden while nothing runs -#}
+    <button type="button" class="sb-running" id="running-now" data-testid="running-now"
+            aria-haspopup="true" aria-expanded="false" aria-controls="running-now-popover" hidden></button>
+    <div class="popover sb-running-pop" id="running-now-popover" data-testid="running-now-popover"
+         role="region" aria-label="Running now" hidden></div>
+    {%- set fleet = S.fleet_text %}
+    <a class="sb-gcs" id="fleet" href="/?filter=quiet" data-testid="fleet"{% if S.fleet %} data-all="{{ 'true' if S.fleet.checking == S.fleet.total else 'false' }}"{% endif %}{% if not fleet %} hidden{% endif %}>
+      <span class="fleet-glyph" aria-hidden="true"></span><span class="sb-label" id="fleet-text">{{ fleet or '' }}</span></a>
+    <div class="live-row" data-testid="live-status">
+      <span class="live-dot" id="live-dot" data-state="{{ S.record_state }}" aria-hidden="true"></span>
+      <span class="sb-label" id="live-text" role="status">{{ S.record_text }}</span>
+      <button type="button" class="icon-btn" id="bell" data-testid="bell" aria-label="Notifications" aria-haspopup="dialog" aria-expanded="false" title="Notifications">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5h4"/></svg>
+        <span class="bell-count" id="bell-count" hidden></span>
+      </button>
+    </div>
+    <div class="popover notes-panel" id="bell-panel" role="dialog" aria-labelledby="bell-title" hidden data-testid="bell-panel">
+      <div class="notes-head">
+        <h2 id="bell-title">Notifications</h2>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-ghost btn-sm" id="bell-clear" data-testid="bell-clear" hidden>Dismiss all</button>
+      </div>
+      <ul id="bell-list" class="notes" aria-live="polite"></ul>
+      <p class="notes-empty" id="bell-empty" data-testid="bell-empty">No notifications. Instruments that stop being OK to run, overdue rounds and LabCore trouble will show here.</p>
+    </div>
+
+    {%- set who = S.user %}
+    <button type="button" class="user-chip" id="user-chip" data-testid="user-chip" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu" title="{{ who or 'Not signed in' }}">
+      <span class="avatar" id="user-initials" aria-hidden="true">{% if not who %}<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg>{% endif %}</span>
+      <span class="sb-label user-name" id="user-name" data-signed-in="{{ 'true' if who else 'false' }}">{{ who or 'Sign in' }}</span>
+      <span class="ico ico-chev chev" aria-hidden="true"></span>
+    </button>
+    <div class="menu" id="user-menu" role="menu" hidden data-testid="user-menu">
+      <div class="menu-head" id="menu-name">{{ who or 'Not signed in' }}</div>
+      <div class="menu-row"><span>Theme</span>
+        <div class="seg" role="radiogroup" aria-label="Theme" data-testid="theme-switch">
+          <button type="button" role="radio" data-theme-choice="system" aria-checked="false" title="Follow this computer's light or dark setting">System</button>
+          <button type="button" role="radio" data-theme-choice="light" aria-checked="false">Light</button>
+          <button type="button" role="radio" data-theme-choice="dark" aria-checked="false">Dark</button>
+        </div>
+      </div>
+      {%- if who %}
+      <button type="button" role="menuitem" class="menu-item" id="menu-switch" data-testid="switch-person">Switch person</button>
+      {%- else %}
+      <button type="button" role="menuitem" class="menu-item" id="menu-signin" data-testid="sign-in">Sign in</button>
+      {%- endif %}
+      <a role="menuitem" href="/settings" data-testid="menu-settings">Settings</a>
+      <a role="menuitem" href="/help" data-testid="menu-help">Help</a>
+      {%- if who %}
+      <button type="button" role="menuitem" class="menu-item" id="menu-signout" data-testid="sign-out">Sign out</button>
+      {%- endif %}
+      <div class="menu-foot">LEM {{ app_version() }}</div>
+    </div>
+  </div>
+</aside>

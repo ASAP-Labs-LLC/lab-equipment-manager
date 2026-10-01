@@ -1,0 +1,49 @@
+{% extends "_layout.html" %}
+{#- Help: what each page is for, how to read the status words, and how to
+    tell which release is running. Short on purpose; the user menu links here
+    from every page. -#}
+{% block title %}Help{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/css/settings.css?v={{ v('css/settings.css') }}">{% endblock %}
+{% block topbar %}
+  <h1>Help</h1>
+{% endblock %}
+{% block content %}
+<main class="content help" id="main" tabindex="-1">
+  <p class="lead">LEM keeps the lab's instruments honest: whether each one is OK to run, its QC, its maintenance, and the rounds that open and close the lab.</p>
+
+  <section aria-labelledby="h-pages">
+    <h2 id="h-pages">Pages</h2>
+    <ul class="pages">
+      {%- for item in shell_state().nav %}
+      <li><a href="{{ item.href }}">{{ item.label }}</a>
+        <span>{{ {'instruments': 'Every instrument, the ones that need you first, and each one\'s full record.',
+                  'checklists': 'Today\'s opening and closing rounds. Every tick records who ticked it.',
+                  'qc': 'The latest QC check on every instrument, and the standards library.',
+                  'log': 'Everything the benches recorded, filterable and exportable.',
+                  'settings': 'How LEM looks on this computer, and what the server knows about itself.'}[item.key] }}</span></li>
+      {%- endfor %}
+    </ul>
+  </section>
+
+  <section aria-labelledby="h-status">
+    <h2 id="h-status">Status is a shape and a word</h2>
+    <p>Colour is never the only signal. Each state has its own shape, so it reads the same in light, dark and on a black-and-white printout.</p>
+    <ul class="glyph-list">
+      <li><span class="glyph final" aria-hidden="true"></span> A filled dot: fine. "OK to run", "In spec", "Checking in".</li>
+      <li><span class="glyph held" aria-hidden="true"></span> A ring with a gap: due or quiet. "QC due", "Quiet since 08:48".</li>
+      <li><span class="glyph error" aria-hidden="true"></span> A triangle: not OK. "Not OK to run", "Out of spec".</li>
+      <li><span class="glyph never" aria-hidden="true"></span> A hollow ring: nothing to judge by yet. "No verdict yet", "Not read from LabCore yet".</li>
+    </ul>
+  </section>
+
+  <section aria-labelledby="h-narrow">
+    <h2 id="h-narrow">On a tablet or a narrow window</h2>
+    <p>Below 1400 px the sidebar shows icons only. A number on an icon is that page's count, and the strip along the bottom of the page says the status in words. On a phone, the <kbd>☰</kbd> button opens the full menu. Settings › This browser lets you keep the names showing.</p>
+  </section>
+
+  <section aria-labelledby="h-version">
+    <h2 id="h-version">Which version is running</h2>
+    <p>The small text in the bottom-right corner of every page is the release this server is running, and the user menu says it as "LEM {{ app_version() }}". It is the same string <span class="mono">/healthz</span> reports. A copy run from a developer's checkout says <span class="mono">dev</span>.</p>
+  </section>
+</main>
+{% endblock %}
