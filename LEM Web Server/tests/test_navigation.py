@@ -77,21 +77,25 @@ class TestTheFloorMoved:
 
 
 class TestChecklistsMode:
-    def test_the_page_exists(self, client):
-        assert client.get("/checklists").status_code == 200
+    def test_the_bookmark_lands_on_a_round(self, client):
+        r = client.get("/checklists")
+        assert r.status_code == 302
+        assert client.get(r.headers["Location"]).status_code == 200
 
     def test_it_offers_opening_and_closing(self, client):
         """Ryan: Checklists → Open or close."""
-        body = client.get("/checklists").get_data(as_text=True).lower()
-        assert "open" in body and "clos" in body
+        body = client.get("/checklists", follow_redirects=True).get_data(as_text=True)
+        assert 'href="/checklists/opening"' in body and 'href="/checklists/closing"' in body
 
     def test_it_can_get_back_to_the_selector(self, client):
-        assert 'href="/"' in client.get("/checklists").get_data(as_text=True)
+        assert 'href="/"' in client.get("/checklists", follow_redirects=True).get_data(as_text=True)
 
     def test_it_is_honest_that_nothing_is_configured_yet(self, client):
-        """Checklists aren't built yet — the page must not imply they are."""
-        body = client.get("/checklists").get_data(as_text=True).lower()
-        assert "not" in body and "yet" in body
+        """No round set up must say so, and say where to set one up."""
+        client.get("/api/checklists")             # so the page knows, rather than reading
+        body = client.get("/checklists/opening").get_data(as_text=True)
+        assert "No opening round is set up." in body
+        assert "/checklists/edit/new?slot=opening" in body
 
 
 class TestEveryPageWorksOffline:
@@ -126,6 +130,6 @@ class TestEveryPageWorksOffline:
         app.config["TESTING"] = True
         return app.test_client()
 
-    @pytest.mark.parametrize("path", ["/", "/floor", "/checklists"])
+    @pytest.mark.parametrize("path", ["/", "/floor", "/checklists/opening", "/checklists/edit"])
     def test_it_still_renders(self, dead_client, path):
         assert dead_client.get(path).status_code == 200, path

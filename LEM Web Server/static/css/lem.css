@@ -181,3 +181,178 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .signin-card .field input { width: 100%; height: 40px; }
 .signin-card .actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s2); }
 .signin-card .errline { margin: 0; }
+
+/* ── the round (ia-final §3.3, piece 9; templates/round.html, js/round.js) ──
+   Tablet first: 72px rows, a 48px tick, 44px for every other target, and a
+   narrow centred card so there is no ragged gutter at 820px. A ticked label
+   stays at full --text (J1: greyed ticked rows read as "disabled", and the
+   person checking the round could not read what had been done). Status is a
+   glyph plus a word, never colour alone. Tokens only. */
+.topbar .crumbs .here { color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.seg-links a {
+    display: inline-flex; align-items: center; min-height: 36px; padding: 0 16px; border-radius: var(--radius-pill);
+    color: var(--text-muted-sunken); text-decoration: none; font-size: var(--fs-sm); font-weight: 500;
+}
+.seg-links a:hover { color: var(--text); }
+.seg-links a[aria-current="page"] { background: var(--bg-card); color: var(--text); box-shadow: var(--e1); font-weight: 600; }
+.round-edit { height: 40px; }
+
+.content.round { max-width: 760px; margin: 0 auto; padding-bottom: calc(48px + var(--s6)); }
+.content.round:focus { outline: none; }
+.round .page-head { margin-bottom: var(--s5); }
+.round .page-head .meta { font-size: var(--fs-sm); }
+.round .pill { height: 26px; font-size: var(--fs-sm); }
+.round .pill.part { background: var(--bg-sunken); color: var(--text); }
+.glyph.half { border-radius: 50%; border: 1.5px solid var(--text); background: linear-gradient(90deg, var(--text) 50%, transparent 50%); }
+.pill.held .glyph.error { background: var(--pill-held-fg); }
+
+.round-card { overflow: hidden; }
+.round-card .rgroup { font-size: var(--fs-md); font-weight: 650; padding: var(--s4) var(--s5) var(--s2); border-top: 1px solid var(--border-light); }
+.round-card .rgroup:first-of-type { border-top: 0; }
+.round-card .rhead {
+    font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); letter-spacing: 0;
+    padding: var(--s4) var(--s5) var(--s1); border-top: 1px solid var(--border-light); margin: 0;
+}
+
+.rrow {
+    display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; grid-template-areas: "tick body meta";
+    align-items: center; column-gap: var(--s4); row-gap: var(--s1);
+    min-height: 72px; padding: var(--s3) var(--s5) var(--s3) var(--s4);
+    border-top: 1px solid var(--border-light); cursor: pointer; position: relative;
+    -webkit-tap-highlight-color: transparent; transition: background var(--t-fast) var(--ease-std);
+}
+.round-card > .rrow:first-of-type, .round-card > h2.visually-hidden + .rrow { border-top: 0; }
+.rrow:hover { background: var(--bg-hover); }
+.rrow[data-checked="1"] { cursor: default; }
+.rrow[data-checked="1"]:hover { background: transparent; }
+.rrow.sub { padding-left: calc(var(--s4) + 40px); }
+/* the next thing to do, marked the way GC marks "Now": an ink edge */
+.rrow.next { box-shadow: inset 3px 0 0 var(--ink); }
+
+.rrow .tick {
+    grid-area: tick; width: 48px; height: 48px; display: grid; place-items: center; padding: 0;
+    /* --text-muted, not --border-strong: a control's edge needs 3:1 (1.4.11) */
+    border: 1.5px solid var(--text-muted); border-radius: 12px; background: var(--bg-card); color: var(--ink-fg);
+    cursor: pointer; transition: background var(--t-fast) var(--ease-std), border-color var(--t-fast) var(--ease-std);
+}
+.rrow .tick svg { width: 26px; height: 26px; opacity: 0; transform: scale(.6); transition: opacity var(--t-fast) var(--ease-out), transform var(--t-base) var(--ease-out); }
+.rrow:not([data-checked="1"]):hover .tick { border-color: var(--ink); }
+.rrow .tick[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); }
+.rrow .tick[aria-pressed="true"] svg { opacity: 1; transform: none; }
+.rrow .tick[data-reading] { border-style: dashed; }
+.rrow .tick[data-reading][aria-pressed="true"] { border-style: solid; }
+
+.rrow .rbody { grid-area: body; display: grid; gap: 2px; min-width: 0; }
+.rrow .rlabel { font-size: 16px; font-weight: 560; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
+.rrow.sub .rlabel { font-size: 15px; font-weight: 500; }
+.rrow .rcap { font-size: var(--fs-sm); color: var(--text-muted); }
+.rrow .rcap .link { color: var(--text); }
+.rrow .rerr { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--st-error); display: flex; gap: var(--s2); align-items: baseline; }
+.rrow .rerr::before { content: ""; flex: none; width: 11px; height: 10px; background: var(--st-error); clip-path: polygon(50% 0, 100% 100%, 0 100%); transform: translateY(1px); }
+
+.rrow .rmeta { grid-area: meta; display: flex; align-items: center; justify-content: flex-end; gap: var(--s1); font-size: var(--fs-sm); color: var(--text-muted); white-space: nowrap; }
+.rrow .rby:empty { display: none; }
+.rrow[data-state="saving"] .rby { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.rrow[data-state="saving"] .rby::before {
+    content: ""; width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid var(--border);
+    border-top-color: var(--ink); animation: gc-spin 0.9s linear infinite;
+}
+.rrow .undo {
+    min-height: 44px; padding: 0 var(--s2); border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-sm);
+    font-weight: 550; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; border-radius: var(--radius-sm);
+}
+.rrow .undo:hover { background: var(--bg-hover); }
+
+/* a reading: the field and its Save on the right, the byline under them */
+.rrow[data-kind="number"], .rrow[data-kind="text"] { grid-template-areas: "tick body entry" "tick body meta"; }
+.rrow[data-kind="number"] .rmeta:not(:has(.rby:not(:empty))):not(:has(.undo:not([hidden]))),
+.rrow[data-kind="text"] .rmeta:not(:has(.rby:not(:empty))):not(:has(.undo:not([hidden]))) { display: none; }
+.rrow .rentry { grid-area: entry; display: flex; align-items: center; gap: var(--s2); justify-content: flex-end; cursor: default; }
+.gc .rrow .rinput {
+    width: 132px; height: 52px; padding: 0 var(--s3); font-size: 18px; text-align: right; font-variant-numeric: tabular-nums;
+    border-radius: var(--radius-md); border: 1px solid var(--text-muted); color: var(--text); background: var(--bg-card);
+}
+.gc .rrow[data-kind="text"] .rinput { width: 220px; text-align: left; font-size: 16px; }
+.gc .rrow .rinput:focus-visible, .gc .rrow .rinput:focus { border-color: var(--border-focus); box-shadow: var(--ring); outline: none; }
+.rrow .runits { font-size: var(--fs-sm); color: var(--text-muted); min-width: 28px; }
+.rrow .rsave { height: 44px; padding: 0 18px; }
+/* a saved reading shows its value, not a Save, until somebody changes it */
+.rrow[data-checked="1"]:not([data-dirty="1"]) .rsave { visibility: hidden; }
+
+/* every state that is not a round has its own sentence */
+.round-note { padding: var(--s5); display: grid; gap: var(--s3); justify-items: start; }
+.round-note p { margin: 0; font-size: var(--fs-md); }
+.round-note .glyph.error { margin-right: 4px; }
+.skeleton { display: grid; gap: var(--s3); width: 100%; }
+.skeleton i { display: block; height: 48px; border-radius: var(--radius-md); background: var(--bg-sunken); }
+.skeleton i:nth-child(2) { width: 82%; }
+.skeleton i:nth-child(3) { width: 64%; }
+.round-foot { display: none; margin: var(--s4) 0 0; font-size: var(--fs-sm); }
+
+/* ── the bench bar: who is ticking, live, and what is saved ─────────────
+   Sticky at the foot of the page column, where the words strip would be (it
+   says the same live words, so body.bench hides the strip). Its right
+   padding clears the version stamp. */
+body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: none !important; }
+.bench-bar {
+    position: sticky; bottom: 0; z-index: 15; margin-top: auto;
+    display: flex; align-items: center; gap: var(--s5); min-height: 48px;
+    padding: var(--s1) calc(var(--badge-w, 32px) + var(--s5)) var(--s1) var(--s6);
+    background: var(--bg-card); border-top: 1px solid var(--border-light); font-size: var(--fs-sm); color: var(--text);
+}
+.bench-bar > div { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; white-space: nowrap; }
+.bench-bar .bb-who > span { display: inline-flex; align-items: center; gap: var(--s2); }
+.bench-bar .bb-who > span[hidden] { display: none; }
+.bench-bar .bb-who b { font-weight: 650; }
+.bench-bar .bb-avatar { width: 26px; height: 26px; font-size: 10px; }
+.bench-bar .bb-live { color: var(--text-muted); }
+.bench-bar .bb-live .live-dot { box-shadow: none; }
+.bench-bar .bb-saved { margin-left: auto; }
+.bench-bar[data-save="failed"] .bb-saved { color: var(--st-error); font-weight: 550; }
+.linkbtn {
+    min-height: 40px; padding: 0 var(--s2); border: 0; background: none; color: var(--text); font: inherit;
+    text-decoration: underline; text-underline-offset: 3px; cursor: pointer; border-radius: var(--radius-sm);
+}
+.linkbtn:hover { background: var(--bg-hover); }
+
+/* say it once: with the full sidebar its foot already says "Live · updated" */
+@media (min-width: 1400px) {
+    :root:not([data-sidebar="rail"]) .bench-bar .bb-live { display: none; }
+}
+:root[data-sidebar="full"] .bench-bar .bb-live { display: none; }
+
+/* tablet: the bar's three parts still fit; the live words shorten first */
+@media (max-width: 1099px) {
+    .bench-bar { gap: var(--s4); padding-left: var(--s5); }
+    .bench-bar .bb-live { overflow: hidden; text-overflow: ellipsis; }
+}
+
+/* phone: a reading's field and Save wrap under the label; the byline too.
+   The bar becomes two short lines. The edit link moves under the card. */
+@media (max-width: 699px) {
+    /* one heading: the h1 says which round, the seg says it again as a control */
+    .topbar .crumbs { display: none; }
+    .round-edit { display: none; }
+    .round-foot { display: block; }
+    .seg-links a { padding: 0 12px; }
+    .content.round { padding-left: var(--s4); padding-right: var(--s4); }
+    .round .page-head h1 { font-size: 26px; }
+    /* the meta stays one line: progress · due (the date is today's anyway) */
+    .round .page-head #round-date, .round .page-head #round-due-sep { display: none; }
+    .rrow { grid-template-columns: 48px minmax(0, 1fr); grid-template-areas: "tick body" "tick meta"; padding: var(--s3) var(--s4) var(--s3) var(--s3); column-gap: var(--s3); }
+    .rrow[data-kind="number"], .rrow[data-kind="text"] { grid-template-areas: "tick body" "tick entry" "tick meta"; }
+    .rrow.sub { padding-left: calc(var(--s3) + 24px); }
+    .rrow .rmeta { justify-content: flex-start; }
+    .rrow .rmeta:not(:has(.rby:not(:empty))):not(:has(.undo:not([hidden]))) { display: none; }
+    .rrow .rentry { justify-content: flex-start; margin-top: var(--s1); }
+    .gc .rrow .rinput { width: 120px; }
+    .gc .rrow[data-kind="text"] .rinput { flex: 1; width: auto; min-width: 0; }
+    .bench-bar { flex-wrap: wrap; row-gap: 0; column-gap: var(--s3); padding: var(--s1) calc(var(--badge-w, 32px) + var(--s3)) var(--s1) var(--s4); }
+    .bench-bar .bb-who { flex: 1 1 100%; }
+    .bench-bar .bb-saved { margin-left: 0; }
+    .bench-bar .bb-live { flex: 0 1 auto; }
+    .bench-bar .bb-tail { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .rrow .tick svg { transition: none; }
+}

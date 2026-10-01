@@ -211,19 +211,20 @@ class Walk:
 # ── T0 ──────────────────────────────────────────────────────────────────────
 
 def test_t0_from_checklists_two_clicks_same_url_same_scroll(drv, base, round_uid):
+    # The round is a shell page now (piece 9): Sign in is the sidebar's user
+    # chip, the page scrolls the window, and "who is ticking" is the bench bar.
     d = drv
     _size(d, 1440, 600)                       # short enough that the round scrolls
     _load(d, base + "/checklists")
     assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, ".item[data-item]")) == 14)
     assert _js(d, "return document.body.classList.contains('anon');")
-    main_scroller = "const m=document.querySelector('main');"
-    _js(d, main_scroller + "m.scrollTop = 260; window.scrollTo(0, 0);")
-    y0 = _js(d, main_scroller + "return m.scrollTop;")
+    _js(d, "window.scrollTo(0, 260);")
+    y0 = _js(d, "return window.scrollY;")
     assert y0 > 100, "the round must actually be scrolled for this to prove anything"
     url0 = d.current_url
 
     w = Walk(d)
-    w.click("#btnAuth", opens_screen=True)
+    w.click("#user-chip", opens_screen=True)
     assert _wait(lambda: _sheet_open(d))
     assert d.find_element(By.ID, "signin-title").text == "Sign in"
     assert _js(d, "return document.activeElement.id;") == "signin-user", "the cursor waits in the name field"
@@ -231,15 +232,14 @@ def test_t0_from_checklists_two_clicks_same_url_same_scroll(drv, base, round_uid
     w.type("#signin-pass", PASSWORD)
     w.click("#signin-ok")
     assert _wait(lambda: not _sheet_open(d))
-    assert _wait(lambda: "Cody" in d.find_element(By.ID, "who").text)
+    assert _wait(lambda: d.find_element(By.ID, "bb-name").text == "Cody")
 
     assert w.counts() == (2, 2, 2), f"T0 walked {w.counts()}; target 2 / 2 / +1"
     assert d.current_url == url0
     assert _js(d, "return window.__sameDoc === true;"), "the page was reloaded or replaced"
-    assert _js(d, main_scroller + "return m.scrollTop;") == y0, "the scroll moved"
+    assert _js(d, "return window.scrollY;") == y0, "the scroll moved"
     assert not _js(d, "return document.body.classList.contains('anon');")
     assert _me(d) == {"authenticated": True, "user": "Cody"}
-    assert d.find_element(By.ID, "btnAuth").get_attribute("textContent").strip() == "Sign out"
 
 
 # ── gated tick ──────────────────────────────────────────────────────────────
@@ -281,7 +281,7 @@ def test_cancel_drops_the_pending_tick(drv, base, server, round_uid):
     assert _wait(lambda: _sheet_open(d))
     d.find_element(By.ID, "signin-cancel").click()
     assert _wait(lambda: not _sheet_open(d))
-    d.find_element(By.ID, "btnAuth").click()
+    d.find_element(By.ID, "user-chip").click()
     assert _wait(lambda: _sheet_open(d))
     assert d.find_element(By.ID, "signin-title").text == "Sign in", "a cancelled act must not keep its title"
     d.find_element(By.ID, "signin-user").send_keys("Cody")

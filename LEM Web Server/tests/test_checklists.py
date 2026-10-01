@@ -324,24 +324,27 @@ class TestEndpoints:
 # ── the page ────────────────────────────────────────────────────────────────
 
 class TestThePage:
+    # The round is /checklists/<slot> now (tests/test_round_page.py). The page
+    # these describe, with the editor and its add box, answers at
+    # /checklists/edit until piece 10 replaces it.
     def test_it_no_longer_claims_to_be_unbuilt(self, client):
-        body = client.get("/checklists").get_data(as_text=True).lower()
+        body = client.get("/checklists/edit").get_data(as_text=True).lower()
         assert "not been implemented" not in body
 
     def test_it_has_an_opening_and_a_closing_slot(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit").get_data(as_text=True)
         assert 'data-slot="opening"' in body
         assert 'data-slot="closing"' in body
 
     def test_it_reads_the_endpoint(self, client):
-        assert "/api/checklists" in client.get("/checklists").get_data(
+        assert "/api/checklists" in client.get("/checklists/edit").get_data(
             as_text=True)
 
     def test_it_can_get_back(self, client):
-        assert 'href="/"' in client.get("/checklists").get_data(as_text=True)
+        assert 'href="/"' in client.get("/checklists/edit").get_data(as_text=True)
 
     def test_it_can_add_items(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit").get_data(as_text=True)
         assert 'id="newItem"' in body
 
     def test_it_survives_labcore_being_down(self):
@@ -370,7 +373,9 @@ class TestThePage:
 
         app = create_app(Dead(), authenticator=StubAuth(), secret="s")
         app.config["TESTING"] = True
-        assert app.test_client().get("/checklists").status_code == 200
+        c = app.test_client()
+        assert c.get("/checklists/opening").status_code == 200
+        assert c.get("/checklists/edit").status_code == 200
 
 
 # ── the write queue says no, and the store must not say yes ─────────────────
