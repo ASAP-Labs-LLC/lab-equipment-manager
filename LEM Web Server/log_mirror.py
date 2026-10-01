@@ -519,3 +519,195 @@ class LogMirrorService:
                 # mirror stops being obvious.
                 pass
             self._stop.wait(self.seconds)
+
+
+# ── the store needs no copy ──────────────────────────────────────────────────
+
+class StoreLogMirror(LogMirror):
+    """`LogMirror`'s API, answered straight from LEM's store (transfer §5.3).
+
+    The mirror existed because the record lived in LabCore, behind a queue
+    that serialises the whole lab: a deep read of 26,106 rows on every History
+    open spent write slots the benches needed, so the app paid it once every
+    five minutes into a local file and read that. Now the record IS a local
+    file — `lem_store.LocalStoreGateway`, WAL, one indexed read away — and a
+    second copy of it would only be a second thing to be behind.
+
+    Same signatures, same row shapes (`rowid_src` is the store's `id`, which is
+    the same number the old cursor carried), same ordering and same tie-break,
+    so every caller in `web_app` and every test of the old mirror's semantics
+    reads this unchanged. Two differences, both deliberate:
+
+    * It reads `lem_machine_log_effective`, so a hidden replay or a retired
+      machine's purged history is out of the History, Logs, QC wall and
+      search exactly as it is out of every other default view.
+    * It never holds a stale copy, so `refresh()` pulls nothing and
+      `filled_at` is "now": there is no fill to be part-way through.
+
+    A READ THAT FAILS RAISES — `LabCoreUnavailable`, the type every caller of
+    the old mirror's gateway path already handles — and `state()` reports the
+    failure as `rows: 0` with a `stale_reason`, which sends every caller down
+    its fallback path, where the same failure is reported to the person
+    rather than shown as an empty record.
+    """
+
+    VIEW = "lem_machine_log_effective"
+    _COLS = ("id AS rowid_src, machine_uid, ts, kind, lab_id, test_name, "
+             "value, detail")
+
+    def __init__(self, gateway, path: Optional[str] = None) -> None:
+        # Deliberately NOT LogMirror.__init__: no file, no connection, no
+        # schema. `path` is accepted so the factory's call shape is the same.
+        self.gateway = gateway
+        self.path = path
+        self._lock = threading.Lock()
+
+    # ── nothing to pull ──────────────────────────────────────────────────
+    def refresh(self) -> int:
+        return 0
+
+    # ── the reads, against the store ─────────────────────────────────────
+    def _read(self, sql: str, args=None) -> List[dict]:
+        res = self.gateway.read_sql(sql, list(args or []))
+        if not isinstance(res, dict):
+            raise LabCoreUnavailable(
+                "the LEM store gave no answer reading the machine log")
+        if res.get("error"):
+            raise LabCoreUnavailable(str(res["error"]))
+        rows = res.get("rows")
+        if rows is None:
+            raise LabCoreUnavailable(
+                "the LEM store answered with no rows key while reading the "
+                "machine log; that is not an empty log.")
+        return [dict(r) for r in rows]
+
+    def events(self, machine_uid: Optional[str] = None,
+               limit: Optional[int] = None,
+               before: Optional[str] = None) -> List[dict]:
+        where, args = [], []
+        if machine_uid:
+            where.append("machine_uid = ?")
+            args.append(machine_uid)
+        if before:
+            ts, _, rid = str(before).partition("|")
+            if rid.isdigit():
+                where.append("(ts < ? OR (ts = ? AND id < ?))")
+                args.extend([ts, ts, int(rid)])
+            else:
+                where.append("ts < ?")
+                args.append(ts)
+        sql = "SELECT %s FROM %s" % (self._COLS, self.VIEW)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        return self._read(sql, args)
+
+    def by_lab_id(self, lab_id: str, limit: int = 50) -> List[dict]:
+        return self._read(
+            "SELECT %s FROM %s WHERE lab_id = ? ORDER BY ts DESC, id DESC "
+            "LIMIT ?" % (self._COLS, self.VIEW), [str(lab_id), int(limit)])
+
+    def search(self, term: str, limit: int = 200) -> List[dict]:
+        term = (term or "").strip()
+        if not term:
+            return []
+        esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = "%" + esc + "%"
+        return self._read(
+            "SELECT %s FROM %s WHERE "
+            "  lab_id    LIKE ? ESCAPE '\\' "
+            "  OR test_name LIKE ? ESCAPE '\\' "
+            "  OR value     LIKE ? ESCAPE '\\' "
+            "  OR machine_uid LIKE ? ESCAPE '\\' "
+            "ORDER BY ts DESC, id DESC LIMIT ?" % (self._COLS, self.VIEW),
+            [like, like, like, like, int(limit)])
+
+    def query(self, term: str = "", machine_uid: str = "", kind: str = "",
+              since: str = "", until: str = "",
+              limit: int = 500) -> List[dict]:
+        where, args = [], []
+        if machine_uid:
+            where.append("machine_uid = ?")
+            args.append(machine_uid)
+        if kind:
+            where.append("kind = ?")
+            args.append(kind)
+        if since:
+            where.append("ts >= ?")
+            args.append(since)
+        if until:
+            where.append("ts < ?")
+            args.append(until if len(until) > 10 else until + "T99")
+        term = (term or "").strip()
+        if term:
+            esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = "%" + esc + "%"
+            where.append("(lab_id LIKE ? ESCAPE '\\' "
+                         "OR test_name LIKE ? ESCAPE '\\' "
+                         "OR value LIKE ? ESCAPE '\\' "
+                         "OR kind LIKE ? ESCAPE '\\' "
+                         "OR detail LIKE ? ESCAPE '\\')")
+            args += [like] * 5
+        sql = "SELECT %s FROM %s" % (self._COLS, self.VIEW)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        args.append(int(limit))
+        return self._read(sql, args)
+
+    def count(self, machine_uid: Optional[str] = None) -> int:
+        sql = "SELECT COUNT(*) AS n FROM %s" % self.VIEW
+        args: list = []
+        if machine_uid:
+            sql += " WHERE machine_uid = ?"
+            args.append(machine_uid)
+        got = self._read(sql, args)
+        return int(got[0]["n"]) if got else 0
+
+    def max_rowid(self) -> int:
+        got = self._read("SELECT COALESCE(MAX(id), 0) AS m FROM %s" % self.VIEW)
+        return int(got[0]["m"]) if got else 0
+
+    def latest_qc(self) -> Dict[tuple, dict]:
+        rows = self._read(
+            "SELECT machine_uid, test_name, ts, lab_id, value, detail, "
+            "id AS rowid_src FROM %s WHERE kind = 'qc' AND test_name != '' "
+            "ORDER BY ts, id" % self.VIEW)
+        out: Dict[tuple, dict] = {}
+        for r in rows:
+            key = (str(r.get("machine_uid") or ""),
+                   str(r.get("test_name") or ""), str(r.get("lab_id") or ""))
+            ts = str(r.get("ts") or "")
+            row = {"ts": ts, "lab_id": str(r.get("lab_id") or ""),
+                   "value": r.get("value"), "detail": r.get("detail")}
+            was = out.get(key)
+            if was is None or ts > was["ts"]:
+                out[key] = row
+                continue
+            # The tie rule of `LogMirror.latest_qc`: a batch is one instant,
+            # and a recorded failure in it is the verdict.
+            if ts == was["ts"] and _failed(r.get("detail")) \
+                    and not _failed(was["detail"]):
+                out[key] = row
+        return out
+
+    def state(self) -> dict:
+        try:
+            got = self._read("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m "
+                             "FROM %s" % self.VIEW)
+        except LabCoreError as exc:
+            return {"rows": 0, "max_rowid": 0, "filled_at": None,
+                    "stale_reason": str(exc) or exc.__class__.__name__,
+                    "source": "store"}
+        row = got[0] if got else {"n": 0, "m": 0}
+        return {"rows": int(row["n"] or 0), "max_rowid": int(row["m"] or 0),
+                "filled_at": _now(), "stale_reason": "", "source": "store"}
+
+    def _set_meta(self, key: str, value: str) -> None:
+        return None
+
+    def _get_meta(self, key: str) -> str:
+        return ""

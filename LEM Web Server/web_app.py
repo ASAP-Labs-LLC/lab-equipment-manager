@@ -259,10 +259,15 @@ def serialize_config(cfg: AppConfig) -> dict:
 class StatusProvider:
     """Computes the dashboard snapshot from live LabCore data on demand."""
 
-    def __init__(self, gateway) -> None:
-        self.gateway = gateway
+    def __init__(self, gateway, labcore=None) -> None:
+        # The configuration is LEM's (the store); the QC rows it judges are
+        # LabCore's `samples`/`sample_tests`. W3: GET /api/status used to cost
+        # five LabCore reads, four of them `lem_*` — now it costs LabCore only
+        # the rows that really are LabCore's.
+        self.labcore = labcore if labcore is not None else gateway
+        self.gateway = self.labcore
         self.store = DbConfigStore(gateway)
-        self.source = LabCoreDataSource(gateway)
+        self.source = LabCoreDataSource(self.labcore)
 
     def load_config(self) -> AppConfig:
         return self.store.load()
@@ -330,6 +335,11 @@ class StatusProvider:
             "refresh_seconds": max(60, int(cfg.poll_minutes) * 60),
             "labcore_online": bool(self.gateway.is_running()),
         }
+
+
+def _truthy(value) -> bool:
+    """A query-string switch: `1`, `true`, `yes`, `on` — anything else is off."""
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _now() -> datetime:
@@ -1010,10 +1020,40 @@ def refusal_response(exc):
     return jsonify(body), (503 if exc.busy else 502), headers
 
 
-def create_app(gateway, admin_password: Optional[str] = None,
+def create_app(gateway, labcore_gateway=None,
+               admin_password: Optional[str] = None,
                secret: Optional[str] = None, authenticator=None,
                live=None, live_token: Optional[str] = None,
-               documents_root=None) -> Flask:
+               documents_root=None, labcore=None) -> Flask:
+    """The app, over TWO gateways: LEM's store and LabCore (transfer §5.3).
+
+    `gateway` is the STORE — every `lem_*` table, the machine log, the
+    snapshot, the log mirror, every store module. In production it is
+    `lem_store.LocalStoreGateway` on this server's disk.
+
+    `labcore_gateway` (alias `labcore=`, the name the gate harness passes) is
+    LabCore, and only the callers that need LabCore's OWN tables reach it:
+    sign-in (`LabCoreAuth`), the dashboard's QC rows (`LabCoreDataSource`, over
+    `samples`/`sample_tests`), and the test-method catalogue. Not one `lem_*`
+    statement goes there; `test_gateway_split.py` walks the pages with a
+    counting gateway in LabCore's place to prove it (S4).
+
+    Omitted, LabCore is the store's own gateway — the shape every test in this
+    suite uses, where one fake holds both LabCore's three tables and the LEM
+    store's. What is refused is the old production shape, LabCore AS the
+    store: the machine log there has no append-only triggers and no
+    `lem_machine_log_effective`, and every reader of the record now names that
+    view — so on LabCore they would fail, and a reader that treats "no such
+    table" as an empty log would report a lab with no history.
+    """
+    labcore = labcore_gateway if labcore_gateway is not None else labcore
+    if labcore is None:
+        labcore = gateway
+    from labcore_gateway import HttpLabCoreGateway
+    if isinstance(gateway, HttpLabCoreGateway):
+        raise ValueError(
+            "LabCore is not LEM's store any more: pass "
+            "create_app(LocalStoreGateway(path), labcore=HttpLabCoreGateway()).")
     # Per-app, never module-global — see throttled_warning.
     warn_seen: Dict[str, list] = {}
 
@@ -1082,11 +1122,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # escape hatch for --dev runs with no LabCore.
     from labcore_auth import LabCoreAuth
 
-    auth_backend = authenticator or LabCoreAuth(gateway=gateway)
+    auth_backend = authenticator or LabCoreAuth(gateway=labcore)
     admin_pw = admin_password or os.environ.get("LABMGR_ADMIN_PASSWORD")
 
-    provider = StatusProvider(gateway)
+    provider = StatusProvider(gateway, labcore)
     app.config["PROVIDER"] = provider
+    app.config["STORE_GATEWAY"] = gateway
+    app.config["LABCORE_GATEWAY"] = labcore
 
     def _confirmed_write(sql: str, args: Optional[list] = None, *,
                          what: str = "") -> dict:
@@ -1492,11 +1534,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # Same lifecycle rule as the snapshot: constructed here, started by the
     # entry point, and correct with no thread at all — an unfilled mirror falls
     # back to reading LabCore rather than reporting a lab with no history.
-    from log_mirror import LogMirror, LogMirrorService
-    log_mirror = LogMirror(
-        gateway,
-        path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
-                          "log-mirror.sqlite3"))
+    from log_mirror import LogMirror, LogMirrorService, StoreLogMirror
+    from lem_store import is_local_store
+    if is_local_store(gateway):
+        # The record is already a local file: read it, do not copy it. Same
+        # API, over `lem_machine_log_effective` (log_mirror.StoreLogMirror).
+        log_mirror = StoreLogMirror(gateway)
+    else:
+        log_mirror = LogMirror(
+            gateway,
+            path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
+                              "log-mirror.sqlite3"))
     app.config["LOG_MIRROR"] = log_mirror
     app.config["LOG_MIRROR_SERVICE"] = LogMirrorService(
         log_mirror,
@@ -2720,7 +2768,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def api_delete_machine(machine_uid):
         """Retire a machine a station module registered — clears its live
         status, QC specs and control row. Its history in lem_machine_log is
-        kept unless purge_history is requested."""
+        always KEPT; `purge_history` hides it from every default view (a
+        `retired_at` on the config row) and deletes nothing."""
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
@@ -2763,6 +2812,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
                     if not is_missing_table(exc):
                         raise
             return go
+
+        def _hide_history():
+            when = _now().isoformat(timespec="seconds")
+            _confirmed_write(
+                "INSERT INTO lem_machine_config (machine_uid, title, config, "
+                "updated_at, updated_by, retired_at) VALUES (?, ?, '{}', ?, ?, ?) "
+                "ON CONFLICT(machine_uid) DO UPDATE SET "
+                "retired_at = excluded.retired_at, "
+                "updated_at = excluded.updated_at, "
+                "updated_by = excluded.updated_by",
+                [machine_uid, machine_uid, when, session.get("user", ""), when],
+                what="the history of “{0}” was NOT hidden".format(machine_uid))
 
         def _tolerating_missing(run):
             """`_drop`'s exemption, for the steps that go through a store.
@@ -2836,7 +2897,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
             ("documents", _tolerating_missing(_forget_documents)),
         ]
         if body.get("purge_history"):
-            steps.append(("history", _drop("lem_machine_log")))
+            # PURGE IS HIDE (transfer §5.2, D4). This was
+            # `DELETE FROM lem_machine_log WHERE machine_uid = ?` — the one
+            # route in the app that destroyed the 17025 record, on a click.
+            # The store's triggers refuse that statement now, and what
+            # replaces it removes nothing: a `retired_at` on the machine's
+            # config row, and every default reader (they all read
+            # `lem_machine_log_effective`) stops showing rows older than it.
+            # The rows are still in the record; un-retiring the uid brings
+            # them back. AFTER "configuration" on purpose: that step deletes
+            # the config, and this one leaves the tombstone that says why the
+            # history is not on screen.
+            steps.append(("history", _hide_history))
 
         removed = []
         for index, (label, step) in enumerate(steps):
@@ -3312,8 +3384,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
         limit = None if _raw.lower() == "all" else max(1, int(_raw or 500))
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         try:
-            sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                   f"detail FROM lem_machine_log {clause} ORDER BY ts DESC")
+            if _truthy(args.get("include_rereads")):
+                # The "include re-reads" switch (transfer §5.2): the WHOLE
+                # record, rows an approved annotation hides included. A person
+                # asked for it by name; the default stays the effective view.
+                sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                       f"detail FROM lem_machine_log {clause} "  # raw-log: the include-re-reads switch
+                       "ORDER BY ts DESC")
+            else:
+                sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                       f"detail FROM lem_machine_log_effective {clause} "
+                       "ORDER BY ts DESC")
             if limit is not None:
                 sql += " LIMIT ?"
             res = gateway.read_sql(
@@ -3394,13 +3475,21 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # read the page was already doing.
             raw = str(args.get("limit") or "").strip()
             lim = None if raw.lower() == "all" else max(1, int(raw or 500))
-            deep = mirror.query(
-                term=needle,
-                machine_uid=(args.get("machine") or "").strip(),
-                kind=(args.get("kind") or "").strip(),
-                since=(args.get("since") or "").strip(),
-                until=(args.get("until") or "").strip(),
-                limit=lim if lim is not None else 100000)
+            try:
+                deep = mirror.query(
+                    term=needle,
+                    machine_uid=(args.get("machine") or "").strip(),
+                    kind=(args.get("kind") or "").strip(),
+                    since=(args.get("since") or "").strip(),
+                    until=(args.get("until") or "").strip(),
+                    limit=lim if lim is not None else 100000)
+            except LabCoreError:
+                # The whole-record search could not be answered — on the LEM
+                # store the mirror IS a read, and reads can fail. Reported
+                # like the page read's failure, never served as "no match".
+                if failed is not None:
+                    failed["at"] = True
+                deep = []
             # The live page still has to be filtered — it was fetched without
             # the term. Dedupe on what identifies a row to a reader; `rowid` is
             # not in the LabCore page's columns.
@@ -3490,7 +3579,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # six fixed words. On the live table that is the same shape of query
             # that once took eight seconds — and it was running per request.
             res = gateway.read_sql(
-                "SELECT DISTINCT kind FROM lem_machine_log ORDER BY kind")
+                "SELECT DISTINCT kind FROM lem_machine_log_effective ORDER BY kind")
             try:
                 found = labcore_rows(res)
             except LabCoreError:
@@ -3575,7 +3664,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                                               "calibration"]
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
-            "SELECT ts, kind, detail FROM lem_machine_log "
+            "SELECT ts, kind, detail FROM lem_machine_log_effective "
             f"WHERE machine_uid = ? AND kind IN ({placeholders}) "
             "ORDER BY ts DESC LIMIT 500", [machine_uid] + kinds)
         try:
@@ -3625,7 +3714,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 return jsonify({"error": "limit must be a number, or 'all'."}), 400
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
-            "SELECT machine_uid, ts, kind, detail FROM lem_machine_log "
+            "SELECT machine_uid, ts, kind, detail FROM lem_machine_log_effective "
             f"WHERE kind IN ({placeholders}) ORDER BY ts DESC LIMIT ?",
             kinds + [limit])
         try:
@@ -3685,8 +3774,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
         the import idempotent, and an empty answer during a blip would report
         every completion in the file as new and write the lot again.
         """
+        # The RECORD, not the effective view: this read is what makes the
+        # import idempotent, and a completion that is merely hidden (a retired
+        # machine's history) is still a completion the file must not re-add.
         res = gateway.read_sql(
-            "SELECT machine_uid, detail FROM lem_machine_log "
+            "SELECT machine_uid, detail FROM lem_machine_log "  # raw-log: import dedupe
             "WHERE kind IN ('pm','calibration')")
         out = set()
         for row in labcore_rows(res):
@@ -3909,7 +4001,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             args.append(machine_uid)
         res = gateway.read_sql(
             "SELECT machine_uid, ts, lab_id, test_name, value, detail "
-            f"FROM lem_machine_log {where} ORDER BY ts ASC LIMIT ?",
+            f"FROM lem_machine_log_effective {where} ORDER BY ts ASC LIMIT ?",
             args + [int(limit)])
         # Raises rather than returning []. This feeds the control chart AND the
         # QC export an assessor asks for; a file that silently contains no QC at
@@ -4401,7 +4493,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             try:
                 res = gateway.read_sql(
                     "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                    "detail FROM lem_machine_log WHERE machine_uid = ? "
+                    "detail FROM lem_machine_log_effective WHERE machine_uid = ? "
                     "ORDER BY ts DESC LIMIT ?", [machine_uid, EVENT_LIMIT])
                 rows = [dict(r) for r in labcore_rows(res)]
             except LabCoreError as exc:
@@ -5397,7 +5489,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         try:
             res = gateway.read_sql(
                 "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                "detail FROM lem_machine_log ORDER BY ts DESC LIMIT ?",
+                "detail FROM lem_machine_log_effective ORDER BY ts DESC LIMIT ?",
                 [SEARCH_CORPUS_ROWS])
             got = labcore_rows(res)
         except LabCoreError as exc:
@@ -5536,7 +5628,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 try:
                     res = gateway.read_sql(
                         "SELECT machine_uid, ts, kind, lab_id, test_name, value "
-                        "FROM lem_machine_log WHERE lab_id = ? "
+                        "FROM lem_machine_log_effective WHERE lab_id = ? "
                         "ORDER BY ts DESC LIMIT 50", [query.strip()],
                         timeout=30)
                     rows = labcore_rows(res, missing_ok=True)
@@ -6008,7 +6100,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             args.append(kind)
         res = gateway.read_sql(
             "SELECT ts, kind, lab_id, test_name, value, detail FROM "
-            f"lem_machine_log {where} ORDER BY ts ASC LIMIT 20000", args)
+            f"lem_machine_log_effective {where} ORDER BY ts ASC LIMIT 20000", args)
         try:
             # A downloaded file with a header row and nothing under it is the
             # least recoverable version of this bug: it leaves the building.
@@ -6446,14 +6538,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if cached:
             return jsonify({"tests": cached, "cached": True})
         try:
-            names = gateway.get_test_names()
+            names = labcore.get_test_names()
         except Exception:                       # a client that raises outright
             names = None
         if names is None:
             # Couldn't ask LabCore. The DISTINCT scan is the safety net, and it
             # needs a generous timeout: it reads every result row in the lab.
             try:
-                res = gateway.read_sql(
+                res = labcore.read_sql(
                     "SELECT DISTINCT test_name FROM sample_tests "
                     "WHERE test_name IS NOT NULL AND TRIM(test_name) != '' "
                     "ORDER BY test_name", timeout=60)

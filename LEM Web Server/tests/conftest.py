@@ -54,6 +54,78 @@ if not any(isinstance(f, _PywFinder) for f in sys.meta_path):
     sys.meta_path.insert(0, _PywFinder())
 
 
+# ── the suite runs on LEM's store ───────────────────────────────────────────
+#
+# Transfer spec §5: every `lem_*` table now lives in `lem_store.
+# LocalStoreGateway`, a local SQLite file with append-only triggers on the
+# machine log and `lem_machine_log_effective` in front of it — and NOT in
+# LabCore. Every fixture in this suite seeds `lem_*` rows into the one gateway
+# it hands `create_app(gw)`, so that gateway IS the store, and it has to be the
+# real store class or the suite would go on proving behaviour against a
+# database production no longer uses: one with no triggers (so a DELETE on the
+# record would pass here and be refused there) and no effective view (so every
+# reader of the log would fail there and pass here).
+#
+# So `FakeLabCoreGateway`, for this suite, is a `LocalStoreGateway` on a
+# throwaway file that ALSO holds LabCore's three core tables and LabCore's
+# named queue ops — the single-gateway shape `create_app(gw)` serves both
+# roles from (see its docstring). Swapped here, before any test module
+# imports the name, so the 90 files that say `FakeLabCoreGateway()` all get it.
+#
+# There is deliberately no switch back to the old in-memory LabCore fake: every
+# reader of the record now names `lem_machine_log_effective`, which only the
+# store has, so a suite run "on LabCore" would be measuring a configuration
+# `create_app` no longer supports.
+if True:
+    import atexit
+    import itertools
+    import shutil
+    import tempfile
+
+    import labcore_gateway as _lcg
+    from lem_store import LocalStoreGateway as _Store
+
+    _LabCoreFake = _lcg.FakeLabCoreGateway
+    # The LabCore-only fake stays reachable for the tests that need LabCore
+    # and the store as two different things (`labcore_counter.py`).
+    _lcg.LabCoreOnlyFake = _LabCoreFake
+    _STORE_DIR = tempfile.mkdtemp(prefix="lem-test-store-")
+    atexit.register(shutil.rmtree, _STORE_DIR, True)
+    _serial = itertools.count()
+
+    class FakeLabCoreGateway(_Store):
+        """LEM's store on a throwaway file, plus LabCore's core tables."""
+
+        def __init__(self, source: str = "LabEquipmentManager") -> None:
+            self._source = source
+            super().__init__(os.path.join(
+                _STORE_DIR, "store-%06d.db" % next(_serial)))
+            # `_Store.sql`, not `self.sql`: a subclass that counts or refuses
+            # its calls has not finished its own __init__ yet — the original
+            # fake declared these on its raw connection for the same reason.
+            for stmt in _lcg._CORE_SCHEMA:
+                res = _Store.sql(self, stmt)
+                assert "error" not in res, res
+
+        # LabCore's queue operations and GET helpers, the fake's own code:
+        # every one is written against `self.sql` / `self.read_sql`.
+        _op_insert_sample = _LabCoreFake._op_insert_sample
+        _op_add_test = _LabCoreFake._op_add_test
+        _op_update_cell = _LabCoreFake._op_update_cell
+        get_samples = _LabCoreFake.get_samples
+        get_test_names = _LabCoreFake.get_test_names
+
+        def close(self) -> None:
+            super().close()
+            for suffix in ("", "-wal", "-shm"):
+                try:
+                    os.remove(self.path + suffix)
+                except OSError:
+                    pass
+
+    _lcg.FakeLabCoreGateway = FakeLabCoreGateway
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _app_log_goes_somewhere_disposable(tmp_path_factory):
     """Keep the app's real log file out of the checkout.

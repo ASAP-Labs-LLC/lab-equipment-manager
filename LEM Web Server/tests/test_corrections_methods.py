@@ -42,7 +42,8 @@ def gw():
     g.sql("CREATE TABLE IF NOT EXISTS lem_machine_config ("
           "machine_uid TEXT PRIMARY KEY, title TEXT, config TEXT, "
           "updated_at TEXT, updated_by TEXT)")
-    g.sql("INSERT INTO lem_machine_config VALUES (?,?,?,?,?)",
+    g.sql("INSERT INTO lem_machine_config (machine_uid, title, config, "
+          "updated_at, updated_by) VALUES (?,?,?,?,?)",
           ["gc1", "Agilent GC", json.dumps(AGILENT), "2026-08-04T09:00:00", "k"])
     return g
 

@@ -100,11 +100,20 @@ class TestSchemaShape:
     def test_the_store_does_not_declare_its_own_tables(self, bare):
         """A read against a table nobody has declared is empty, not an error —
         but the store must not answer that by issuing DDL of its own."""
+        def lem_tables():
+            res = bare.read_sql("SELECT name FROM pragma_table_list "
+                                "WHERE name LIKE 'lem_%'")
+            assert "error" not in res, res
+            return sorted(r["name"] for r in res["rows"])
+        # Compared before and after rather than against "none": the LEM store
+        # declares the record (`lem_machine_log`, `lem_machine_config`) when
+        # the file is made. What this test is about is THESE stores adding
+        # nothing of their own on a read.
+        before = lem_tables()
+        assert "lem_corrective_actions" not in before
         assert CorrectiveActionStore(bare).for_machine("m1") == []
         assert CorrectionAuditStore(bare).history("m1") == []
-        res = bare.read_sql("SELECT name FROM pragma_table_list "
-                            "WHERE name LIKE 'lem_%'")
-        assert res.get("rows") == []
+        assert lem_tables() == before
 
 
 # ── corrective actions: what a person did about a failure ───────────────────
@@ -660,7 +669,7 @@ class TestEquipmentHistoryTimeline:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["m1", "2026-08-11T08:59:00", "qc", "081124-4417", "Sulfur",
                 "12.4", '{"in_spec": false}'])
 
@@ -1016,7 +1025,7 @@ def seed_log_rows(gw, count, machine="m1"):
            "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
            "detail TEXT)")
     for i in range(count):
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [machine, f"2026-08-11T09:{i // 60:02d}:{i % 60:02d}", "run",
                 "", "Sulfur", str(i), "{}"])
 
@@ -1089,7 +1098,7 @@ class TestTheTriggerIsLinkedToTheAction:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [row["machine_uid"], row["ts"], row["kind"], row["lab_id"],
                 row["test_name"], row["value"], row["detail"]])
         CorrectiveActionStore(gw).open_action(
@@ -1715,7 +1724,7 @@ class TestTheTriggerNamesOneEvent:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["m1", ts, "qc", lab_id, "Sulfur", value,
                 '{"in_spec": false}'])
         return {"machine_uid": "m1", "ts": ts, "kind": "qc", "lab_id": lab_id,
@@ -1787,7 +1796,12 @@ class TestTheTriggerNamesOneEvent:
         CorrectiveActionStore(gw).open_action(
             "m1", what_happened="one", uid="CA-1", trigger_kind="qc_fail",
             trigger_ref=log_event_ref(row))
-        gw.sql("DELETE FROM lem_machine_log")       # aged out of the window
+        # Gone from what the reader sees — hidden by an annotation, because
+        # the record itself is append-only and refuses the DELETE this test
+        # used to simulate "aged out of the window" with.
+        assert "error" not in gw.sql(
+            "INSERT INTO log_annotation (log_id, label, by, at) "
+            "SELECT id, 'import_leftover', 'test', 't' FROM lem_machine_log")
         out = EquipmentHistory(gw).timeline("m1")
         assert [e.uid for e in out] == ["CA-1"]
         assert out[0].caused_by == ""

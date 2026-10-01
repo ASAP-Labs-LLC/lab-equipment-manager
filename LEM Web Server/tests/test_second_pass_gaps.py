@@ -76,7 +76,7 @@ def lab():
            "reason TEXT, updated_at TEXT)")
     gw.sql("INSERT INTO lem_machine_status VALUES "
            "('m1','OptiMPP 1','GREEN','ok','2026-08-03T09:00:00')")
-    gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+    gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
            ["m1", "2026-07-02T09:00:00", "qc", "CP", "Cloud Point", "-7.2",
             json.dumps({"in_spec": True})])
     return gw
