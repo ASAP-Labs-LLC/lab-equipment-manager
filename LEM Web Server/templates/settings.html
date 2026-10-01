@@ -1,10 +1,21 @@
 {% extends "_layout.html" %}
-{#- Settings (ia-final §3.7), GC hub's settings variant: a sticky sub-nav,
-    sections with a left title and one intro sentence, hairline rows. This
-    piece builds This browser and a read-only Diagnostics; the admin sections
-    (levels, lab hours, imports, exports) arrive with their own piece, and the
-    sub-nav lists only sections that are on the page, so it has no dead ends.
-    Page code: static/js/settings.js. -#}
+{#- Settings (ia-final §3.7, piece 11), GC hub's settings variant: a sticky
+    sub-nav, sections with a left title and one intro sentence, hairline rows,
+    save per section.
+
+    What LEM does differently from GC's page, on purpose:
+    * One emphasis. Saves are plain buttons that wake up when something
+      changed; the only ink button is an import's "Import N …", and it exists
+      only after its preview.
+    * The lock is the sign-in. LEM has one permission level (open question
+      6), so a gated section's chip opens the in-place sign-in sheet and the
+      control you pressed goes ahead after it. Reading is never gated.
+    * Every fetched section has four states: loading, the answer, empty
+      (said as a fact about the lab), and "could not read" with Retry.
+    * Developer exists in this HTML only under --dev (web_app.dev_tools_allowed).
+
+    Rendered from memory only (tests/test_settings_page.py); the levels, the
+    hours and the import previews are fetched by static/js/settings.js. -#}
 {% block title %}Settings{% endblock %}
 {% block head %}<link rel="stylesheet" href="/static/css/settings.css?v={{ v('css/settings.css') }}">{% endblock %}
 {% block topbar %}
@@ -12,14 +23,26 @@
   <span class="spacer"></span>
   <span class="caption" id="saved-state" role="status" data-testid="settings-state"></span>
 {% endblock %}
+{%- macro lock() -%}<span class="ico ico-lock lockmark" aria-hidden="true"></span><span class="sr-only"> (sign in to change)</span>{%- endmacro %}
+{%- macro chip(act) -%}
+<button type="button" class="unlock-chip" data-gated="{{ act }}" data-testid="unlock-chip"><span class="ico ico-lock" aria-hidden="true"></span>Sign in to change</button>
+{%- endmacro %}
 {% block content %}
 <div class="set-frame">
   <nav class="set-nav" id="set-nav" aria-label="Settings sections" data-testid="settings-nav">
     <a href="#browser" class="active" aria-current="true">This browser</a>
-    <a href="#diagnostics">Diagnostics</a>
+    <a href="#levels">Floor and levels{{ lock() }}</a>
+    <a href="#hours">Lab hours{{ lock() }}</a>
+    <a href="#imports">Imports{{ lock() }}</a>
+    <a href="#exports">Records and exports</a>
+    <a href="#diagnostics">Diagnostics<span class="glyph {{ diag.summary.glyph if diag.summary.glyph in ('error', 'held') else '' }} nav-glyph" id="diag-nav-glyph" aria-hidden="true"></span></a>
+    {%- if dev_tools %}
+    <a href="#developer">Developer</a>
+    {%- endif %}
   </nav>
   <main class="content set-main" id="main" data-testid="settings-page" tabindex="-1">
 
+    {#- ── This browser ─────────────────────────────────────────────── -#}
     <section class="sec" id="browser" data-testid="section-browser">
       <div class="about"><h2>This browser</h2>
         <p class="intro">Just for this computer: how LEM looks on this screen. Nobody else's screen changes.</p></div>
@@ -43,20 +66,197 @@
       </div>
     </section>
 
-    <section class="sec" id="diagnostics" data-testid="section-diagnostics">
-      <div class="about"><h2>Diagnostics</h2>
-        <p class="intro">What this server knows about itself, read from memory when this page opened. The same facts as /healthz.</p></div>
+    {#- ── Floor and levels ─────────────────────────────────────────── -#}
+    <section class="sec" id="levels" data-testid="section-levels">
+      <div class="about"><h2>Floor and levels</h2>
+        <p class="intro">The lab's floors, top first. Every screen's level picker lists these, and opens on the default.</p>
+        {{ chip("change the levels") }}</div>
       <div class="body">
-        <div class="kv diag-kv" data-testid="diagnostics">
-          {%- for row in diag %}
-          <div class="k">{{ row.label }}</div>
-          <div class="v"><span class="glyph {{ row.glyph }}" aria-hidden="true"></span><span>{{ row.value }}</span>{% if row.note %}<span class="caption">{{ row.note }}</span>{% endif %}</div>
-          {%- endfor %}
+        <div class="load-state" id="levels-state" role="status" data-state="loading"><span class="glyph working" aria-hidden="true"></span><span>Reading the levels from LabCore…</span></div>
+        <table class="tbl lv-tbl" id="levels-table" hidden>
+          <thead><tr><th scope="col">Level</th><th scope="col">Standing on it</th><th scope="col"><span class="sr-only">Default and rename</span></th></tr></thead>
+          <tbody id="levels-body"></tbody>
+        </table>
+        <form class="add-row" id="level-form" autocomplete="off">
+          <label class="field grow"><span>New level</span><input type="text" id="level-name" maxlength="40" placeholder="e.g. Basement"></label>
+          <div class="field"><span id="level-where-label">Where</span>
+            <div class="seg" role="radiogroup" aria-labelledby="level-where-label" id="level-where">
+              <button type="button" role="radio" data-where="top" aria-checked="true">On top</button>
+              <button type="button" role="radio" data-where="bottom" aria-checked="false">Below the ground</button>
+            </div></div>
+          <button type="submit" class="btn" id="level-add" data-gated="add a level"><span class="ico ico-plus" aria-hidden="true"></span>Add level</button>
+        </form>
+        <p class="msg" id="levels-msg" role="status"></p>
+      </div>
+    </section>
+
+    {#- ── Lab hours and holidays ───────────────────────────────────── -#}
+    <section class="sec" id="hours" data-testid="section-hours">
+      <div class="about"><h2>Lab hours and holidays</h2>
+        <p class="intro">When the lab is open. A bench quiet in these hours is a bell item; outside them it is closed, not stopped.</p>
+        {{ chip("change the lab hours") }}</div>
+      <div class="body">
+        <div class="load-state" id="hours-state" role="status" data-state="loading"><span class="glyph working" aria-hidden="true"></span><span>Reading the lab's hours from LabCore…</span></div>
+        <div id="hours-form" hidden>
+          <div class="set-row">
+            <div><b id="days-label">Open days</b><p class="caption" id="days-summary"></p></div>
+            <div class="chips day-chips" role="group" aria-labelledby="days-label" id="day-chips">
+              {%- for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] %}
+              <button type="button" class="chip" data-day="{{ loop.index0 }}" aria-pressed="false">{{ d }}</button>
+              {%- endfor %}
+            </div>
+          </div>
+          <div class="set-row">
+            <div><b>Hours</b><p class="caption">The same hours every open day.</p></div>
+            <div class="time-pair">
+              <label class="field"><span>Opens</span><input type="time" id="hours-opens" step="900"></label>
+              <span class="caption to">to</span>
+              <label class="field"><span>Closes</span><input type="time" id="hours-closes" step="900"></label>
+            </div>
+          </div>
+          <div class="save-row">
+            <p class="msg" id="hours-msg" role="status"></p>
+            <button type="button" class="btn" id="hours-save" data-gated="save the lab hours" disabled>Save hours</button>
+          </div>
+          <h3 class="sub-h">Holidays</h3>
+          <ul class="hol-list" id="hol-list" aria-label="Holidays"></ul>
+          <form class="add-row" id="holiday-form" autocomplete="off">
+            <label class="field"><span>Day</span><input type="date" id="holiday-day"></label>
+            <label class="field grow"><span>Name</span><input type="text" id="holiday-name" maxlength="60" placeholder="e.g. Thanksgiving"></label>
+            <button type="submit" class="btn" id="holiday-add" data-gated="add a holiday"><span class="ico ico-plus" aria-hidden="true"></span>Add holiday</button>
+          </form>
+          <p class="msg" id="hol-msg" role="status"></p>
         </div>
       </div>
     </section>
 
+    {#- ── Imports ──────────────────────────────────────────────────── -#}
+    <section class="sec" id="imports" data-testid="section-imports">
+      <div class="about"><h2>Imports</h2>
+        <p class="intro">History from outside LEM. Each shows what it will do first, and afterwards what landed in LabCore and what did not. Running one twice adds nothing.</p>
+        {{ chip("import") }}</div>
+      <div class="body">
+        <div class="imp" id="pm-import" data-testid="import-pm">
+          <div class="imp-head">
+            <div><b>PM and calibration history</b>
+              <p class="caption">A spreadsheet of past work, one row per completion. Start from the template: it lists every instrument by its exact name.</p></div>
+            <a class="btn btn-sm btn-ghost" href="/api/maintenance-import/template.csv" id="pm-template" download><span class="ico ico-download" aria-hidden="true"></span>Template</a>
+          </div>
+          <div class="file-row">
+            <label class="btn btn-sm file-btn"><input type="file" id="pm-file" accept=".csv,text/csv"><span class="ico ico-file" aria-hidden="true"></span>Choose CSV…</label>
+            <span class="caption file-name" id="pm-file-name">No file chosen</span>
+            <button type="button" class="btn btn-sm" id="pm-preview" data-gated="preview the import" hidden>Preview</button>
+          </div>
+          <div class="preview" id="pm-preview-out" hidden></div>
+          <div class="go-row" id="pm-go-row" hidden>
+            <button type="button" class="btn btn-primary" id="pm-import-go" data-gated="import"></button>
+            <button type="button" class="btn btn-ghost" id="pm-cancel">Choose another file</button>
+          </div>
+          <div class="outcome" id="pm-outcome" role="status" hidden></div>
+        </div>
+
+        <div class="imp" id="v4-import" data-testid="import-v4">
+          <div class="imp-head">
+            <div><b>Checklists from the old LEM</b>
+              <p class="caption">The opening and closing rounds from <code>lab_manager_config.json</code>, and their ticks from <code>checklist_state.json</code> if you have it.</p></div>
+          </div>
+          <div class="file-row">
+            <label class="btn btn-sm file-btn"><input type="file" id="v4-config" accept=".json,application/json"><span class="ico ico-file" aria-hidden="true"></span>Choose config…</label>
+            <span class="caption file-name" id="v4-config-name">No file chosen</span>
+          </div>
+          <div class="file-row">
+            <label class="btn btn-sm btn-ghost file-btn"><input type="file" id="v4-state" accept=".json,application/json"><span class="ico ico-file" aria-hidden="true"></span>Add history (optional)…</label>
+            <span class="caption file-name" id="v4-state-name">No history file</span>
+            <button type="button" class="btn btn-sm" id="v4-preview" data-gated="preview the import" hidden>Preview</button>
+          </div>
+          <div class="preview" id="v4-preview-out" hidden></div>
+          <div class="go-row" id="v4-go-row" hidden>
+            <button type="button" class="btn btn-primary" id="v4-import-go" data-gated="import"></button>
+            <button type="button" class="btn btn-ghost" id="v4-cancel">Choose other files</button>
+          </div>
+          <div class="outcome" id="v4-outcome" role="status" hidden></div>
+        </div>
+      </div>
+    </section>
+
+    {#- ── Records and exports ──────────────────────────────────────── -#}
+    <section class="sec" id="exports" data-testid="section-exports">
+      <div class="about"><h2>Records and exports</h2>
+        <p class="intro">The files an assessor asks for. Each is read when you press Download, so it is as current as the record.</p></div>
+      <div class="body">
+        {%- for ex in [
+          ("equipment", "/api/export/equipment.csv", "Equipment register", "Every instrument: where it stands, its state, and its PM and calibration dates."),
+          ("qc", "/api/export/qc.csv", "QC history", "Every QC check across the lab, with its limits and verdict."),
+          ("actions", "/api/export/corrective-actions.csv", "Corrective actions", "Every action, open and closed, with who did each step and when."),
+          ("uncertainty", "/api/export/uncertainty.csv", "Uncertainty register", "Every estimate in force, with its twelve SOP 2.10 fields."),
+        ] %}
+        <div class="set-row ex-row" data-export="{{ ex[0] }}">
+          <div><b>{{ ex[2] }}</b><p class="caption">{{ ex[3] }}</p><p class="msg ex-msg" role="status"></p></div>
+          <a class="btn btn-sm" href="{{ ex[1] }}" download data-export-link><span class="ico ico-download" aria-hidden="true"></span>Download</a>
+        </div>
+        {%- endfor %}
+      </div>
+    </section>
+
+    {#- ── Diagnostics ──────────────────────────────────────────────── -#}
+    <section class="sec" id="diagnostics" data-testid="section-diagnostics">
+      <div class="about"><h2>Diagnostics</h2>
+        <p class="intro">What this server knows about itself, from memory: looking costs LabCore nothing. The same facts as /healthz.</p></div>
+      <div class="body">
+        <div class="diag-head">
+          <p class="diag-summary" id="diag-summary" role="status"><span class="glyph {{ diag.summary.glyph }}" aria-hidden="true"></span><span id="diag-summary-text">{{ diag.summary.text }}</span></p>
+          <button type="button" class="btn btn-sm" id="diag-refresh" title="Read the instrument record from LabCore once, then re-read these facts">Refresh now</button>
+        </div>
+        <div class="kv diag-kv" data-testid="diagnostics" id="diag-rows">
+          {%- for row in diag.rows %}
+          <div class="k">{{ row.label }}</div>
+          <div class="v" data-key="{{ row.key }}"{% if row.age_seconds is not none and row.age_seconds is defined %} data-age="{{ row.age_seconds }}"{% endif %}><span class="glyph {{ row.glyph }}" aria-hidden="true"></span><span class="val">{{ row.value }}</span>{% if row.note %}<span class="caption">{{ row.note }}</span>{% endif %}</div>
+          {%- endfor %}
+        </div>
+        <details class="raw" id="diag-raw">
+          <summary>All /healthz fields</summary>
+          <div class="kv raw-kv" id="diag-health">
+            {%- for k, v in diag.healthz.items() %}
+            <div class="k">{{ k }}</div><div class="v mono">{{ v if v != "" else "—" }}</div>
+            {%- endfor %}
+          </div>
+        </details>
+      </div>
+    </section>
+
+    {%- if dev_tools %}
+    {#- ── Developer (only under --dev, on the fake LabCore) ─────────── -#}
+    <section class="sec" id="developer" data-testid="section-developer">
+      <div class="about"><h2>Developer</h2>
+        <p class="intro">Only on a development server, against the in-memory LabCore. A simulated status says so in its reason, lasts 20 minutes, and is gone on restart.</p></div>
+      <div class="body">
+        <label class="field dev-pick"><span>Instrument</span><select id="dev-machine"><option value="">Reading the record…</option></select></label>
+        <div class="dev-tools" role="group" aria-label="Simulate">
+          <button type="button" class="btn btn-sm" data-sim="result">Simulate a parsed result</button>
+          <button type="button" class="btn btn-sm" data-sim="burst">Simulate 6 results</button>
+          <button type="button" class="btn btn-sm" data-sim="status-open" aria-expanded="false" aria-controls="dev-status">Simulate status…</button>
+          <button type="button" class="btn btn-sm btn-ghost" data-sim="clear">Clear this instrument's simulation</button>
+        </div>
+        <div class="dev-status" id="dev-status" hidden>
+          <div class="seg" role="radiogroup" aria-label="Status to simulate" id="dev-status-seg">
+            {%- for s in ["GREEN", "YELLOW", "RED", "SERVICE", "DEAD-LINE"] %}
+            <button type="button" role="radio" data-status="{{ s }}" aria-checked="{{ 'true' if s == 'RED' else 'false' }}">{{ s.title() }}</button>
+            {%- endfor %}
+          </div>
+          <button type="button" class="btn btn-sm" data-sim="status">Simulate it</button>
+        </div>
+        <p class="msg" id="dev-msg" role="status"></p>
+      </div>
+    </section>
+    {%- endif %}
+
   </main>
 </div>
 {% endblock %}
-{% block scripts %}<script src="/static/js/settings.js?v={{ v('js/settings.js') }}"></script>{% endblock %}
+{% block scripts %}
+<script src="/static/js/settings_logic.js?v={{ v('js/settings_logic.js') }}"></script>
+<script src="/static/js/settings.js?v={{ v('js/settings.js') }}"></script>
+{%- if dev_tools %}
+<script src="/static/js/settings_dev.js?v={{ v('js/settings_dev.js') }}"></script>
+{%- endif %}
+{% endblock %}

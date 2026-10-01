@@ -181,3 +181,128 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .signin-card .field input { width: 100%; height: 40px; }
 .signin-card .actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s2); }
 .signin-card .errline { margin: 0; }
+
+/* ── Settings, all sections (piece 11; templates/settings.html) ──────────
+   GC's settings anatomy (settings.css) plus what LEM adds: an unlock chip
+   that is the sign-in, a load-state line with four states, the import flow
+   (file → preview → one ink button → outcome) and Diagnostics' one-line
+   summary. Tokens only. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.set-nav .nav-glyph { margin-left: auto; }
+.set-nav .nav-glyph:not(.error):not(.held) { display: none; }
+.set-nav a .lockmark { margin-left: auto; }
+.set-main .sec { padding: var(--s6) 0; }
+.set-main .sec > .about .intro { line-height: 1.5; }
+.set-main .sec > .about code, .set-main .caption code { font-family: var(--mono); font-size: 0.95em; }
+.set-main .sec > .about .unlock-chip { margin-top: var(--s3); cursor: pointer; font: inherit; font-size: var(--fs-xs); }
+.set-main .sec > .about .unlock-chip .ico { width: 12px; height: 12px; }
+.set-main .sec > .about .unlock-chip:hover { border-color: var(--border-strong); color: var(--text); }
+body:not(.anon) .set-main .unlock-chip { display: none; }
+.set-main .muted { color: var(--text-muted); }
+.set-main .btn { font-size: var(--fs-sm); }
+.set-main .msg:empty { display: none; }
+.set-main .msg { margin: 0; }
+.set-main .sub-h { font-size: var(--fs-md); font-weight: 600; margin: var(--s2) 0 0; }
+
+/* a fetched section's state line: loading, could-not-read, empty */
+.load-state { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); color: var(--text); }
+.load-state[data-state="loading"] { color: var(--text-muted); }
+.load-state[data-state="empty"] { padding: var(--s3) var(--s4); border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text-muted-sunken); }
+.load-state[data-state="error"] { padding: var(--s3) 0; flex-wrap: wrap; }
+.load-state .btn { margin-left: auto; }
+.load-state[hidden] { display: none; }
+
+/* levels */
+.lv-tbl th:last-child, .lv-tbl td.lv-act { text-align: right; }
+.lv-tbl td { height: 48px; padding-top: 6px; padding-bottom: 6px; }
+.lv-tbl td.lv-act { white-space: nowrap; }
+.lv-tbl td.lv-act > * + * { margin-left: var(--s1); }
+.set-main .lv-act .btn-ghost, .set-main .hol-list .btn-ghost { font-weight: 500; color: var(--text-muted); }
+.set-main .lv-act .btn-ghost:hover, .set-main .hol-list .btn-ghost:hover { color: var(--text); }
+.lv-tbl .lv-name b { font-weight: 600; }
+.lv-tbl .lv-tag { margin-left: var(--s2); }
+.lv-tbl tbody tr:last-child td { border-bottom: 0; }
+.rename-form { display: flex; gap: var(--s2); align-items: center; }
+.gc .rename-form input[type="text"] { width: 220px; height: 32px; }
+.add-row { display: flex; align-items: flex-end; gap: var(--s3); flex-wrap: wrap; padding-top: var(--s4); border-top: 1px solid var(--border-light); }
+.add-row .field.grow { flex: 1 1 200px; }
+.gc .add-row input[type="text"], .gc .add-row input[type="date"] { width: 100%; }
+.add-row .seg { height: 36px; align-items: center; }
+.gc input[type="time"], .gc input[type="date"] {
+    height: 36px; padding: 0 var(--s3); border: 1px solid var(--border); border-radius: var(--radius-md);
+    background: var(--bg-card); color: var(--text); font: inherit; color-scheme: light dark;
+}
+
+/* hours */
+#hours-form { display: grid; gap: var(--s4); }
+#hours-form[hidden] { display: none; }
+/* open days: on is a tint, a weight and a tick, off is plain; five ink
+   pills would be the loudest thing on the page for the quietest setting */
+.day-chips .chip { min-width: 58px; padding: 0 var(--s3); display: inline-flex; align-items: center; justify-content: center; gap: 4px; color: var(--text-muted); font-weight: 500; }
+.day-chips .chip[aria-pressed="true"] { background: var(--bg-active); border-color: var(--border-strong); color: var(--text); font-weight: 600; }
+.day-chips .chip[aria-pressed="true"]::before { content: ""; width: 12px; height: 12px; background: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / contain no-repeat;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 5 5 9-10'/%3E%3C/svg%3E") center / contain no-repeat; }
+.time-pair { display: flex; align-items: flex-end; gap: var(--s2); }
+.time-pair .to { padding-bottom: 10px; }
+.save-row { display: flex; align-items: center; justify-content: flex-end; gap: var(--s3); }
+.save-row .msg { margin-right: auto; }
+.hol-list { list-style: none; margin: 0; padding: 0; }
+.hol-list li { display: grid; grid-template-columns: 170px minmax(0, 1fr) auto; align-items: center; gap: var(--s3); min-height: 44px; border-bottom: 1px solid var(--border-light); font-size: var(--fs-sm); }
+.hol-list li.past { color: var(--text-muted); }
+.hol-list li.empty { display: block; padding: var(--s3) var(--s4); border: 0; border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text-muted-sunken); min-height: 0; }
+.hol-list .hol-day { font-variant-numeric: tabular-nums; }
+
+/* imports: each importer is a quiet card; the flow reads top to bottom */
+.imp { display: grid; gap: var(--s3); padding: var(--s4) var(--s5) var(--s5); border: 1px solid var(--border-light); border-radius: var(--radius-card); background: var(--bg-card); }
+.imp-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s4); }
+.imp-head b { font-weight: 600; }
+.imp-head .caption { margin: 2px 0 0; max-width: 60ch; line-height: 1.5; }
+.file-row { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.file-btn { position: relative; overflow: hidden; }
+.file-btn input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; font-size: 0; }
+.file-btn:focus-within { box-shadow: var(--ring); }
+.file-name { font-size: var(--fs-sm); }
+.preview { display: grid; gap: var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text); font-size: var(--fs-sm); }
+.preview.err { color: var(--st-error); }
+.preview .pv-lines { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.preview .tablewrap { background: var(--bg-card); border-radius: var(--radius-sm); }
+.pv-tbl td, .pv-tbl th { padding: 6px var(--s3); }
+.go-row { display: flex; gap: var(--s2); align-items: center; }
+.outcome { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius-md); border: 1px solid var(--border-light); font-size: var(--fs-sm); }
+.outcome .glyph { margin-top: 4px; }
+.outcome b { font-weight: 600; color: var(--text); }
+.outcome .caption { margin: 2px 0 0; font-size: var(--fs-sm); line-height: 1.5; }
+.outcome[data-tone="failed"] b { color: var(--pill-error-fg); }
+
+/* exports */
+.ex-row .msg { margin-top: var(--s1); font-size: var(--fs-xs); }
+.ex-row .btn { flex: none; }
+
+/* diagnostics */
+.diag-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); padding-bottom: var(--s3); border-bottom: 1px solid var(--border-light); }
+.diag-summary { display: flex; align-items: center; gap: var(--s2); margin: 0; font-size: var(--fs-md); font-weight: 600; color: var(--text); }
+/* a fact, then why, on its own line: the value never wraps into the note */
+.set-main .diag-kv > .v { display: grid; grid-template-columns: 10px minmax(0, 1fr); column-gap: var(--s2); row-gap: 0; align-items: center; }
+.set-main .diag-kv > .v .caption { grid-column: 2; margin: 0; line-height: 1.35; }
+.set-main .diag-kv > .v .glyph:not(.final):not(.held):not(.error):not(.never):not(.working) { visibility: hidden; }
+.raw summary { cursor: pointer; font-size: var(--fs-sm); color: var(--text-muted); padding: var(--s1) 0; }
+.raw summary:hover { color: var(--text); }
+.raw-kv { margin-top: var(--s2); }
+.raw-kv .v.mono { font-family: var(--mono); font-size: var(--fs-xs); color: var(--text); }
+.raw-kv > div:nth-last-child(-n+2) { border-bottom: 0; }
+
+/* developer */
+.dev-pick { max-width: 420px; }
+.gc .dev-pick select { width: 100%; }
+.dev-tools { display: flex; flex-wrap: wrap; gap: var(--s2); }
+.dev-status { display: flex; align-items: center; gap: var(--s3); flex-wrap: wrap; }
+.dev-status[hidden] { display: none; }
+
+@media (max-width: 699px) {
+    .hol-list li { grid-template-columns: 1fr auto; }
+    .hol-list .hol-name { grid-column: 1; }
+    .imp { padding: var(--s3) var(--s4) var(--s4); }
+    .imp-head { flex-direction: column; }
+    .lv-tbl th:nth-child(2), .lv-tbl td:nth-child(2) { display: none; }
+}
