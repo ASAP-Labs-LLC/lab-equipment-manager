@@ -1165,6 +1165,69 @@ def create_app(gateway, labcore_gateway=None,
                     type(exc).__name__, exc)) from exc
         return check_write(res, what=what)
 
+    # ── one save, one transaction (transfer §5.2, W2) ─────────────────
+    #
+    # On the LEM store a change and everything that records it — the factor,
+    # its §7.8.2 receipt, its log line — commit together or not at all, and a
+    # browser retry carrying the same `X-Request-Id` is answered from
+    # `request_ledger` (written inside the same transaction) instead of being
+    # done twice. A gateway with no `transaction()` (a test double, LabCore
+    # itself) keeps the old one-statement-at-a-time path.
+    transactional = callable(getattr(gateway, "transaction", None))
+
+    def _request_id() -> str:
+        return (request.headers.get("X-Request-Id") or "").strip()[:128]
+
+    def _replay(rid: str):
+        """The stored answer to a request already done, or None.
+
+        A ledger that cannot be READ is not "not done yet": doing the work
+        again on a blip is the duplicate this exists to prevent, so it raises
+        and the route reports it like any other unreadable record."""
+        if not rid or not transactional:
+            return None
+        res = gateway.read_sql(
+            "SELECT status, body FROM request_ledger WHERE request_id = ?",
+            [rid])
+        found = labcore_rows(res)
+        if not found:
+            return None
+        response = app.response_class(
+            found[0].get("body") or "{}", status=int(found[0].get("status")
+                                                    or 200),
+            mimetype="application/json")
+        response.headers["X-Request-Replayed"] = "true"
+        return response
+
+    def _ledger(rid: str, body: dict, status: int = 200) -> None:
+        if not rid:
+            return
+        _confirmed_write(
+            "INSERT INTO request_ledger (request_id, route, status, body, at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [rid, "{0} {1}".format(request.method, request.path), status,
+             json.dumps(body), _now().isoformat(timespec="seconds")],
+            what="the record of this request was NOT written, so nothing "
+                 "was saved")
+
+    def _audit_line(action: str, machine_uid: str = "", detail=None) -> None:
+        """`_audit`'s INSERT, RAISING — for use inside a transaction, where a
+        refused log line must take the change back with it."""
+        _confirmed_write(
+            "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+            "test_name, value, detail) VALUES (?, ?, 'config', '', ?, '', ?)",
+            [machine_uid, _now().isoformat(timespec="seconds"), action,
+             json.dumps({"action": action, "by": session.get("user", ""),
+                         **(detail or {})})],
+            what="the log line for this change was NOT written")
+
+    def _not_saved(exc, what: str):
+        """Re-word a refusal raised inside a rolled-back transaction: whatever
+        step said no, NOTHING was saved, and the sentence has to say that."""
+        from labcore_gateway import LabCoreRefused as _Refused
+        result = getattr(exc, "result", None) or {"error": str(exc)}
+        raise _Refused(result, what) from exc
+
     def authed() -> bool:
         return bool(session.get("user"))
 
@@ -4715,8 +4778,18 @@ def create_app(gateway, labcore_gateway=None,
             # Refused rather than coerced: a correction is added to every reading
             # this bench produces, and "a bit" would silently become 0.0.
             return jsonify({"error": f"{raw!r} is not a number."}), 400
+        rid = _request_id()
+        try:
+            replay = _replay(rid)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "whether this save was already made")
+        if replay is not None:
+            return replay
         existing = _corrections(machine_uid).get(test_name)
         previous = existing["correction"] if existing else 0.0
+        if transactional:
+            return _save_correction_in_one_transaction(
+                machine_uid, test_name, correction, previous, body, rid)
         # THE write this whole guard exists for. `corrected = raw + correction`
         # is applied to EVERY measurement this bench takes — before the QC
         # verdict, before the LabCore write, before anything is displayed — so a
@@ -4785,11 +4858,70 @@ def create_app(gateway, labcore_gateway=None,
         return jsonify({"ok": True, "test_name": test_name,
                         "correction": correction})
 
+    def _save_correction_in_one_transaction(machine_uid, test_name,
+                                            correction, previous, body, rid):
+        """Factor, receipt, log line and ledger row: one commit (W2).
+
+        Every step RAISES here, unlike `_record_correction_change` and
+        `_audit`, which must never fail a change that has already landed.
+        Inside a transaction nothing has landed until the end, so a refused
+        receipt is a refused save — rolled back, and reported as NOT saved,
+        which for the first time is exactly what happened."""
+        units = str(body.get("units") or "")
+        what = (f"the correction for “{test_name}” was NOT saved and this "
+                f"instrument is still applying the previous one")
+        answer = {"ok": True, "test_name": test_name, "correction": correction}
+        # Declarations first and outside: DDL is not part of the change.
+        snapshots.ensure_schema()
+        _corrections_schema()
+        try:
+            with gateway.transaction():
+                _confirmed_write(
+                    "INSERT INTO lem_correction_factors (machine_uid, "
+                    "test_name, correction, units, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
+                    "correction=excluded.correction, units=excluded.units, "
+                    "updated_at=excluded.updated_at, "
+                    "updated_by=excluded.updated_by",
+                    [machine_uid, test_name, correction, units,
+                     _now().isoformat(timespec="seconds"),
+                     session.get("user", "")], what=what)
+                correction_audit.record(
+                    machine_uid=machine_uid, test_name=test_name,
+                    previous=previous, new_value=correction, units=units,
+                    by=session.get("user", ""),
+                    reason=str(body.get("reason") or ""),
+                    when=_now().isoformat(timespec="seconds"),
+                    uid=uuid.uuid4().hex)
+                _audit_line("correction factor set", machine_uid,
+                            {"test": test_name, "previous": previous,
+                             "new": correction})
+                _ledger(rid, answer)
+        except LabCoreUnavailable as exc:
+            return _labcore_failed(
+                exc, "the correction factor for “{0}”".format(test_name))
+        except LabCoreRefused as exc:
+            _not_saved(exc, what)
+        # Committed. Only now is there anything for a bench to re-read.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+        _page_drop("logkinds")
+        snapshots.refresh_soon()
+        return jsonify(answer)
+
     @app.route("/api/machines/<machine_uid>/corrections/<test_name>",
                methods=["DELETE"])
     def api_delete_correction(machine_uid, test_name):
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
+        rid = _request_id()
+        try:
+            replay = _replay(rid)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "whether this removal was already "
+                                            "made")
+        if replay is not None:
+            return replay
         try:
             existing = _corrections(machine_uid).get(test_name)
         except LabCoreError as exc:
@@ -4800,6 +4932,41 @@ def create_app(gateway, labcore_gateway=None,
                                             "factors")
         if existing is None:
             return jsonify({"error": f"No correction for “{test_name}”."}), 404
+        if transactional:
+            what = (f"the correction for “{test_name}” was NOT removed and "
+                    f"this instrument is still applying it")
+            answer = {"ok": True, "deleted": test_name}
+            snapshots.ensure_schema()
+            try:
+                with gateway.transaction():
+                    _confirmed_write(
+                        "DELETE FROM lem_correction_factors "
+                        "WHERE machine_uid = ? AND test_name = ?",
+                        [machine_uid, test_name], what=what)
+                    # A removal is a change TO ZERO, not an absence.
+                    correction_audit.record(
+                        machine_uid=machine_uid, test_name=test_name,
+                        previous=existing["correction"], new_value=0.0,
+                        units=str(existing.get("units") or ""),
+                        by=session.get("user", ""),
+                        reason=str((request.get_json(silent=True) or {})
+                                   .get("reason") or ""),
+                        when=_now().isoformat(timespec="seconds"),
+                        uid=uuid.uuid4().hex)
+                    _audit_line("correction factor removed", machine_uid,
+                                {"test": test_name,
+                                 "previous": existing["correction"],
+                                 "new": 0.0})
+                    _ledger(rid, answer)
+            except LabCoreUnavailable as exc:
+                return _labcore_failed(
+                    exc, "removing the correction for “{0}”".format(test_name))
+            except LabCoreRefused as exc:
+                _not_saved(exc, what)
+            app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+            _page_drop("logkinds")
+            snapshots.refresh_soon()
+            return jsonify(answer)
         # Removing an offset changes every future reading exactly as setting
         # one does. A removal reported as done that did not happen leaves the
         # bench quietly still applying it, and the editor showing that it does
