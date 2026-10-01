@@ -456,6 +456,78 @@ class TestNothingRewritesTheRecord:
 
 # ── the effective view ─────────────────────────────────────────────────────
 
+class TestNothingCanStandInFrontOfTheRecord:
+    """Round 3's critic: `store.sql("CREATE TEMP TABLE lem_machine_log ...")`
+    was allowed. SQLite resolves an unqualified name in `temp` before `main`,
+    so on the writer connection that table STOOD IN FRONT OF the record:
+    every later server INSERT answered "1 row" and landed in a scratch table
+    that vanishes with the connection, `main.lem_machine_log` stayed at 0,
+    and the guard then refused the DROP that would have removed the impostor.
+    A `DELETE FROM lem_machine_log` also "succeeded", against the impostor.
+    Every write would be reported as recorded while nothing was.
+
+    The same trick works on any name a reader or writer uses unqualified —
+    the factors, the ledger, the effective view — so the rule is not "not
+    these names" but "no temp tables or views on a store connection at all".
+    Nothing in LEM creates one (pinned below by grep), and a scratch table
+    has no business sharing a connection with the record."""
+
+    @pytest.mark.parametrize("ddl", [
+        "CREATE TEMP TABLE lem_machine_log (machine_uid, ts, kind, lab_id, "
+        "test_name, value, detail)",
+        "CREATE TEMPORARY TABLE log_annotation (id, log_id, label)",
+        "CREATE TEMP VIEW lem_machine_log_effective AS SELECT 1 AS id",
+        "CREATE TEMP TABLE lem_correction_factors (machine_uid, test_name, "
+        "correction)",
+        "CREATE TEMP TABLE request_ledger (request_id, route, status, body)",
+        "CREATE TEMP TABLE scratch (x)",
+        "CREATE TEMP TABLE lem_machine_log AS SELECT * FROM main.lem_machine_log",
+        # a trigger on any table can make its writes vanish while answering ok
+        "CREATE TRIGGER quiet BEFORE INSERT ON store_meta "
+        "BEGIN SELECT RAISE(IGNORE); END",
+        "CREATE TEMP TRIGGER quiet BEFORE INSERT ON request_ledger "
+        "BEGIN SELECT RAISE(IGNORE); END",
+    ])
+    def test_no_temp_object_or_trigger_can_be_created(self, store, ddl):
+        res = store.sql(ddl)
+        assert "error" in res and "not authorized" in res["error"], (ddl, res)
+
+    def test_after_the_attempt_writes_still_land_in_the_record(self, store):
+        store.sql("CREATE TEMP TABLE lem_machine_log (machine_uid, ts, kind, "
+                  "lab_id, test_name, value, detail)")
+        _log(store)
+        got = store.read_sql("SELECT COUNT(*) AS n FROM main.lem_machine_log")
+        assert got["rows"][0]["n"] == 1
+        assert "append-only" in store.sql("DELETE FROM lem_machine_log"
+                                          )["error"]
+
+    def test_nor_on_a_reader(self, store):
+        res = store.read_sql("CREATE TEMP VIEW lem_machine_log_effective AS "
+                             "SELECT 1 AS id")
+        assert "error" in res, res
+
+    def test_inside_a_transaction_too(self, store):
+        with pytest.raises(Exception):
+            with store.transaction():
+                res = store.sql("CREATE TEMP TABLE lem_machine_log (x)")
+                if "error" in res:
+                    raise RuntimeError(res["error"])
+        _log(store)
+        got = store.read_sql("SELECT COUNT(*) AS n FROM main.lem_machine_log")
+        assert got["rows"][0]["n"] == 1
+
+    def test_lem_itself_never_creates_one(self):
+        import pathlib
+        import re
+        root = pathlib.Path(__file__).resolve().parent.parent
+        hits = []
+        for path in root.glob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if re.search(r"CREATE\s+TEMP(ORARY)?\s+(TABLE|VIEW)", text, re.I):
+                hits.append(path.name)
+        assert hits == [], hits
+
+
 class TestTheEffectiveView:
     def _annotate(self, store, rid, label):
         assert "error" not in store.sql(

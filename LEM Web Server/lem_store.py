@@ -40,9 +40,11 @@ adds:
   app (S1). Dedupe an ingest with `WHERE NOT EXISTS`, never `OR IGNORE`.
 * **No way round it through the store.** Every connection runs with
   `recursive_triggers` on (a REPLACE then fires the DELETE guard as well) and
-  an authorizer (`_guard`) that refuses DROP/ALTER/CREATE TRIGGER against the
-  record, its view and its guards, and refuses switching off the PRAGMAs the
-  guarantee rests on. Readers are `query_only`. The bare file can still drop
+  an authorizer (`_guard`) that refuses DROP/ALTER against the record, its
+  view and its guards, refuses every CREATE TRIGGER and every TEMP table,
+  view or trigger (a temp object of the same name stands in front of the
+  real one; a trigger can RAISE(IGNORE) a write that then answers ok), and
+  refuses switching off the PRAGMAs the guarantee rests on. Readers are `query_only`. The bare file can still drop
   a trigger — SQLite has no rule against its owner — so every open restores
   the guards and `health()["guards_missing"]` names any that are gone.
 * **Hiding is an annotation.** `lem_machine_log_effective` is the record minus
@@ -137,11 +139,23 @@ def _guard(action, arg1, arg2, _db, _src):
     hold for the bare file too.
     """
     a = sqlite3
+    if action in (a.SQLITE_CREATE_TEMP_TABLE, a.SQLITE_CREATE_TEMP_VIEW,
+                  a.SQLITE_CREATE_TEMP_TRIGGER, a.SQLITE_CREATE_TRIGGER):
+        # Nothing may stand in front of a table. SQLite resolves an
+        # unqualified name in `temp` before `main`, so a TEMP table named
+        # `lem_machine_log` on the writer took every later INSERT ("1 row")
+        # into a scratch table that dies with the connection, while the
+        # record stayed empty (round 3's critic). A trigger on ANY table can
+        # do the same with RAISE(IGNORE): the write answers ok and no row
+        # exists. LEM creates neither after `_migrate` (which declares the
+        # guard triggers before this authorizer is installed), so both are
+        # refused outright rather than by a list of names someone has to
+        # remember to extend.
+        return a.SQLITE_DENY
     if action in (a.SQLITE_DROP_TABLE, a.SQLITE_DROP_TEMP_TABLE,
                   a.SQLITE_DROP_VIEW, a.SQLITE_DROP_TEMP_VIEW):
         return a.SQLITE_DENY if arg1 in PROTECTED else a.SQLITE_OK
     if action in (a.SQLITE_DROP_TRIGGER, a.SQLITE_DROP_TEMP_TRIGGER,
-                  a.SQLITE_CREATE_TRIGGER, a.SQLITE_CREATE_TEMP_TRIGGER,
                   a.SQLITE_DROP_INDEX, a.SQLITE_DROP_TEMP_INDEX):
         if arg1 in GUARD_TRIGGERS or arg2 in PROTECTED:
             return a.SQLITE_DENY
@@ -583,7 +597,18 @@ class LocalStoreGateway:
                 self._writer.execute("ROLLBACK")
                 raise
             self._tx.depth = 0
-            self._writer.execute("COMMIT")
+            try:
+                self._writer.execute("COMMIT")
+            except BaseException:
+                # A COMMIT that fails (disk full, I/O error) can leave the
+                # transaction OPEN, and the next BEGIN on this writer would
+                # then fail "within a transaction" for every save until a
+                # restart. Rolled back here, so the failure is this save's.
+                try:
+                    self._writer.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
 
     # ── what it is ────────────────────────────────────────────────────
     def health(self) -> dict:
