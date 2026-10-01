@@ -527,6 +527,14 @@ class LivePresence:
                 return None
             return dict(entry)
 
+    def forget(self, machine_uid: str) -> bool:
+        """Drop what this bench last said, so the record speaks again.
+
+        Only Settings › Developer calls it (under --dev), to clear a simulated
+        status; a real bench simply ages out. True if there was an entry."""
+        with self._lock:
+            return self._entries.pop(str(machine_uid or "").strip(), None) is not None
+
     def all(self) -> dict:
         """Every machine still within its TTL."""
         with self._lock:

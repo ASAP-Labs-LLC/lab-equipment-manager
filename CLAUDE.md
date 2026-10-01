@@ -321,6 +321,42 @@ restores the parse setup.
 
 Tests: `LEM Station Module/tests/test_manual_mode.py` (59).
 
+## The bench journal — custody of every reading (2026-10-01, transfer v4 P1)
+
+Every reading is appended to `%APPDATA%\LabLink\apps\LabStation\lem_journal\<uid>\`
+and fsync'd **before** anything downstream acts on it; a restart re-delivers
+whatever the journal says was never delivered. Plain files (LabStation
+intercepts `import sqlite3`), stdlib only. Spec: transfer-final.md §3.
+
+- Layout: `journal.meta` (epoch, acked, durable, created, module,
+  last_v2_handshake; atomic replace, 3 × 50 ms retry on a Windows sharing
+  violation), `seg-NNNNNN.jsonl` (canonical JSON + CRC32 of the exact body
+  bytes as the last field; roll at 4 MB), `known.idx` (replay keys of pruned
+  segments), `bench.key` (write-once, 0600), `torn-*.bin` (cut-off tails).
+- Records numbered per bench under an epoch minted ONLY when journal.meta is
+  missing; an unreadable meta is rebuilt from the records, never re-minted.
+  One fsync per append. On open the last segment is cut at the first bad
+  line (torn tail); a bad line elsewhere is skipped and reported.
+- A reading is `run` (with the log rows it makes and the parsed row), then
+  `projected` once its rows land in lem_machine_log and `settled` once the
+  results road is done with it (filed, given up, no Lab ID, QC check). Held,
+  backlogged, parked or cap-dropped rows are NOT settled.
+- Serial frames are journaled by the reader (`_FrameSink._complete`) on its
+  own thread as the idle gap completes them — before any poll can take them.
+- Store check: file lines are keyed (file path + identity, byte offset, line
+  hash); a print whose key the journal holds is dropped before parsing. The
+  key only suppresses what the offset logic already read; it never causes a
+  read. `_journal_suppressed` counts it.
+- No journal (unwritable folder) → the bench works as before v4, loudly. Disk
+  policy (§3.4): warn at 200 MB unacked / 80 % of 500 MB; at 1 GB unacked or
+  < 1 GB free prune durable segments early, then pause FILE ingest only.
+- One journal object per folder per process (`acquire_journal`), released at
+  `shutdown()`.
+- Running digest is a chain: d0 = 64 zeros, d_n = sha256(d_{n-1} || body_n).
+
+Tests: `test_bench_journal.py` (29), `test_journal_custody.py` (19). Gate:
+K8, K9, K1b 0/0; K8r exactly 1 lost; T5 0/0 with the tail repaired.
+
 ## Threading model (approved & implemented 2026-07-28)
 
 Polls run ingest → parse → evaluate → ALL LabCore HTTP in the worker

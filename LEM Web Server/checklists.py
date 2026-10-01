@@ -786,17 +786,23 @@ class ChecklistStore:
                 # still reported as busy. Without it six refusals from a deep
                 # queue come back 502 and the operator is told never to retry
                 # an import that would land a minute later.
-                raise ChecklistWriteError(
+                refused = ChecklistWriteError(
                     f"LabCore refused a batch of {len(chunk)} historical ticks "
                     f"after {attempts} attempts; {done} rows landed before it. "
                     f"Last answer: {refusal}.{spent} Run the import again — "
                     f"what already landed is skipped.", res)
+                # The count rides on the refusal as a number too, so the
+                # route can report `history_landed` without parsing prose.
+                refused.done = done
+                raise refused
             if time.monotonic() >= deadline:
-                raise ChecklistWriteError(
+                late = ChecklistWriteError(
                     f"The import ran out of its {budget:.0f}s budget with "
                     f"{done} rows landed, because LabCore's queue was taking "
                     f"them slower than that. Run it again — what already "
                     f"landed is skipped.")
+                late.done = done
+                raise late
             time.sleep(pause)
         return done
 
