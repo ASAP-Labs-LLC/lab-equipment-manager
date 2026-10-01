@@ -240,7 +240,10 @@ def test_at_820_the_status_is_in_words(drv, base, scheme):
                    "return {shown: getComputedStyle(s).display !== 'none', text: s.innerText.replace(/\\s+/g, ' ').trim(),"
                    " bottom: r.bottom, h: r.height, vh: innerHeight};")
     assert strip["shown"] and strip["h"] == 36
-    assert strip["text"].startswith("Updated "), strip["text"]
+    # ia-final 2.1 gives the strip's words: "Live · updated 4 s ago · 15 of 17
+    # benches checking in". Piece 1 drew static placeholders ("Updated ...");
+    # the live feed (piece 2) now writes the spec's sentence, so pin that.
+    assert strip["text"].startswith("Live · updated "), strip["text"]
     assert " benches checking in" in strip["text"], strip["text"]
     assert abs(strip["bottom"] - strip["vh"]) <= 1, strip
     # the strip's words end before the version stamp starts
