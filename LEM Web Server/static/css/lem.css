@@ -142,3 +142,42 @@
 
 /* a sheet's error line: dialog.sheet p is muted, an error must not be */
 dialog.sheet p.errline { color: var(--st-error); }
+
+/* ── sign in, in place (piece 3; templates/_signin.html, js/signin.js) ───
+   Signed out, the chip IS Sign in (a link to /signin?next=, the sheet with a
+   script) and the small chevron beside it opens the menu, so Theme, Settings
+   and Help keep a door. In the rail the chevron goes: Settings › This
+   browser has the theme, and the rail has no room for two targets. */
+.user-row { display: flex; align-items: center; gap: var(--s1); }
+.user-row .user-chip { flex: 1; min-width: 0; }
+a.user-chip { text-decoration: none; }
+.user-more .ico-chev { transform: rotate(-90deg); }
+@media (max-width: 1399px) {
+    :root:not([data-sidebar="full"]) .sb .user-more { display: none; }
+}
+:root[data-sidebar="rail"] .sb .user-more { display: none; }
+:root[data-drawer][data-drawer] .sb .user-more { display: inline-grid; }
+
+/* Signed out, a control that changes the lab is dimmed — in the muted text
+   token, with a dashed edge, because opacity fails AA on its words — and it
+   still answers a click: the click opens "Sign in to <act>". Never
+   pointer-events:none; a button that does nothing reads as broken. */
+body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-style: dashed; cursor: pointer; }
+
+/* the sheet: the reason under the title is the one sentence that says your
+   act is not lost, so it is not smaller than the fields */
+.signin-sheet .form { gap: var(--s3); }
+.signin-sheet h2, .signin-sheet .form p { margin: 0; }
+.signin-sheet h2 { font-weight: 650; }
+.signin-sheet #signin-why { font-size: var(--fs-sm); margin-bottom: var(--s1); }
+.signin-sheet .field input { width: 100%; height: 40px; }
+.signin-sheet .actions { margin-top: var(--s2); }
+/* /signin (no script): the same form as the sheet, as a card */
+.content.signin-page { max-width: 460px; }
+.signin-card { padding: var(--s5); margin-top: var(--s6); }
+.signin-card .form { display: grid; gap: var(--s3); }
+.signin-card h2 { font-size: var(--fs-lg); margin: 0; }
+.signin-card .caption { font-size: var(--fs-sm); margin: 0; }
+.signin-card .field input { width: 100%; height: 40px; }
+.signin-card .actions { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s2); }
+.signin-card .errline { margin: 0; }

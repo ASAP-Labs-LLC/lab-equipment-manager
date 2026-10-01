@@ -6,6 +6,8 @@
 <title>LEM — Logs</title>
 <link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
 <script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<link rel="stylesheet" href="/static/css/signin_legacy.css?v={{ v('css/signin_legacy.css') }}">
+<script src="/static/js/signin.js?v={{ v('js/signin.js') }}"></script>
 <style>
 
   .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;
@@ -53,7 +55,7 @@
   @media (prefers-reduced-motion:reduce){.busy .spin{animation:none;opacity:.7}}
 </style>
 </head>
-<body>
+<body class="{{ '' if session.get('user') else 'anon' }}" data-user="{{ session.get('user') or '' }}">
 <div class="frame">
 {% include '_nav.html' %}
 <div class="pane">
@@ -64,7 +66,7 @@
     <a class="tool" id="csv" href="/api/logs.csv">Export CSV</a>
     <button class="tool" id="more" hidden>Load more</button>
     <span class="who" id="who" hidden></span>
-    <button id="btnAuth" class="tool">Sign in</button>
+    <a id="btnAuth" class="tool" data-signin href="{{ signin_href() }}">{{ 'Sign out' if session.get('user') else 'Sign in' }}</a>
   </header>
 
   <div class="filters">
@@ -301,18 +303,29 @@ $('#clear').addEventListener('click', () => {
 
 let AUTHED = false, WHO = '';
 
-async function loadWho() {
-  const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
-  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
+function paintWho() {
   const who = $('#who');
   who.hidden = !AUTHED;
   who.innerHTML = AUTHED ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
   $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
 }
 
-$('#btnAuth').addEventListener('click', async () => {
-  if (AUTHED) { await fetch('/api/logout', {method: 'POST'}); return loadWho(); }
-  location.href = '/floor';        // the sign-in dialog lives there
+async function loadWho() {
+  const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
+  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
+  paintWho();
+}
+
+// Sign in where you are (static/js/signin.js): the sheet opens on this page
+// and the filters, the scroll and the URL stay as they were.
+$('#btnAuth').addEventListener('click', async e => {
+  if (!LEMSignIn.user()) return;              // signin.js opens the sheet
+  e.preventDefault();
+  await LEMSignIn.signOut();
+});
+document.addEventListener('lem:auth', e => {
+  AUTHED = !!e.detail.user; WHO = e.detail.user || '';
+  paintWho();
 });
 
 loadWho();
@@ -320,5 +333,6 @@ load();
 </script>
 </div>
 </div>
+{% include "_signin.html" %}
 </body>
 </html>

@@ -1,0 +1,25 @@
+{#- The one sign-in sheet (ia-final §8 T0). Included by _layout.html on every
+    shell page and by the old pages that still have a Sign in of their own, so
+    there is one copy to keep right. static/js/signin.js opens it in place,
+    titled for the act ("Sign in to tick"), and runs that act afterwards.
+
+    The form is a real one: action /signin, method post, with `next`. If the
+    script never ran, the same fields still sign you in and bring you back.
+    The user name is not required: an NFC reader may type the card's code into
+    either field, and LabCore matches it in both (labcore_auth.py). -#}
+<dialog class="sheet signin-sheet" id="signin-sheet" data-testid="signin-sheet" aria-labelledby="signin-title" aria-describedby="signin-why">
+  <form method="post" action="/signin" class="form" id="signin-form" novalidate>
+    <input type="hidden" name="next" id="signin-next" value="{{ request.full_path if request.query_string else request.path }}">
+    <h2 id="signin-title">Sign in</h2>
+    <p id="signin-why">Your LabCore account, the same one LabStation uses. You stay on this page.</p>
+    <label class="field"><span>LabCore user name</span>
+      <input type="text" name="username" id="signin-user" autocomplete="username" spellcheck="false" autocapitalize="off"></label>
+    <label class="field"><span>Password</span>
+      <input type="password" name="password" id="signin-pass" autocomplete="current-password"></label>
+    <p id="signin-error" class="errline" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" id="signin-cancel">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="signin-ok">Sign in</button>
+    </div>
+  </form>
+</dialog>

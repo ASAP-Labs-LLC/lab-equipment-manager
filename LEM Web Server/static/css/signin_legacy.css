@@ -1,0 +1,40 @@
+/* The sign-in sheet (templates/_signin.html) on the pages still drawn by
+ * _nav.html and static/lem.css: Home, Checklists, PM & CAL, Logs.
+ *
+ * Those pages cannot load tokens.css: both palettes define --ink and --mono
+ * with opposite meanings (lem.css's --ink is the light text colour, the
+ * shell's is the dark button fill), and the old pages would repaint. So the
+ * same markup is drawn here in the old pages' own variables, and looks like
+ * the old pages' dialogs. This file goes when the last of those pages moves
+ * into the shell; the markup and signin.js do not change.
+ */
+dialog.signin-sheet, dialog.lem-sheet {
+  width: min(440px, calc(100vw - 32px)); padding: 22px 22px 18px;
+  background: var(--deck); color: var(--ink); border: 1px solid var(--edge);
+  border-radius: 14px; box-shadow: 0 24px 60px rgba(0, 0, 0, .55);
+}
+dialog.signin-sheet::backdrop, dialog.lem-sheet::backdrop { background: rgba(4, 5, 8, .62); }
+dialog.signin-sheet .form, dialog.lem-sheet .form { display: grid; gap: 12px; }
+dialog.signin-sheet h2, dialog.lem-sheet h2 { font-size: 17px; font-weight: 700; letter-spacing: 0; }
+dialog.signin-sheet p, dialog.lem-sheet p { color: var(--ink2); font-size: 13px; line-height: 1.5; }
+dialog.signin-sheet .field, dialog.lem-sheet .field { display: grid; gap: 5px; font-size: 12px; color: var(--ink2); }
+dialog.signin-sheet .field input, dialog.lem-sheet .field input,
+dialog.lem-sheet .field textarea { height: 40px; font-size: 15px; }
+dialog.lem-sheet .field textarea { height: auto; min-height: 76px; resize: vertical; }
+dialog.signin-sheet .errline, dialog.lem-sheet .errline { color: var(--red); font-size: 12.5px; }
+dialog.signin-sheet .errline[hidden], dialog.lem-sheet .errline[hidden] { display: none; }
+dialog.signin-sheet .actions, dialog.lem-sheet .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+dialog.signin-sheet .btn, dialog.lem-sheet .btn {
+  height: 38px; padding: 0 16px; border-radius: 999px; font: 600 13px var(--ui); cursor: pointer;
+  background: transparent; color: var(--ink); border: 1px solid var(--edge);
+}
+dialog.signin-sheet .btn:hover, dialog.lem-sheet .btn:hover { border-color: var(--ink2); }
+dialog.signin-sheet .btn-primary, dialog.lem-sheet .btn-primary { background: var(--amber); border-color: var(--amber); color: var(--void); }
+dialog.signin-sheet .btn-primary:hover, dialog.lem-sheet .btn-primary:hover { filter: brightness(1.08); border-color: var(--amber); }
+dialog.signin-sheet .btn:disabled, dialog.lem-sheet .btn:disabled { opacity: .55; cursor: default; }
+dialog.signin-sheet .btn:focus-visible, dialog.lem-sheet .btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+
+/* The old pages' signed-out rule, the floor's own (test_floor_bands_and_
+   readonly.py): dimmed, still clickable. The click opens "Sign in to <act>". */
+body.anon .gated, body.anon [data-gated] { opacity: .5; filter: saturate(.25); cursor: pointer; }
+body.anon .gated:hover, body.anon [data-gated]:hover { opacity: .8; }
