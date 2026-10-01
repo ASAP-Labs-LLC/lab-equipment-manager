@@ -1,0 +1,62 @@
+{% extends "_layout.html" %}
+{#- Settings (ia-final §3.7), GC hub's settings variant: a sticky sub-nav,
+    sections with a left title and one intro sentence, hairline rows. This
+    piece builds This browser and a read-only Diagnostics; the admin sections
+    (levels, lab hours, imports, exports) arrive with their own piece, and the
+    sub-nav lists only sections that are on the page, so it has no dead ends.
+    Page code: static/js/settings.js. -#}
+{% block title %}Settings{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/css/settings.css?v={{ v('css/settings.css') }}">{% endblock %}
+{% block topbar %}
+  <h1>Settings</h1>
+  <span class="spacer"></span>
+  <span class="caption" id="saved-state" role="status" data-testid="settings-state"></span>
+{% endblock %}
+{% block content %}
+<div class="set-frame">
+  <nav class="set-nav" id="set-nav" aria-label="Settings sections" data-testid="settings-nav">
+    <a href="#browser" class="active" aria-current="true">This browser</a>
+    <a href="#diagnostics">Diagnostics</a>
+  </nav>
+  <main class="content set-main" id="main" data-testid="settings-page" tabindex="-1">
+
+    <section class="sec" id="browser" data-testid="section-browser">
+      <div class="about"><h2>This browser</h2>
+        <p class="intro">Just for this computer: how LEM looks on this screen. Nobody else's screen changes.</p></div>
+      <div class="body">
+        <div class="set-row">
+          <div><b id="theme-label">Theme</b><p class="caption">System follows this computer's light or dark setting.</p></div>
+          <div class="seg seg-lg" role="radiogroup" aria-labelledby="theme-label" id="theme-choice" data-testid="settings-theme">
+            <button type="button" role="radio" data-choice="system" aria-checked="false">System</button>
+            <button type="button" role="radio" data-choice="light" aria-checked="false">Light</button>
+            <button type="button" role="radio" data-choice="dark" aria-checked="false">Dark</button>
+          </div>
+        </div>
+        <div class="set-row">
+          <div><b id="sidebar-label">Sidebar</b><p class="caption">Automatic shows names on screens 1400 px wide or more, and icons with counts below that.</p></div>
+          <div class="seg seg-lg" role="radiogroup" aria-labelledby="sidebar-label" id="sidebar-choice" data-testid="settings-sidebar">
+            <button type="button" role="radio" data-choice="auto" aria-checked="false">Automatic</button>
+            <button type="button" role="radio" data-choice="full" aria-checked="false">Names</button>
+            <button type="button" role="radio" data-choice="rail" aria-checked="false">Icons</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="sec" id="diagnostics" data-testid="section-diagnostics">
+      <div class="about"><h2>Diagnostics</h2>
+        <p class="intro">What this server knows about itself, read from memory when this page opened. The same facts as /healthz.</p></div>
+      <div class="body">
+        <div class="kv diag-kv" data-testid="diagnostics">
+          {%- for row in diag %}
+          <div class="k">{{ row.label }}</div>
+          <div class="v"><span class="glyph {{ row.glyph }}" aria-hidden="true"></span><span>{{ row.value }}</span>{% if row.note %}<span class="caption">{{ row.note }}</span>{% endif %}</div>
+          {%- endfor %}
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+{% endblock %}
+{% block scripts %}<script src="/static/js/settings.js?v={{ v('js/settings.js') }}"></script>{% endblock %}

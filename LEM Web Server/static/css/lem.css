@@ -1,0 +1,144 @@
+/* lem.css: LEM's own rules on GC hub's shell (tokens.css, shell.css and the
+   rest, ported verbatim). It defines NO colours, tokens only, with ONE
+   exception: the dark --warn block below (ia-final §9.2), which
+   tests/test_ui_contrast.py checks row by row.
+
+   What is here: the one token deviation, the skip link, the rail badges, the
+   words strip that replaces the sidebar foot when the sidebar is only icons,
+   the phone's top bar and slide-in sidebar, the record-age glyph states, and
+   the Settings page's small additions. */
+
+/* ── the one token deviation (§9.2) ───────────────────────────────────────
+   GC's dark --warn is yellow (#facc15) while light is orange (#b45309), so
+   "Overdue" changed hue between themes. Amber keeps the light hue family.
+   #f59e0b on the dark card (#141414) is about 8.6:1. To be back-ported to
+   GC hub's tokens.css (open question 5). */
+:root[data-theme="dark"] {
+    --warn:          #f59e0b;
+    --warn-text:     #f59e0b;
+    --warn-soft:     rgba(245, 158, 11, 0.12);
+    --st-held:       #f59e0b;
+    --pill-held-fg:  #fbbf24;
+}
+
+/* ── skip link ────────────────────────────────────────────────────────── */
+.skip-link {
+    position: absolute; left: var(--s3); top: -48px; z-index: 80; padding: var(--s2) var(--s4);
+    border-radius: var(--radius-pill); background: var(--ink); color: var(--ink-fg); text-decoration: none;
+    font-weight: 600; font-size: var(--fs-sm);
+}
+.skip-link:focus { top: var(--s3); }
+
+/* ── nav: the rail badge (shown only when the sidebar is icons) ───────── */
+.nav-item { position: relative; }
+.rail-badge {
+    display: none; position: absolute; top: 2px; left: calc(50% + 3px);
+    min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill);
+    background: var(--ink); color: var(--ink-fg); box-shadow: 0 0 0 2px var(--sidebar-bg);
+    font-size: 10px; font-weight: 700; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums;
+}
+.nav-item .nav-meta:empty { display: none; }
+
+/* ── the sidebar foot: the benches line and the record's age ─────────── */
+.live-dot[data-state="fresh"] { background: var(--st-final); }
+.live-dot[data-state="stale"], .live-dot[data-state="never"] {
+    background: transparent; border: 1.5px solid var(--text-muted); box-shadow: none;
+}
+.live-dot[data-state="never"] { border-style: dashed; }
+.sb-gcs .fleet-glyph { width: 8px; height: 8px; border-radius: 50%; flex: none; border: 1.5px solid var(--text-muted); }
+.sb-gcs[data-all="true"] .fleet-glyph { border-color: var(--st-final); background: var(--st-final); }
+.sb-gcs[data-all="false"] .fleet-glyph { border-color: var(--st-held); }
+
+/* ── the words strip (rail mode, §2.1) ────────────────────────────────────
+   A 36px strip at the bottom of the page column. It says in words what the
+   rail's foot can only draw: the record's age and the benches. Its right
+   padding clears the version stamp (shell.js keeps --badge-w current). */
+.rail-status {
+    display: none; position: sticky; bottom: 0; z-index: 15; margin-top: auto;
+    height: 36px; align-items: center; gap: var(--s2);
+    padding: 0 calc(var(--badge-w, 32px) + var(--s5)) 0 var(--s6);
+    background: var(--bg-card); border-top: 1px solid var(--border-light);
+    font-size: var(--fs-xs); color: var(--text); white-space: nowrap; overflow: hidden;
+}
+.rail-status .rs-item { display: inline-flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rail-status .rs-item[hidden] { display: none; }
+.rail-status .rs-sep { color: var(--text-muted); }
+.rail-status a { color: var(--text); text-decoration: none; }
+.rail-status a:hover { text-decoration: underline; text-underline-offset: 2px; }
+.rail-status .live-dot { box-shadow: none; }
+
+/* rail mode: below 1400px unless the person chose Full; always when they chose Icons only */
+@media (max-width: 1399px) {
+    :root:not([data-sidebar="full"]) .nav-item .rail-badge:not(:empty) { display: block; }
+    :root:not([data-sidebar="full"]) .sb .live-row .live-dot,
+    :root:not([data-sidebar="full"]) .sb .sb-gcs { display: none; }
+    :root:not([data-sidebar="full"]) .rail-status { display: flex; }
+}
+:root[data-sidebar="rail"] .nav-item .rail-badge:not(:empty) { display: block; }
+:root[data-sidebar="rail"] .sb .live-row .live-dot,
+:root[data-sidebar="rail"] .sb .sb-gcs { display: none; }
+:root[data-sidebar="rail"] .rail-status { display: flex; }
+
+/* ── the phone (below 700px): a 56px top bar and a slide-in sidebar ─────
+   The topbar becomes the phone bar: menu button, the mark, the page title.
+   The sidebar leaves the flow and slides in, full width of its labels. */
+.phone-only { display: none; }
+@media (max-width: 699px) {
+    .phone-only { display: inline-flex; }
+    .topbar { padding: 0 var(--s4) 0 var(--s2); gap: var(--s2); }
+    .topbar .phone-mark { align-items: center; text-decoration: none; }
+    .topbar .phone-mark .mark-logo { width: 28px; height: 28px; }
+    .content { padding: var(--s5) var(--s4) calc(var(--badge-room) + var(--s5)); }
+    .sb {
+        position: fixed; top: 0; left: 0; bottom: 0; height: auto; width: 280px; max-width: 86vw;
+        transform: translateX(-100%); visibility: hidden; box-shadow: var(--e3);
+        transition: transform var(--t-base) var(--ease-out), visibility 0s linear var(--t-base);
+    }
+    :root[data-drawer="open"] .sb { transform: none; visibility: visible; transition: transform var(--t-base) var(--ease-out); }
+    /* in the drawer the sidebar is always the full one, whatever the rail rules say */
+    :root[data-drawer][data-drawer] .sb { width: 280px; flex-basis: auto; padding-left: var(--s3); padding-right: var(--s3); }
+    :root[data-drawer][data-drawer] .sb .sb-label,
+    :root[data-drawer][data-drawer] .sb .sb-recent { display: block; }
+    :root[data-drawer][data-drawer] .sb .nav-meta:not(:empty) { display: inline; }
+    :root[data-drawer][data-drawer] .sb .rail-badge { display: none; }
+    :root[data-drawer][data-drawer] .sb .sb-head { flex-direction: row; }
+    :root[data-drawer][data-drawer] .sb .nav-item { justify-content: flex-start; padding: 0 var(--s3); }
+    :root[data-drawer][data-drawer] .sb .user-chip { justify-content: flex-start; padding: var(--s2); }
+    :root[data-drawer][data-drawer] .sb .user-chip .chev { display: inline-block; }
+    :root[data-drawer][data-drawer] .sb .live-row { flex-direction: row; padding: 0 var(--s2); }
+    :root[data-drawer][data-drawer] .sb .live-row .sb-label { display: block; flex: 1; }
+    :root[data-drawer][data-drawer] .sb .live-row .live-dot { display: inline-block; }
+    :root[data-drawer][data-drawer] .sb .sb-gcs:not([hidden]) { display: flex; }
+    .sb #sb-toggle { display: none; }
+    .drawer-catch { position: fixed; inset: 0; z-index: 25; background: transparent; border: 0; padding: 0; }
+    .rail-status, :root[data-sidebar] .rail-status { display: flex; padding-left: var(--s4); }
+    .rail-status .rs-sep.optional, .rail-status .rs-item.optional { display: none; }
+}
+
+/* ── Settings (P01: This browser and Diagnostics) ─────────────────────── */
+.set-main .set-row .seg-lg { flex: none; }
+.diag-kv { grid-template-columns: 180px minmax(0, 1fr); }
+.diag-kv .v { display: flex; align-items: center; gap: var(--s2); color: var(--text); }
+.diag-kv .v .caption { margin-left: var(--s1); }
+.diag-kv > div:nth-last-child(-n+2) { border-bottom: 0; }
+
+@media (max-width: 699px) {
+    .set-row { flex-wrap: wrap; gap: var(--s3); }
+    .diag-kv { grid-template-columns: 1fr; }
+    .diag-kv > .k { padding-bottom: 0; border-bottom: 0; }
+    .diag-kv > .v { padding-top: 2px; flex-wrap: wrap; }
+}
+
+/* ── Help ─────────────────────────────────────────────────────────────── */
+.help .pages { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--s2); }
+.help .pages li { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: var(--s3); margin: 0; }
+.help .pages a { color: var(--text); font-weight: 600; }
+@media (max-width: 699px) { .help .pages li { grid-template-columns: 1fr; gap: 0; } }
+
+/* ── the degraded-data banner ─────────────────────────────────────────────
+   GC's status_shell.css draws it in --warn-text on --warn-soft: 4.38:1 in
+   light, under AA. --pill-held-fg is the token made for text on that tint. */
+.paused-banner { color: var(--pill-held-fg); }
+
+/* a sheet's error line: dialog.sheet p is muted, an error must not be */
+dialog.sheet p.errline { color: var(--st-error); }

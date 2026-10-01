@@ -46,9 +46,20 @@ def _log_row(gw, machine_uid, ts, lab_id, test_name="Flash Point", value="63.7")
 
 
 @pytest.fixture
-def lab():
-    """One instrument and a hundred QC runs — comfortably past EVENT_LIMIT."""
+def lab(tmp_path):
+    """One instrument and a hundred QC runs — comfortably past EVENT_LIMIT.
+
+    The app's data folder is a temp folder of this test's own. `create_app`
+    otherwise puts the log mirror at `<code dir>/data/log-mirror.sqlite3`, a
+    file that OUTLIVES the run — so what `/api/search` answered here depended
+    on whatever a developer's last `--dev` boot left in that file. In a fresh
+    checkout (empty mirror) the capped search fell through to the whole-record
+    read and found the sample; in one with a stale mirror the mirror answered
+    first, did not hold L-37000, and the search said `no_match`. Same code, two
+    answers, decided by a leftover file.
+    """
     gw = FakeLabCoreGateway()
+    gw.data_root = str(tmp_path)
     snapshot_service.SnapshotService(gw).ensure_schema()
     gw.sql("INSERT INTO lem_machine_status (machine_uid, title, status, "
            "reason, updated_at) VALUES ('pac-flash-1', 'PAC Flash 1', "
@@ -61,7 +72,7 @@ def lab():
 
 
 def _client(gw):
-    app = create_app(gw, secret="t")
+    app = create_app(gw, secret="t", documents_root=gw.data_root)
     app.config.update(TESTING=True)
     return app.test_client()
 
@@ -122,9 +133,14 @@ class TestWhatNotFoundIsAllowedToMean:
         assert answer["corpus"]["rows"] == 10
         assert answer["corpus"]["truncated"] is True
         # And the point of the flag: the sample IS in the lab's log, so a bare
-        # "no_match" here would be a denial. The caller has what it needs to
-        # say "not in the last 10 records" instead.
-        assert answer["state"] == "no_match"
+        # "no_match" here would be a denial. Since "search through all time" a
+        # clipped corpus is not the last word: the route goes on to the whole
+        # record (an empty mirror here, so LabCore's log) and finds it — and
+        # says that is where the hit came from, so the page can tell a corpus
+        # hit from one found beyond it.
+        assert answer["state"] == "ok", answer
+        assert answer.get("beyond_corpus") is True, answer
+        assert any(h.get("lab_id") == "L-37000" for h in answer["results"])
 
     def test_an_uncapped_corpus_does_not_claim_it_was_capped(self, lab):
         """The other half. A flag that is always True is worse than no flag."""
