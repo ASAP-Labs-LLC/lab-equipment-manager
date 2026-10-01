@@ -121,11 +121,17 @@ class TestTheSchema:
         again = store.sql(
             "INSERT INTO lem_machine_log (machine_uid, ts, kind, bench_epoch, "
             "bench_seq) VALUES ('m1', 't', 'run', 'E1', 1)")
-        assert "UNIQUE" in again["error"]
+        assert "already in the record" in again["error"]
+        # Not even "OR IGNORE": the BEFORE INSERT guard (S1, below) refuses
+        # any insert that would collide with a row already in the record,
+        # whatever conflict clause it carries, so a duplicate bench line is
+        # an error a caller sees, never a silent no-op or a silent rewrite.
         ignored = store.sql(
             "INSERT OR IGNORE INTO lem_machine_log (machine_uid, ts, kind, "
             "bench_epoch, bench_seq) VALUES ('m1', 't', 'run', 'E1', 1)")
-        assert ignored == {"ok": True, "rows_affected": 0}
+        assert "already in the record" in ignored["error"]
+        assert store.read_sql("SELECT COUNT(*) n FROM lem_machine_log"
+                              )["rows"][0]["n"] == 1
 
     def test_a_seven_column_insert_lands_as_a_server_row(self, store):
         """W2b. `web_app._audit`, the PM completion, the maintenance import
@@ -222,6 +228,205 @@ class TestTheRecordIsAppendOnly:
         res = store.sql("INSERT INTO log_annotation (log_id, label, by, at) "
                         "VALUES (999, 'replay_duplicate', 'lem', 't')")
         assert "FOREIGN KEY" in res["error"]
+
+
+class TestNothingRewritesTheRecord:
+    """S1, the way round the UPDATE and DELETE triggers.
+
+    SQLite's REPLACE conflict resolution DELETES the colliding row and inserts
+    the new one, and it does not fire DELETE triggers while
+    `recursive_triggers` is off (the default, and the default of every
+    `sqlite3` shell). So `INSERT OR REPLACE INTO lem_machine_log (id, ...)`
+    rewrote a reading in place: the critic turned 1.0 into 999, the detail
+    into 'forged' and the origin back to 'server', and forged a hiding
+    annotation the same way, through `sql()` and through raw sqlite3 alike.
+    And the store accepted `DROP TRIGGER` and `DROP TABLE`, which take the
+    guarantee away wholesale.
+
+    A rule that holds for the obvious statements and not for the less obvious
+    ones is a rule an assessor cannot rely on. These pin every road we know:
+    each conflict clause, the upsert form, a collision on each unique custody
+    key, and DDL against the record, through the store and through the bare
+    file.
+    """
+
+    def _row(self, store, rid):
+        return store.read_sql("SELECT value, detail, origin FROM "
+                              "lem_machine_log WHERE id = ?", [rid])["rows"][0]
+
+    @pytest.mark.parametrize("verb", [
+        "INSERT OR REPLACE", "REPLACE", "INSERT OR IGNORE", "INSERT OR FAIL",
+        "INSERT OR ABORT", "INSERT OR ROLLBACK", "INSERT"])
+    def test_no_insert_form_touches_an_existing_log_row(self, store, verb):
+        rid = _log(store)
+        before = self._row(store, rid)
+        res = store.sql(
+            verb + " INTO lem_machine_log (id, machine_uid, ts, kind, lab_id, "
+            "test_name, value, detail) VALUES (?, 'm1', 't', 'run', 'L1', "
+            "'Flash', '999', 'forged')", [rid])
+        assert "already in the record" in res.get("error", ""), res
+        assert self._row(store, rid) == before
+        assert store.read_sql("SELECT COUNT(*) n FROM lem_machine_log"
+                              )["rows"][0]["n"] == 1
+
+    def test_the_upsert_form_is_refused_too(self, store):
+        rid = _log(store)
+        before = self._row(store, rid)
+        res = store.sql(
+            "INSERT INTO lem_machine_log (id, machine_uid, ts, kind, value) "
+            "VALUES (?, 'm1', 't', 'run', '999') ON CONFLICT(id) DO UPDATE "
+            "SET value = excluded.value", [rid])
+        assert "error" in res
+        assert self._row(store, rid) == before
+
+    def test_a_collision_on_a_custody_key_cannot_replace_either(self, store):
+        """No `id` named at all: the REPLACE collides on the bench key or the
+        legacy key instead, and would delete the original under a new id."""
+        assert "error" not in store.sql(
+            "INSERT INTO lem_machine_log (machine_uid, ts, kind, value, "
+            "bench_epoch, bench_seq, legacy_key) "
+            "VALUES ('m1', 't', 'run', '1.0', 'E1', 7, 'LK')")
+        for clash in ("bench_epoch, bench_seq) VALUES ('m1','t','run','999',"
+                      "'E1', 7)",
+                      "legacy_key) VALUES ('m1','t','run','999','LK')"):
+            res = store.sql("INSERT OR REPLACE INTO lem_machine_log "
+                            "(machine_uid, ts, kind, value, " + clash)
+            assert "already in the record" in res.get("error", ""), res
+        rows = store.read_sql("SELECT id, value FROM lem_machine_log")["rows"]
+        assert rows == [{"id": 1, "value": "1.0"}]
+
+    @pytest.mark.parametrize("verb", ["INSERT OR REPLACE", "REPLACE",
+                                      "INSERT OR IGNORE", "INSERT"])
+    def test_no_insert_form_touches_an_existing_annotation(self, store, verb):
+        rid = _log(store)
+        assert "error" not in store.sql(
+            "INSERT INTO log_annotation (id, log_id, label, by, at) "
+            "VALUES (1, ?, 'replay_candidate', 'lem', 't')", [rid])
+        res = store.sql(
+            verb + " INTO log_annotation (id, log_id, label, by, at) "
+            "VALUES (1, ?, 'replay_duplicate', 'forger', 't')", [rid])
+        assert "already in the record" in res.get("error", ""), res
+        assert store.read_sql("SELECT label, by FROM log_annotation"
+                              )["rows"] == [{"label": "replay_candidate",
+                                             "by": "lem"}]
+        # and the reading is still in the effective record
+        assert store.read_sql("SELECT COUNT(*) n FROM "
+                              "lem_machine_log_effective")["rows"][0]["n"] == 1
+
+    def test_replace_is_refused_through_the_bare_file_too(self, store):
+        """The guard is a trigger, so it belongs to the FILE, not to this
+        class: a sqlite3 shell with every default gets the same refusal."""
+        rid = _log(store)
+        assert "error" not in store.sql(
+            "INSERT INTO log_annotation (id, log_id, label, by, at) "
+            "VALUES (1, ?, 'replay_candidate', 'lem', 't')", [rid])
+        con = sqlite3.connect(store.path)
+        try:
+            with pytest.raises(sqlite3.DatabaseError,
+                               match="already in the record"):
+                con.execute("INSERT OR REPLACE INTO lem_machine_log (id, "
+                            "machine_uid, ts, kind, value, detail) VALUES "
+                            "(?, 'm1', 't', 'run', '999', 'forged')", [rid])
+            with pytest.raises(sqlite3.DatabaseError,
+                               match="already in the record"):
+                con.execute("REPLACE INTO log_annotation (id, log_id, label, "
+                            "by, at) VALUES (1, ?, 'replay_duplicate', 'x', "
+                            "'t')", [rid])
+        finally:
+            con.close()
+        assert self._row(store, rid) == {"value": "1.0", "detail": "{}",
+                                         "origin": "server"}
+
+    def test_replace_fires_the_delete_guard_on_the_stores_connections(
+            self, store):
+        """Defence in depth for a unique key nobody has thought of yet:
+        with `recursive_triggers` on, a REPLACE's conflict deletion runs the
+        BEFORE DELETE trigger, so even a collision the INSERT guard does not
+        name is refused rather than performed."""
+        assert store.writer_pragmas()["recursive_triggers"] == 1
+        assert store.reader_pragmas()["recursive_triggers"] == 1
+
+    @pytest.mark.parametrize("ddl", [
+        "DROP TRIGGER lem_log_no_update",
+        "DROP TRIGGER lem_log_no_delete",
+        "DROP TRIGGER lem_log_no_overwrite",
+        "DROP TRIGGER ann_no_update",
+        "DROP TRIGGER ann_no_delete",
+        "DROP TRIGGER ann_no_overwrite",
+        "DROP TABLE log_annotation",
+        "DROP TABLE lem_machine_log",
+        "DROP TABLE annotation_approval",
+        "DROP TABLE lem_machine_config",
+        "DROP VIEW lem_machine_log_effective",
+        "DROP INDEX ux_log_bench",
+        "DROP INDEX ux_log_legacy",
+        "ALTER TABLE lem_machine_log RENAME TO old_log",
+        "ALTER TABLE log_annotation DROP COLUMN approval_id",
+        "ALTER TABLE lem_machine_log ADD COLUMN sneaky TEXT",
+        "CREATE TRIGGER sneak BEFORE DELETE ON lem_machine_log "
+        "BEGIN SELECT RAISE(IGNORE); END",
+        "CREATE TEMP TRIGGER sneak BEFORE INSERT ON log_annotation "
+        "BEGIN SELECT 1; END",
+        "PRAGMA writable_schema = 1",
+        "PRAGMA recursive_triggers = 0",
+        "PRAGMA foreign_keys = 0",
+        "PRAGMA query_only = 0",
+    ])
+    def test_the_store_refuses_ddl_that_would_unguard_the_record(
+            self, store, ddl):
+        rid = _log(store)
+        res = store.sql(ddl)
+        assert "error" in res, (ddl, res)
+        assert "not authorized" in res["error"], res
+        # and the guard is still there, doing its job
+        assert "append-only" in store.sql("DELETE FROM lem_machine_log"
+                                          )["error"]
+        assert "already in the record" in store.sql(
+            "REPLACE INTO lem_machine_log (id, value) VALUES (?, '9')",
+            [rid])["error"]
+        assert store.health()["guards_missing"] == []
+
+    def test_a_read_cannot_write(self, store):
+        """`read_sql` runs on reader connections, which are query-only: a
+        DROP or DELETE sent down the read road is refused, not performed."""
+        _log(store)
+        for stmt in ("DROP TABLE log_annotation",
+                     "DELETE FROM request_ledger",
+                     "INSERT INTO store_meta (key, value) VALUES ('x', 'y')"):
+            assert "error" in store.read_sql(stmt), stmt
+        assert store.read_sql("SELECT COUNT(*) n FROM store_meta WHERE key "
+                              "= 'x'")["rows"][0]["n"] == 0
+
+    def test_ordinary_schema_work_still_runs(self, store):
+        """What the app's owners declare on the store (`snapshot_service`'s
+        indexes, its own tables) is untouched by the refusal."""
+        for ok in ("CREATE INDEX IF NOT EXISTS ix_extra ON lem_machine_log"
+                   "(kind)",
+                   "CREATE TABLE IF NOT EXISTS lem_scratch (a TEXT)",
+                   "DROP TABLE lem_scratch",
+                   "PRAGMA table_info('lem_machine_log')"):
+            assert "error" not in store.sql(ok), ok
+
+    def test_a_trigger_dropped_behind_the_stores_back_comes_back(
+            self, tmp_path):
+        """The bare file CAN drop a trigger; SQLite has no rule against its
+        own owner. What the store can do is notice and restore: every open
+        re-declares the guards, and `health()` names any that are missing
+        while it runs, so `/healthz` says so instead of the record quietly
+        becoming rewritable."""
+        path = str(tmp_path / "lem.db")
+        s = LocalStoreGateway(path)
+        con = sqlite3.connect(path)
+        con.execute("DROP TRIGGER lem_log_no_overwrite")
+        con.commit()
+        con.close()
+        assert s.health()["guards_missing"] == ["lem_log_no_overwrite"]
+        s.close()
+        s = LocalStoreGateway(path)
+        try:
+            assert s.health()["guards_missing"] == []
+        finally:
+            s.close()
 
 
 # ── the effective view ─────────────────────────────────────────────────────

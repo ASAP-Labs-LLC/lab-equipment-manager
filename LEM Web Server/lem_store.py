@@ -33,8 +33,18 @@ adds:
   through `sql()`, so a test double that refuses a write refuses it inside a
   transaction too, and the transaction rolls back.
 * **Append-only, in the file.** Triggers refuse UPDATE and DELETE on
-  `lem_machine_log` and `log_annotation`. Anybody opening `lem.db` with the
-  sqlite3 shell gets the same answer as the app (S1).
+  `lem_machine_log` and `log_annotation`, and refuse any INSERT that would
+  collide with a row already there — so `INSERT OR REPLACE` / `REPLACE INTO`,
+  whose conflict deletion skips DELETE triggers, cannot rewrite a row either.
+  Anybody opening `lem.db` with the sqlite3 shell gets the same answer as the
+  app (S1). Dedupe an ingest with `WHERE NOT EXISTS`, never `OR IGNORE`.
+* **No way round it through the store.** Every connection runs with
+  `recursive_triggers` on (a REPLACE then fires the DELETE guard as well) and
+  an authorizer (`_guard`) that refuses DROP/ALTER/CREATE TRIGGER against the
+  record, its view and its guards, and refuses switching off the PRAGMAs the
+  guarantee rests on. Readers are `query_only`. The bare file can still drop
+  a trigger — SQLite has no rule against its owner — so every open restores
+  the guards and `health()["guards_missing"]` names any that are gone.
 * **Hiding is an annotation.** `lem_machine_log_effective` is the record minus
   rows whose newest annotation hides them, minus the history of a machine
   retired with "purge history" (which used to DELETE, and now cannot).
@@ -92,6 +102,58 @@ CUSTODY_COLUMNS = ("id", "origin", "bench_epoch", "bench_seq", "content_key",
 #: on a row counts.
 HIDING_LABELS = ("replay_duplicate", "import_leftover")
 
+#: The triggers that make the record append-only. `health()` names any that
+#: are missing (the bare file can drop one; the store cannot) and every open
+#: re-declares them.
+GUARD_TRIGGERS = ("lem_log_no_update", "lem_log_no_delete",
+                  "lem_log_no_overwrite", "ann_no_update", "ann_no_delete",
+                  "ann_no_overwrite")
+
+#: What the store will not let a statement drop, alter or hang a trigger on:
+#: the record, the annotations that decide how it counts, the approvals behind
+#: them, the configuration row whose `retired_at` the effective view reads,
+#: and the view itself. Only `_migrate`, which runs before the guard is
+#: installed, reshapes these.
+PROTECTED = frozenset(("lem_machine_log", "log_annotation",
+                       "annotation_approval", "lem_machine_config",
+                       "lem_machine_log_effective"))
+
+#: PRAGMAs a statement may not SET on a store connection: each one switches
+#: off part of the guarantee (schema writes, the REPLACE-fires-DELETE rule,
+#: the annotation's foreign key, a reader's query-only mode) or its
+#: durability. Reading any of them is fine.
+_LOCKED_PRAGMAS = frozenset(("writable_schema", "recursive_triggers",
+                             "foreign_keys", "query_only", "journal_mode",
+                             "synchronous", "trusted_schema",
+                             "ignore_check_constraints", "legacy_alter_table"))
+
+
+def _guard(action, arg1, arg2, _db, _src):
+    """sqlite3 authorizer for every store connection after migration.
+
+    Refuses, with SQLite's own "not authorized" error (which `_error` hands
+    back in LabCore's error shape), DDL that would unguard the record. Plain
+    reads and writes are not its business: the triggers own those, and they
+    hold for the bare file too.
+    """
+    a = sqlite3
+    if action in (a.SQLITE_DROP_TABLE, a.SQLITE_DROP_TEMP_TABLE,
+                  a.SQLITE_DROP_VIEW, a.SQLITE_DROP_TEMP_VIEW):
+        return a.SQLITE_DENY if arg1 in PROTECTED else a.SQLITE_OK
+    if action in (a.SQLITE_DROP_TRIGGER, a.SQLITE_DROP_TEMP_TRIGGER,
+                  a.SQLITE_CREATE_TRIGGER, a.SQLITE_CREATE_TEMP_TRIGGER,
+                  a.SQLITE_DROP_INDEX, a.SQLITE_DROP_TEMP_INDEX):
+        if arg1 in GUARD_TRIGGERS or arg2 in PROTECTED:
+            return a.SQLITE_DENY
+        return a.SQLITE_OK
+    if action == a.SQLITE_ALTER_TABLE:
+        return a.SQLITE_DENY if arg2 in PROTECTED else a.SQLITE_OK
+    if action == a.SQLITE_PRAGMA:
+        if arg2 is not None and str(arg1).lower() in _LOCKED_PRAGMAS:
+            return a.SQLITE_DENY
+        return a.SQLITE_OK
+    return a.SQLITE_OK
+
 _LOG_DDL = (
     "CREATE TABLE IF NOT EXISTS lem_machine_log ("
     " id INTEGER PRIMARY KEY,"
@@ -126,6 +188,26 @@ _DDL = (
     "CREATE TRIGGER IF NOT EXISTS lem_log_no_delete BEFORE DELETE ON "
     "lem_machine_log BEGIN SELECT RAISE(ABORT, "
     "'lem_machine_log is append-only: annotate the row instead'); END",
+    # REPLACE (and `INSERT OR REPLACE`) resolves a collision by DELETING the
+    # row already there, and SQLite skips DELETE triggers for that unless
+    # `recursive_triggers` is on, which no sqlite3 shell turns on. Without
+    # this guard `INSERT OR REPLACE ... (id, ...)` rewrote a reading in
+    # place. It refuses ANY insert that would collide with a row already in
+    # the record, on each key that can collide (the id and both unique
+    # custody keys, with the same NULL rules as their indexes), whatever
+    # conflict clause the statement carries, OR IGNORE included: a duplicate
+    # is an error its caller sees, never a silent no-op or a silent rewrite.
+    # raw-log: the guard must see every row, hidden ones included.
+    "CREATE TRIGGER IF NOT EXISTS lem_log_no_overwrite BEFORE INSERT ON "
+    "lem_machine_log WHEN "
+    " EXISTS (SELECT 1 FROM lem_machine_log WHERE id = NEW.id)"
+    " OR (NEW.bench_seq IS NOT NULL AND EXISTS (SELECT 1 FROM lem_machine_log"
+    "     WHERE machine_uid = NEW.machine_uid AND bench_epoch = NEW.bench_epoch"
+    "     AND bench_seq = NEW.bench_seq))"
+    " OR (NEW.legacy_key IS NOT NULL AND EXISTS (SELECT 1 FROM lem_machine_log"
+    "     WHERE legacy_key = NEW.legacy_key)) "
+    "BEGIN SELECT RAISE(ABORT, 'lem_machine_log is append-only: that row is "
+    "already in the record and cannot be replaced'); END",
     "CREATE TABLE IF NOT EXISTS log_annotation ("
     " id INTEGER PRIMARY KEY,"
     " log_id INTEGER NOT NULL REFERENCES lem_machine_log(id),"
@@ -137,6 +219,11 @@ _DDL = (
     "BEGIN SELECT RAISE(ABORT, 'log_annotation is append-only'); END",
     "CREATE TRIGGER IF NOT EXISTS ann_no_delete BEFORE DELETE ON log_annotation "
     "BEGIN SELECT RAISE(ABORT, 'log_annotation is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS ann_no_overwrite BEFORE INSERT ON "
+    "log_annotation WHEN EXISTS (SELECT 1 FROM log_annotation "
+    "WHERE id = NEW.id) "
+    "BEGIN SELECT RAISE(ABORT, 'log_annotation is append-only: that "
+    "annotation is already in the record and cannot be replaced'); END",
     "CREATE TABLE IF NOT EXISTS annotation_approval ("
     " id INTEGER PRIMARY KEY, machine_uid TEXT, rule TEXT, run_id TEXT,"
     " candidates INTEGER, examples TEXT, qc_impact TEXT, approved_by TEXT,"
@@ -246,6 +333,12 @@ def _error(exc: BaseException) -> dict:
     reports 503 + Retry-After rather than "never retry this".
     """
     text = "{0}: {1}".format(type(exc).__name__, exc)
+    if str(exc) == "not authorized":
+        # `_guard` said no. Say what was refused and why, keeping SQLite's
+        # own words so the cause is searchable.
+        text += (" (the LEM store refuses statements that would drop, alter "
+                 "or unguard the append-only record, or switch off its "
+                 "durability; nothing was changed)")
     out = {"error": text}
     if "locked" in str(exc).lower() or "busy" in str(exc).lower():
         out["busy"] = True
@@ -287,11 +380,15 @@ class LocalStoreGateway:
         folder = os.path.dirname(os.path.abspath(self.path))
         if folder:
             os.makedirs(folder, exist_ok=True)
-        self._writer = self._connect()
+        # Unguarded only while `_migrate` reshapes the record; guarded for
+        # every statement after it.
+        self._writer = self._connect(writer=True, guarded=False)
         self._migrate()
+        self._writer.set_authorizer(_guard)
 
     # ── connections ───────────────────────────────────────────────────
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, writer: bool = False,
+                 guarded: bool = True) -> sqlite3.Connection:
         if self.read_only:
             uri = "file:{0}?mode=ro".format(
                 os.path.abspath(self.path).replace("?", "%3f"))
@@ -307,7 +404,16 @@ class LocalStoreGateway:
             con.execute("PRAGMA journal_mode=WAL")
         con.execute("PRAGMA synchronous=FULL")
         con.execute("PRAGMA foreign_keys=ON")
+        # A REPLACE's conflict deletion fires BEFORE DELETE triggers only
+        # with this on: the second wall behind `*_no_overwrite`.
+        con.execute("PRAGMA recursive_triggers=ON")
         con.execute("PRAGMA busy_timeout={0}".format(self.BUSY_TIMEOUT_MS))
+        if not writer:
+            # A reader reads. `read_sql("DROP TABLE ...")` is refused here,
+            # not performed on the road everybody assumes cannot write.
+            con.execute("PRAGMA query_only=ON")
+        if guarded:
+            con.set_authorizer(_guard)
         with self._all_lock:
             self._all.append(con)
         return con
@@ -480,7 +586,7 @@ class LocalStoreGateway:
             except OSError:
                 pass
         out = {"path": self.path, "read_only": self.read_only, "bytes": size,
-               "schema_version": None}
+               "schema_version": None, "guards_missing": None}
         # On the engine, like `is_running`: `/healthz` must never count as a
         # read in anybody's tally.
         try:
@@ -488,14 +594,23 @@ class LocalStoreGateway:
                 row = con.execute("SELECT value FROM store_meta "
                                   "WHERE key = 'schema_version'").fetchone()
             out["schema_version"] = int(row[0]) if row else None
+            out["guards_missing"] = self._guards_missing(con)
         except (sqlite3.Error, TypeError, ValueError) as exc:
             out["error"] = "{0}: {1}".format(type(exc).__name__, exc)
         return out
 
+    @staticmethod
+    def _guards_missing(con) -> List[str]:
+        """The append-only triggers NOT in the file, by name. `None` from
+        `health()` means this could not be read, which is not "all there"."""
+        have = {r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger'")}
+        return [t for t in GUARD_TRIGGERS if t not in have]
+
     def _pragmas(self, con) -> Dict[str, Any]:
         out = {}
         for name in ("journal_mode", "synchronous", "foreign_keys",
-                     "busy_timeout"):
+                     "busy_timeout", "recursive_triggers", "query_only"):
             out[name] = con.execute("PRAGMA " + name).fetchone()[0]
         return out
 
