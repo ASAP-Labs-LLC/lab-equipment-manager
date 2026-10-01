@@ -70,7 +70,9 @@ def server(tmp_path_factory):
     try:
         srv = make_server("127.0.0.1", PORT, app, threaded=True)
     except OSError as exc:
-        pytest.skip(f"port {PORT} is busy: {exc}")
+        # a busy port is a broken run, not a missing tool: skipping here
+        # would print green for a page nobody walked
+        pytest.fail(f"port {PORT} is busy (set LEM_UI_TEST_PORT): {exc}")
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     yield {"base": f"http://127.0.0.1:{PORT}", "app": app}
     srv.shutdown()

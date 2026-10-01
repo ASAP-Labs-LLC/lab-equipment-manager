@@ -454,14 +454,32 @@ def test_any_gated_control_on_a_shell_page_waits_and_runs_once(drv, base):
     assert _js(d, "return window.__ran;") == 2 and not _sheet_open(d)
 
 
-def test_no_js_road_puts_you_back(drv, base):
+def test_no_js_road_puts_you_back(drv, base, server):
+    """The form post (no JavaScript) signs you in and sends you to ``next``.
+
+    ``next`` here is the tablet's bookmark, ``/checklists``, which is itself
+    a 302 to the round open now (``/checklists/opening`` or ``/closing``). So
+    "put back" means: you end on that round's page, not on /signin.
+
+    The check is on the URL's *path*, never ``endswith("/checklists")``: the
+    sign-in page's own URL, ``/signin?next=/checklists``, ends with that too,
+    so the old assertion passed while the browser had not moved yet and
+    failed once it had (2 of 5 runs). A path cannot be confused that way.
+    """
+    from urllib.parse import urlparse
     d = drv
     d.get(base + "/signin?next=/checklists")
+    assert urlparse(d.current_url).path == "/signin"
     d.find_element(By.CSS_SELECTOR, "input[name=username]").send_keys("Cody")
     d.find_element(By.CSS_SELECTOR, "input[name=password]").send_keys(PASSWORD)
     d.find_element(By.CSS_SELECTOR, "form[action='/signin'] button[type=submit]").click()
-    assert _wait(lambda: d.current_url.endswith("/checklists"))
+    rounds = {"/checklists/opening", "/checklists/closing"}
+    assert _wait(lambda: urlparse(d.current_url).path in rounds), d.current_url
     assert _wait(lambda: _js(d, "return document.readyState;") == "complete")
+    # the round the server's bookmark opens now: sign-in and the bookmark
+    # agree about which round "back" is
+    want = server["app"].test_client().get("/checklists").headers["Location"]
+    assert urlparse(d.current_url).path == urlparse(want).path
     assert _wait(lambda: _me(d)["user"] == "Cody")
 
 
