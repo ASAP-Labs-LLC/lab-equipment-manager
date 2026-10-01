@@ -36,9 +36,13 @@ T = ROOT / "templates"
 JS = ROOT / "static" / "js"
 CSS = ROOT / "static" / "css"
 
-SHELL_PAGES = ["/settings", "/help"]
+SHELL_PAGES = ["/settings", "/help", "/"]
 # pages still drawn by the old _nav.html (later pieces replace them)
-OLD_PAGES = ["/", "/floor", "/maintenance", "/checklists", "/logs", "/checklists/trends"]
+# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
+# covers it); "/maintenance" redirects to its filter, and the old PM page
+# lives at /maintenance/classic until the record and Settings › Imports take
+# over its two jobs (ia-final §3.1 #2, §3.7).
+OLD_PAGES = ["/floor", "/maintenance/classic", "/checklists", "/logs", "/checklists/trends"]
 WALL_PAGES = ["/qc"]
 NAV = [("instruments", "Instruments", "/"), ("checklists", "Checklists", "/checklists"),
        ("qc", "QC", None), ("log", "Log", "/logs"), ("settings", "Settings", "/settings")]

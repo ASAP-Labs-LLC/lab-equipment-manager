@@ -35,7 +35,7 @@ def client(gw):
 
 @pytest.fixture
 def page(client):
-    return client.get("/maintenance").get_data(as_text=True)
+    return client.get("/maintenance/classic").get_data(as_text=True)
 
 
 def seed(gw):
@@ -110,10 +110,20 @@ class TestFleetHistory:
 
 class TestThePage:
     def test_it_exists(self, client):
-        assert client.get("/maintenance").status_code == 200
+        assert client.get("/maintenance/classic").status_code == 200
 
-    def test_it_is_reachable_from_the_mode_selector(self, client):
-        assert 'href="/maintenance"' in client.get("/").get_data(as_text=True)
+    def test_the_old_address_is_the_instruments_filter(self, client):
+        """ia-final §1: PM and calibration are a view of Instruments. The old
+        URL is kept as a redirect so a bookmark lands somewhere true."""
+        r = client.get("/maintenance")
+        assert r.status_code == 302
+        assert r.headers["Location"].endswith("/instruments?filter=maintenance")
+
+    def test_it_is_reachable_from_instruments(self, client):
+        """Its two jobs (marking a task done across the lab, importing PM
+        history) have no other door until the record and Settings › Imports
+        land, so Instruments' Maintenance view must link it: no dead end."""
+        assert 'href="/maintenance/classic"' in client.get("/").get_data(as_text=True)
 
     def test_it_is_reachable_from_the_floor(self, client):
         assert 'href="/maintenance"' in client.get("/floor").get_data(as_text=True)
@@ -160,4 +170,4 @@ class TestThePage:
 
         app = create_app(Dead(), authenticator=StubAuth(), secret="s")
         app.config["TESTING"] = True
-        assert app.test_client().get("/maintenance").status_code == 200
+        assert app.test_client().get("/maintenance/classic").status_code == 200

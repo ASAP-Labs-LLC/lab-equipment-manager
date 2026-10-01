@@ -1,0 +1,105 @@
+{% extends "_layout.html" %}
+{#- Instruments, the home page (ia-final §3.2): find an instrument and see who
+    needs you. One heading, one fleet pill, ONE place problems are listed
+    (the Needs-you card), and a table whose Can it run? column answers T1
+    without a click.
+
+    The first paint's data is the same answer /api/ui/instruments serves,
+    carried in a JSON island (data, never code) so the verdicts are on screen
+    as the page arrives. static/js/instruments.js draws it with textContent
+    and refetches when the live feed says an instrument changed. The server
+    renders the frame and every "couldn't" sentence, so a page whose script
+    failed still says what it knows. -#}
+{% block title %}Instruments{% endblock %}
+{% block topbar %}
+  <nav class="seg seg-lg view-seg" aria-label="Instruments view" data-testid="view-seg">
+    <a href="/" aria-current="page">List</a>
+    <a href="/floor" data-testid="view-map">Floor map</a>
+  </nav>
+  <span class="spacer"></span>
+  <div class="find" id="find" data-testid="find">
+    <label class="find-box" for="find-q">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+      <span class="visually-hidden">Find an instrument or a Lab ID</span>
+      <input type="search" id="find-q" placeholder="Find an instrument or a Lab ID" autocomplete="off" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-controls="find-list" aria-autocomplete="list" data-testid="find-q">
+      <kbd aria-hidden="true">Ctrl K</kbd>
+    </label>
+    <button type="button" class="icon-btn find-open" id="find-open" aria-label="Find an instrument or a Lab ID" title="Find (Ctrl K)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
+    </button>
+    <div class="find-pop" id="find-pop" data-testid="find-pop" hidden>
+      <ul class="find-list" id="find-list" role="listbox" aria-label="Matches"></ul>
+      <p class="find-state" id="find-state" role="status" aria-live="polite"></p>
+      <p class="find-note caption" id="find-note"></p>
+    </div>
+  </div>
+{% endblock %}
+{% block content %}
+<main class="content inst-home" id="main" tabindex="-1" data-testid="instruments-page"
+      data-has-quality="{{ 'true' if has_quality else 'false' }}">
+  <header class="page-head">
+    <h1>Instruments</h1>
+    <div class="meta" id="inst-meta" data-testid="inst-meta">
+      {%- if data.state == 'ready' %}
+      <span class="pill {{ data.fleet.pill.level }}" id="fleet-pill" data-testid="fleet-pill"><span class="glyph {{ data.fleet.pill.glyph }}" aria-hidden="true"></span>{{ data.fleet.pill.text }}</span>
+      <span id="fleet-count">{{ data.fleet.total }} {{ 'instrument' if data.fleet.total == 1 else 'instruments' }}</span>
+      {%- if data.levels %}<span class="sep" aria-hidden="true">·</span><span id="fleet-levels">on {{ data.levels|length }} levels</span>{% endif %}
+      {%- endif %}
+    </div>
+  </header>
+
+  {#- what could not be read, said as such (never an empty card) -#}
+  <div class="unread card" id="inst-unread" data-testid="inst-unread" role="status"{% if data.state == 'ready' %} hidden{% endif %}>
+    {%- if data.state == 'unreadable' %}
+    <span class="glyph error" aria-hidden="true"></span>
+    {#- the banner above says why (LabCore not answering); this says what
+        it means for this page, once, without repeating the reason -#}
+    <div><b>No instruments to show yet.</b>
+      <p class="caption">This is not an empty lab: LEM has not been able to read it. The list appears by itself as soon as LabCore answers.</p></div>
+    {%- else %}
+    <span class="glyph dashed" aria-hidden="true"></span>
+    <div><b>Not read from LabCore yet.</b>
+      <p class="caption">LEM reads every instrument within a few seconds of starting. The list appears by itself.</p></div>
+    {%- endif %}
+  </div>
+
+  <section class="card checklist needs" id="needs" aria-labelledby="needs-title" data-testid="needs-you"{% if data.state != 'ready' %} hidden{% endif %}>
+    <div class="bar">
+      <h2 id="needs-title">Needs you</h2>
+      <span class="caption" id="needs-caption" role="status"></span>
+    </div>
+    <div class="ntiles" id="needs-tiles"></div>
+    <p class="needs-empty" id="needs-empty" hidden><span class="glyph final" aria-hidden="true"></span>Nothing needs you. Problems show here as they happen.</p>
+  </section>
+
+  <section class="card table-card inst-table" aria-label="All instruments" data-testid="inst-table"{% if data.state != 'ready' %} hidden{% endif %}>
+    <div class="table-head">
+      <div class="chips" role="group" aria-label="Show" id="inst-chips" data-testid="inst-chips"></div>
+      <span class="spacer"></span>
+      <span class="caption" id="inst-shown" role="status"></span>
+    </div>
+    {#- until each record carries its schedule (piece 6) and Settings has
+        Imports (piece 11), marking a task done and importing PM history are
+        on the old page; the Maintenance view is its door -#}
+    <p class="view-note" id="maint-note" data-testid="maint-note" hidden><span class="ico ico-info" aria-hidden="true"></span>To mark a task done or import PM history, open the <a class="link" href="/maintenance/classic">PM and calibration page</a>.</p>
+    <table class="tbl inst" id="inst-tbl">
+      <thead><tr>
+        <th scope="col" class="c-name">Instrument</th>
+        <th scope="col" class="c-run">Can it run?</th>
+        <th scope="col" class="c-qc">Last QC</th>
+        <th scope="col" class="c-bench">Bench</th>
+        <th scope="col" class="c-where">Where</th>
+      </tr></thead>
+      <tbody id="inst-rows"></tbody>
+    </table>
+    <p class="table-empty" id="inst-none" hidden></p>
+    <p class="table-foot caption" data-testid="inst-foot">New instruments are added in LabStation › LEM module › New machine…</p>
+  </section>
+</main>
+<script type="application/json" id="instruments-data">{{ data|json_island }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+<script src="/static/js/instruments.js?v={{ v('js/instruments.js') }}"></script>
+{% endblock %}

@@ -104,13 +104,15 @@ def readiness(machine: dict, override: Optional[str] = None) -> dict:
     if bad:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in bad}))
         return {"state": NOT_OK, "reason": "QC out of spec: " + names}
-    cal = _overdue(machine, "calibration")
-    if cal:
-        return {"state": NOT_OK, "reason": "Calibration overdue"}
+    # Ryan, 2026-10-01: only QC (and an override) can make the answer No.
+    # An overdue calibration is a warning, like an overdue PM; the QC check
+    # against the certificate band is what says whether it still reads true.
     due = _qc_due(machine)
     if due:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in due}))
         return {"state": OK_BUT, "reason": "QC due: " + names}
+    if _overdue(machine, "calibration"):
+        return {"state": OK_BUT, "reason": "Calibration overdue"}
     if _overdue(machine, "pm"):
         return {"state": OK_BUT, "reason": "PM overdue"}
     if not _checking_in(machine):
@@ -287,6 +289,14 @@ def _names(titles: List[str], limit: int = 3) -> str:
     return ", ".join(t[:limit - 1]) + " and %d more" % (len(t) - limit + 1)
 
 
+def _lower_first(s: str) -> str:
+    """"Calibration overdue" -> "calibration overdue", but "QC out of spec"
+    stays: an acronym keeps its capitals."""
+    if len(s) > 1 and s[1].isupper():
+        return s
+    return s[:1].lower() + s[1:]
+
+
 def _plural(n: int, one: str, many: str) -> str:
     return one if n == 1 else many
 
@@ -327,7 +337,7 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
             digest = hashlib.sha1(("%s|%s" % (reason, ",".join(sorted(uids)))).encode()).hexdigest()[:10]
             out.append({"key": "notok:group:" + digest, "level": "error",
                         "message": "%s are not OK to run: %s." % (
-                            _names([title[u] for u in uids]), reason[:1].lower() + reason[1:]),
+                            _names([title[u] for u in uids]), _lower_first(reason)),
                         "href": "/?filter=needs", "link": "Show them"})
     for m in ms:
         uid = m.get("machine_uid")
@@ -347,9 +357,19 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
                     "href": href(due[0]["machine_uid"], "qc") if n == 1 else "/?filter=needs",
                     "link": "Open " + title[due[0]["machine_uid"]] if n == 1 else "Show them"})
 
-    # Calibration overdue is not an item of its own: it makes the instrument
-    # Not OK to run, and that item already says so ("...: Calibration
-    # overdue."). Two items for one fact is the repetition §0.2 forbids.
+    # Calibration overdue is a warning (Ryan, 2026-10-01), so it is a line of
+    # its own, merged across instruments; it used to ride inside "not OK".
+    cal = [m for m in ms if (ready.get(m.get("machine_uid")) or {}).get("state") == OK_BUT
+           and _overdue(m, "calibration")]
+    if cal:
+        n = len(cal)
+        out.append({"key": "caldue:" + ",".join(sorted(m["machine_uid"] for m in cal)),
+                    "level": "warning",
+                    "message": "%d %s overdue for calibration: %s." % (
+                        n, _plural(n, "instrument is", "instruments are"),
+                        _names([title[m["machine_uid"]] for m in cal])),
+                    "href": href(cal[0]["machine_uid"], "maintenance") if n == 1 else "/?cause=ok_but-cal",
+                    "link": "Open " + title[cal[0]["machine_uid"]] if n == 1 else "Show them"})
 
     quiet = []
     for m in ms:

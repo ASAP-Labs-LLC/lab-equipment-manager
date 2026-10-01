@@ -30,7 +30,11 @@ from web_app import create_app
 
 # Every page that includes the shared nav. The stamp lives there so it cannot
 # be on some pages and not others.
-PAGES = ("/", "/floor", "/maintenance", "/checklists", "/logs")
+# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
+# covers it); "/maintenance" redirects to its filter, and the old PM page
+# lives at /maintenance/classic until the record and Settings › Imports take
+# over its two jobs (ia-final §3.1 #2, §3.7).
+PAGES = ("/floor", "/maintenance/classic", "/checklists", "/logs")
 
 
 @pytest.fixture
