@@ -312,6 +312,30 @@ its certified value; the span is derived from it.
 MINOR: no `lem_*` column, no `/api/live` change, no verdict rule; the bench
 does not move.
 
+## Sign in where you are (2026-10-01, ia-final §8 T0)
+
+One sheet, `templates/_signin.html`, on every page with a Sign in (the shell
+via `_layout.html`; Home, Checklists, PM & CAL and Logs include it too). Never
+send anyone to /floor to sign in again, and never print "Sign in to …" and
+stop: `tests/test_signin_in_place.py` greps for both.
+
+- **Pages ask `LEMSignIn` (static/js/signin.js).** `LEMSignIn.need('tick',
+  () => toggle(row, true))` runs the act now if signed in, else opens "Sign in
+  to tick" and runs it after; Cancel drops it. Or mark the control
+  `data-gated="mark done"` and signin.js catches the click (capture phase)
+  before the page's handler and clicks it again after sign-in. Pass what the
+  person MEANT (`checked`), not what the row says by then.
+- **Nothing reloads.** Sign-in fires `lem:auth` on `document` (detail
+  `{user}`) BEFORE the pending act runs; pages repaint from it. `<body>` has
+  `anon` and `data-user` from the server, so the first paint is right.
+- **Switch person** keeps the last person signed in until the next one is in;
+  `/api/login` then ends the last person's LabCore token.
+- **/signin?next=** is the no-JS road; `next` must be a path on this server
+  (same rule in `_safe_next` and `LEMSignInLogic.safeNext`).
+- Walked in a browser by `tests/test_ui_signin.py` (gc-hub's venv has
+  selenium): T0 2 clicks / 2 typed / +1 screen with the same URL, document and
+  scroll; a gated tick or Mark done costs +1 / +2 / +1 and then happens.
+
 ## The live road: benches push, LabCore records (2026-08-05)
 
 Two roads carrying **different facts**, not the same fact at two speeds.

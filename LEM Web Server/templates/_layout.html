@@ -7,7 +7,7 @@
     LEM's changes to GC's frame: the topbar doubles as the phone's 56px bar
     (menu button and mark, shown below 700px); a skip link; the .rail-status
     words strip at the foot of the page column (rail mode only, §2.1); the
-    in-place sign-in sheet. The version stamp is the last element. -#}
+    in-place sign-in sheet (_signin.html). The version stamp is the last element. -#}
 <!DOCTYPE html>
 <html lang="en" data-theme="light">
 <head>
@@ -18,6 +18,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ v('favicon.svg') }}">
   <script src="/static/js/ui_logic.js?v={{ v('js/ui_logic.js') }}"></script>
   <script src="/static/js/shell.js?v={{ v('js/shell.js') }}"></script>
+  <script src="/static/js/signin.js?v={{ v('js/signin.js') }}"></script>
   <link rel="stylesheet" href="/static/css/tokens.css?v={{ v('css/tokens.css') }}">
   <link rel="stylesheet" href="/static/css/shell.css?v={{ v('css/shell.css') }}">
   <link rel="stylesheet" href="/static/css/badge.css?v={{ v('css/badge.css') }}">
@@ -28,7 +29,9 @@
   {% block head %}{% endblock %}
   <link rel="stylesheet" href="/static/css/lem.css?v={{ v('css/lem.css') }}">
 </head>
-<body class="gc lem" data-nav="{{ nav or '' }}">
+{#- `anon` and data-user are known before any script runs, so a gated
+    control is dimmed on the first paint (signin.js keeps them current). -#}
+<body class="gc lem{% if not session.get('user') %} anon{% endif %}" data-nav="{{ nav or '' }}" data-user="{{ session.get('user') or '' }}">
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="app">
     {% include "_shell.html" %}
@@ -40,7 +43,7 @@
         <a class="phone-mark phone-only" href="/" aria-label="LEM: Instruments (home)"><span class="mark-logo" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 16a8 8 0 0 1 16 0"/><path d="M12 16l4.5-5"/><path d="M4 20h16"/></svg></span></a>
         {% block topbar %}{% endblock %}
       </header>
-      {#- one line, only while the data is degraded (a later piece fills it) -#}
+      {#- one line, only while the data is degraded (status.js fills it) -#}
       <div id="paused-banner" class="paused-banner" data-testid="paused-banner" role="status" hidden></div>
       {% block content %}{% endblock %}
       {%- set S = shell_state() %}
@@ -49,28 +52,25 @@
         <span class="rs-item" id="rs-record" data-at="{{ S.record_at or '' }}" data-labcore="{{ S.labcore }}"><span class="live-dot" id="rs-dot" data-state="{{ S.record_state }}" aria-hidden="true"></span><span id="rs-record-text">{{ S.record_text }}</span></span>
         <span class="rs-sep optional" aria-hidden="true"{% if not S.fleet_text %} hidden{% endif %}>·</span>
         <a class="rs-item optional" id="rs-fleet" href="/?filter=quiet"{% if not S.fleet_text %} hidden{% endif %}>{{ S.fleet_text or '' }}</a>
+        <span class="rs-sep optional" aria-hidden="true" hidden>·</span>
+        <span class="rs-item optional rs-job" id="rs-job" hidden></span>
       </div>
     </div>
   </div>
 
-  {#- sign in, in place (ia-final §8 T0): same page, same scroll -#}
-  <dialog class="sheet" id="signin-sheet" data-testid="signin-sheet" aria-labelledby="signin-title">
-    <form method="dialog" class="form" id="signin-form">
-      <h2 id="signin-title">Sign in</h2>
-      <p>Your LabCore account, the same one LabStation uses. Everything you change is recorded with your name.</p>
-      <label class="field"><span>User name</span>
-        <input type="text" id="signin-user" autocomplete="username" spellcheck="false" autocapitalize="off" required></label>
-      <label class="field"><span>Password</span>
-        <input type="password" id="signin-pass" autocomplete="current-password" required></label>
-      <p id="signin-error" class="errline" role="alert" hidden></p>
-      <div class="actions">
-        <button type="button" class="btn" id="signin-cancel">Cancel</button>
-        <button type="submit" class="btn btn-primary" id="signin-ok">Sign in</button>
-      </div>
-    </form>
-  </dialog>
+  {#- sign in, in place (ia-final §8 T0): same page, same scroll. The /signin
+      page is itself the form, so it does not carry a second copy. -#}
+  {%- if not signin_page %}
+  {% include "_signin.html" %}
+  {%- endif %}
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
+  {#- the live feed (ia-final §5): one poller, GETs only, for every part of the
+      shell that says something live -#}
+  <script src="/static/js/live.js?v={{ v('js/live.js') }}"></script>
+  <script src="/static/js/status.js?v={{ v('js/status.js') }}"></script>
+  <script src="/static/js/running_now.js?v={{ v('js/running_now.js') }}"></script>
+  <script src="/static/js/notifications_panel.js?v={{ v('js/notifications_panel.js') }}"></script>
   {% block scripts %}{% endblock %}
 
   {#- Which build is running, bottom-right: the same string /healthz reports

@@ -6,6 +6,8 @@
 <title>LEM — PM &amp; Calibration</title>
 <link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
 <script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<link rel="stylesheet" href="/static/css/signin_legacy.css?v={{ v('css/signin_legacy.css') }}">
+<script src="/static/js/signin.js?v={{ v('js/signin.js') }}"></script>
 <style>
 
   main{flex:1;display:grid;grid-template-columns:1fr 380px;gap:18px;
@@ -51,7 +53,7 @@
   }
 </style>
 </head>
-<body>
+<body class="{{ '' if session.get('user') else 'anon' }}" data-user="{{ session.get('user') or '' }}">
 <div class="frame">
 {% include '_nav.html' %}
 <div class="pane">
@@ -61,7 +63,7 @@
     <button class="tool on" id="fKind" data-kind="">All</button>
     <a class="tool" href="/floor">Map</a>
     <span class="who" id="who" hidden></span>
-    <button id="btnAuth" class="tool">Sign in</button>
+    <a id="btnAuth" class="tool" data-signin href="{{ signin_href() }}">{{ 'Sign out' if session.get('user') else 'Sign in' }}</a>
   </header>
 
   <main>
@@ -105,6 +107,20 @@
     </div>
   </main>
 
+  <dialog class="lem-sheet" id="done-sheet" aria-labelledby="done-title" aria-describedby="done-what">
+    <form class="form" id="done-form" novalidate>
+      <h2 id="done-title">Mark done</h2>
+      <p id="done-what"></p>
+      <label class="field"><span>What was done</span>
+        <textarea id="done-note" rows="3" required placeholder="e.g. Replaced the inlet filter"></textarea></label>
+      <p class="errline" id="done-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" id="done-cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="done-ok">Mark done</button>
+      </div>
+    </form>
+  </dialog>
+
 <script>
 const $ = s => document.querySelector(s);
 // First paint from cache so arriving from another page is instant; every refresh
@@ -128,6 +144,7 @@ const KINDS = ['', 'pm', 'calibration'];
 const KIND_LABEL = {'': 'All', pm: 'PM only', calibration: 'Calibration only'};
 
 let AUTHED = false, WHO = '', KIND = '';
+let TASKS = new Map();
 
 function paintWho() {
   const who = $('#who');
@@ -136,11 +153,10 @@ function paintWho() {
   $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
 }
 
-function requireAuth() {
-  if (AUTHED) return true;
-  $('#err').textContent = 'Sign in to record a completion.';
-  return false;
-}
+// Signed out, an act opens "Sign in to <act>" on this page and goes ahead
+// after sign-in (static/js/signin.js); nothing here prints "Sign in to …" and
+// leaves the person to work out where.
+function needAuth(act, then) { return LEMSignIn.need(act, then); }
 
 async function load() {
   const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
@@ -164,6 +180,7 @@ async function load() {
     return;
   }
 
+  TASKS = new Map((now.tasks || []).map(t => [t.uid, t]));
   let tasks = now.tasks || [];
   if (KIND) tasks = tasks.filter(t => t.kind === KIND);
   // `machines_named: false` means the TASKS are all here and their machine
@@ -191,7 +208,7 @@ async function load() {
           <a href="/floor">${esc(t.machine_title)}</a>
           · every ${t.interval_days} d · ${esc(t.reason)}</div>
       </div>
-      <button class="tool" data-done="${esc(t.uid)}">Mark done</button>
+      <button class="tool" data-done="${esc(t.uid)}" data-gated="mark done">Mark done</button>
     </div>`).join('')
     : `<p class="empty">Nothing ${KIND ? 'of this kind ' : ''}scheduled
        anywhere. Add PMs and calibrations from an equipment record on the
@@ -229,25 +246,79 @@ $('#fKind').addEventListener('click', () => {
   load();
 });
 
-$('#btnAuth').addEventListener('click', async () => {
-  if (AUTHED) { await fetch('/api/logout', {method: 'POST'}); return load(); }
-  location.href = '/floor';        // the sign-in dialog lives there
+// Sign in where you are (static/js/signin.js): signed out, Sign in opens the
+// sheet on this page; signed in, it signs out in place.
+$('#btnAuth').addEventListener('click', async e => {
+  if (!LEMSignIn.user()) return;              // signin.js opens the sheet
+  e.preventDefault();
+  await LEMSignIn.signOut();
+});
+document.addEventListener('lem:auth', e => {
+  AUTHED = !!e.detail.user; WHO = e.detail.user || '';
+  paintWho();
 });
 
-document.addEventListener('click', async e => {
+/* MARK DONE, IN A SHEET THIS PAGE OWNS.
+ *
+ * It was a browser prompt: optional, unstyled, and impossible to hand over to. A
+ * signed-out Mark done is caught by signin.js (the button is data-gated), the
+ * sheet says "Sign in to mark done", and after sign-in the button is pressed
+ * again for you — which lands here and opens this sheet by itself. The note
+ * is required: "what was done" is the line an auditor reads in the PM/CAL
+ * record, and an empty one says nothing. A refusal keeps the sheet open with
+ * the reason, so the note typed is not lost.
+ */
+// "Oct 1" alone for a date a year out reads as today: say the year when it is not this one
+const fmtDay = d => d.toLocaleDateString(undefined, d.getFullYear() === new Date().getFullYear()
+  ? {day: 'numeric', month: 'short'} : {day: 'numeric', month: 'short', year: 'numeric'});
+let DONE_UID = null;
+
+function openMarkDone(uid) {
+  const t = TASKS.get(uid);
+  DONE_UID = uid;
+  const next = t && t.interval_days
+    ? fmtDay(new Date(Date.now() + t.interval_days * 864e5)) : null;
+  $('#done-title').textContent = t ? `Mark done: ${t.name}` : 'Mark done';
+  $('#done-what').textContent = t
+    ? `${t.machine_title}, done today.${next ? ` The next one is due ${next}.` : ''}`
+    : 'Done today.';
+  $('#done-note').value = '';
+  $('#done-error').hidden = true;
+  $('#done-ok').disabled = false;
+  $('#done-sheet').showModal();
+  $('#done-note').focus();
+}
+
+document.addEventListener('click', e => {
   const done = e.target.closest('[data-done]');
   if (!done) return;
-  if (!requireAuth()) return;
-  const note = prompt('Note for this completion (optional):') ?? '';
-  const r = await fetch(
-    `/api/maintenance/${encodeURIComponent(done.dataset.done)}/complete`,
-    {method: 'POST', headers: {'Content-Type': 'application/json'},
-     body: JSON.stringify({note})});
-  const b = await r.json().catch(() => ({}));
-  if (!r.ok) {
-    $('#err').textContent = b.error || 'Could not record that.';
+  needAuth('mark done', () => openMarkDone(done.dataset.done));
+});
+
+$('#done-cancel').addEventListener('click', () => $('#done-sheet').close());
+$('#done-form').addEventListener('submit', async e => {
+  e.preventDefault();
+  const note = $('#done-note').value.trim();
+  const say = text => { $('#done-error').textContent = text; $('#done-error').hidden = false; };
+  if (!note) { say('Say what was done. It is the line the PM and calibration record keeps.'); $('#done-note').focus(); return; }
+  $('#done-ok').disabled = true;
+  let r = null, b = {};
+  try {
+    r = await fetch(`/api/maintenance/${encodeURIComponent(DONE_UID)}/complete`,
+      {method: 'POST', headers: {'Content-Type': 'application/json'},
+       body: JSON.stringify({note})});
+    b = await r.json().catch(() => ({}));
+  } catch (_e) { r = null; }
+  $('#done-ok').disabled = false;
+  if (!r) { say('Not saved: LEM did not answer. Try again.'); return; }
+  if (r.status === 401) {
+    // the session ended while the sheet was up: sign in, then save this note
+    $('#done-sheet').close();
+    LEMSignIn.open({act: 'mark done', then: () => openMarkDone(DONE_UID)});
     return;
   }
+  if (!r.ok) { say(b.error || 'Not saved. Try again.'); return; }
+  $('#done-sheet').close();
   // Completing is TWO writes — the reschedule and the history line — and the
   // second can be refused on its own. The task really is done and rescheduled,
   // so this is a 200; but the PM/CAL record is what an auditor reads, and only
@@ -304,7 +375,7 @@ function renderImport(b) {
 
 async function runImport(dry) {
   if (!IMPORT_TEXT) return;
-  if (!requireAuth()) return;
+  if (!LEMSignIn.user()) return needAuth(dry ? 'preview the import' : 'import', () => runImport(dry));
   const r = await fetch(`/api/maintenance-import${dry ? '?dry_run=1' : ''}`,
     {method: 'POST', headers: {'Content-Type': 'application/json'},
      body: JSON.stringify({csv: IMPORT_TEXT})});
@@ -324,5 +395,6 @@ LEM.prefetch(['/api/machines', '/api/checklists']);
 </script>
 </div>
 </div>
+{% include "_signin.html" %}
 </body>
 </html>

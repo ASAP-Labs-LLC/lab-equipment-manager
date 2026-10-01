@@ -111,9 +111,11 @@ class LogMirror:
     connections are not shareable across threads without it.
     """
 
-    def __init__(self, gateway, path: str) -> None:
+    def __init__(self, gateway, path: str, jobs=None) -> None:
         self.gateway = gateway
         self.path = path
+        # `jobs.Registry` (optional): the first fill shows in "Running now".
+        self.jobs = jobs
         self._lock = threading.Lock()
         folder = os.path.dirname(os.path.abspath(path))
         if folder:
@@ -126,6 +128,33 @@ class LogMirror:
         with self._lock:
             self._db.executescript(_SCHEMA)
             self._db.commit()
+        # What every open page is told about this copy, IN MEMORY. The live
+        # feed asks on every poll from every tab; `state()` counts the table
+        # under the same lock a fill holds for a whole chunk, so it would make
+        # the poll wait on the pull. Read once here, then kept by the pull.
+        self._status_lock = threading.Lock()
+        filled = self._get_meta("filled_at") or None
+        rows = self.count()
+        self._status = {"state": ("filled" if filled else "empty" if not rows else "partial"),
+                        "rows": rows, "complete_to": filled, "held_to": None,
+                        "pct": None, "reason": self._get_meta("stale_reason") or ""}
+
+    def live_status(self) -> dict:
+        """The copy's state for `/api/ui/live`, from memory (never SQLite).
+
+        state: `empty` (nothing pulled yet), `filling` (the first pull is
+        running), `partial` (a pull stopped part-way and no pull has run to the
+        end yet), `filled` (complete to `complete_to`), or `behind` (filled
+        once, the last refresh failed: `reason`). `pct` stays None: the pull
+        walks by rowid and does not know the table's size, and a guessed
+        percentage is a number nobody can check.
+        """
+        with self._status_lock:
+            return dict(self._status)
+
+    def _note(self, **kw) -> None:
+        with self._status_lock:
+            self._status.update(kw)
 
     # ── the pull ─────────────────────────────────────────────────────────
 
@@ -136,19 +165,38 @@ class LogMirror:
         means; what this guarantees is that a failure leaves the mirror exactly
         as it was, with a reason recorded, rather than half-written or empty.
         """
+        first = not self._status.get("complete_to")
+        job = None
+        if first and self.jobs is not None:
+            try:
+                job = self.jobs.start("log-copy", "Filling the log copy",
+                                      open_url="/logs")
+            except Exception:                          # noqa: BLE001
+                job = None
+        if first:
+            self._note(state="filling")
         try:
-            got = self._pull()
-        except LabCoreError as exc:
-            self._set_meta("stale_reason", str(exc) or exc.__class__.__name__)
-            raise
+            got = self._pull(job)
         except Exception as exc:                       # noqa: BLE001
-            self._set_meta("stale_reason", "%s: %s" % (type(exc).__name__, exc))
+            reason = (str(exc) or exc.__class__.__name__) if isinstance(exc, LabCoreError) \
+                else "%s: %s" % (type(exc).__name__, exc)
+            self._set_meta("stale_reason", reason)
+            self._note(state=("behind" if not first else
+                               "partial" if self._status.get("rows") else "empty"),
+                       reason=reason)
+            if job is not None:
+                job.fail("The log copy stopped filling: " + reason[:120])
             raise
         self._set_meta("stale_reason", "")
-        self._set_meta("filled_at", _now())
+        stamp = _now()
+        self._set_meta("filled_at", stamp)
+        self._note(state="filled", complete_to=stamp, reason="")
+        if job is not None:
+            n = self._status.get("rows") or 0
+            job.finish("Log copy filled · {:,} rows".format(n))
         return got
 
-    def _pull(self) -> int:
+    def _pull(self, job=None) -> int:
         self._reset_if_source_changed()
         total = 0
         while True:
@@ -174,6 +222,10 @@ class LogMirror:
                      for r in rows])
                 self._db.commit()
             total += len(rows)
+            held = self._status.get("rows") or 0
+            self._note(rows=held + len(rows), held_to=str(rows[-1].get("ts") or "") or None)
+            if job is not None:
+                job.progress(text="{:,} rows so far".format(held + len(rows)))
             if len(rows) < PULL_CHUNK:
                 return total
 
@@ -209,6 +261,7 @@ class LogMirror:
         with self._lock:
             self._db.execute("DELETE FROM log")
             self._db.commit()
+        self._note(rows=0, held_to=None)
 
     @staticmethod
     def _rows(res) -> List[dict]:
@@ -556,11 +609,14 @@ class StoreLogMirror(LogMirror):
     _COLS = ("id AS rowid_src, machine_uid, ts, kind, lab_id, test_name, "
              "value, detail")
 
-    def __init__(self, gateway, path: Optional[str] = None) -> None:
+    def __init__(self, gateway, path: Optional[str] = None,
+                 jobs=None) -> None:
         # Deliberately NOT LogMirror.__init__: no file, no connection, no
-        # schema. `path` is accepted so the factory's call shape is the same.
+        # schema. `path` and `jobs` are accepted so the factory's call shape
+        # is the same; there is never a first fill to report as a job.
         self.gateway = gateway
         self.path = path
+        self.jobs = jobs
         self._lock = threading.Lock()
 
     # ── nothing to pull ──────────────────────────────────────────────────
@@ -694,6 +750,13 @@ class StoreLogMirror(LogMirror):
                     and not _failed(was["detail"]):
                 out[key] = row
         return out
+
+    def live_status(self) -> dict:
+        """For `/api/ui/live`, from memory and never the file: the record is
+        read in place, so it is always complete to this instant and there is
+        no fill to be part-way through or behind on."""
+        return {"state": "filled", "rows": None, "complete_to": _now(),
+                "held_to": None, "pct": None, "reason": "", "source": "store"}
 
     def state(self) -> dict:
         try:

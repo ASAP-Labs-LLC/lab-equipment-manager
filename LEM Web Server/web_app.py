@@ -1293,6 +1293,11 @@ def create_app(gateway, labcore_gateway=None,
         merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
                                  STATUS_COLORS) if snap.get("ready") else None)
         status = ui_shell.shell_status(snap, merged)
+        # The nav's counts on first paint come from the live payload, the SAME
+        # function the browser then polls (ui_live.nav_meta), so the page that
+        # loads and the poll that follows cannot say two things (§0.2).
+        live = _live_payload(None)
+        status["nav_meta"] = live["nav_meta"]
         state, words = ui_shell.record_words(status)
         has_quality = any(r.rule == "/quality" for r in app.url_map.iter_rules())
         user = session.get("user") or ""
@@ -1301,6 +1306,74 @@ def create_app(gateway, labcore_gateway=None,
                    record_state=state, record_text=words, user=user)
         g._lem_shell = out
         return out
+
+    # ── the live feed (ia-final §5): GET /api/ui/live ───────────────────
+    # Memory only, 0 LabCore ops (tests/test_ui_live.py counts them). A GET,
+    # so `_is_background` keeps /healthz `idle_seconds` rising while any
+    # number of pages poll it. NOT `POST /api/live`, the bench contract.
+    import jobs as _jobs_mod
+    import ui_live
+    app.config.setdefault("JOBS", _jobs_mod.Registry())
+    app.config["LIVE_FEED"] = ui_live.Feed()
+    app.config["NOTICES"] = ui_live.Notices()
+    # what the poller thread learned about certificates (None: not asked yet)
+    _certs: dict = {"items": None, "at": 0.0}
+    # the last round summary actually read, so a tick's cache drop does not
+    # blank the nav for the second it takes to re-read the day
+    _round_last: dict = {"day": None, "value": None}
+
+    _has_record: dict = {}
+
+    def _record_href(uid: str, section: str) -> str:
+        """Where an instrument's record lives TODAY. `/instruments/<uid>` is
+        the record in the new IA (pieces 4-5); until that route exists the
+        old floor is the record, rather than a link to a 404. Looked up once:
+        routes do not change while the server runs."""
+        if "v" not in _has_record:
+            _has_record["v"] = any(r.rule == "/instruments/<machine_uid>"
+                                   for r in app.url_map.iter_rules())
+        if _has_record["v"]:
+            return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
+        return "/floor"
+
+    def _today_round_day():
+        """Today's cached `/api/checklists` answer, or the last one read
+        today, or None. Never a read: a cold cache is unknown."""
+        day = _today()
+        with _pages_lock:
+            cached = _pages.get(f"checklists:{day}")
+        if cached is not None:
+            _round_last.update(day=day, value=cached)
+            return cached
+        return _round_last["value"] if _round_last["day"] == day else None
+
+    def _live_payload(cursor):
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        ready = bool(snap.get("ready"))
+        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                                 STATUS_COLORS) if ready else None)
+        tables = snapshots.tables() if ready else None
+        mirror = app.config.get("LOG_MIRROR")
+        try:
+            mstatus = mirror.live_status() if mirror is not None else None
+        except Exception:                               # noqa: BLE001
+            mstatus = None
+        return ui_live.payload(
+            feed=app.config["LIVE_FEED"], cursor=cursor, snap=snap, merged=merged,
+            overrides=ui_live.overrides_from_tables(tables), day=_today_round_day(),
+            notices=app.config["NOTICES"], audit_spool=len(audit_spool),
+            certificates=_certs["items"], mirror=mstatus,
+            jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
+            now=_now(), tz=ui_live.lab_tz())
+
+    @app.route("/api/ui/live")
+    def api_ui_live():
+        """Every open page's global status: see ui_live.payload."""
+        cursor = (request.args.get("since") or "").strip() or None
+        resp = jsonify(_live_payload(cursor))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     def _diagnostics() -> list:
         """Settings › Diagnostics: the /healthz facts, each said as a sentence.
@@ -1383,6 +1456,20 @@ def create_app(gateway, labcore_gateway=None,
                      "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
                                if waiting else "Nothing waiting"),
                      "note": ("oldest " + str(audit_spool.oldest())) if waiting else ""})
+        # The live road, where the bell's "Benches can't reach LEM directly"
+        # sends people. The same count /api/ui/live serves (fleet.live_road).
+        fleet = _live_payload(None).get("fleet")
+        if fleet:
+            road, n = fleet["live_road"], fleet["checking_in"]
+            rows.append({"label": "Live road",
+                         "glyph": "final" if n and road == n else "held",
+                         "value": "%d of %d %s %s it" % (road, n, "bench" if n == 1 else "benches",
+                                                         "uses" if road == 1 else "use"),
+                         "note": ("benches that cannot use it read their settings from LabCore "
+                                  "on a timer instead") if road < n else "settings reach every bench at once"})
+        else:
+            rows.append({"label": "Live road", "glyph": "never", "value": "Not known yet",
+                         "note": "no instrument record has been read"})
         return rows
 
     @app.route("/settings")
@@ -1426,24 +1513,85 @@ def create_app(gateway, labcore_gateway=None,
         return jsonify({"authenticated": authed(), "user": session.get("user", "")})
 
     # ── auth ──────────────────────────────────────────────────────────
+    def _sign_in(username: str, password: str):
+        """(user, error). One road for the sheet (/api/login) and the no-JS
+        page (/signin), so the two cannot disagree about who got in.
+
+        Switch person: when somebody is already signed in on this browser and
+        the next person gets in, the last person's LabCore session is ended.
+        A tablet handed along a bench must not leave a token per analyst
+        behind. A failed attempt changes nothing: the sheet promises the last
+        person stays signed in if the switch is cancelled or mistyped.
+        """
+        previous = session.get("token", "")
+        user, token, error = auth_backend.login(username, password)
+        if not user and admin_pw and password == admin_pw:
+            # Offline escape hatch: only when an admin password is explicitly
+            # configured (LABMGR_ADMIN_PASSWORD) — e.g. a --dev run.
+            user, token, error = (username or "admin"), "", ""
+        if not user:
+            return None, (error or "Invalid credentials")
+        if previous and previous != token:
+            auth_backend.logout(previous)
+        session["user"] = user
+        session["token"] = token
+        return user, ""
+
     @app.route("/api/login", methods=["POST"])
     def api_login():
         body = request.get_json(silent=True) or {}
-        username = str(body.get("username", ""))
-        password = str(body.get("password", ""))
-        user, token, error = auth_backend.login(username, password)
+        user, error = _sign_in(str(body.get("username", "")), str(body.get("password", "")))
         if user:
-            session["user"] = user
-            session["token"] = token
             return jsonify({"ok": True, "user": user})
-        # Offline escape hatch: only when an admin password is explicitly
-        # configured (LABMGR_ADMIN_PASSWORD) — e.g. a --dev run.
-        if admin_pw and password == admin_pw:
-            session["user"] = username or "admin"
-            session["token"] = ""
-            return jsonify({"ok": True, "user": session["user"]})
-        return jsonify({"ok": False,
-                        "error": error or "Invalid credentials"}), 401
+        return jsonify({"ok": False, "error": error}), 401
+
+    def _safe_next(raw) -> str:
+        """Where /signin sends you afterwards: a path on THIS server. `next`
+        is off a URL anybody can craft, and an open redirect after a good
+        password hands the session's trust to a look-alike page. Same rule as
+        LEMSignInLogic.safeNext (tests/js/signin_logic.mjs)."""
+        s = str(raw or "")
+        if not s.startswith("/") or s[1:2] in ("/", "\\"):
+            return "/"
+        if re.search(r"[\x00-\x1f\x7f]", s) or re.match(r"/signin(?:[/?#]|$)", s):
+            return "/"
+        return s
+
+    def _signin_words(error: str) -> str:
+        """The page's version of LEMSignInLogic.failureText: a wrong password,
+        and LabCore not answering, are different problems."""
+        if re.search(r"connection error|not connected|labcore returned status", error or "", re.I):
+            return ("Not signed in: LabCore did not answer, so the password could "
+                    "not be checked. Try again in a moment.")
+        if not error or re.search(r"invalid", error, re.I):
+            return "That user name and password were not accepted."
+        return "Not signed in: " + error
+
+    @app.template_global("signin_href")
+    def _signin_href() -> str:
+        """Every Sign in link: /signin?next=<this page>. A plain link, so it
+        works with no script; signin.js turns the click into the sheet."""
+        from urllib.parse import quote
+        here = request.full_path if request.query_string else request.path
+        return "/signin?next=" + quote(here, safe="")
+
+    @app.route("/signin", methods=["GET", "POST"])
+    def page_signin():
+        """The no-JS road in (ia-final §8 T0). Every page's Sign in is a link
+        here; with a script it opens the sheet in place instead. Answers 303
+        to `next` on success, so a reload never re-posts the password."""
+        nxt = _safe_next(request.values.get("next"))
+        if request.method == "GET" and authed():
+            return redirect(nxt, code=303)
+        error, username = "", ""
+        if request.method == "POST":
+            username = request.form.get("username", "")
+            user, err = _sign_in(username, request.form.get("password", ""))
+            if user:
+                return redirect(nxt, code=303)
+            error = _signin_words(err)
+        return render_template("signin.html", nav="", signin_page=True, next=nxt,
+                               error=error, username=username), (401 if error else 200)
 
     @app.route("/api/logout", methods=["POST"])
     def api_logout():
@@ -1629,12 +1777,14 @@ def create_app(gateway, labcore_gateway=None,
     if is_local_store(gateway):
         # The record is already a local file: read it, do not copy it. Same
         # API, over `lem_machine_log_effective` (log_mirror.StoreLogMirror).
-        log_mirror = StoreLogMirror(gateway)
+        # No first fill, so nothing to show in "Running now".
+        log_mirror = StoreLogMirror(gateway, jobs=app.config["JOBS"])
     else:
         log_mirror = LogMirror(
             gateway,
             path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
-                              "log-mirror.sqlite3"))
+                              "log-mirror.sqlite3"),
+            jobs=app.config["JOBS"])
     app.config["LOG_MIRROR"] = log_mirror
     app.config["LOG_MIRROR_SERVICE"] = LogMirrorService(
         log_mirror,
@@ -1720,11 +1870,30 @@ def create_app(gateway, labcore_gateway=None,
         talks to LabCore on a timer, so a raise here would end all of it.
         """
         for name, rider in (("audit spool", audit_spool.drain),
-                            ("search corpus", _refresh_search_corpus)):
+                            ("search corpus", _refresh_search_corpus),
+                            ("today's round", _warm_round),
+                            ("certificate expiry", _warm_certificates)):
             try:
                 rider()
             except Exception:                       # noqa: BLE001
                 logger.exception("%s failed on the snapshot cycle", name)
+
+    def _warm_round():
+        """Keep today's round in the page cache, so the live feed always has
+        it: a new day starts cold, and the feed may not read LabCore. A no-op
+        while the day is cached."""
+        _page(f"checklists:{_today()}", _build_checklist_day)
+
+    def _warm_certificates():
+        """The bell's "a certificate is expiring" items, at most every 30 min.
+        One LabCore read on this thread; the feed only reads the result. A
+        failed read leaves the last answer (or None: not known), never []."""
+        if time.time() - _certs["at"] < 1800:
+            return
+        _certs["at"] = time.time()
+        report = expiry_report(certificate_store, now=_now(), within_days=None)
+        _certs["items"] = [{"standard": c.standard_name, "expires": c.expires_at}
+                           for c in report.get("expiring") or []]
 
     snapshots.on_cycle = _on_cycle
 
@@ -1957,6 +2126,31 @@ def create_app(gateway, labcore_gateway=None,
             for key in [k for k in _pages
                         if any(k.startswith(p) for p in prefixes)]:
                 _pages.pop(key, None)
+        today = f"checklists:{_today()}"
+        if any(today.startswith(p) for p in prefixes):
+            _rewarm_round()
+
+    def _rewarm_round() -> None:
+        """Re-read today's round off the request path after a checklist write.
+
+        `/api/ui/live` reads the round from this cache and never reads LabCore
+        itself, so without this a tick would leave every nav saying the old
+        count until somebody opened the checklist page. The cost lands on a
+        thread, once per write, which is the write's own cost, never a poll's.
+        Off in tests unless asked for (LEM_REWARM), so a test counting a
+        toggle's LabCore ops is not racing a thread.
+        """
+        if not app.config.get("LEM_REWARM", not app.config.get("TESTING")):
+            return
+
+        def run():
+            try:
+                _page(f"checklists:{_today()}", _build_checklist_day)
+            except Exception as exc:                    # noqa: BLE001
+                logger.warning("today's round could not be re-read: %s", exc)
+        t = threading.Thread(target=run, daemon=True, name="lem-round-rewarm")
+        app.config["LEM_REWARM_THREAD"] = t
+        t.start()
 
 
     from machine_configs import (ConfigReadUnavailable, MachineConfigError,

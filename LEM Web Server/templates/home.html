@@ -6,6 +6,8 @@
 <title>LEM — Lab Equipment Manager</title>
 <link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
 <script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<link rel="stylesheet" href="/static/css/signin_legacy.css?v={{ v('css/signin_legacy.css') }}">
+<script src="/static/js/signin.js?v={{ v('js/signin.js') }}"></script>
 <style>
   .pane{overflow:auto}
   main{flex:1;display:flex;flex-direction:column;justify-content:center;
@@ -43,7 +45,7 @@
   }
 </style>
 </head>
-<body>
+<body class="{{ '' if session.get('user') else 'anon' }}" data-user="{{ session.get('user') or '' }}">
 <div class="frame">
   {% include '_nav.html' %}
   <div class="pane">
@@ -51,7 +53,7 @@
       <h1 class="sign">LEM <b>·</b> Lab Equipment Manager</h1>
       <span class="spacer"></span>
       <span class="who" id="who" hidden></span>
-      <button id="btnAuth" class="tool">Sign in</button>
+      <a id="btnAuth" class="tool" data-signin href="{{ signin_href() }}">{{ 'Sign out' if session.get('user') else 'Sign in' }}</a>
     </header>
 
     <main>
@@ -144,15 +146,21 @@ async function load() {
   }
 }
 
-$('#btnAuth').addEventListener('click', async () => {
-  if (AUTHED) {
-    await fetch('/api/logout', {method: 'POST'});
-    return load();
-  }
-  location.href = '/floor';        // the sign-in dialog lives there
+// Sign in where you are: signed out, Sign in is a link signin.js turns into
+// the sheet on this page (static/js/signin.js). Signed in, it signs out, in
+// place. Either way the page repaints from 'lem:auth' — no trip to /floor.
+$('#btnAuth').addEventListener('click', async e => {
+  if (!LEMSignIn.user()) return;              // signin.js opens the sheet
+  e.preventDefault();
+  await LEMSignIn.signOut();
+});
+document.addEventListener('lem:auth', e => {
+  AUTHED = !!e.detail.user; WHO = e.detail.user || '';
+  paintWho();
 });
 
 load();
 </script>
+{% include "_signin.html" %}
 </body>
 </html>

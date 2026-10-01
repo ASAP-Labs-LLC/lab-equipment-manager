@@ -2,7 +2,7 @@
     Swapped: the mark, the five nav items, the foot's status lines. Added: a
     rail badge and an aria-label on every nav item, so the rail keeps its words
     (§2.1). The values are this render's, from memory (ui_shell.shell_status);
-    the live feed (a later piece) keeps them current through LEMShell.
+    the live feed (status.js) keeps them current through LEMShell.
     shell.js wires it. Every icon is different: the judges caught a reuse. -#}
 {%- set S = shell_state() -%}
 {%- macro nav_icon(kind) -%}
@@ -42,7 +42,7 @@
   </section>
 
   <div class="sb-foot">
-    {#- what is running (a later piece fills it); hidden while nothing runs -#}
+    {#- what is running (running_now.js fills it); hidden while nothing runs -#}
     <button type="button" class="sb-running" id="running-now" data-testid="running-now"
             aria-haspopup="true" aria-expanded="false" aria-controls="running-now-popover" hidden></button>
     <div class="popover sb-running-pop" id="running-now-popover" data-testid="running-now-popover"
@@ -69,11 +69,27 @@
     </div>
 
     {%- set who = S.user %}
-    <button type="button" class="user-chip" id="user-chip" data-testid="user-chip" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu" title="{{ who or 'Not signed in' }}">
-      <span class="avatar" id="user-initials" aria-hidden="true">{% if not who %}<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg>{% endif %}</span>
-      <span class="sb-label user-name" id="user-name" data-signed-in="{{ 'true' if who else 'false' }}">{{ who or 'Sign in' }}</span>
+    {#- Signed in, the chip opens the menu. Signed out, the chip IS Sign in
+        (T0 is two clicks: the chip, then Sign in), a plain link to
+        /signin?next= that signin.js turns into the sheet; the chevron beside
+        it keeps Theme, Settings and Help one click away. -#}
+    <div class="user-row">
+    {%- if who %}
+    <button type="button" class="user-chip" id="user-chip" data-testid="user-chip" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu" title="{{ who }}">
+      <span class="avatar" id="user-initials" aria-hidden="true"></span>
+      <span class="sb-label user-name" id="user-name" data-signed-in="true">{{ who }}</span>
       <span class="ico ico-chev chev" aria-hidden="true"></span>
     </button>
+    {%- else %}
+    <a class="user-chip" id="user-chip" data-testid="user-chip" data-signin href="{{ signin_href() }}" title="Sign in">
+      <span class="avatar" id="user-initials" aria-hidden="true"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg></span>
+      <span class="sb-label user-name" id="user-name" data-signed-in="false">Sign in</span>
+    </a>
+    <button type="button" class="icon-btn user-more" id="user-more" data-testid="user-more" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu" aria-label="Theme, Settings and Help" title="Theme, Settings and Help">
+      <span class="ico ico-chev" aria-hidden="true"></span>
+    </button>
+    {%- endif %}
+    </div>
     <div class="menu" id="user-menu" role="menu" hidden data-testid="user-menu">
       <div class="menu-head" id="menu-name">{{ who or 'Not signed in' }}</div>
       <div class="menu-row"><span>Theme</span>
