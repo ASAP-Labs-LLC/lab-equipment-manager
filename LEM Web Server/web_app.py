@@ -6321,12 +6321,36 @@ def create_app(gateway, labcore_gateway=None,
 
     @app.route("/api/qc-standards/certificates/<uid>/download")
     def api_download_certificate(uid):
+        # A download is a READ. `_document_failed` words a failed SAVE, and
+        # answered an unknown id with 503 "this certificate was NOT saved".
+        # Same three answers as the equipment documents' download instead:
+        # unreadable, no such certificate, or listed with its file gone.
+        try:
+            listed = certificate_store.get(uid)
+        except CertificateRejected as exc:
+            return jsonify({"error": str(exc)}), 404
+        except CertificateStoreError as exc:
+            cause = getattr(exc, "__cause__", None)
+            return _labcore_unreadable(
+                cause if isinstance(cause, LabCoreError) else exc,
+                "this certificate")
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this certificate")
+        if listed is None:
+            # Reached only through a read that SUCCEEDED.
+            return jsonify({"error": "No such certificate."}), 404
         try:
             cert, data = certificate_store.fetch(uid)
         except CertificateRejected as exc:
             return jsonify({"error": str(exc)}), 404
         except CertificateStoreError as exc:
-            return _document_failed(exc, "this certificate")
+            cause = getattr(exc, "__cause__", None)
+            if isinstance(cause, LabCoreError):
+                return _labcore_unreadable(cause, "this certificate")
+            logger.warning("certificate %r is listed and its file is "
+                           "missing: %s", uid, exc)
+            return jsonify({"error": str(exc), "retry": False,
+                            "storage": "missing"}), 500
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "this certificate")
         return Response(data, mimetype=cert.content_type or "application/pdf",
