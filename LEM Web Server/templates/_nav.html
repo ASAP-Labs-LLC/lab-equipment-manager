@@ -63,7 +63,10 @@
 
    `aria-hidden` — a screen reader working down the page does not want the
    build number between the nav and the content; anyone who needs it has
-   /healthz, which is the same string. #}
+   /healthz, which is the same string.
+
+   `#app-version` is the bare string /healthz reports, as on the new shell
+   pages (_layout.html), so one check reads every page alike. #}
 <span class="verstamp" aria-hidden="true" title="The LEM release running on this server">
-  LEM {{ app_version() }}
+  LEM <span id="app-version">{{ app_version() }}</span>
 </span>
