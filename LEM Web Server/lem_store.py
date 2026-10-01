@@ -189,6 +189,7 @@ _DDL = (
     # of a machine retired with "purge history" (rows older than its
     # `retired_at`). Only the NEWEST annotation on a row decides, so
     # `reinstated` undoes a hide without touching anything that came before.
+    # raw-log: the view IS the definition of the effective record.
     "CREATE VIEW IF NOT EXISTS lem_machine_log_effective AS "
     "SELECT l.* FROM lem_machine_log l "
     "WHERE NOT EXISTS (SELECT 1 FROM log_annotation a "
@@ -478,18 +479,17 @@ class LocalStoreGateway:
                 size += os.path.getsize(self.path + suffix)
             except OSError:
                 pass
-        version = None
-        res = self.read_sql("SELECT value FROM store_meta "
-                            "WHERE key = 'schema_version'")
-        if res.get("rows"):
-            try:
-                version = int(res["rows"][0]["value"])
-            except (TypeError, ValueError):
-                version = None
         out = {"path": self.path, "read_only": self.read_only, "bytes": size,
-               "schema_version": version}
-        if res.get("error"):
-            out["error"] = res["error"]
+               "schema_version": None}
+        # On the engine, like `is_running`: `/healthz` must never count as a
+        # read in anybody's tally.
+        try:
+            with self._reader() as con:
+                row = con.execute("SELECT value FROM store_meta "
+                                  "WHERE key = 'schema_version'").fetchone()
+            out["schema_version"] = int(row[0]) if row else None
+        except (sqlite3.Error, TypeError, ValueError) as exc:
+            out["error"] = "{0}: {1}".format(type(exc).__name__, exc)
         return out
 
     def _pragmas(self, con) -> Dict[str, Any]:

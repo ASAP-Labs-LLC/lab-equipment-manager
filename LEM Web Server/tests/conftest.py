@@ -85,10 +85,9 @@ if True:
     import labcore_gateway as _lcg
     from lem_store import LocalStoreGateway as _Store
 
-    _LabCoreFake = _lcg.FakeLabCoreGateway
-    # The LabCore-only fake stays reachable for the tests that need LabCore
-    # and the store as two different things (`labcore_counter.py`).
-    _lcg.LabCoreOnlyFake = _LabCoreFake
+    # LabCore's own fake stays reachable as `InMemoryLabCore`, for the tests
+    # that need LabCore and the store as two different things.
+    _LabCoreFake = _lcg.InMemoryLabCore
     _STORE_DIR = tempfile.mkdtemp(prefix="lem-test-store-")
     atexit.register(shutil.rmtree, _STORE_DIR, True)
     _serial = itertools.count()

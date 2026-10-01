@@ -1321,11 +1321,29 @@ def create_app(gateway, labcore_gateway=None,
         rows = [{"label": "Version", "glyph": "", "value": APP_VERSION,
                  "note": "the same string /healthz reports"}]
         online = getattr(snapshots, "_online", None)
-        rows.append({"label": "LabCore",
-                     "glyph": "never" if online is None else ("final" if online else "error"),
-                     "value": ("Not asked yet" if online is None
-                               else "Reachable" if online else "Not answering"),
-                     "note": ""})
+        if labcore is not gateway:
+            # The snapshot reads LEM's store now (transfer §5.3); what it
+            # knows about reachability is the STORE's, and saying "LabCore:
+            # Reachable" off it would be a sentence about the wrong database.
+            rows.append({"label": "LabCore", "glyph": "never",
+                         "value": "Not asked in the background",
+                         "note": "asked only for sign-in, the dashboard's QC "
+                                 "rows and the test-method list"})
+            h = gateway.health() if is_local_store(gateway) else {}
+            err = h.get("error") or ""
+            rows.append({"label": "LEM store",
+                         "glyph": "error" if (err or online is False) else (
+                             "never" if online is None else "final"),
+                         "value": ("Could not be read" if err or online is False
+                                   else "Read-only (candidate boot)"
+                                   if h.get("read_only") else "Read-write"),
+                         "note": err[:120] or str(h.get("path") or "")})
+        else:
+            rows.append({"label": "LabCore",
+                         "glyph": "never" if online is None else ("final" if online else "error"),
+                         "value": ("Not asked yet" if online is None
+                                   else "Reachable" if online else "Not answering"),
+                         "note": ""})
         snap = snapshots.get(build_if_missing=False)
         if snap.get("ready"):
             at = (snap.get("built_at") or "")[11:19]
@@ -1344,10 +1362,19 @@ def create_app(gateway, labcore_gateway=None,
             n = int(mstate.get("rows") or 0)
             filled = str(mstate.get("filled_at") or "")
             why = mstate.get("stale_reason") or ""
-            rows.append({"label": "Log copy",
-                         "glyph": "held" if (why or not n) else "final",
-                         "value": ("{:,} rows".format(n) if n else "Empty: filling from LabCore"),
-                         "note": why or (("filled " + _local_hm(filled)) if filled else "")})
+            if mstate.get("source") == "store":
+                # Not a copy: the record itself, read where it lives.
+                rows.append({"label": "Machine log",
+                             "glyph": "error" if why else "final",
+                             "value": ("Could not be read" if why else
+                                       "{:,} rows".format(n) if n
+                                       else "No rows yet"),
+                             "note": why[:120] or "in the LEM store"})
+            else:
+                rows.append({"label": "Log copy",
+                             "glyph": "held" if (why or not n) else "final",
+                             "value": ("{:,} rows".format(n) if n else "Empty: filling from LabCore"),
+                             "note": why or (("filled " + _local_hm(filled)) if filled else "")})
         except Exception as exc:                    # a local file; say it, never 0
             rows.append({"label": "Log copy", "glyph": "error",
                          "value": "Could not be read", "note": str(exc)[:120]})
@@ -1817,11 +1844,22 @@ def create_app(gateway, labcore_gateway=None,
         # it takes the real signal with it.
         checked = getattr(snapshots, "schema_checked", True)
         schema = "ok" if schema_ok else ("degraded" if checked else "unknown")
+        reach = "unknown" if online is None else (
+            "reachable" if online else "unreachable")
+        store_info = None
+        if is_local_store(gateway):
+            # The snapshot reads the STORE now (transfer §5.3), so what it
+            # knows about reachability is the store's. LabCore is reported as
+            # "unknown" when it is a different gateway, because nothing in the
+            # background asks it anything any more — and inventing an answer
+            # here is the one thing this route must not do.
+            store_info = dict(gateway.health(), reachable=reach)
+        split = labcore is not gateway
         return jsonify({
             "status": "ok",
             "version": APP_VERSION,
-            "labcore": "unknown" if online is None else (
-                "reachable" if online else "unreachable"),
+            "labcore": "unknown" if split else reach,
+            "store": store_info,
             "schema": schema,
             "schema_error": getattr(snapshots, "schema_error", ""),
             # Correction-factor audit rows LabCore would not take yet

@@ -16,10 +16,8 @@ import labcore_gateway
 
 
 def _lab_fake_class():
-    # conftest keeps the LabCore-only fake under this name when it swaps
-    # `FakeLabCoreGateway` for the store-backed one.
-    return getattr(labcore_gateway, "LabCoreOnlyFake",
-                   labcore_gateway.FakeLabCoreGateway)
+    # NOT `FakeLabCoreGateway`, which conftest has made the store-backed one.
+    return labcore_gateway.InMemoryLabCore
 
 
 class CountingLabCore:

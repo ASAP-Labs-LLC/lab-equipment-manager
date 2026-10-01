@@ -153,6 +153,7 @@ class LogMirror:
         total = 0
         while True:
             since = self.max_rowid()
+            # raw-log: the legacy copy of a LabCore-held log (no view there)
             res = self.gateway.read_sql(
                 "SELECT rowid AS rowid_src, machine_uid, ts, kind, lab_id, "
                 "test_name, value, detail FROM lem_machine_log "
@@ -200,7 +201,7 @@ class LogMirror:
         held = self.max_rowid()
         if not held:
             return
-        res = self.gateway.read_sql(
+        res = self.gateway.read_sql(  # raw-log: legacy LabCore copy's cursor check
             "SELECT COUNT(*) n FROM lem_machine_log WHERE rowid = ?", [held])
         rows = self._rows(res)
         if rows and int(list(rows[0].values())[0] or 0):
