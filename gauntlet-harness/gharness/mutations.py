@@ -54,9 +54,23 @@ MUTATIONS = {
         "what": "unique (uid, epoch, seq) removed from the store",
         "pattern": r"CREATE UNIQUE INDEX (IF NOT EXISTS )?ux_log_bench",
         "replace": r"CREATE INDEX \1ux_log_bench"},
+    # ── the bench journal (owner P1) ──
+    # A serial frame is CONSUMED when the poll takes it off the reader. v4
+    # journals it on the reader's thread first; reversed, the frame reaches
+    # the poll before any journal holds it (v3.9's K8 window) and the kill
+    # point K8r measures the residual at is never reached.
     "journal_order_reversed": {
-        "kind": "source", "owner": "P1", "pattern": None, "replace": None,
-        "what": "journal-before-consume order reversed (cursor saved before the journal fsync)"},
+        "kind": "source", "owner": "P1",
+        "pattern": r"if self\._on_frame is not None and frame\.strip\(\):",
+        "replace": "if False:",
+        "what": "journal-before-consume order reversed: serial frames reach the poll before the journal"},
+    # The poll's readings never journaled: nothing re-delivers a kill's
+    # readings and nothing suppresses a restarted bench's re-read.
+    "journal_poll_off": {
+        "kind": "source", "owner": "P1",
+        "pattern": r"journaled = journal is not None and self\._journal_poll\(",
+        "replace": "journaled = False and self._journal_poll(",
+        "what": "a poll's readings are not journaled before they go to LabCore"},
     "cursor_and_keys_off": {
         "kind": "source", "owner": "P2", "pattern": None, "replace": None,
         "what": "persisted cursor and content keys ignored"},

@@ -17,6 +17,23 @@ and calls the 29 functions exactly as phase 1 did. What World adds:
   reached FAILS the scenario: a kill scenario that did not kill measured
   nothing.
 
+* **Serial through the reader.** Phase 1's serial scenarios hand frames to
+  the poll by patching `m._ingest`, which is the only thing v3.9 allows: its
+  reader opens a real port. A target whose module has `_open_serial_reader`
+  (v4) gets a reader over a harness port instead, and every frame goes through
+  the reader's OWN frame handling — bytes, then an idle gap, which is what
+  completes a frame on the wire — before the poll drains it. That is where v4
+  journals a frame, and where K8r's kill point is: a harness that bypassed the
+  reader could neither reach the point nor see the custody it protects. The
+  frames arrive one at a time, in time order, so a kill as frame k completes
+  leaves frames k+1.. still to arrive after the restart — they have not been
+  sent yet — which is why K8r loses exactly the one frame being journaled.
+
+* **Journal surgery.** `before_next_restart(fn)` runs `fn` between a kill and
+  the restart (T5 tears the journal's last line there: the power cut), and
+  `journal_check()` verifies the journal on disk with an independent CRC
+  reader, so "tail repaired" is measured, not taken from the module's word.
+
 * **Roads.** An HServer (lazy; see hserver.py) is installed for every World,
   so a bench that calls out reaches a real app, and one that does not pays
   nothing.
@@ -28,8 +45,10 @@ and calls the 29 functions exactly as phase 1 did. What World adds:
 """
 import json
 import os
+import re
 import shutil
 import sqlite3
+import zlib
 from collections import Counter
 
 from . import env
@@ -67,6 +86,8 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
     plumbing = hasattr(mod, "fault_point") and \
         hasattr(getattr(mod, "LEMStationModule", object), "_fault_point")
     original_hook = getattr(mod, "fault_point", None)
+    reader_seam = hasattr(getattr(mod, "LEMStationModule", object),
+                          "_open_serial_reader")
 
     class World(Ctx):
         mutation = None          # set by the mutation runner
@@ -97,6 +118,96 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 if server_factory else None
             if self.server:
                 self.server.install()
+            self._before_restart = []
+            self.torn = None
+            self._attach_reader()
+
+        # ── serial, through the module's own reader (v4) ──
+        def _attach_reader(self):
+            if self.source != "serial" or not reader_seam:
+                return
+            self._port = _HarnessPort()
+            self.m._serial_reader = self.m._open_serial_reader(
+                self.m.machine(), port=self._port)
+            self._wire_t = 0.0
+
+        def _deliver_frames(self):
+            reader = self.m._serial_reader
+            while getattr(self, "pending_frames", None):
+                frame = self.pending_frames.pop(0)
+                self._wire_t += 10.0
+                reader._on_bytes(frame.encode("utf-8"), self._wire_t)
+                self._wire_t += 10.0                 # the idle gap
+                reader._on_idle(self._wire_t)
+
+        def poll(self):
+            if self.source != "serial" or not reader_seam:
+                return Ctx.poll(self)
+            try:
+                self._deliver_frames()
+                lh.poll(self.m, self.now)
+            except Kill:
+                self.kills += 1
+                self.gw.plan = None
+                self.restart()
+            self.k += 1
+
+        def restart(self):
+            hooks, self._before_restart = self._before_restart, []
+            for fn in hooks:
+                fn()
+            Ctx.restart(self)
+            self._attach_reader()
+
+        def before_next_restart(self, fn):
+            self._before_restart.append(fn)
+
+        # ── the journal on disk ──
+        def journal_dir(self):
+            return os.path.join(os.environ["LEM_JOURNAL_DIR"], self.uid)
+
+        def tear_journal_tail(self):
+            """The power cut: the last append was written and never fsync'd,
+            and only part of its last line reached the disk."""
+            d = self.journal_dir()
+            segs = sorted(n for n in os.listdir(d) if _SEG.match(n)) \
+                if os.path.isdir(d) else []
+            if not segs:
+                raise RuntimeError("no journal segment to tear in %s — the "
+                                   "target wrote no journal" % d)
+            p = os.path.join(d, segs[-1])
+            with open(p, "rb") as f:
+                data = f.read()
+            last = data.splitlines(True)[-1]
+            cut = len(last) - len(last) // 2
+            with open(p, "r+b") as f:
+                f.truncate(len(data) - cut)
+            # What the power cut LEFT of the line is what the module must find
+            # torn, cut off and set aside.
+            self.torn = {"segment": segs[-1], "lost_bytes": cut,
+                         "left_bytes": len(last) - cut}
+
+        def journal_check(self):
+            """Every journal line verified with this harness's own CRC reader;
+            `tail_repaired` is True only if the partial line the power cut
+            left was cut off AND set aside (one torn-*.bin of exactly its size)
+            AND every line left in the journal is clean."""
+            d = self.journal_dir()
+            bad = lines = 0
+            for n in sorted(os.listdir(d)):
+                if not _SEG.match(n):
+                    continue
+                with open(os.path.join(d, n), "rb") as f:
+                    for line in f.read().splitlines(True):
+                        lines += 1
+                        if not _crc_ok(line):
+                            bad += 1
+            aside = [n for n in os.listdir(d) if n.startswith("torn-")]
+            sizes = [os.path.getsize(os.path.join(d, n)) for n in aside]
+            left = (self.torn or {}).get("left_bytes")
+            return {"journal_lines": lines, "journal_bad_lines": bad,
+                    "torn_bytes_left": left, "torn_set_aside": sizes,
+                    "tail_repaired": bool(left) and bad == 0 and sizes == [left]}
 
         # ── instrument ──
         def emit_line(self, lab, value, write=True):
@@ -285,6 +396,10 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 "records_resent": srv.records_resent if (srv is not None and v2) else None,
                 "roads_used": srv.roads_used() if srv is not None else [],
                 "max_sends_per_cell": max(gw.cell_sends.values()) if gw.cell_sends else 0,
+                # Re-read prints the journal's store check dropped (v4). None
+                # on a target with no journal: "nothing suppressed" and "cannot
+                # suppress" are different sentences.
+                "suppressed_rereads": getattr(self.m, "_journal_suppressed", None),
             }
 
         def _store_count(self, table):
@@ -300,6 +415,29 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
 
 
 _WORLDS = {"n": 0}
+_SEG = re.compile(r"^seg-\d{6,}\.jsonl$")
+_CRC_TAIL = re.compile(rb',"crc":"([0-9a-f]{8})"\}\n\Z')
+
+
+def _crc_ok(line):
+    """The journal's line format (transfer v4 §3.1), checked without the
+    module: canonical JSON whose last field is the CRC32 of the body."""
+    m = _CRC_TAIL.search(line)
+    if not m:
+        return False
+    body = line[:m.start()] + b"}"
+    return (zlib.crc32(body) & 0xffffffff) == int(m.group(1), 16)
+
+
+class _HarnessPort:
+    """The serial port the reader reads, when the harness drives it: nothing
+    ever arrives on its own — `_deliver_frames` hands the reader each frame."""
+
+    def read(self):
+        return b""
+
+    def close(self):
+        pass
 
 
 def fresh_world_dirs():
