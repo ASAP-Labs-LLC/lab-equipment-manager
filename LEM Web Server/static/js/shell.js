@@ -1,7 +1,7 @@
 // LEM's shell (templates/_layout.html, _shell.html), ported from GC hub's
 // static/js/shell.js: theme, the sidebar rail, the phone drawer, the user
-// menu, Recent, the bell's panel, the record-age words, the in-place sign-in
-// and small DOM helpers the pages share (LEMShell). Loaded in <head> right
+// menu, Recent, the bell's panel, the record-age words, who is signed in
+// (the sign-in sheet itself is static/js/signin.js) and small DOM helpers the pages share (LEMShell). Loaded in <head> right
 // after ui_logic.js so the theme is set before the page paints. Every server
 // or browser-stored string is set with textContent.
 //
@@ -224,54 +224,60 @@
         if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     }
 
-    // ── sign in, out, switch person (in place: same page, same scroll) ─────
-    let reloadOnClose = false;
-    function signIn(title) {
-        const dlg = $('signin-sheet');
-        if (!dlg) return;
-        // Switch person has already signed the last person out; however the
-        // sheet closes (Cancel, Escape), the page must redraw signed out.
-        reloadOnClose = title === 'Switch person';
-        $('signin-title').textContent = title || 'Sign in';
-        $('signin-error').hidden = true;
-        $('signin-pass').value = '';
-        if (typeof dlg.showModal === 'function') dlg.showModal(); else dlg.setAttribute('open', '');
-        $('signin-user').focus();
+    // ── who is signed in: the chip and the menu (the sheet is signin.js) ──
+    // Signed out, the chip is the Sign in link (signin.js opens the sheet from
+    // it) and #user-more opens the menu. Signed in, the chip opens the menu,
+    // which offers Switch person and Sign out. Sign-in and Switch person
+    // repaint this in place ('lem:auth'); nothing reloads, so the URL, the
+    // scroll and anything half-typed on the page stay.
+    function menuItem(id, testid, label) {
+        return h('button', { type: 'button', role: 'menuitem', className: 'menu-item', id, 'data-testid': testid }, label);
     }
-    async function submitSignIn(ev) {
-        ev.preventDefault();
-        const ok = $('signin-ok');
-        const err = $('signin-error');
-        ok.disabled = true;
-        err.hidden = true;
-        let res = null;
-        try {
-            res = await fetch('/api/login', {
-                method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-                body: JSON.stringify({ username: $('signin-user').value, password: $('signin-pass').value }),
-            });
-        } catch (_e) { res = null; }
-        let body = null;
-        try { body = res ? await res.json() : null; } catch (_e) { body = null; }
-        ok.disabled = false;
-        if (res && res.ok && body && body.ok) {
-            location.reload();          // the shell and the page redraw with the name; the URL and scroll stay
-            return;
+    const PERSON_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" '
+        + 'stroke-linecap="round"><circle cx="12" cy="9" r="3.5"/><path d="M5.5 19a6.5 6.5 0 0 1 13 0"/></svg>';
+    function paintUser(name) {
+        const old = $('user-chip');
+        const menu = $('user-menu');
+        if (!old || !menu) return;
+        const signedIn = !!name;
+        if (signedIn !== (old.tagName === 'BUTTON')) {
+            // a link signed out, a menu button signed in: swap the element
+            const fresh = signedIn
+                ? h('button', { type: 'button', className: 'user-chip', id: 'user-chip', 'data-testid': 'user-chip',
+                                'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-controls': 'user-menu' })
+                : h('a', { className: 'user-chip', id: 'user-chip', 'data-testid': 'user-chip', 'data-signin': '',
+                           href: '/signin?next=' + encodeURIComponent(location.pathname + location.search) });
+            fresh.appendChild(h('span', { className: 'avatar', id: 'user-initials', 'aria-hidden': 'true' }));
+            fresh.appendChild(h('span', { className: 'sb-label user-name', id: 'user-name' }));
+            if (signedIn) fresh.appendChild(h('span', { className: 'ico ico-chev chev', 'aria-hidden': 'true' }));
+            old.replaceWith(fresh);
         }
-        // a refusal is not a network failure: say which one it was
-        err.textContent = !res ? 'Not signed in: LEM did not answer. Check the connection and try again.'
-            : res.status === 401 ? ((body && body.error) || 'That user name and password were not accepted.')
-            : 'Not signed in: LEM answered ' + res.status + '. Try again in a moment.';
-        err.hidden = false;
-        $('signin-pass').select();
-    }
-    async function signOut(then) {
-        let ok = false;
-        try { ok = (await fetch('/api/logout', { method: 'POST', headers: { Accept: 'application/json' } })).ok; }
-        catch (_e) { ok = false; }
-        if (!ok) { toast('Not signed out: LEM did not answer. Try again.', 'err'); return false; }
-        if (then) then(); else location.reload();
-        return true;
+        const chip = $('user-chip');
+        chip.title = signedIn ? name : 'Sign in';
+        $('user-name').textContent = signedIn ? name : 'Sign in';
+        $('user-name').dataset.signedIn = signedIn ? 'true' : 'false';
+        const ini = $('user-initials');
+        if (signedIn) ini.textContent = U.initials(name);
+        else ini.innerHTML = PERSON_SVG;          // a constant, not a server string
+        const more = $('user-more');
+        if (signedIn && more) more.remove();
+        if (!signedIn && !more) {
+            chip.after(h('button', { type: 'button', className: 'icon-btn user-more', id: 'user-more', 'data-testid': 'user-more',
+                                     'aria-haspopup': 'menu', 'aria-expanded': 'false', 'aria-controls': 'user-menu',
+                                     'aria-label': 'Theme, Settings and Help', title: 'Theme, Settings and Help' },
+                h('span', { className: 'ico ico-chev', 'aria-hidden': 'true' })));
+        }
+        $('menu-name').textContent = signedIn ? name : 'Not signed in';
+        // the menu's own items: Switch person and Sign out, or Sign in
+        const settings = menu.querySelector('[data-testid="menu-settings"]');
+        const foot = menu.querySelector('.menu-foot');
+        ['menu-switch', 'menu-signin', 'menu-signout'].forEach(id => { const e = $(id); if (e) e.remove(); });
+        if (signedIn) {
+            menu.insertBefore(menuItem('menu-switch', 'switch-person', 'Switch person'), settings);
+            menu.insertBefore(menuItem('menu-signout', 'sign-out', 'Sign out'), foot);
+        } else {
+            menu.insertBefore(menuItem('menu-signin', 'sign-in', 'Sign in'), settings);
+        }
     }
 
     // ── the version badge's width, for gutters that must clear it ──────────
@@ -293,6 +299,7 @@
         if (!$('sidebar')) return;
         const signedIn = $('user-name').dataset.signedIn === 'true';
         if (signedIn) $('user-initials').textContent = U.initials($('user-name').textContent);
+        document.addEventListener('lem:auth', (ev) => paintUser(ev.detail && ev.detail.user));
 
         const rec = $('rs-record');
         if (rec) { record.at = rec.dataset.at || null; record.labcore = rec.dataset.labcore || 'unknown'; }
@@ -309,45 +316,60 @@
             drawer(!document.documentElement.hasAttribute('data-drawer'), ev.detail === 0);
         });
 
-        const chip = $('user-chip');
+        // The chip and #user-more are looked up per click: signing in swaps
+        // the chip for a menu button (paintUser).
         const menu = $('user-menu');
         const bell = $('bell');
         const panel = $('bell-panel');
-        chip.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(panel, bell, false); toggle(menu, chip); syncThemeSwitches(); });
-        bell.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(menu, chip, false); toggle(panel, bell); });
+        const menuOpener = () => $('user-more') || $('user-chip');
+        const signedInNow = () => !!(window.LEMSignIn ? window.LEMSignIn.user() : document.body.dataset.user);
         document.addEventListener('click', (ev) => {
-            if (!menu.hidden && !menu.contains(ev.target)) toggle(menu, chip, false);
-            if (!panel.hidden && !panel.contains(ev.target)) toggle(panel, bell, false);
+            const t = ev.target;
+            const chip = t.closest && t.closest('#user-chip, #user-more');
+            if (chip) {
+                // signed out, the chip itself is Sign in (signin.js opens the sheet)
+                if (chip.id === 'user-chip' && !signedInNow()) return;
+                ev.stopPropagation();
+                toggle(panel, bell, false);
+                toggle(menu, chip);
+                syncThemeSwitches();
+                return;
+            }
+            const item = t.closest && t.closest('#user-menu .menu-item');
+            if (item) {
+                toggle(menu, menuOpener(), false);
+                const S = window.LEMSignIn;
+                if (!S) return;
+                if (item.id === 'menu-signin') S.open({});
+                if (item.id === 'menu-switch') S.switchPerson();
+                if (item.id === 'menu-signout') {
+                    S.signOut().then(ok => {
+                        if (ok) location.reload();   // the page redraws signed out
+                        else toast('Not signed out: LEM did not answer. Try again.', 'err');
+                    });
+                }
+                return;
+            }
+            if (!menu.hidden && !menu.contains(t)) toggle(menu, menuOpener(), false);
+            if (!panel.hidden && !panel.contains(t)) toggle(panel, bell, false);
         });
+        bell.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(menu, menuOpener(), false); toggle(panel, bell); });
         document.addEventListener('keydown', (ev) => {
             if (ev.key !== 'Escape') return;
             const wasOpen = !menu.hidden || !panel.hidden;
-            toggle(menu, chip, false); toggle(panel, bell, false);
-            if (wasOpen) chip.focus();
+            toggle(menu, menuOpener(), false); toggle(panel, bell, false);
+            if (wasOpen) menuOpener().focus();
             drawer(false);
         });
         document.querySelectorAll('[data-theme-choice]').forEach(b => b.addEventListener('click', (ev) => {
             ev.stopPropagation();
             themeSet(b.dataset.themeChoice);
         }));
-        if ($('menu-signout')) $('menu-signout').addEventListener('click', () => signOut());
-        if ($('menu-switch')) $('menu-switch').addEventListener('click', () => {
-            toggle(menu, chip, false);
-            signOut(() => signIn('Switch person'));
-        });
-        if ($('menu-signin')) $('menu-signin').addEventListener('click', () => { toggle(menu, chip, false); signIn(); });
-        const form = $('signin-form');
-        if (form) {
-            form.addEventListener('submit', submitSignIn);
-            const dlg = $('signin-sheet');
-            $('signin-cancel').addEventListener('click', () => { if (dlg.open) dlg.close(); });
-            dlg.addEventListener('close', () => { if (reloadOnClose) location.reload(); });
-        }
 
         renderRecent();
     });
 
     window.LEMShell = {
-        h, icon, glyph, toast, addRecent, applyTheme, setNavMeta, setStatus, signIn, signOut, drawer,
+        h, icon, glyph, toast, addRecent, applyTheme, setNavMeta, setStatus, drawer, paintUser,
     };
 })();
