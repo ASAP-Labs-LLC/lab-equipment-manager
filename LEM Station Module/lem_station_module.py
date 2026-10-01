@@ -4432,6 +4432,28 @@ def context_operator(context) -> Optional[str]:
     return known_text(getattr(user, "username", None))
 
 
+# ── Fault points (the transfer v4 gate's kill sites) ─────────────────────────
+#
+# The gate (gauntlet-harness/gate.py, transfer spec §15.3) proves "nothing lost,
+# nothing doubled" by killing this module at NAMED places and restarting it.
+# The module marks those places itself with `self._fault_point(name)`. In
+# production the hook is a no-op; the harness replaces the module-level
+# `fault_point` — one global, so calls from the serial reader thread (which is
+# not the bench object) are seen too. See tests/test_fault_point.py.
+FAULT_POINTS = (
+    "before_journal", "after_journal_before_fsync",
+    "after_journal_before_cursor", "after_cursor",
+    "serial_frame_complete_before_fsync",
+    "after_combined_read", "after_batch_landed", "before_filed_journaled",
+    "between_upload_chunks",
+)
+
+
+def fault_point(name: str) -> None:
+    """No-op. Exists to be replaced by the gate harness."""
+    return None
+
+
 class LEMStationModule:
     """LEM – Lab Equipment Manager: ONE machine per module instance.
 
@@ -4442,6 +4464,18 @@ class LEMStationModule:
 
     module_type = "LEMStation"
     module_title = "LEM – Lab Equipment Manager"
+
+    def _fault_point(self, name: str) -> None:
+        """A named kill site for the gate. A no-op unless the harness has
+        replaced the module-level `fault_point`. An unknown name is refused
+        only under LEM_FAULT_POINTS_STRICT=1 (tests): on the floor a typo must
+        never cost a poll."""
+        if name not in FAULT_POINTS:
+            if os.environ.get("LEM_FAULT_POINTS_STRICT") == "1":
+                raise ValueError("unknown fault point: %r" % (name,))
+            return None
+        # Looked up at call time on purpose: the harness swaps the global.
+        return globals()["fault_point"](name)
 
     outputs = ("row_parsed", "status_changed")
     inputs = ()
