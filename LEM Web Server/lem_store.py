@@ -269,9 +269,11 @@ _DDL = (
     # W2: a browser retry carrying the same X-Request-Id is answered from here
     # instead of being done twice. Written in the SAME transaction as the
     # change, so "recorded as done" and "done" cannot disagree.
+    # `route`, `who` and `fingerprint` scope the id to ONE request: reused
+    # for anything else it is refused, never replayed.
     "CREATE TABLE IF NOT EXISTS request_ledger ("
     " request_id TEXT PRIMARY KEY, route TEXT, status INTEGER, body TEXT,"
-    " at TEXT)",
+    " at TEXT, who TEXT, fingerprint TEXT)",
     # The record minus what an append-only annotation hides, minus the history
     # of a machine retired with "purge history" (rows older than its
     # `retired_at`). Only the NEWEST annotation on a row decides, so
@@ -465,6 +467,12 @@ class LocalStoreGateway:
                         "FROM lem_machine_log_v0 ORDER BY rowid".format(
                             ", ".join(LOG_COLUMNS)))
                     con.execute("DROP TABLE lem_machine_log_v0")
+                led = [r[1] for r in con.execute(
+                    "PRAGMA table_info('request_ledger')").fetchall()]
+                for col in ("who", "fingerprint"):
+                    if led and col not in led:
+                        con.execute("ALTER TABLE request_ledger ADD COLUMN "
+                                    "{0} TEXT".format(col))
                 cfg = [r[1] for r in con.execute(
                     "PRAGMA table_info('lem_machine_config')").fetchall()]
                 if cfg and "retired_at" not in cfg:

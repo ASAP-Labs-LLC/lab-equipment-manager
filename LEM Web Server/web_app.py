@@ -15,6 +15,7 @@ production runs against HttpLabCoreGateway — the app code is identical either 
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -1178,35 +1179,87 @@ def create_app(gateway, labcore_gateway=None,
     def _request_id() -> str:
         return (request.headers.get("X-Request-Id") or "").strip()[:128]
 
+    # WHAT AN ID NAMES. One request: this method on this path, this body,
+    # this person. The first version keyed on the id alone, so a DELETE sent
+    # with a POST's id was answered with the POST's 200 and removed nothing.
+    def _request_scope() -> tuple:
+        body = request.get_json(silent=True)
+        if body is not None:
+            # Canonical, so a retry that re-serialises the same JSON in
+            # another key order is still the same request.
+            raw = json.dumps(body, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8")
+        else:
+            raw = request.get_data() or b""
+        return ("{0} {1}".format(request.method, request.path),
+                str(session.get("user", "")),
+                hashlib.sha256(raw).hexdigest())
+
+    class _AlreadyDone(Exception):
+        """Raised inside a transaction that found its own request already in
+        the ledger: rolls back (nothing was written yet) and carries the
+        answer to give instead."""
+
+        def __init__(self, response):
+            super().__init__("already done")
+            self.response = response
+
     def _replay(rid: str):
-        """The stored answer to a request already done, or None.
+        """The stored answer to THIS request if it was already done, a 422
+        if the id was used for a different request, or None.
 
         A ledger that cannot be READ is not "not done yet": doing the work
         again on a blip is the duplicate this exists to prevent, so it raises
-        and the route reports it like any other unreadable record."""
+        and the route reports it like any other unreadable record. Called
+        once before the work (cheap, no lock) and once more INSIDE the
+        transaction (`_claim`), which is the look-up that decides."""
         if not rid or not transactional:
             return None
         res = gateway.read_sql(
-            "SELECT status, body FROM request_ledger WHERE request_id = ?",
-            [rid])
+            "SELECT route, who, fingerprint, status, body FROM request_ledger "
+            "WHERE request_id = ?", [rid])
         found = labcore_rows(res)
         if not found:
             return None
+        row = found[0]
+        route, who, fingerprint = _request_scope()
+        if (row.get("route"), row.get("who") or "",
+                row.get("fingerprint") or "") != (route, who, fingerprint):
+            # Neither replayed nor performed. Only the route is named: the
+            # body and the person behind the first use are not this caller's.
+            response = jsonify({
+                "error": ("This request id was already used for a different "
+                          "request ({0}). Nothing was done; send this change "
+                          "with a new id.").format(row.get("route") or "?"),
+                "request_id_reused": True})
+            response.status_code = 422
+            return response
         response = app.response_class(
-            found[0].get("body") or "{}", status=int(found[0].get("status")
-                                                    or 200),
+            row.get("body") or "{}", status=int(row.get("status") or 200),
             mimetype="application/json")
         response.headers["X-Request-Replayed"] = "true"
         return response
 
+    def _claim(rid: str) -> None:
+        """Inside the transaction, before any write: if this id is in the
+        ledger now, another copy of the request committed while this one
+        waited for the writer. BEGIN IMMEDIATE makes this look-up and the
+        ledger INSERT one serialised step, so a burst of identical retries
+        is one change and N true answers, never a primary-key clash
+        reported as "NOT saved" about a save that landed."""
+        done = _replay(rid)
+        if done is not None:
+            raise _AlreadyDone(done)
+
     def _ledger(rid: str, body: dict, status: int = 200) -> None:
         if not rid:
             return
+        route, who, fingerprint = _request_scope()
         _confirmed_write(
-            "INSERT INTO request_ledger (request_id, route, status, body, at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            [rid, "{0} {1}".format(request.method, request.path), status,
-             json.dumps(body), _now().isoformat(timespec="seconds")],
+            "INSERT INTO request_ledger (request_id, route, status, body, at, "
+            "who, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [rid, route, status, json.dumps(body),
+             _now().isoformat(timespec="seconds"), who, fingerprint],
             what="the record of this request was NOT written, so nothing "
                  "was saved")
 
@@ -5108,6 +5161,12 @@ def create_app(gateway, labcore_gateway=None,
         _corrections_schema()
         try:
             with gateway.transaction():
+                _claim(rid)
+                # Re-read under the writer: what the receipt calls "previous"
+                # is what this commit replaces, not what was there when the
+                # request arrived and another save may since have changed.
+                was = _corrections(machine_uid).get(test_name)
+                previous = was["correction"] if was else 0.0
                 _confirmed_write(
                     "INSERT INTO lem_correction_factors (machine_uid, "
                     "test_name, correction, units, updated_at, updated_by) "
@@ -5130,6 +5189,8 @@ def create_app(gateway, labcore_gateway=None,
                             {"test": test_name, "previous": previous,
                              "new": correction})
                 _ledger(rid, answer)
+        except _AlreadyDone as done:
+            return done.response
         except LabCoreUnavailable as exc:
             return _labcore_failed(
                 exc, "the correction factor for “{0}”".format(test_name))
@@ -5171,6 +5232,15 @@ def create_app(gateway, labcore_gateway=None,
             snapshots.ensure_schema()
             try:
                 with gateway.transaction():
+                    _claim(rid)
+                    existing = _corrections(machine_uid).get(test_name)
+                    if existing is None:
+                        # Removed by another request while this one waited
+                        # for the writer: the same true 404 as above.
+                        raise _AlreadyDone(app.response_class(
+                            json.dumps({"error": "No correction for "
+                                                 "“{0}”.".format(test_name)}),
+                            status=404, mimetype="application/json"))
                     _confirmed_write(
                         "DELETE FROM lem_correction_factors "
                         "WHERE machine_uid = ? AND test_name = ?",
@@ -5190,6 +5260,8 @@ def create_app(gateway, labcore_gateway=None,
                                  "previous": existing["correction"],
                                  "new": 0.0})
                     _ledger(rid, answer)
+            except _AlreadyDone as done:
+                return done.response
             except LabCoreUnavailable as exc:
                 return _labcore_failed(
                     exc, "removing the correction for “{0}”".format(test_name))

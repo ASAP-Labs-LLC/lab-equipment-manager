@@ -180,6 +180,31 @@ class TestTheSchema:
 
 # ── S1: append-only ───────────────────────────────────────────────────────
 
+class TestTheRequestLedgerIsScoped:
+    def test_a_ledger_from_the_first_version_gains_its_scope_columns(
+            self, tmp_path):
+        """Round one's ledger keyed on the id alone. Opening that file must
+        add `who` and `fingerprint` rather than leave a ledger the server
+        cannot scope, which would make every old id look "used elsewhere"."""
+        path = str(tmp_path / "lem.db")
+        con = sqlite3.connect(path)
+        con.execute("CREATE TABLE request_ledger (request_id TEXT PRIMARY "
+                    "KEY, route TEXT, status INTEGER, body TEXT, at TEXT)")
+        con.execute("INSERT INTO request_ledger VALUES ('r', 'POST /x', 200, "
+                    "'{}', 't')")
+        con.commit()
+        con.close()
+        s = LocalStoreGateway(path)
+        try:
+            cols = [r["name"] for r in s.read_sql(
+                "PRAGMA table_info('request_ledger')")["rows"]]
+            assert cols[-2:] == ["who", "fingerprint"]
+            assert s.read_sql("SELECT COUNT(*) n FROM request_ledger"
+                              )["rows"][0]["n"] == 1
+        finally:
+            s.close()
+
+
 class TestTheRecordIsAppendOnly:
     """S1. Neither the 17025 record nor the annotations that decide how it
     counts can be rewritten. Both refusals come back as LabCore's error shape,

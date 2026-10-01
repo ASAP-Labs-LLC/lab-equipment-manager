@@ -233,3 +233,186 @@ class TestItCostsLabCoreNothing:
         c.post("/api/machines/m1/corrections", json=BODY,
                headers={"X-Request-Id": "req-z"})
         assert lab.ops - before == 0, lab.calls
+
+
+# ── what "the same request" means ───────────────────────────────────────────
+
+def _factor(store):
+    rows = store.read_sql("SELECT correction FROM lem_correction_factors "
+                          "WHERE machine_uid = 'm1' AND test_name = 'Flash'"
+                          )["rows"]
+    return rows[0]["correction"] if rows else None
+
+
+class TestTheIdIsScopedToOneRequest:
+    """An X-Request-Id names ONE request: one method, one path, one body, one
+    person. The first version looked the id up and nothing else, so the
+    critic sent `DELETE /corrections/Flash` with an id a POST had used and got
+    the POST's 200 back while the correction stayed in force: a supervisor
+    told "removed" about an offset still being added to every reading.
+
+    Reuse with anything different is refused (422, the answer the IETF
+    Idempotency-Key draft gives for a key reused with a different request)
+    and NOTHING is done: performing it would make the id mean two things,
+    and replaying would answer a question nobody asked. The refusal names
+    what the id was first used for, so a developer can find the bug."""
+
+    def test_a_delete_with_a_posts_id_is_refused_and_removes_nothing(
+            self, store):
+        _app_, c = _app(store)
+        assert c.post("/api/machines/m1/corrections", json=BODY,
+                      headers={"X-Request-Id": "shared"}).status_code == 200
+        r = c.delete("/api/machines/m1/corrections/Flash",
+                     headers={"X-Request-Id": "shared"})
+        assert r.status_code == 422, r.get_json()
+        assert r.headers.get("X-Request-Replayed") is None
+        assert "POST" in r.get_json()["error"]
+        assert "nothing was done" in r.get_json()["error"].lower()
+        assert _factor(store) == 0.5            # still in force, and says so
+        # …and the removal the person meant works with its own id.
+        assert c.delete("/api/machines/m1/corrections/Flash",
+                        headers={"X-Request-Id": "own"}).status_code == 200
+        assert _factor(store) is None
+
+    def test_the_same_id_with_a_different_body_is_refused(self, store):
+        _app_, c = _app(store)
+        c.post("/api/machines/m1/corrections", json=BODY,
+               headers={"X-Request-Id": "k"})
+        r = c.post("/api/machines/m1/corrections",
+                   json=dict(BODY, correction=0.9),
+                   headers={"X-Request-Id": "k"})
+        assert r.status_code == 422, r.get_json()
+        assert _factor(store) == 0.5
+        assert counts(store) == (1, 1, 1)
+
+    def test_the_same_id_on_another_instrument_is_refused(self, store):
+        store.sql("INSERT INTO lem_machine_status VALUES ('m2','PAC Flash 2',"
+                  "'GREEN','ok','2026-10-01T09:00:00')")
+        _app_, c = _app(store)
+        c.post("/api/machines/m1/corrections", json=BODY,
+               headers={"X-Request-Id": "k2"})
+        r = c.post("/api/machines/m2/corrections", json=BODY,
+                   headers={"X-Request-Id": "k2"})
+        assert r.status_code == 422, r.get_json()
+
+    def test_another_persons_id_is_not_their_answer(self, store):
+        """The ledger body is the first person's answer. Somebody else
+        presenting the same id gets a refusal, not a copy of it."""
+        app, c = _app(store)
+        c.post("/api/machines/m1/corrections", json=BODY,
+               headers={"X-Request-Id": "mine"})
+        other = app.test_client()
+        other.post("/api/login", json={"username": "someone", "password":
+                                       "good"})
+        with other.session_transaction() as s:
+            s["user"] = "someone-else"
+        r = other.post("/api/machines/m1/corrections", json=BODY,
+                       headers={"X-Request-Id": "mine"})
+        assert r.status_code == 422, r.get_json()
+        assert "test_name" not in (r.get_json() or {})
+
+    def test_key_order_is_not_a_different_body(self, store):
+        """The same JSON re-serialised by a retry is the same request."""
+        _app_, c = _app(store)
+        a = c.post("/api/machines/m1/corrections",
+                   data='{"test_name":"Flash","correction":0.5,"units":"C"}',
+                   content_type="application/json",
+                   headers={"X-Request-Id": "ord"})
+        b = c.post("/api/machines/m1/corrections",
+                   data='{"units":"C","correction":0.5,"test_name":"Flash"}',
+                   content_type="application/json",
+                   headers={"X-Request-Id": "ord"})
+        assert a.status_code == b.status_code == 200
+        assert b.headers.get("X-Request-Replayed") == "true"
+        assert counts(store) == (1, 1, 1)
+
+    def test_the_ledger_row_records_the_scope(self, store):
+        _app_, c = _app(store)
+        c.post("/api/machines/m1/corrections", json=BODY,
+               headers={"X-Request-Id": "scope"})
+        row = store.read_sql("SELECT route, who, fingerprint FROM "
+                             "request_ledger WHERE request_id = 'scope'"
+                             )["rows"][0]
+        assert row["route"] == "POST /api/machines/m1/corrections"
+        assert row["who"] == "kaden"
+        assert len(row["fingerprint"]) == 64
+
+
+class TestConcurrentRetriesOfOneRequest:
+    """The critic's 8 simultaneous POSTs with one id: 1 committed, 4
+    replayed, and 3 were told 502 "was NOT saved and this instrument is still
+    applying the previous one". It WAS saved; those three lost a race between
+    the ledger look-up (outside the transaction) and the ledger INSERT
+    (inside it), hit the primary key, and reported the loss as a refusal.
+    "NOT saved" about a save that landed is the exact lie W2 exists to end.
+
+    The look-up is now repeated INSIDE the transaction, which BEGIN IMMEDIATE
+    serialises: whoever gets the writer second sees the first one's ledger
+    row and answers with it."""
+
+    def test_eight_at_once_are_one_change_and_eight_true_answers(self, store):
+        import threading
+        import time as _t
+        real = store.sql
+
+        def slow_factor(sql, args=None, **kw):
+            # Hold the writer long enough that all eight pass the outer
+            # look-up before the first one commits — the race, made certain.
+            if "INSERT INTO lem_correction_factors" in sql:
+                _t.sleep(0.3)
+            return real(sql, args, **kw)
+
+        store.sql = slow_factor
+        app, _c = _app(store)
+        clients = []
+        for _ in range(8):
+            cl = app.test_client()
+            cl.post("/api/login", json={"username": "k", "password": "good"})
+            clients.append(cl)
+        gate = threading.Barrier(8)
+        out = [None] * 8
+
+        def go(i):
+            gate.wait()
+            r = clients[i].post("/api/machines/m1/corrections", json=BODY,
+                                headers={"X-Request-Id": "burst"})
+            out[i] = (r.status_code, r.headers.get("X-Request-Replayed"),
+                      r.get_json())
+
+        threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        store.sql = real
+        statuses = sorted(o[0] for o in out)
+        assert statuses == [200] * 8, out
+        assert sum(1 for o in out if o[1] is None) == 1, out
+        assert all(o[2] == out[0][2] for o in out), out
+        assert counts(store) == (1, 1, 1)
+
+
+class TestThePageSendsTheId:
+    """The server half is worth nothing if no page sends the header: round
+    one's critic found 0 senders. The correction editor's save and removal
+    now go through `LEM.send`, which carries and reuses the id
+    (tests/js/request_id.mjs pins its rules); this pins that the editor
+    really calls it and no bare `fetch` write to the route is left."""
+
+    def test_the_correction_editor_writes_through_lem_send(self):
+        import os
+        import re
+        src = open(os.path.join(os.path.dirname(__file__), "..", "templates",
+                                "floor.html"), encoding="utf-8").read()
+        sends = re.findall(r"LEM\.send\(\s*`/api/machines/\$\{uid\}/"
+                           r"corrections[^`]*`", src)
+        assert len(sends) == 2, sends               # save and remove
+        bare = re.findall(r"fetch\(\s*`/api/machines/\$\{uid\}/corrections"
+                          r"[^`]*`\s*,\s*\{\s*method", src)
+        assert bare == [], bare
+
+    def test_lem_send_sets_the_header(self):
+        import os
+        src = open(os.path.join(os.path.dirname(__file__), "..", "static",
+                                "lem.js"), encoding="utf-8").read()
+        assert "'X-Request-Id': id" in src

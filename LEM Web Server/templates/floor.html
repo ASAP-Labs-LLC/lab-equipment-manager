@@ -5978,11 +5978,13 @@ async function saveCorrection(btn) {
   const value = wrap.querySelector('.corrval').value.trim();
   if (!requireAuth()) return;
   const uid = encodeURIComponent(corrMachine.machine_uid);
-  const r = await fetch(`/api/machines/${uid}/corrections`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({test_name: test, correction: value})});
-  const out = await r.json().catch(() => ({}));
-  if (!r.ok) { $('#corrErr').textContent = out.error || 'Could not save.'; return; }
+  // LEM.send carries an X-Request-Id and reuses it for a retry of this same
+  // change, so a press after a lost answer is answered "already saved" by the
+  // server instead of becoming a second change in the §7.8.2 trail.
+  const r = await LEM.send(`/api/machines/${uid}/corrections`, {
+    body: {test_name: test, correction: value},
+    fallback: 'The correction was not confirmed.'});
+  if (!r.ok) { $('#corrErr').textContent = r.error; return; }
   $('#corrErr').textContent = '';
   LEM.bust('/api/machines');
   await renderCorrections();
@@ -5993,14 +5995,10 @@ async function deleteCorrection(btn) {
   const test = btn.closest('[data-test]').dataset.test;
   if (!requireAuth()) return;
   const uid = encodeURIComponent(corrMachine.machine_uid);
-  const r = await fetch(
+  const r = await LEM.send(
     `/api/machines/${uid}/corrections/${encodeURIComponent(test)}`,
-    {method: 'DELETE'});
-  if (!r.ok) {
-    const out = await r.json().catch(() => ({}));
-    $('#corrErr').textContent = out.error || 'Could not remove.';
-    return;
-  }
+    {method: 'DELETE', fallback: 'The removal was not confirmed.'});
+  if (!r.ok) { $('#corrErr').textContent = r.error; return; }
   LEM.bust('/api/machines');
   await renderCorrections();
   load();
