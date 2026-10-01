@@ -144,6 +144,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def app_options(args) -> dict:
+    """What the command line hands create_app. Settings › Developer (the
+    Simulate tools) exists only under --dev; create_app also refuses it on any
+    gateway but the in-memory fake (web_app.dev_tools_allowed)."""
+    return {"dev_tools": bool(args.dev)}
+
+
 def _start_live_channel(app, gateway, host, port) -> str:
     from live_presence import start_live_channel
 
@@ -170,7 +177,7 @@ def main(argv) -> int:
         print(f"WARNING: LabCore not reachable at {where}. "
               f"Writes will fail until it is running.", file=sys.stderr)
 
-    app = create_app(gateway)
+    app = create_app(gateway, **app_options(args))
     # The server — not the app factory — owns the background refresher, so
     # requests are served from memory and LabCore sees one reader, not one per
     # screen. Started before serving so the first page has something to show.
