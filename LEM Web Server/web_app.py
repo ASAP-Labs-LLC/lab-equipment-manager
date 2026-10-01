@@ -269,6 +269,22 @@ class StatusProvider:
         self.gateway = self.labcore
         self.store = DbConfigStore(gateway)
         self.source = LabCoreDataSource(self.labcore)
+        # The QC rows' shared copy (see `_qc_rows`). `clock` is injectable so
+        # a test can walk through an interval without sleeping it.
+        self.clock = time.monotonic
+        self._rows_lock = threading.Lock()
+        self._rows_key = None
+        self._rows: Optional[List[dict]] = None
+        self._rows_at: Optional[float] = None        # clock() of the good read
+        self._rows_wall: Optional[str] = None        # its wall time, for words
+        self._rows_error: Optional[BaseException] = None
+        self._rows_error_at: Optional[float] = None
+        self._online: Optional[bool] = None
+        self._online_at: Optional[float] = None
+
+    #: How long a failed read of LabCore is believed before it is tried
+    #: again. Per request would put a dead LabCore's every poll on the queue.
+    RETRY_FAILED_SECONDS = 15.0
 
     def load_config(self) -> AppConfig:
         return self.store.load()
@@ -276,12 +292,78 @@ class StatusProvider:
     def save_config(self, cfg: AppConfig):
         return self.store.save(cfg)
 
+    def _qc_rows(self, cfg: AppConfig, sample_id_column: str, ttl: float):
+        """The dashboard's QC rows: (rows, as_of_wall, error_or_None).
+
+        W3. These rows are LabCore's (`samples`/`sample_tests`), so they are
+        read from LabCore, but at most once per the dashboard's refresh
+        interval for EVERY screen together, keyed on what is watched (a
+        changed watch list is read at once), one read in flight at a time.
+        Every open dashboard polls this; one read per poll per screen was
+        the remaining LabCore cost of `/api/status`.
+
+        A failed read is never an empty dashboard. With rows from an earlier
+        read they are served WITH the failure, which the caller words as
+        "as of"; with none the failure is raised, as before. A failure is
+        believed for RETRY_FAILED_SECONDS before LabCore is asked again.
+        """
+        key = (sample_id_column, tuple(
+            (s.name, (s.sample_id_val or "").strip(),
+             tuple((t.value_col or "").strip() for t in s.tests))
+            for s in cfg.samples))
+        with self._rows_lock:
+            now = self.clock()
+            same = key == self._rows_key
+            if same and self._rows is not None and self._rows_at is not None \
+                    and now - self._rows_at < ttl:
+                return self._rows, self._rows_wall, None
+            if same and self._rows_error is not None \
+                    and self._rows_error_at is not None \
+                    and now - self._rows_error_at < self.RETRY_FAILED_SECONDS:
+                if self._rows is None:
+                    raise self._rows_error
+                return self._rows, self._rows_wall, self._rows_error
+            if not same:
+                self._rows = self._rows_at = self._rows_wall = None
+                self._rows_error = self._rows_error_at = None
+            try:
+                rows = self.source.load_rows(cfg.samples, sample_id_column)
+            except LabCoreError as exc:
+                self._rows_key = key
+                self._rows_error, self._rows_error_at = exc, now
+                self._online, self._online_at = False, now
+                if self._rows is None:
+                    raise
+                return self._rows, self._rows_wall, exc
+            self._rows_key = key
+            self._rows, self._rows_at = rows, now
+            self._rows_wall = datetime.now().isoformat(timespec="seconds")
+            self._rows_error = self._rows_error_at = None
+            if any((s.sample_id_val or "").strip() for s in cfg.samples):
+                # A read just answered: that IS LabCore being online, and
+                # asking again with a probe would be a second trip for it.
+                self._online, self._online_at = True, now
+            return rows, self._rows_wall, None
+
+    def _labcore_online(self, ttl: float) -> bool:
+        with self._rows_lock:
+            now = self.clock()
+            if self._online is not None and self._online_at is not None \
+                    and now - self._online_at < ttl:
+                return self._online
+        online = bool(self.gateway.is_running())
+        with self._rows_lock:
+            self._online, self._online_at = online, self.clock()
+        return online
+
     def build_snapshot(self) -> dict:
         cfg = self.load_config()
         sample_id_column = cfg.sample_id_column or "Lab ID"
         samples_by_name: Dict[str, SampleSpec] = {s.name: s for s in cfg.samples}
+        refresh_seconds = max(60, int(cfg.poll_minutes) * 60)
 
-        rows = self.source.load_rows(cfg.samples, sample_id_column)
+        rows, rows_as_of, rows_error = self._qc_rows(
+            cfg, sample_id_column, float(refresh_seconds))
         sample_index = build_sample_index(rows, sample_id_column)
 
         boxes_payload: List[dict] = []
@@ -329,12 +411,21 @@ class StatusProvider:
                 })
             boxes_payload.append(payload)
 
+        errors: List[str] = []
+        if rows_error is not None:
+            errors.append(
+                "LabCore did not answer ({0}); the QC values shown are as of "
+                "{1}.".format(str(rows_error) or type(rows_error).__name__,
+                              rows_as_of))
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "boxes": boxes_payload,
-            "errors": [],
-            "refresh_seconds": max(60, int(cfg.poll_minutes) * 60),
-            "labcore_online": bool(self.gateway.is_running()),
+            "errors": errors,
+            "refresh_seconds": refresh_seconds,
+            "qc_rows_as_of": rows_as_of,
+            "labcore_online": (False if rows_error is not None
+                               else self._labcore_online(
+                                   float(refresh_seconds))),
         }
 
 
@@ -1127,6 +1218,7 @@ def create_app(gateway, labcore_gateway=None,
     admin_pw = admin_password or os.environ.get("LABMGR_ADMIN_PASSWORD")
 
     provider = StatusProvider(gateway, labcore)
+    app.config["STATUS_PROVIDER"] = provider
     app.config["PROVIDER"] = provider
     app.config["STORE_GATEWAY"] = gateway
     app.config["LABCORE_GATEWAY"] = labcore

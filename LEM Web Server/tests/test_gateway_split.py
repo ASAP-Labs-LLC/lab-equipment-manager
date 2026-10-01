@@ -228,6 +228,122 @@ class TestW3TheDashboardConfigIsLems:
         assert lab.lem_statements == []
 
 
+class TestW3TheDashboardsQcRowsAreReadOncePerInterval:
+    """The critic's second-tier W3 finding: with a dashboard configured,
+    EVERY `GET /api/status` cost 1 LabCore read (the `samples` query), so
+    three wall screens and two desks put five reads a minute on the queue
+    the benches write through, and a tab left polling cost one forever.
+
+    The rows are LabCore's and stay LabCore's; what changes is who pays.
+    They are read at most once per the dashboard's own refresh interval
+    (`refresh_seconds`, never under 60 s) for EVERY screen together, one
+    read in flight at a time. A read that fails is never an empty
+    dashboard: with rows in hand the answer says how old they are and that
+    LabCore is not answering; with none it is the 503 it always was. And a
+    LabCore that is down is asked again after a back-off, not per request,
+    which is the +426-after-one-kill lesson applied here."""
+
+    def _configured(self, tmp_path, clock):
+        from db_config_store import DbConfigStore
+        from models import (AppConfig, BoxConfig, SampleSpec, SampleTestSpec,
+                            WatchedTarget)
+        app, store, lab = _split(tmp_path, seed=False)
+        app.config["STATUS_PROVIDER"].clock = clock
+        lab.fake.write("insert_sample", {"lab_id": "STD-1"})
+        lab.fake.write("update_cell", {"lab_id": "STD-1", "test_name":
+                                       "Flash Point", "value": "65",
+                                       "updated_at": "2026-10-01 09:00:00"})
+        cfg = AppConfig(version=5, poll_minutes=1, map_locked=False,
+                        sample_id_column="Lab ID", samples=[SampleSpec(
+            name="Diesel QC", sample_id_val="STD-1", tests=[SampleTestSpec(
+                name="Flash", value_col="Flash Point", expected=65.0,
+                std_dev=2.0, units="C")])],
+            boxes=[BoxConfig(uid="gc1", title="GC-1", csv_path="",
+                             watched_targets=[WatchedTarget(
+                                 sample="Diesel QC", test="Flash")])])
+        ok, why = DbConfigStore(store).save(cfg)
+        assert ok, why
+        return app, store, lab
+
+    def test_thirty_refreshes_cost_one_read(self, tmp_path):
+        now = [1000.0]
+        app, _store, lab = self._configured(tmp_path, lambda: now[0])
+        c = app.test_client()
+        before = lab.ops
+        for _ in range(30):
+            r = c.get("/api/status")
+            assert r.status_code == 200
+            assert r.get_json()["boxes"][0]["results"][0]["value"] == \
+                pytest.approx(65.0)
+            now[0] += 1.0                      # 30 s of polling, every second
+        assert lab.ops - before == 1, lab.calls[before:]
+        assert lab.lem_statements == []
+
+    def test_after_the_interval_the_rows_are_read_again(self, tmp_path):
+        now = [1000.0]
+        app, _store, lab = self._configured(tmp_path, lambda: now[0])
+        c = app.test_client()
+        before = lab.ops
+        c.get("/api/status")
+        lab.fake.write("update_cell", {"lab_id": "STD-1", "test_name":
+                                       "Flash Point", "value": "66",
+                                       "updated_at": "2026-10-01 10:00:00"})
+        now[0] += 61
+        body = c.get("/api/status").get_json()
+        assert body["boxes"][0]["results"][0]["value"] == pytest.approx(66.0)
+        assert lab.ops - before == 2
+
+    def test_a_failed_read_keeps_the_rows_and_says_how_old(self, tmp_path):
+        now = [1000.0]
+        app, _store, lab = self._configured(tmp_path, lambda: now[0])
+        c = app.test_client()
+        c.get("/api/status")
+        lab.fake.read_sql = lambda *a, **k: dict(WATCHDOG)
+        now[0] += 61
+        before = lab.ops
+        bodies = []
+        for _ in range(10):
+            r = c.get("/api/status")
+            assert r.status_code == 200
+            bodies.append(r.get_json())
+            now[0] += 1.0
+        body = bodies[-1]
+        assert body["boxes"][0]["results"][0]["value"] == pytest.approx(65.0)
+        assert body["labcore_online"] is False
+        assert body["qc_rows_as_of"]
+        assert any("as of" in e and "LabCore" in e for e in body["errors"])
+        # one attempt, then a back-off: not ten reads at a LabCore that is down
+        assert lab.ops - before == 1, lab.calls[before:]
+
+    def test_a_failed_first_read_is_a_503_not_an_empty_dashboard(
+            self, tmp_path):
+        now = [1000.0]
+        app, _store, lab = self._configured(tmp_path, lambda: now[0])
+        lab.fake.read_sql = lambda *a, **k: dict(WATCHDOG)
+        c = app.test_client()
+        before = lab.ops
+        for _ in range(5):
+            r = c.get("/api/status")
+            assert r.status_code == 503, r.get_json()
+            now[0] += 1.0
+        assert lab.ops - before == 1, lab.calls[before:]
+
+    def test_a_changed_watch_list_is_read_at_once(self, tmp_path):
+        """The cache is keyed on WHAT is watched: a box added a second ago
+        must not wait out the interval showing nothing for its sample."""
+        from db_config_store import DbConfigStore
+        now = [1000.0]
+        app, store, lab = self._configured(tmp_path, lambda: now[0])
+        c = app.test_client()
+        before = lab.ops
+        c.get("/api/status")
+        cfg = DbConfigStore(store).load()
+        cfg.samples[0].sample_id_val = "STD-2"
+        assert DbConfigStore(store).save(cfg)[0]
+        c.get("/api/status")
+        assert lab.ops - before == 2
+
+
 # ── W2b: the server's own INSERTs land on the store ─────────────────────────
 
 class TestW2bTheServersInsertsLand:
