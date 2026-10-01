@@ -48,7 +48,10 @@ def extract_tag(tag, dest):
         raise TargetError("git archive %s failed: %s"
                           % (tag, out.stderr.decode(errors="replace")[:300]))
     with tarfile.open(fileobj=io.BytesIO(out.stdout)) as tf:
-        tf.extractall(dest)
+        if hasattr(tarfile, "data_filter"):    # refuse links/paths out of dest
+            tf.extractall(dest, filter="data")
+        else:
+            tf.extractall(dest)
     return dest
 
 

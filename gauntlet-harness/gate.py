@@ -14,10 +14,17 @@ Exit status:
     2  the harness itself is not trustworthy: v3.9 drifted from faults.json /
        web.json / economy.json, a call to production was attempted, something
        was written outside the temp root, or code loaded from outside the
-       target. A run that exits 2 says nothing about the target.
+       target, or the gate crashed — anywhere: its own imports (wrong
+       interpreter, missing package), loading the target, a scenario failing
+       in harness code, the self-test, the report. A crash never exits 1,
+       because 1 is a verdict. A run that exits 2 says nothing about the target.
 
 With --mutations: 0 if every available mutation was KILLED, 1 if one
-SURVIVED (or, with --strict, one was UNAVAILABLE), 2 on a harness failure.
+SURVIVED (or, with --strict, one was UNAVAILABLE), 2 on a harness failure —
+including a mutated run that itself had harness errors, or a subprocess whose
+exit status contradicts its own results. On v3.9 five mutations run today (T0
+and four P0 source mutations of v3.9 mechanisms); the seven §15.7 mutations of
+v4 code are UNAVAILABLE until the pieces that own them land that code.
 
 Never `gate.py | tail && push` — use the exit status (set -o pipefail).
 
@@ -38,7 +45,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 sys.dont_write_bytecode = True
 
-from gharness import env  # noqa: E402  (light: no LEM import)
+# This import is guarded like everything else: a gate whose own package will
+# not import must still exit 2, not Python's 1 (see main()).
+try:
+    from gharness import env  # noqa: E402  (light: no LEM import)
+    _IMPORT_FAILURE = None
+except BaseException:                       # noqa: B902
+    env = None
+    _IMPORT_FAILURE = traceback.format_exc()
+
+HARNESS_FAILURE = 2
 
 
 def parse(argv):
@@ -154,9 +170,15 @@ def run(args):
         except KillNeverReached as e:
             results[sid] = {"status": "kill_not_reached", "why": str(e)}
         except Exception as e:
-            results[sid] = {"status": "error",
+            origin = crash_origin(sys.exc_info()[2], code_root)
+            results[sid] = {"status": "error", "origin": origin,
                             "why": "%s: %s" % (type(e).__name__, e),
                             "trace": traceback.format_exc()[-1500:]}
+            if origin == "harness":
+                # Not a statement about the target: the gate broke here.
+                harness_errors.append("scenario %s crashed in harness code: %s\n%s"
+                                      % (sid, results[sid]["why"],
+                                         results[sid]["trace"]))
         results[sid]["seconds"] = round(time.time() - t0, 2)
 
     # economy.json reproduction rides on the E runs (v3.9 only)
@@ -190,15 +212,40 @@ def run(args):
                               % json.dumps(writes)[:800])
 
     drifted = sorted(s for s, r in results.items() if r.get("drift"))
-    if econ_drift:
-        harness_errors.append("economy.json not reproduced: " + "; ".join(econ_drift[:5]))
     v4_failed = sorted(s for s, r in results.items() if r["v4_fail"])
     out = {"target": label, "code_root": code_root, "tmp_root": tmp_root,
            "mutation": args.mutation, "seconds": round(time.time() - t_start, 1),
            "scenarios": results, "drifted": drifted, "v4_failed": v4_failed,
+           # economy.json is phase-1 ground truth like faults.json: a miss is
+           # drift (exit 2), kept apart from harness_errors so the self-test
+           # can count it as a mutation going red rather than as a crash.
+           "economy_drift": econ_drift,
            "harness_errors": harness_errors, "writes_outside_tmp": writes,
            "network_attempts": len(netguard.attempts()), "violations": viol}
     return out
+
+
+def crash_origin(tb, code_root):
+    """'target' if the exception was raised from the target's own code, else
+    'harness'. Walk from the innermost frame outward to the first frame that is
+    the gate's (gauntlet-harness/), the baseline harness's, or the target's;
+    library frames (stdlib, site-packages) say nothing either way. The harness
+    paths are checked first because on --target v4 the target is the worktree,
+    which contains gauntlet-harness/. Nothing recognisable: the harness's —
+    an unexplained crash is never evidence about the target."""
+    from gharness import target
+    ours = [os.path.realpath(HERE) + os.sep,
+            os.path.realpath(target.BASELINE_HARNESS) + os.sep]
+    theirs = os.path.realpath(code_root) + os.sep if code_root else None
+    for fr in reversed(traceback.extract_tb(tb)):
+        f = os.path.realpath(fr.filename)
+        if "site-packages" in f.split(os.sep):
+            continue
+        if any(f.startswith(o) for o in ours):
+            return "harness"
+        if theirs and f.startswith(theirs):
+            return "target"
+    return "harness"
 
 
 def _diff(row, r, compare, vol):
@@ -265,12 +312,14 @@ def report(out, quiet=False):
         print("v4 failed: " + " ".join(out["v4_failed"]))
     if out["drifted"]:
         print("v3.9 DRIFTED: " + " ".join(out["drifted"]))
+    for e in out.get("economy_drift") or []:
+        print("v3.9 DRIFT economy.json " + e)
     for e in out["harness_errors"]:
         print("HARNESS: " + e)
 
 
 def exit_code(out, drift_only=False):
-    if out["harness_errors"] or out["drifted"]:
+    if out["harness_errors"] or out["drifted"] or out.get("economy_drift"):
         return 2
     if drift_only:
         return 0
@@ -299,15 +348,25 @@ def run_mutations(args):
             raise RuntimeError("gate subprocess wrote no results (exit %d): %s"
                                % (p.returncode, p.stdout.decode(errors="replace")[-1500:]))
         with open(path) as f:
-            return json.load(f), p.returncode
+            res = json.load(f)
+        # The subprocess's exit status must be the one its own results imply;
+        # if not, one of the two is lying and nothing here can be judged.
+        if p.returncode != exit_code(res):
+            raise RuntimeError("gate subprocess %s exited %d but its results imply %d"
+                               % (name, p.returncode, exit_code(res)))
+        if res["harness_errors"]:
+            raise RuntimeError("gate subprocess %s is not trustworthy: %s"
+                               % (name, "; ".join(res["harness_errors"])[:1500]))
+        return res, p.returncode
 
-    clean, rc = sub([], "clean")
-    if clean["harness_errors"]:
-        print("clean run has harness errors; the self-test cannot be judged:")
-        for e in clean["harness_errors"]:
-            print("  " + e)
-        return 2
-    green = {s: not r[row_key] for s, r in clean["scenarios"].items()}
+    def greens(res):
+        g = {s: not r[row_key] for s, r in res["scenarios"].items()}
+        if label == "v3.9":
+            g["economy.json"] = not res.get("economy_drift")
+        return g
+
+    clean, rc = sub([], "clean")     # raises (-> exit 2) on harness errors
+    green = greens(clean)
     print("clean run: %d scenarios, %d green against their %s row"
           % (len(green), sum(green.values()), "v3.9" if label == "v3.9" else "v4"))
     survived = unavailable = 0
@@ -322,7 +381,7 @@ def run_mutations(args):
                       "matching code)" % (name, spec["what"], spec["owner"]))
                 continue
             res, _ = sub(["--code", dst], "mut-" + name)
-        mutated = {s: not r[row_key] for s, r in res["scenarios"].items()}
+        mutated = greens(res)
         v, killed = MU.verdict(green, mutated)
         if v == "SURVIVED":
             survived += 1
@@ -337,7 +396,43 @@ def run_mutations(args):
 
 
 def main(argv=None):
+    """Parse, then run guarded: whatever escapes is exit 2.
+
+    An uncaught exception would exit 1 — the same status as the correct v3.9
+    verdict and as "v4 fails". So nothing escapes: any exception, including a
+    SystemExit raised by the code under test (even SystemExit(0)) and an
+    interrupt, is a harness failure. argparse's own errors already exit 2."""
     args = parse(argv if argv is not None else sys.argv[1:])
+    try:
+        if _IMPORT_FAILURE:
+            raise ImportError("the gate's own package did not import:\n"
+                              + _IMPORT_FAILURE)
+        return _main(args)
+    except BaseException as e:              # noqa: B902 — that is the point
+        return _harness_crash(e)
+
+
+def _harness_crash(e):
+    try:
+        tb = traceback.format_exc()
+        sys.stdout.write(tb[-4000:])
+        sys.stdout.write("HARNESS: the gate crashed (%s: %s) — exit 2; this run "
+                         "says nothing about the target\n" % (type(e).__name__, e))
+        sys.stdout.flush()
+    except BaseException:                   # noqa: B902 — even printing failed
+        pass
+    return HARNESS_FAILURE
+
+
+def _write_results(out, args):
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(out, f, indent=1, default=str)
+    with open(os.path.join(out["tmp_root"], "results.json"), "w") as f:
+        json.dump(out, f, indent=1, default=str)
+
+
+def _main(args):
     if args.mutations:
         return run_mutations(args)
     drift_rc = None
@@ -353,11 +448,7 @@ def main(argv=None):
                   "trusted; v4 not judged" % drift_rc)
             return 2
     out = run(args)
-    if args.json:
-        with open(args.json, "w") as f:
-            json.dump(out, f, indent=1, default=str)
-    with open(os.path.join(out["tmp_root"], "results.json"), "w") as f:
-        json.dump(out, f, indent=1, default=str)
+    _write_results(out, args)
     report(out, quiet=args.quiet)
     return exit_code(out, args.drift_only)
 

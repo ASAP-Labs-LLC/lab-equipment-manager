@@ -25,6 +25,30 @@ import shutil
 MUTATIONS = {
     "T0": {"kind": "harness", "what": "tally row deletion: one stored run row removed",
            "owner": "P0"},
+    # ── today's mechanisms (owner P0): these match v3.9.0 AND the worktree,
+    # so the source route — copy the tree, edit it, run the gate on the copy —
+    # is exercised on every self-test, not only once v4 code exists. Each
+    # breaks one thing v3.9 already does right; the gate must notice.
+    "offset_not_advanced": {
+        "kind": "source", "owner": "P0",
+        "what": "single_csv byte offset never advances (every poll re-reads the file)",
+        "pattern": r"new_position = f\.tell\(\)",
+        "replace": "new_position = last_position"},
+    "refusal_counted_as_filed": {
+        "kind": "source", "owner": "P0",
+        "what": "a busy refusal of a machine-log batch is counted as filed",
+        "pattern": r"refused = refusal_reason\(result\)",
+        "replace": "refused = None"},
+    "requeue_on_raise_off": {
+        "kind": "source", "owner": "P0",
+        "what": "a machine-log batch whose write raised is dropped, not put back",
+        "pattern": r"self\._pending_events\.extendleft\(reversed\(batch\)\)\n(\s*)raise",
+        "replace": r"pass\n\1raise"},
+    "cell_key_ignores_value": {
+        "kind": "source", "owner": "P0",
+        "what": "a result write is 'the same write' whatever its value",
+        "pattern": r'str\(params\.get\("value"\) or ""\)\)',
+        "replace": '"")'},
     "unique_seq_off": {
         "kind": "source", "owner": "P6",
         "what": "unique (uid, epoch, seq) removed from the store",

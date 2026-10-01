@@ -190,8 +190,15 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 rows = self._lem_store_rows(test)
             else:
                 rows = self._labcore_rows(test)
-            if World.mutation == "T0" and rows and self.store_kind() == "lem":
-                rows = rows[1:]       # LEM store is append-only: drop at read
+            if World.mutation == "T0" and self.store_kind() == "lem":
+                # The LEM store is append-only (triggers refuse DELETE), so
+                # T0 drops at read — the first row the tally COUNTS. A hidden
+                # replay would change no term, and a T0 that cannot move the
+                # tally proves nothing.
+                for i, r in enumerate(rows):
+                    if not r["hidden"]:
+                        rows = rows[:i] + rows[i + 1:]
+                        break
             return rows
 
         def _labcore_rows(self, test):
