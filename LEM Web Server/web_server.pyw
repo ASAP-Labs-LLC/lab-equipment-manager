@@ -181,6 +181,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def app_options(args) -> dict:
+    """What the command line hands create_app. Settings › Developer (the
+    Simulate tools) exists only under --dev; create_app also refuses it on any
+    gateway but the in-memory fake (web_app.dev_tools_allowed)."""
+    return {"dev_tools": bool(args.dev)}
+
+
 def _start_live_channel(app, gateway, host, port) -> str:
     from live_presence import start_live_channel
 
@@ -214,7 +221,7 @@ def main(argv) -> int:
     # `gateway` stays LabCore below: the live channel is published into
     # LabCore's `lem_meta` because that is where v3.9 benches read it (the
     # mixed-fleet exception, transfer §6.2; it ends at bridge-off).
-    app = create_app(store, labcore=gateway)
+    app = create_app(store, labcore=gateway, **app_options(args))
     # The server — not the app factory — owns the background refresher, so
     # requests are served from memory and LabCore sees one reader, not one per
     # screen. Started before serving so the first page has something to show.

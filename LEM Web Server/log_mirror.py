@@ -618,10 +618,21 @@ class StoreLogMirror(LogMirror):
         self.path = path
         self.jobs = jobs
         self._lock = threading.Lock()
+        self._remembered: Optional[dict] = None
 
     # ── nothing to pull ──────────────────────────────────────────────────
     def refresh(self) -> int:
+        """Nothing to copy. The server's five-minute thread still calls it,
+        so it re-counts the record for `remembered_state` — one local read,
+        never LabCore — and a failure is remembered as a failure."""
+        self.state()
         return 0
+
+    def remembered_state(self) -> Optional[dict]:
+        """What the last `state()` found, from memory, or None if the log has
+        not been counted since this process started. For Settings ›
+        Diagnostics, which must cost nothing when it is opened."""
+        return self._remembered
 
     # ── the reads, against the store ─────────────────────────────────────
     def _read(self, sql: str, args=None) -> List[dict]:
@@ -763,12 +774,16 @@ class StoreLogMirror(LogMirror):
             got = self._read("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m "
                              "FROM %s" % self.VIEW)
         except LabCoreError as exc:
-            return {"rows": 0, "max_rowid": 0, "filled_at": None,
-                    "stale_reason": str(exc) or exc.__class__.__name__,
-                    "source": "store"}
+            out = {"rows": 0, "max_rowid": 0, "filled_at": None,
+                   "stale_reason": str(exc) or exc.__class__.__name__,
+                   "source": "store"}
+            self._remembered = out
+            return out
         row = got[0] if got else {"n": 0, "m": 0}
-        return {"rows": int(row["n"] or 0), "max_rowid": int(row["m"] or 0),
-                "filled_at": _now(), "stale_reason": "", "source": "store"}
+        out = {"rows": int(row["n"] or 0), "max_rowid": int(row["m"] or 0),
+               "filled_at": _now(), "stale_reason": "", "source": "store"}
+        self._remembered = out
+        return out
 
     def _set_meta(self, key: str, value: str) -> None:
         return None

@@ -24,7 +24,7 @@ import threading
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from flask import (Flask, Response, g, jsonify, redirect, render_template,
@@ -1112,11 +1112,88 @@ def refusal_response(exc):
     return jsonify(body), (503 if exc.busy else 502), headers
 
 
+def dev_tools_allowed(gateway, asked: bool) -> bool:
+    """Settings › Developer (the four Simulate tools) — only under --dev, and
+    only on the in-memory fake LabCore.
+
+    Two conditions, not one: `--dev` is a flag somebody types, and a boot
+    script that passed it to a server pointed at the real LabCore must still
+    not grow a "Simulate status" button on the lab's screens. The tools used to
+    sit in the floor's right-click menu in production, one click from a fake
+    RED on a wall display.
+    """
+    from labcore_gateway import FakeLabCoreGateway
+    return bool(asked) and isinstance(gateway, FakeLabCoreGateway)
+
+
+SIM_REASON = "Simulated in Settings › Developer, not from the bench."
+SIM_STATUSES = (STATUS_GREEN, STATUS_YELLOW, STATUS_RED, STATUS_SERVICE, STATUS_DEAD)
+
+
+def _register_dev_tools(app, gateway, snapshots) -> None:
+    """POST /api/dev/simulate — registered only when `dev_tools_allowed`.
+
+    A simulated STATUS goes on the live road (memory; it ages out in 20 min,
+    is gone on restart, and its reason says "Simulated" so a screenshot cannot
+    pass it off as real). Simulated RESULTS are written as `run` rows into the
+    fake LabCore's log, so the Logs page and the record show them the way a
+    bench's would; the log copy is pulled at once so they appear now, not in
+    five minutes. Nothing here can reach a real LabCore: see
+    `dev_tools_allowed`.
+    """
+    import secrets as _secrets
+    live = app.config["LIVE"]
+
+    @app.route("/api/dev/simulate", methods=["POST"])
+    def api_dev_simulate():
+        body = request.get_json(silent=True) or {}
+        uid = str(body.get("machine_uid") or "").strip()
+        action = str(body.get("action") or "")
+        snap = snapshots.get()
+        known = {m.get("machine_uid") for m in snap.get("machines") or []}
+        if uid not in known:
+            return jsonify({"error": "No instrument %r in the record." % uid}), 404
+        now = datetime.now()
+        if action == "status":
+            status = str(body.get("status") or "").upper()
+            if status not in SIM_STATUSES:
+                return jsonify({"error": "Pick one of " + ", ".join(SIM_STATUSES)}), 400
+            live.record(uid, {"status": status, "reason": SIM_REASON,
+                              "at": now.isoformat(timespec="seconds"),
+                              "interval_seconds": 3600})
+            return jsonify({"simulated": status, "machine_uid": uid})
+        if action == "clear":
+            had = live.forget(uid)
+            return jsonify({"cleared": had, "machine_uid": uid})
+        if action in ("result", "burst"):
+            n = 1 if action == "result" else 6
+            landed = 0
+            for i in range(n):
+                res = gateway.sql(
+                    "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                    "test_name, value, detail) VALUES (?, ?, 'run', ?, '', '', ?)",
+                    [uid, (now + timedelta(seconds=i)).isoformat(timespec="seconds"),
+                     "SIM-" + _secrets.token_hex(2).upper(),
+                     json.dumps({"simulated": True})])
+                if refusal_reason(res):
+                    break
+                landed += 1
+            try:
+                app.config["LOG_MIRROR"].refresh()
+            except Exception as exc:                     # noqa: BLE001
+                logger.warning("dev: the log copy did not refresh: %s", exc)
+            snapshots.refresh_soon()
+            status = 200 if landed == n else 502
+            return jsonify({"landed": landed, "not_landed": n - landed}), status
+        return jsonify({"error": "Unknown action."}), 400
+
+
 def create_app(gateway, labcore_gateway=None,
                admin_password: Optional[str] = None,
                secret: Optional[str] = None, authenticator=None,
                live=None, live_token: Optional[str] = None,
-               documents_root=None, labcore=None) -> Flask:
+               documents_root=None, labcore=None,
+               dev_tools: bool = False) -> Flask:
     """The app, over TWO gateways: LEM's store and LabCore (transfer §5.3).
 
     `gateway` is the STORE — every `lem_*` table, the machine log, the
@@ -1520,11 +1597,18 @@ def create_app(gateway, labcore_gateway=None,
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
-    def _diagnostics() -> list:
-        """Settings › Diagnostics: the /healthz facts, each said as a sentence.
+    class _Done(Exception):
+        """Diagnostics: this row is written, go on to the next."""
 
-        Memory and the local log copy only — no LabCore op. Every row has a
-        "could not tell" wording distinct from its "nothing there" wording.
+    def _diagnostics() -> dict:
+        """Settings › Diagnostics: what this server knows about itself.
+
+        Memory and the local log copy only, never a LabCore op: people open
+        this when something is slow, which is when the queue is deep. Each row
+        is a sentence with a glyph, and every row has a "could not tell"
+        wording distinct from its "nothing there" wording. `summary` is the one
+        line the section leads with; `healthz` is /healthz itself (one
+        function serves both, so they cannot disagree).
         """
         def _local_hm(iso: str) -> str:
             # the mirror stamps UTC; the lab reads its own clock
@@ -1536,91 +1620,168 @@ def create_app(gateway, labcore_gateway=None,
                     else at.strftime("%H:%M")
             except (TypeError, ValueError):
                 return iso
-        rows = [{"label": "Version", "glyph": "", "value": APP_VERSION,
-                 "note": "the same string /healthz reports"}]
-        online = getattr(snapshots, "_online", None)
-        if labcore is not gateway:
+        health = _health()
+        rows = []
+        split = labcore is not gateway
+        snap = snapshots.get(build_if_missing=False)
+        interval = int(getattr(snapshots, "interval", 12))
+        if snap.get("ready"):
+            at = (snap.get("built_at") or "")[11:19]
+            err = snap.get("error")
+            rows.append({"key": "record", "label": "Instrument record",
+                         "glyph": "held" if snap.get("stale") else "final",
+                         "value": "Read at " + at if at else "Read",
+                         "at": snap.get("built_at") or "",
+                         "age_seconds": snap.get("age_seconds"),
+                         "note": ("the last refresh failed: " + str(err)[:120]) if err else
+                                 "read from %s every %d s, one read for every screen" % (
+                                     "the LEM store" if is_local_store(gateway) else "LabCore",
+                                     interval)})
+        else:
+            err = snap.get("error")
+            rows.append({"key": "record", "label": "Instrument record",
+                         "glyph": "error" if err else "never",
+                         "value": "Could not be read" if err else "Not read yet",
+                         "at": "", "age_seconds": None,
+                         "note": str(err)[:120] if err else "the first read starts when the server does"})
+        if split:
             # The snapshot reads LEM's store now (transfer §5.3); what it
             # knows about reachability is the STORE's, and saying "LabCore:
             # Reachable" off it would be a sentence about the wrong database.
-            rows.append({"label": "LabCore", "glyph": "never",
-                         "value": "Not asked in the background",
+            rows.append({"key": "labcore", "label": "LabCore",
+                         "glyph": "never", "value": "Not asked in the background",
                          "note": "asked only for sign-in, the dashboard's QC "
                                  "rows and the test-method list"})
-            h = gateway.health() if is_local_store(gateway) else {}
-            err = h.get("error") or ""
-            rows.append({"label": "LEM store",
-                         "glyph": "error" if (err or online is False) else (
-                             "never" if online is None else "final"),
-                         "value": ("Could not be read" if err or online is False
+        else:
+            online = health["labcore"]
+            rows.append({"key": "labcore", "label": "LabCore road",
+                         "glyph": {"reachable": "final", "unreachable": "error"}.get(online, "never"),
+                         "value": {"reachable": "Reachable", "unreachable": "Not answering"}.get(
+                             online, "Not asked yet"),
+                         "note": ("schema: " + health["schema"] +
+                                  ((" (" + str(health["schema_error"])[:100] + ")")
+                                   if health.get("schema_error") else ""))})
+        store_h = health.get("store")
+        if store_h:
+            err = store_h.get("error") or ""
+            reach = store_h.get("reachable")
+            rows.append({"key": "store", "label": "LEM store",
+                         "glyph": "error" if (err or reach == "unreachable") else (
+                             "never" if reach == "unknown" else "final"),
+                         "value": ("Could not be read" if err or reach == "unreachable"
                                    else "Read-only (candidate boot)"
-                                   if h.get("read_only") else "Read-write"),
-                         "note": err[:120] or str(h.get("path") or "")})
-        else:
-            rows.append({"label": "LabCore",
-                         "glyph": "never" if online is None else ("final" if online else "error"),
-                         "value": ("Not asked yet" if online is None
-                                   else "Reachable" if online else "Not answering"),
-                         "note": ""})
-        snap = snapshots.get(build_if_missing=False)
-        if snap.get("ready"):
-            at = (snap.get("built_at") or "")[11:19]
-            rows.append({"label": "Instrument record", "glyph": "held" if snap.get("stale") else "final",
-                         "value": "Read at " + at if at else "Read",
-                         "note": ("the last refresh failed: " + str(snap.get("error"))[:120])
-                                 if snap.get("error") else
-                                 "refreshed every %d s" % int(getattr(snapshots, "interval", 12))})
-        else:
-            err = snap.get("error")
-            rows.append({"label": "Instrument record", "glyph": "error" if err else "never",
-                         "value": "Could not be read" if err else "Not read yet",
-                         "note": str(err)[:120] if err else ""})
-        try:
-            mstate = app.config["LOG_MIRROR"].state()
-            n = int(mstate.get("rows") or 0)
-            filled = str(mstate.get("filled_at") or "")
-            why = mstate.get("stale_reason") or ""
-            if mstate.get("source") == "store":
-                # Not a copy: the record itself, read where it lives.
-                rows.append({"label": "Machine log",
-                             "glyph": "error" if why else "final",
-                             "value": ("Could not be read" if why else
-                                       "{:,} rows".format(n) if n
-                                       else "No rows yet"),
-                             "note": why[:120] or "in the LEM store"})
-            else:
-                rows.append({"label": "Log copy",
-                             "glyph": "held" if (why or not n) else "final",
-                             "value": ("{:,} rows".format(n) if n else "Empty: filling from LabCore"),
-                             "note": why or (("filled " + _local_hm(filled)) if filled else "")})
-        except Exception as exc:                    # a local file; say it, never 0
-            rows.append({"label": "Log copy", "glyph": "error",
-                         "value": "Could not be read", "note": str(exc)[:120]})
-        waiting = len(audit_spool)
-        rows.append({"label": "Correction audit", "glyph": "held" if waiting else "final",
-                     "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
-                               if waiting else "Nothing waiting"),
-                     "note": ("oldest " + str(audit_spool.oldest())) if waiting else ""})
+                                   if store_h.get("read_only") else "Read-write"),
+                         "note": err[:120] or str(store_h.get("path") or "")})
         # The live road, where the bell's "Benches can't reach LEM directly"
         # sends people. The same count /api/ui/live serves (fleet.live_road).
         fleet = _live_payload(None).get("fleet")
         if fleet:
             road, n = fleet["live_road"], fleet["checking_in"]
-            rows.append({"label": "Live road",
+            rows.append({"key": "live_road", "label": "Bench live road",
                          "glyph": "final" if n and road == n else "held",
-                         "value": "%d of %d %s %s it" % (road, n, "bench" if n == 1 else "benches",
-                                                         "uses" if road == 1 else "use"),
-                         "note": ("benches that cannot use it read their settings from LabCore "
-                                  "on a timer instead") if road < n else "settings reach every bench at once"})
+                         "value": "%d of %d %s %s the live road" % (
+                             road, n, "bench" if n == 1 else "benches",
+                             "uses" if road == 1 else "use"),
+                         "note": ("the rest read their settings from LabCore on a timer instead"
+                                  if road < n else "settings reach every bench at once")})
         else:
-            rows.append({"label": "Live road", "glyph": "never", "value": "Not known yet",
+            rows.append({"key": "live_road", "label": "Bench live road", "glyph": "never",
+                         "value": "Not known yet",
                          "note": "no instrument record has been read"})
-        return rows
+        waiting = int(health["audit_spool"])
+        rows.append({"key": "audit_spool", "label": "Correction audit",
+                     "glyph": "held" if waiting else "final",
+                     "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
+                               if waiting else "Nothing waiting"),
+                     "note": ("oldest " + str(health.get("audit_spool_oldest") or "")) if waiting
+                             else "every correction-factor change is in %s audit table" % (
+                                 "the LEM store's" if is_local_store(gateway) else "LabCore's")})
+        source = "source: LabCore lem_machine_log, copied here every 5 min"
+        try:
+            mirror = app.config["LOG_MIRROR"]
+            remembered = getattr(mirror, "remembered_state", None)
+            if callable(remembered):
+                # The record itself, read where it lives (transfer §5): not a
+                # copy, so "copied every 5 min" would send somebody looking
+                # for a lag that does not exist. And still memory only —
+                # this page is opened when things are slow, so it reports the
+                # count the last read of the log took, and says so, rather
+                # than counting 40,000 rows on the press.
+                source = "source: lem_machine_log in the LEM store, read in place"
+                mstate = remembered()
+                if mstate is None:
+                    rows.append({"key": "log_copy", "label": "Machine log",
+                                 "glyph": "never", "value": "Not counted yet",
+                                 "note": "counted the next time anything reads "
+                                         "the log; " + source})
+                    raise _Done()
+                why = mstate.get("stale_reason") or ""
+                n = int(mstate.get("rows") or 0)
+                rows.append({"key": "log_copy", "label": "Machine log",
+                             "glyph": "error" if why else "final",
+                             "value": ("Could not be read" if why else
+                                       "{:,} rows".format(n) if n else "No rows yet"),
+                             "note": "; ".join(x for x in (
+                                 why[:120], ("counted " + _local_hm(str(mstate.get("filled_at"))))
+                                 if mstate.get("filled_at") and not why else "",
+                                 source) if x)})
+                raise _Done()
+            mstate = mirror.state()
+            live = mirror.live_status() or {}
+            n = int(mstate.get("rows") or 0)
+            kind = live.get("state") or ("filled" if mstate.get("filled_at") else "empty")
+            why = live.get("reason") or mstate.get("stale_reason") or ""
+            done_to = live.get("complete_to") or mstate.get("filled_at") or ""
+            value = {"filled": "{:,} rows, complete".format(n),
+                     "filling": "Filling: {:,} rows so far".format(n),
+                     "partial": "Partial: {:,} rows".format(n),
+                     "behind": "Behind: {:,} rows".format(n),
+                     "empty": "Empty: not filled yet"}.get(kind, "{:,} rows".format(n))
+            glyph = {"filled": "final", "filling": "working"}.get(kind, "held")
+            note = "; ".join(x for x in (
+                why, ("complete to " + _local_hm(str(done_to))) if done_to and kind == "filled" else "",
+                source) if x)
+            rows.append({"key": "log_copy", "label": "Log copy", "glyph": glyph,
+                         "value": value, "note": note})
+        except _Done:
+            pass
+        except Exception as exc:                    # a local file; say it, never 0
+            rows.append({"key": "log_copy", "label": "Log copy", "glyph": "error",
+                         "value": "Could not be read", "note": str(exc)[:120] + "; " + source})
+        rows.append({"key": "version", "label": "Version", "glyph": "", "value": APP_VERSION,
+                     "note": "the build the updater put on, the same string /healthz reports"})
+        trouble = [r for r in rows if r["glyph"] in ("error", "held")]
+        bad = [r for r in trouble if r["glyph"] == "error"]
+        if not trouble:
+            unknown = [r for r in rows if r["glyph"] == "never"]
+            summary = ({"glyph": "never", "text": "Starting up: " + ", ".join(
+                           r["label"].lower() for r in unknown) + " not known yet."}
+                       if unknown else
+                       {"glyph": "final", "text": "Everything LEM depends on is answering."})
+        else:
+            names = ", ".join(r["label"] for r in trouble)
+            summary = {"glyph": "error" if bad else "held",
+                       "text": "%d %s a look: %s." % (len(trouble),
+                                                    "thing needs" if len(trouble) == 1 else "things need",
+                                                    names)}
+        return {"rows": rows, "summary": summary, "healthz": health}
+
+    @app.route("/api/ui/diagnostics")
+    def api_ui_diagnostics():
+        """Settings › Diagnostics, re-read without reloading the page. A GET
+        from memory (0 LabCore ops), like /api/ui/live."""
+        resp = jsonify(_diagnostics())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     @app.route("/settings")
     def page_settings():
-        """Settings › This browser (and a read-only Diagnostics)."""
-        return render_template("settings.html", nav="settings", diag=_diagnostics())
+        """Settings (ia-final §3.7). Rendered from memory: the levels, the lab
+        hours and the import previews are fetched by the page itself, so a slow
+        LabCore is a loading row and then a sentence, never a page that will
+        not open. The Developer section exists only under --dev."""
+        return render_template("settings.html", nav="settings", diag=_diagnostics(),
+                               dev_tools=app.config["DEV_TOOLS"])
 
     @app.route("/help")
     def page_help():
@@ -2140,6 +2301,11 @@ def create_app(gateway, labcore_gateway=None,
         LabCore blip fail a release that was never broken — this whole server
         exists to keep LabCore load independent of how many things are looking.
         """
+        return jsonify(_health())
+
+    def _health() -> dict:
+        """The /healthz answer, shared with Settings › Diagnostics so the two
+        can only ever say the same thing. Memory only (see healthz)."""
         online = getattr(snapshots, "_online", None)
         # Whether LabCore ever accepted our CREATEs and ALTERs. Deliberately
         # NOT part of `status`: a degraded schema still serves a usable floor,
@@ -2169,7 +2335,7 @@ def create_app(gateway, labcore_gateway=None,
             # here is the one thing this route must not do.
             store_info = dict(gateway.health(), reachable=reach)
         split = labcore is not gateway
-        return jsonify({
+        return {
             "status": "ok",
             "version": APP_VERSION,
             "labcore": "unknown" if split else reach,
@@ -2197,7 +2363,7 @@ def create_app(gateway, labcore_gateway=None,
             # LEM has no per-user sessions the way COA does; the floor is
             # anonymous. Reported for a uniform shape across both apps.
             "active_sessions": 0,
-        })
+        }
 
     # ── the page cache ────────────────────────────────────────────────
     # For answers this process is the ONLY writer of: checklist definitions,
@@ -2933,7 +3099,9 @@ def create_app(gateway, labcore_gateway=None,
                 body_json, status, headers = _labcore_failed(
                     exc, "the rest of the V4 import")
                 data = body_json.get_json()
-                data.update({"count": len(saved_names),
+                data.update({"landed": len(saved_names),
+                             "not_landed": len(found) - len(saved_names),
+                             "count": len(saved_names),
                              "checklists": preview,
                              "history_rows": 0, "history_days": 0,
                              "incomplete": True, "dry_run": False,
@@ -2966,7 +3134,12 @@ def create_app(gateway, labcore_gateway=None,
                 data, status, headers = _labcore_failed(
                     exc, "the imported history")
                 payload = data.get_json()
-                payload.update({"count": len(found), "checklists": preview,
+                done = getattr(exc, "done", None)
+                payload.update({"landed": len(found), "not_landed": 0,
+                                "history_landed": done,
+                                "history_not_landed": (len(rows) - done
+                                                       if done is not None else None),
+                                "count": len(found), "checklists": preview,
                                 "history_rows": 0,
                                 "history_days": history_days,
                                 "incomplete": True, "dry_run": False,
@@ -2979,7 +3152,9 @@ def create_app(gateway, labcore_gateway=None,
         _audit("checklist v4 import", "",
                {"imported": len(found), "names": [c.name for c in found],
                 "history_rows": history_rows, "history_days": history_days})
-        return jsonify({"count": len(found), "checklists": preview,
+        return jsonify({"landed": len(found), "not_landed": 0,
+                        "history_landed": history_rows, "history_not_landed": 0,
+                        "count": len(found), "checklists": preview,
                         "history_rows": history_rows,
                         "history_days": history_days, "dry_run": False})
 
@@ -4343,6 +4518,15 @@ def create_app(gateway, labcore_gateway=None,
         payload["created"] = made
         payload["refused"] = refused
         payload["rescheduled"] = rescheduled
+        # The two words every bulk write in this app reports in (constraints
+        # A.1): `landed` is what LabCore acknowledged, `not_landed` what it did
+        # not — refused, or never sent after the queue said no. Settings ›
+        # Imports reads only these, so its sentence cannot drift from the
+        # truth the way "imported 3094" did.
+        payload["landed"] = made
+        payload["not_landed"] = refused
+        payload["reschedule_not_landed"] = (len(plan["reschedule"]) - rescheduled
+                                            if stopped is not None else 0)
         _audit("maintenance history imported", "",
                {"created": made, "refused": refused,
                 "skipped": payload["skipped"],
@@ -6758,6 +6942,72 @@ def create_app(gateway, labcore_gateway=None,
                              "LEM QC history.csv",
                              note="" if named else NAMES_UNREAD)
 
+    @app.route("/api/export/equipment.csv")
+    def api_export_equipment():
+        """The equipment register (Settings › Records and exports): every
+        instrument, where it stands, its state and its PM/calibration dates.
+
+        From the in-memory record, 0 LabCore ops. Before the first read it is
+        a 503, never a header with no rows: an empty equipment register is a
+        statement that the lab owns nothing.
+        """
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return jsonify({"error": "The instrument record has not been read from "
+                                     "LabCore yet, so there is no register to give. "
+                                     "Try again in a moment."}), 503
+        from live_presence import merge_machines
+        machines = merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                                  STATUS_COLORS)
+        names = {lv.get("uid"): lv.get("name") for lv in snap.get("levels") or []}
+
+        def due(m, kind):
+            tasks = [t for t in m.get("maintenance") or [] if t.get("kind") == kind]
+            if not tasks:
+                return "", ""
+            first = min(tasks, key=lambda t: str(t.get("next_due") or "9999"))
+            return str(first.get("last_done") or ""), str(first.get("next_due") or "")
+
+        out = []
+        for m in sorted(machines, key=lambda m: str(m.get("title") or "").lower()):
+            pm_last, pm_next = due(m, "pm")
+            cal_last, cal_next = due(m, "calibration")
+            out.append([m.get("machine_uid"), m.get("title"),
+                        names.get(m.get("level_uid"), ""), m.get("status"),
+                        m.get("reason"), len(m.get("qc_targets") or []) + len(m.get("qc_specs") or []),
+                        pm_last, pm_next, cal_last, cal_next,
+                        "yes" if m.get("live") else "no", m.get("watching") or ""])
+        note = ("" if not snap.get("stale") else
+                "This register was read at %s and LabCore has not answered since."
+                % (snap.get("built_at") or "an unknown time"))
+        return _csv_response(out, ["machine_uid", "instrument", "level", "status", "reason",
+                                   "qc_checks", "pm_last_done", "pm_next_due",
+                                   "calibration_last_done", "calibration_next_due",
+                                   "bench_live", "watching"],
+                             "LEM equipment register.csv", note=note)
+
+    @app.route("/api/export/uncertainty.csv")
+    def api_export_uncertainty():
+        """The uncertainty register (SOP 2.10), every estimate in force, one
+        row each with its twelve Register fields. A failed read is a 503: "no
+        estimates on file" is itself a finding at an assessment."""
+        try:
+            current = uncertainty_store.list_current()
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the uncertainty register")
+        fields = list(uncertainty.REGISTER_FIELDS)
+        titles, named = _titles_soft()
+        out = []
+        for est in current:
+            reg = est.to_register_row()
+            out.append([est.estimate_id, est.machine_uid, titles.get(est.machine_uid, ""),
+                        est.test_name] + [reg.get(f, "") for f in fields])
+        note = "" if out else "No approved uncertainty estimates are on file."
+        if not named:
+            note = (note + " " if note else "") + NAMES_UNREAD
+        return _csv_response(out, ["estimate_id", "machine_uid", "instrument", "test"] + fields,
+                             "LEM uncertainty register.csv", note=note)
+
     @app.route("/api/machines/<machine_uid>/events")
     def api_machine_events(machine_uid):
         limit = request.args.get("limit", default=100, type=int)
@@ -7180,4 +7430,9 @@ def create_app(gateway, labcore_gateway=None,
 
     app.config["WARM"] = _warm
     app.config["PAGE"] = _page          # exercised directly by the cache tests
+    # The fake is LabCore's, not the store's: under --dev the store is
+    # still a LocalStoreGateway, and it is LabCore that must be the fake.
+    app.config["DEV_TOOLS"] = dev_tools_allowed(labcore, dev_tools)
+    if app.config["DEV_TOOLS"]:
+        _register_dev_tools(app, gateway, snapshots)
     return app
