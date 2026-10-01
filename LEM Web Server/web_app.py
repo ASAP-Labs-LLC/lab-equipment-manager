@@ -1188,6 +1188,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
         merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
                                  STATUS_COLORS) if snap.get("ready") else None)
         status = ui_shell.shell_status(snap, merged)
+        # The nav's counts on first paint come from the live payload, the SAME
+        # function the browser then polls (ui_live.nav_meta), so the page that
+        # loads and the poll that follows cannot say two things (§0.2).
+        live = _live_payload(None)
+        status["nav_meta"] = live["nav_meta"]
         state, words = ui_shell.record_words(status)
         has_quality = any(r.rule == "/quality" for r in app.url_map.iter_rules())
         user = session.get("user") or ""
@@ -1196,6 +1201,74 @@ def create_app(gateway, admin_password: Optional[str] = None,
                    record_state=state, record_text=words, user=user)
         g._lem_shell = out
         return out
+
+    # ── the live feed (ia-final §5): GET /api/ui/live ───────────────────
+    # Memory only, 0 LabCore ops (tests/test_ui_live.py counts them). A GET,
+    # so `_is_background` keeps /healthz `idle_seconds` rising while any
+    # number of pages poll it. NOT `POST /api/live`, the bench contract.
+    import jobs as _jobs_mod
+    import ui_live
+    app.config.setdefault("JOBS", _jobs_mod.Registry())
+    app.config["LIVE_FEED"] = ui_live.Feed()
+    app.config["NOTICES"] = ui_live.Notices()
+    # what the poller thread learned about certificates (None: not asked yet)
+    _certs: dict = {"items": None, "at": 0.0}
+    # the last round summary actually read, so a tick's cache drop does not
+    # blank the nav for the second it takes to re-read the day
+    _round_last: dict = {"day": None, "value": None}
+
+    _has_record: dict = {}
+
+    def _record_href(uid: str, section: str) -> str:
+        """Where an instrument's record lives TODAY. `/instruments/<uid>` is
+        the record in the new IA (pieces 4-5); until that route exists the
+        old floor is the record, rather than a link to a 404. Looked up once:
+        routes do not change while the server runs."""
+        if "v" not in _has_record:
+            _has_record["v"] = any(r.rule == "/instruments/<machine_uid>"
+                                   for r in app.url_map.iter_rules())
+        if _has_record["v"]:
+            return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
+        return "/floor"
+
+    def _today_round_day():
+        """Today's cached `/api/checklists` answer, or the last one read
+        today, or None. Never a read: a cold cache is unknown."""
+        day = _today()
+        with _pages_lock:
+            cached = _pages.get(f"checklists:{day}")
+        if cached is not None:
+            _round_last.update(day=day, value=cached)
+            return cached
+        return _round_last["value"] if _round_last["day"] == day else None
+
+    def _live_payload(cursor):
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        ready = bool(snap.get("ready"))
+        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                                 STATUS_COLORS) if ready else None)
+        tables = snapshots.tables() if ready else None
+        mirror = app.config.get("LOG_MIRROR")
+        try:
+            mstatus = mirror.live_status() if mirror is not None else None
+        except Exception:                               # noqa: BLE001
+            mstatus = None
+        return ui_live.payload(
+            feed=app.config["LIVE_FEED"], cursor=cursor, snap=snap, merged=merged,
+            overrides=ui_live.overrides_from_tables(tables), day=_today_round_day(),
+            notices=app.config["NOTICES"], audit_spool=len(audit_spool),
+            certificates=_certs["items"], mirror=mstatus,
+            jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
+            now=_now(), tz=ui_live.lab_tz())
+
+    @app.route("/api/ui/live")
+    def api_ui_live():
+        """Every open page's global status: see ui_live.payload."""
+        cursor = (request.args.get("since") or "").strip() or None
+        resp = jsonify(_live_payload(cursor))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     def _diagnostics() -> list:
         """Settings › Diagnostics: the /healthz facts, each said as a sentence.
@@ -1251,6 +1324,20 @@ def create_app(gateway, admin_password: Optional[str] = None,
                      "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
                                if waiting else "Nothing waiting"),
                      "note": ("oldest " + str(audit_spool.oldest())) if waiting else ""})
+        # The live road, where the bell's "Benches can't reach LEM directly"
+        # sends people. The same count /api/ui/live serves (fleet.live_road).
+        fleet = _live_payload(None).get("fleet")
+        if fleet:
+            road, n = fleet["live_road"], fleet["checking_in"]
+            rows.append({"label": "Live road",
+                         "glyph": "final" if n and road == n else "held",
+                         "value": "%d of %d %s %s it" % (road, n, "bench" if n == 1 else "benches",
+                                                         "uses" if road == 1 else "use"),
+                         "note": ("benches that cannot use it read their settings from LabCore "
+                                  "on a timer instead") if road < n else "settings reach every bench at once"})
+        else:
+            rows.append({"label": "Live road", "glyph": "never", "value": "Not known yet",
+                         "note": "no instrument record has been read"})
         return rows
 
     @app.route("/settings")
@@ -1557,7 +1644,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     log_mirror = LogMirror(
         gateway,
         path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
-                          "log-mirror.sqlite3"))
+                          "log-mirror.sqlite3"),
+        jobs=app.config["JOBS"])
     app.config["LOG_MIRROR"] = log_mirror
     app.config["LOG_MIRROR_SERVICE"] = LogMirrorService(
         log_mirror,
@@ -1643,11 +1731,30 @@ def create_app(gateway, admin_password: Optional[str] = None,
         talks to LabCore on a timer, so a raise here would end all of it.
         """
         for name, rider in (("audit spool", audit_spool.drain),
-                            ("search corpus", _refresh_search_corpus)):
+                            ("search corpus", _refresh_search_corpus),
+                            ("today's round", _warm_round),
+                            ("certificate expiry", _warm_certificates)):
             try:
                 rider()
             except Exception:                       # noqa: BLE001
                 logger.exception("%s failed on the snapshot cycle", name)
+
+    def _warm_round():
+        """Keep today's round in the page cache, so the live feed always has
+        it: a new day starts cold, and the feed may not read LabCore. A no-op
+        while the day is cached."""
+        _page(f"checklists:{_today()}", _build_checklist_day)
+
+    def _warm_certificates():
+        """The bell's "a certificate is expiring" items, at most every 30 min.
+        One LabCore read on this thread; the feed only reads the result. A
+        failed read leaves the last answer (or None: not known), never []."""
+        if time.time() - _certs["at"] < 1800:
+            return
+        _certs["at"] = time.time()
+        report = expiry_report(certificate_store, now=_now(), within_days=None)
+        _certs["items"] = [{"standard": c.standard_name, "expires": c.expires_at}
+                           for c in report.get("expiring") or []]
 
     snapshots.on_cycle = _on_cycle
 
@@ -1869,6 +1976,31 @@ def create_app(gateway, admin_password: Optional[str] = None,
             for key in [k for k in _pages
                         if any(k.startswith(p) for p in prefixes)]:
                 _pages.pop(key, None)
+        today = f"checklists:{_today()}"
+        if any(today.startswith(p) for p in prefixes):
+            _rewarm_round()
+
+    def _rewarm_round() -> None:
+        """Re-read today's round off the request path after a checklist write.
+
+        `/api/ui/live` reads the round from this cache and never reads LabCore
+        itself, so without this a tick would leave every nav saying the old
+        count until somebody opened the checklist page. The cost lands on a
+        thread, once per write, which is the write's own cost, never a poll's.
+        Off in tests unless asked for (LEM_REWARM), so a test counting a
+        toggle's LabCore ops is not racing a thread.
+        """
+        if not app.config.get("LEM_REWARM", not app.config.get("TESTING")):
+            return
+
+        def run():
+            try:
+                _page(f"checklists:{_today()}", _build_checklist_day)
+            except Exception as exc:                    # noqa: BLE001
+                logger.warning("today's round could not be re-read: %s", exc)
+        t = threading.Thread(target=run, daemon=True, name="lem-round-rewarm")
+        app.config["LEM_REWARM_THREAD"] = t
+        t.start()
 
 
     from machine_configs import (ConfigReadUnavailable, MachineConfigError,

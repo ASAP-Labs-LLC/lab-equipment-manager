@@ -1,8 +1,9 @@
 """What the shell (templates/_layout.html, _shell.html) says, from memory only.
 
 The sidebar foot, the rail badges and the ``.rail-status`` strip have to say
-something true on the first paint, before any live feed is wired (that is a
-later piece: ``/api/ui/live``). Everything here is read from the in-memory
+something true on the first paint, before the live feed (``/api/ui/live``,
+ui_live.py, static/js/status.js) has answered. The nav counts on first paint
+are ``ui_live.nav_meta`` of the same payload the feed then serves. Everything here is read from the in-memory
 snapshot and the live road — **0 LabCore ops per page render**. A shell that
 asked LabCore anything would turn every open tablet into load on the queue the
 snapshot exists to protect (tests/test_ui_shell_pages.py counts the calls).
@@ -98,7 +99,9 @@ def record_words(status: dict) -> tuple:
     The same four states as `LEMUi.recordStatus`; the server says the clock
     time ("Updated 13:02") because it cannot know when the page will be read,
     and shell.js turns that into "Updated 4 s ago" and keeps it ageing. It
-    never says "Live": nothing on this page polls yet.
+    never says "Live": nothing has polled yet when the server renders. Once
+    the live feed answers (a second later), status.js replaces these words
+    with the feed's own ("Live · updated 4 s ago").
     """
     at = status.get("record_at")
     down = status.get("labcore") == "unreachable"
