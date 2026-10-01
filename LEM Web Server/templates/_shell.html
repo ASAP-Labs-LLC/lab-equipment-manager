@@ -2,7 +2,7 @@
     Swapped: the mark, the five nav items, the foot's status lines. Added: a
     rail badge and an aria-label on every nav item, so the rail keeps its words
     (§2.1). The values are this render's, from memory (ui_shell.shell_status);
-    the live feed (a later piece) keeps them current through LEMShell.
+    the live feed (status.js) keeps them current through LEMShell.
     shell.js wires it. Every icon is different: the judges caught a reuse. -#}
 {%- set S = shell_state() -%}
 {%- macro nav_icon(kind) -%}
@@ -42,7 +42,7 @@
   </section>
 
   <div class="sb-foot">
-    {#- what is running (a later piece fills it); hidden while nothing runs -#}
+    {#- what is running (running_now.js fills it); hidden while nothing runs -#}
     <button type="button" class="sb-running" id="running-now" data-testid="running-now"
             aria-haspopup="true" aria-expanded="false" aria-controls="running-now-popover" hidden></button>
     <div class="popover sb-running-pop" id="running-now-popover" data-testid="running-now-popover"

@@ -154,8 +154,9 @@
     }
 
     // ── the record's age, the benches: the foot and the rail strip ─────────
-    // Both places say the same words from one state. The live feed (a later
-    // piece) calls setStatus; until then the page's own render ages on screen.
+    // Both places say the same words from one state. The live feed
+    // (status.js) calls setStatus every second once it has started; before
+    // its first answer the page's own render ages on screen.
     const record = { at: null, labcore: 'unknown' };
     let statusOverride = null;          // { state, text } from the live feed
     function renderRecord() {
@@ -164,7 +165,7 @@
             const dot = $(dotId);
             const text = $(textId);
             if (dot) dot.dataset.state = st.state;
-            if (text && text.textContent !== st.text) text.textContent = st.text;
+            if (text && text.textContent !== st.text) { text.textContent = st.text; text.title = st.text; }
         }
     }
     function setFleet(textValue, all) {
@@ -184,7 +185,19 @@
             if (sep && sep.classList.contains('rs-sep')) sep.hidden = !show;
         }
     }
-    // status: { live?: {state, text}, fleet?: {checking, total} | null }
+    // what is running, in the strip (the foot has #running-now for it)
+    function setJob(textValue) {
+        const job = $('rs-job');
+        if (!job) return;
+        const show = !!textValue;
+        job.hidden = !show;
+        if (job.textContent !== (textValue || '')) job.textContent = textValue || '';
+        const sep = job.previousElementSibling;
+        if (sep && sep.classList.contains('rs-sep')) sep.hidden = !show;
+    }
+    // status: { live?: {state, text}, fleet?: {checking, total} | null, job?: text | null }
+    // The live feed (status.js, running_now.js) calls this; the words in the
+    // foot and in the rail strip are always the same words.
     function setStatus(status) {
         if (!status) return;
         if (status.live) statusOverride = { state: status.live.state, text: String(status.live.text) };
@@ -192,6 +205,7 @@
             const f = status.fleet;
             setFleet(f ? U.fleetText(f.checking, f.total) : null, f ? f.checking === f.total : undefined);
         }
+        if ('job' in status) setJob(status.job);
         renderRecord();
     }
 
