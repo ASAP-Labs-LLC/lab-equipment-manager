@@ -136,6 +136,50 @@ Two related items from the same report, deliberately NOT done:
   Full root-cause chain and the fixes proposed to the LabCore team:
   `docs/labcore-lem-tables-and-the-write-queue.md`.
 
+## LEM's record lives in LEM's store, not in LabCore (2026-10-01)
+
+Transfer spec v4 §5 (piece P6). Every `lem_*` table used to live inside
+LabCore, behind a queue that serialises the lab at ~1.5 ops/sec and kills any
+read past 8 s — and the 17025 machine log could be rewritten or deleted by any
+statement reaching it ("purge history" did). Sections below that say "LabCore
+is the record" for `lem_*` tables describe the world before this.
+
+- **`lem_store.LocalStoreGateway`** — a SQLite file on this server's disk
+  (`LEM_STORE_PATH`, production `C:\ASAPApps\lem\store\lem.db`). WAL,
+  `synchronous=FULL`, one writer connection under one lock, readers from a
+  pool. Same surface and answer shapes as the LabCore gateways, so every store
+  module and snapshot arm runs unchanged; a local `sqlite3.Error` is
+  `{"error": ...}`, never empty rows. `transaction()` exists.
+- **`create_app(store, labcore=...)`.** LabCore is asked only for what is
+  LabCore's: sign-in, `LabCoreDataSource` (`samples`/`sample_tests`), the
+  test-method list. With one argument the gateway serves both (the test
+  suite's shape). `HttpLabCoreGateway` as the store is refused.
+- **Append-only, in the file.** Triggers refuse UPDATE/DELETE on
+  `lem_machine_log` and `log_annotation`. Do not write code (or tests, or
+  demo seeders) that rewrites a log row: hide it with an annotation.
+- **Readers read `lem_machine_log_effective`** — the record minus rows whose
+  newest annotation hides them, minus history older than the machine's
+  `lem_machine_config.retired_at`. It is a VIEW: use `id`, never `rowid`.
+  `tests/test_gateway_split.py` parses every string in the server and fails on
+  a raw `FROM lem_machine_log` without a `# raw-log: why` within two lines.
+- **Purge is hide.** `purge_history` writes a `retired_at` tombstone on the
+  config row; nothing is deleted. Re-saving the config clears it.
+- **W2:** correction save/removal is one transaction (factor, receipt, log
+  line, `request_ledger` row). A retry with the same `X-Request-Id` gets the
+  stored answer and `X-Request-Replayed: true`.
+- **`LogMirror` → `StoreLogMirror`** on a store: same API, reads the view,
+  no copy. The old class remains for a LabCore-held log.
+- **Boots:** live = read-write; `--no-publish` = the same store READ-ONLY
+  (never created); `--dev` = `InMemoryLabCore` + a scratch store.
+- **The suite runs on the store:** `tests/conftest.py` swaps
+  `FakeLabCoreGateway` for a `LocalStoreGateway` on a throwaway file that also
+  holds LabCore's three core tables. To claim "costs LabCore nothing", count on
+  a separate LabCore: `tests/labcore_counter.CountingLabCore`.
+- **Not yet:** the bench sync API (P7), the bridge that pulls v3.9 benches'
+  rows out of LabCore into the store and projects config back (P9), backups
+  (P11). Until P9, a server on the store does not see what v3.9 benches write
+  to LabCore — this is not deployable on its own.
+
 ## QC expiry is a rolling window (2026-08-03)
 
 Changed from V4's calendar-day rule at Ryan's request ("as long as it tracks real
