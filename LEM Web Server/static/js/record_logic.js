@@ -320,7 +320,20 @@
         return ((task && task.name) || 'Task') + ' marked done' + (who ? ' · ' + who : '') + (at ? ' · ' + at : '');
     }
 
-    const api = { localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    /** A readiness tile's detail as whole facts: its " · "-joined detail,
+        plus, on the Bench tile, when it last checked in. The page draws each
+        part unbreakable, so a narrow tile wraps only between facts and never
+        leaves "14:01" alone on a line (round 8, at 820 wide). */
+    function tileParts(t, nowMs) {
+        const parts = String((t && t.detail) || '').split(' · ').map(x => x.trim()).filter(Boolean);
+        if (t && t.key === 'bench' && t.at) {
+            const at = stamp(t.at, nowMs, true);
+            if (at) parts.push(at);
+        }
+        return parts;
+    }
+
+    const api = { tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

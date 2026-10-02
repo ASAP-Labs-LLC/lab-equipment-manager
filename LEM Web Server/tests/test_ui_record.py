@@ -976,24 +976,69 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         # the tile says the worst row's word, never a different one
         if rows:
             worst = next(k for k in ("out", "due", "none", "in") if k in keys)
-            word = next(c["verdict"]["word"] for c in rows if c["verdict"]["key"] == worst)
-            assert tile["word"] == word, (name, tile, word)
+            words = [c["verdict"]["word"] for c in rows if c["verdict"]["key"] == worst]
+            # of the worst rows, "QC due" (a run is owed and one ran
+            # before) outranks "No verdict yet" (never run): both make the
+            # card say "QC due on …", and the tile says the stronger
+            want = "QC due" if "QC due" in words else words[0]
+            assert tile["word"] == want, (name, tile, words)
+            # a row's word and glyph are one §4.1 pair, never mixed
+            for c in rows:
+                v = c["verdict"]
+                assert {"In spec": "final", "QC due": "half", "Out of spec": "error",
+                        "No verdict yet": "never"}[v["word"]] == v["glyph"], (name, v)
         else:
             assert tile["word"] == "No QC assigned", name
 
-    def test_koehler_never_run_on_a_bench_that_checks_in_is_qc_due(self):
-        """Dev seed Koehler K23000 read "QC due on . Next: run the QC
-        standard." over a row that said "No verdict yet · never run"."""
+    def test_koehler_never_run_on_a_bench_that_checks_in_is_no_verdict_yet(self):
+        """Dev seed Koehler K23000: an assigned check that has never run, on a
+        bench that checks in. Round 2 found the card reading "QC due on ."
+        over the row; round 8's critic found the row reading "QC due · never
+        run" while the Instruments list's Last QC column said "No verdict yet"
+        for the same instrument. §4.1 defines "No verdict yet" as exactly
+        this case (assigned but never run), so the row and the QC tile say
+        it, in §4.1's hollow ring, with the reason "never run".
+
+        The instrument's verdict is a different level of §4.1 and is
+        unchanged: a check is owed, so the card says "OK to run, but… QC due
+        on <check>. Next: run AF26", and the QC tile is the current tile,
+        because it is the one that explains the "but". The row keeps key
+        "due" so everything that counts what makes the card say "QC due"
+        (the caption, the home's row) still counts it."""
         m = prod("PAC Flash 2")
         s = dict(m["effective_specs"][0], last_qc_in_spec=None, last_qc_at=None, last_qc_value=None)
         rec = record(dict(m, effective_specs=[s]))
         assert rec["readiness"]["word"] == "OK to run, but…"
         (c,) = rec["qc"]["checks"]
-        assert c["verdict"]["word"] == "QC due" and c["verdict"]["detail"] == "never run"
+        assert c["verdict"] == {"key": "due", "word": "No verdict yet", "glyph": "never",
+                                "detail": "never run"}
         assert rec["readiness"]["caption"]["lead"] == "QC due on Flash Point Closed cup (small scale)"
         assert rec["readiness"]["caption"]["next"] == "Run AF26"
-        assert _qc_tile(rec)["word"] == "QC due"
+        tile = _qc_tile(rec)
+        assert (tile["word"], tile["detail"], tile["glyph"]) == ("No verdict yet", "Never run", "never")
+        assert tile["current"] is True
         assert rec["qc"]["selected"] == c["test"]
+
+    def test_a_result_against_an_old_standard_is_no_verdict_yet_too(self):
+        """The standard changed and nothing has run against the new one: by
+        §4.1 that is assigned and never run (against this standard). The
+        Instruments list's Last QC column drops a superseded result and says
+        "No verdict yet", so the row says it too."""
+        m = prod("PAC Flash 2")
+        s = dict(m["effective_specs"][0], last_qc_superseded_by="OLD-STD")
+        rec = record(dict(m, effective_specs=[s]))
+        (c,) = rec["qc"]["checks"]
+        assert (c["verdict"]["key"], c["verdict"]["word"], c["verdict"]["glyph"]) == ("due", "No verdict yet", "never")
+        assert c["verdict"]["detail"].startswith("not yet run against ")
+
+    def test_a_check_that_ran_but_has_no_verdict_in_the_window_is_still_qc_due(self):
+        """Not every "due" row is a never-run one. A check that ran, and whose
+        pass is older than its window, is QC due: the list shows its date in
+        Last QC, not a word, so there is nothing for the two pages to
+        disagree on, and "QC due · last passed …" says what to do."""
+        rec = record(prod("PAC Flash 2", at=AT + timedelta(days=8)))
+        words = {(c["verdict"]["key"], c["verdict"]["word"]) for c in rec["qc"]["checks"]}
+        assert ("due", "QC due") in words, words
 
     def test_viscocity_old_pass_on_a_stopped_bench_is_no_verdict_yet(self):
         """Production Viscocity: bench stopped, card Can't tell, and a pass
@@ -1054,7 +1099,10 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         assert row["readiness"]["word"] == "OK to run, but…"
         assert "ASTM D1 - Thing" in json.dumps(row)
         rec = record(m)
-        assert rec["qc"]["checks"][0]["verdict"]["word"] == "QC due"
+        # assigned, never run: owed (the card's "QC due on …"), and in §4.1's
+        # words for the check itself, No verdict yet · never run
+        v = rec["qc"]["checks"][0]["verdict"]
+        assert (v["key"], v["word"], v["detail"]) == ("due", "No verdict yet", "never run")
         assert "Thing" in rec["readiness"]["caption"]["lead"]
 
     def test_the_dev_seed_agrees_too(self, tmp_path):
@@ -1072,6 +1120,48 @@ class TestEveryCheckIsJudgedByTheCardsRule:
                 assert "due" in keys, (r["title"], keys)
             if rec["readiness"]["state"] == "cant_tell":
                 assert "in" not in keys, r["title"]
+
+
+class TestOneWordForNeverRunOnEveryPage:
+    def test_the_tile_wears_the_rows_ring(self):
+        """§4.1 gives No verdict yet a hollow ring and Can't tell a dashed
+        one. The row drew the hollow ring and the QC tile above it the dashed
+        one, so the same words wore two shapes a few centimetres apart. The
+        tile now wears "never", which the page draws as a solid hollow ring."""
+        for rec in (record(prod("Eravap")), record(prod("Viscocity"))):
+            tile = _qc_tile(rec)
+            assert (tile["word"], tile["glyph"]) == ("No verdict yet", "never"), tile
+        js = (ROOT / "static" / "js" / "record.js").read_text()
+        assert re.search(r"kind === 'never'[^\n]*\n[^\n]*class: 'ring' \}", js), \
+            "circle('never') must draw a solid (not dashed) ring"
+
+    def test_the_record_and_the_instruments_list_agree_on_the_dev_seed(self, tmp_path):
+        """Round 8's critic: for the dev seed's Koehler K23000 the record's
+        Verdict column and QC tile said "QC due · never run" while the
+        Instruments list's Last QC column said "No verdict yet". One fact,
+        two words, on two pages (§0.2 say it once; §4.1 one vocabulary).
+        Walk every seeded instrument: wherever the list says "No verdict
+        yet", every row on the record that has no result says it too, and
+        so does the QC tile."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        rows = c.get("/api/ui/instruments").get_json()["instruments"]
+        seen = 0
+        for r in rows:
+            if (r.get("last_qc") or {}).get("word") != "No verdict yet":
+                continue
+            seen += 1
+            rec = c.get("/api/ui/instruments/%s" % r["uid"]).get_json()
+            unrun = [x for x in rec["qc"]["checks"] if not x.get("at")]
+            assert unrun, r["title"]
+            for x in unrun:
+                assert x["verdict"]["word"] == "No verdict yet", (r["title"], x["verdict"])
+            assert _qc_tile(rec)["word"] == "No verdict yet", (r["title"], _qc_tile(rec))
+        assert seen >= 1, "the seed should exercise this (Koehler K23000)"
+        k = next(r for r in rows if r["title"] == "Koehler K23000")
+        rec = c.get("/api/ui/instruments/%s" % k["uid"]).get_json()
+        assert rec["readiness"]["word"] == "OK to run, but…"
+        assert "QC due" not in json.dumps(rec["qc"]), "the rows say §4.1's word, not the card's"
 
 
 class TestASilentBenchIsCantTell:
@@ -1146,6 +1236,23 @@ class TestSignedOutPrimaryKeepsItsContrast:
         assert m, "no signed-out rule for the primary"
         assert "color: var(--ink-fg)" in m.group(1) and "border-style: solid" in m.group(1)
         assert re.search(r"body\.anon \.btn-primary\[data-gated\]::before", css)
+
+    def test_the_topbar_gated_button_says_sign_in_the_same_way(self):
+        """Round 8's critic: signed out, the record's two gated buttons said
+        "sign in first" two ways: the topbar "Take off line…" dashed and
+        muted, the primary solid with a lock. On this page both keep their
+        own words and solid edge and both carry the lock; the shell's
+        dashed dim stays for every other page."""
+        css = (ROOT / "static" / "css" / "lem.css").read_text()
+        tpl = (ROOT / "templates" / "instrument.html").read_text()
+        btn = re.search(r'<button[^>]*id="topbar-online"[^>]*>', tpl).group(0)
+        assert "gate-lock" in btn and "data-gated=" in btn
+        m = re.search(r"body\.anon \.btn\.gate-lock\[data-gated\][^{]*\{([^}]*)\}", css)
+        assert m, "no signed-out rule for the topbar's gated button"
+        assert "color: var(--text)" in m.group(1) and "border-style: solid" in m.group(1)
+        lock = re.search(r"([^{}]*)\{[^}]*-webkit-mask: url", css).group(1)
+        assert "body.anon .btn.gate-lock[data-gated]::before" in lock
+        assert "body.anon .btn-primary[data-gated]::before" in lock
 
 
 def test_favicon_ico_is_not_a_404(tmp_path):

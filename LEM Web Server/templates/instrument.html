@@ -14,7 +14,7 @@
   <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Instruments</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page" id="crumb-name">{{ data.title }}</span></nav>
   <span class="spacer"></span>
   <a class="btn btn-ghost btn-sm" id="show-map" href="{{ data.topbar.map }}" data-testid="show-map">Show on the floor map</a>
-  <button type="button" class="btn btn-sm" id="topbar-online" data-act="offline" data-gated="take it off line" data-testid="topbar-online"{% if not data.topbar.online %} hidden{% endif %}>Take off line…</button>
+  <button type="button" class="btn btn-sm gate-lock" id="topbar-online" data-act="offline" data-gated="take it off line" data-testid="topbar-online"{% if not data.topbar.online %} hidden{% endif %}>Take off line…</button>
 {% endblock %}
 {% block content %}
 <main class="content record" id="main" tabindex="-1" data-testid="record-page" data-uid="{{ data.uid }}"

@@ -252,5 +252,21 @@ check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
     R.doneToast({ name: 'Annual calibration' }, 'ryan', '13:42'), 'Annual calibration marked done · ryan · 13:42');
 }
 
+// Round 8: at 820 wide the Bench tile's detail "Results folder · today 14:01"
+// broke between "today" and "14:01", leaving the clock alone on a line. A
+// tile's detail is a list of facts joined by " · "; each fact is kept whole
+// (the page draws each as an unbreakable span), so a narrow tile breaks only
+// at a separator. The Bench tile appends when it last checked in.
+{
+  const NOW = new Date(2026, 9, 2, 15, 0).getTime();
+  check('the bench tile: source, then when, as two whole parts',
+    R.tileParts({ key: 'bench', detail: 'Results folder', at: '2026-10-02T14:01:00' }, NOW),
+    ['Results folder', 'today 14:01']);
+  check('a detail already joined by " · " splits at its separators',
+    R.tileParts({ key: 'qc', detail: 'Never run · bench stopped' }, NOW), ['Never run', 'bench stopped']);
+  check('only the bench tile carries a time', R.tileParts({ key: 'qc', detail: 'In spec', at: '2026-10-02T14:01:00' }, NOW), ['In spec']);
+  check('no detail, no parts', R.tileParts({ key: 'online', detail: '' }, NOW), []);
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

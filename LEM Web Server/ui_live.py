@@ -184,8 +184,11 @@ def check_verdict(spec: Optional[dict], machine: dict) -> dict:
     * on a bench that is stopped or never checked in (not a shut lab),
       every other check is **No verdict yet · bench stopped**: the card says
       Can't tell, and "QC due" would ask for a run nothing would pick up;
-    * an assigned check with no verdict in the window is **QC due**: that is
-      what makes the card say "OK to run, but… QC due on X". A check whose
+    * an assigned check with no verdict in the window is due (key "due"):
+      that is what makes the card say "OK to run, but… QC due on X". Its
+      word is **QC due** when it has run before, and **No verdict yet ·
+      never run** when it has not (§4.1's definition, and the Instruments
+      list's word for the same fact). A check whose
       band is not published yet counts once its bench is checking in, since
       then a run could judge it and nobody has;
     * a pass on a bench that is checking in, older than its window
@@ -219,7 +222,14 @@ def check_verdict(spec: Optional[dict], machine: dict) -> dict:
                  else "never run"]
         if not running:
             parts.append(_bench_word(machine))
-        return {"key": "due", "word": "QC due", "glyph": "half", "detail": " · ".join(parts)}
+        # Still key "due": a run is owed, and that is what makes the card say
+        # "OK to run, but… QC due on X". But a check that has never run (or
+        # never against this standard) is §4.1's **No verdict yet**, the word
+        # the Instruments list's Last QC column uses for the same fact (round
+        # 8's critic: "QC due · never run" here, "No verdict yet" there).
+        if ran:
+            return {"key": "due", "word": "QC due", "glyph": "half", "detail": " · ".join(parts)}
+        return {"key": "due", "word": "No verdict yet", "glyph": "never", "detail": " · ".join(parts)}
     if not running:
         return {"key": "none", "word": "No verdict yet", "glyph": "never",
                 "detail": _bench_word(machine)}

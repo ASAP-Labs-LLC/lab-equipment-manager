@@ -54,6 +54,8 @@
         } else if (kind === 'due' || kind === 'half') {
             box.appendChild(svg('circle', { cx: 11, cy: 11, r: 9.25, class: 'ring' }));
             box.appendChild(svg('path', { d: 'M11 1.75a9.25 9.25 0 0 1 0 18.5z', class: 'fill' }));
+        } else if (kind === 'never') {
+            box.appendChild(svg('circle', { cx: 11, cy: 11, r: 9.25, class: 'ring' }));
         } else if (kind === 'off') {
             box.appendChild(svg('rect', { x: 4.5, y: 4.5, width: 13, height: 13, rx: 1.5, transform: 'rotate(45 11 11)', class: 'ring' }));
         } else {
@@ -113,8 +115,18 @@
     function tile(t) {
         const kids = [circle(t.glyph), h('span', { className: 't-title', text: t.title }),
             h('span', { className: 't-word', text: t.word })];
-        const detail = t.detail + (t.at && t.key === 'bench' ? ' · ' + R.stamp(t.at, undefined, true) : '');
-        if (detail) kids.push(h('span', { className: 't-detail', text: detail }));
+        // a short fact is kept whole ("today 14:01"), so a narrow tile wraps
+        // between facts; a long one ("Nobody has taken it off line") may wrap
+        // inside itself rather than run out of its tile
+        const parts = R.tileParts(t);
+        if (parts.length) {
+            const d = h('span', { className: 't-detail' });
+            parts.forEach((x, i) => {
+                if (i) d.appendChild(document.createTextNode(' · '));
+                d.appendChild(h('span', { className: 't-part' + (x.length <= 18 ? ' whole' : ''), text: x }));
+            });
+            kids.push(d);
+        }
         const a = t.action;
         if (a && a.href) kids.push(h('a', { className: 't-link', href: a.href, text: a.label }));
         return h('div', { className: 'rtile' + (t.current ? ' current' : ''), 'data-key': t.key, 'data-testid': 'ready-tile' }, ...kids);
@@ -182,7 +194,7 @@
                 h('td', { className: 'c-band' }, bandCell(c)),
                 h('td', { className: 'c-track' }, track(c)),
                 h('td', { className: 'c-last num', text: R.fmtQC(c.value, c) }),
-                h('td', { className: 'c-verdict' }, h('span', { className: 'verdict ' + (VERDICT_CLASS[v.key] || '') }, glyph(v.glyph),
+                h('td', { className: 'c-verdict' }, h('span', { className: 'verdict ' + (v.glyph === 'never' ? '' : (VERDICT_CLASS[v.key] || '')) }, glyph(v.glyph),
                     h('span', { text: v.word })), v.detail ? h('span', { className: 'sub' + (v.detail.length <= 26 ? ' one-line' : ''), text: v.detail }) : null),
                 h('td', { className: 'c-when', text: c.at ? R.stamp(c.at) : '' }));
         }));

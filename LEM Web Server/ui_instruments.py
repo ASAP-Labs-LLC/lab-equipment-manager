@@ -290,10 +290,17 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
     if by["out"]:
         qc = ("Out of spec", "bad", "%d of %d %s" % (len(by["out"]), n, "check" if n == 1 else "checks"))
     elif by["due"]:
-        qc = ("QC due", "due", _tests(by["due"]))
+        ran = [c for c in by["due"] if c["verdict"]["word"] == "QC due"]
+        if ran:
+            qc = ("QC due", "due", _tests(ran if len(ran) < len(by["due"]) else by["due"]))
+        else:
+            # every owed check has never run: §4.1's No verdict yet, the
+            # rows' word and the list's (the ring, not the half-ring)
+            why = by["due"][0]["verdict"]["detail"].split(" · ")[0]
+            qc = ("No verdict yet", "never", why[:1].upper() + why[1:])
     elif by["none"]:
         why = by["none"][0]["verdict"]["detail"]
-        qc = ("No verdict yet", "unknown", why[:1].upper() + why[1:])
+        qc = ("No verdict yet", "never", why[:1].upper() + why[1:])
     elif checks:
         qc = ("In spec", "ok", "%d of %d %s" % (n, n, "check" if n == 1 else "checks"))
     else:
@@ -304,7 +311,7 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
     off = state == OFF_LINE
     tiles = [
         {"key": "qc", "title": "QC", "word": qc[0], "glyph": qc[1], "detail": qc[2],
-         "current": state in (NOT_OK, OK_BUT) and qc[1] in ("bad", "due"),
+         "current": state in (NOT_OK, OK_BUT) and bool(by["out"] or by["due"]),
          "action": {"label": "See the checks", "href": href(uid, "qc")}},
         {"key": "bench", "title": "Bench", "word": b["word"], "glyph": bench_glyph,
          "detail": source_caption(m.get("watching")), "at": b["at"],
