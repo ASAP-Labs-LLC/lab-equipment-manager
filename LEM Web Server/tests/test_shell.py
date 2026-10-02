@@ -18,7 +18,9 @@ import pytest
 
 from labcore_gateway import FakeLabCoreGateway
 
-PAGES = ["/", "/floor", "/checklists", "/maintenance", "/logs"]
+# /checklists is a 302 to the round (a new shell page, tests/test_round_page.py);
+# the old checklists page, with the editor, answers at /checklists/edit
+PAGES = ["/", "/floor", "/checklists/edit", "/maintenance", "/logs"]
 DESTS = ["/floor", "/checklists", "/maintenance", "/logs"]
 
 
@@ -100,7 +102,7 @@ class TestNavigation:
         assert 'href="/"' in body(client, path), path
 
     @pytest.mark.parametrize("path,expected", [
-        ("/floor", "/floor"), ("/checklists", "/checklists"),
+        ("/floor", "/floor"), ("/checklists/edit", "/checklists"),
         ("/maintenance", "/maintenance"), ("/logs", "/logs")])
     def test_the_current_page_is_marked(self, client, path, expected):
         html = body(client, path)
