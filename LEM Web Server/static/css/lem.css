@@ -843,3 +843,148 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
     .table-card .tbl th:first-child, .table-card .tbl td:first-child { padding-left: var(--s4); }
     .table-card .tbl th:last-child, .table-card .tbl td:last-child { padding-right: var(--s4); }
 }
+
+/* ── the floor map (/?view=map, piece 12; js/plan.js draws, js/floor_map.js runs) ──
+   The plan is the bounding box of the bays somebody placed (J1: the old map
+   was a fixed half-width grid of empty dashed cells with dead space below),
+   with one uniform cell that fills the window's height within 88-136px.
+   Empty bays are bare floor; they become dashed drop targets only in
+   Arrange. A bay is a card: name, glyph + word, one detail line, each one
+   line with an ellipsis (the bay's title has the whole story). Status colour
+   is the glyph and the word only: the Not-OK bay has the 1.5px ink border
+   and a bold word, never a red fill; a bench that stopped checking in has a
+   dashed outline. Tokens only (tests/test_ui_contrast.py). */
+.map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--s5); align-items: start; }
+.map-layout[hidden] { display: none; }
+.plan-card { padding: var(--s4) var(--s5) var(--s5); min-width: 0; }
+.plan-bar { display: flex; align-items: center; gap: var(--s3); min-height: 40px; margin-bottom: var(--s4); min-width: 0; }
+.plan-bar .spacer { flex: 1; }
+.plan-title { margin: 0; font-size: var(--fs-lg); font-weight: 600; white-space: nowrap; }
+.plan-title[hidden], .level-seg[hidden] { display: none; }
+.level-seg { flex: none; }
+.plan-caption { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.arrange-btn { flex: none; gap: 6px; }
+.arrange-btn[hidden] { display: none; }
+.arrange-btn .lockmark { display: none; }
+body.anon .arrange-btn .lockmark { display: inline-block; }
+
+.plan {
+    display: grid; gap: var(--plan-gap, 12px); padding: var(--plan-gap, 12px); border-radius: var(--radius-md); background: var(--bg-sunken);
+    grid-template-columns: repeat(var(--plan-cols, 1), minmax(0, 1fr));
+    grid-template-rows: repeat(var(--plan-rows, 1), var(--cell-h, 104px));
+}
+.plan[hidden] { display: none; }
+.bay {
+    display: flex; flex-direction: column; justify-content: flex-start; min-width: 0; min-height: 0; overflow: hidden;
+    padding: 10px 12px; border: 1px solid var(--border-light); border-radius: var(--radius-md);
+    background: var(--bg-card); color: var(--text); text-decoration: none; box-shadow: var(--e1);
+    font: inherit; text-align: left;
+    transition: border-color var(--t-fast) var(--ease-std), opacity var(--t-fast) var(--ease-std);
+}
+a.bay:hover { border-color: var(--border-strong); }
+.bay .b-name { font-size: var(--fs-md); font-weight: 600; line-height: 20px; }
+.bay .b-word { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-sm); font-weight: 500; line-height: 18px; }
+.bay .b-detail { font-size: var(--fs-xs); color: var(--text-muted); line-height: 16px; }
+.bay .b-wtext, .bay .b-detail { display: block; min-width: 0; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a name may take two lines ("Agilent / GC 1" keeps its number) */
+.bay .b-name { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; min-width: 0; max-width: 100%; }
+/* compact (a wide floor, or Arrange): 8px gutters, a tighter bay, the same three lines */
+.plan.compact .bay { padding: 8px 9px; }
+.plan.compact .bay .b-name { font-size: var(--fs-sm); line-height: 17px; }
+.plan.compact .bay .b-word { font-size: var(--fs-xs); line-height: 16px; gap: 5px; }
+.plan.compact .bay .b-detail { line-height: 15px; }
+/* Arrange shows a name and a glyph: where things stand is the whole job */
+.plan.arranging .bay .b-detail { display: none; }
+/* roomy cells (140px+): the same three lines, a size larger */
+.plan.roomy .bay { padding: 14px 16px; }
+.plan.roomy .bay .b-name { font-size: var(--fs-lg); line-height: 22px; }
+.plan.roomy .bay .b-word { font-size: var(--fs-md); line-height: 20px; }
+.plan.roomy .bay .b-detail { font-size: var(--fs-sm); line-height: 18px; }
+/* grand cells (200px+, a floor with few rows): read from across the room */
+.plan.grand .bay { padding: 18px 20px; }
+.plan.grand .bay .b-name { font-size: 20px; line-height: 26px; }
+.plan.grand .bay .b-word { font-size: var(--fs-lg); line-height: 22px; gap: 8px; }
+.plan.grand .bay .b-word .glyph { width: 12px; height: 12px; }
+.plan.grand .bay .b-detail { font-size: var(--fs-md); line-height: 20px; }
+/* the name leads at the top; the verdict and its detail sit together at the foot */
+.bay .b-word { margin-top: auto; }
+.bay .b-detail { margin-top: 2px; }
+.bay .b-word .glyph { flex: none; }
+.bay.s-not_ok .b-word { color: var(--st-error); }
+.bay.s-ok_but .b-word { color: var(--pill-held-fg); }
+.bay.stop { border: 1.5px solid var(--ink); }
+.bay.stop .b-word { font-weight: 700; }
+.bay.stopped { border-style: dashed; border-color: var(--border-strong); box-shadow: none; }
+.bay.stop.stopped { border-color: var(--ink); }
+.bay.focus { outline: 2px solid var(--accent); outline-offset: 3px; }
+.bay.dim { opacity: 0.38; }
+.bay.dim:hover, .bay.dim:focus-visible { opacity: 1; }
+.bay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Arrange: the floor shows its bays, a ring of room to grow into, and every
+   instrument becomes something you pick up */
+.plan.arranging { outline: 1.5px dashed var(--border-strong); outline-offset: -1px; }
+.plan .cell { border: 1.5px dashed var(--border); border-radius: var(--radius-md); background: transparent; cursor: pointer; padding: 0; min-width: 0; }
+.plan .cell:hover, .plan .cell.over, .plan .cell:focus-visible { border-color: var(--ink); background: var(--bg-hover); }
+.plan.arranging .bay { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.bay.picked { outline: 2px solid var(--ink); outline-offset: 2px; }
+.bay.dragging { cursor: grabbing; position: relative; z-index: 5; box-shadow: var(--e3); }
+.bay.saving { opacity: 0.7; }
+.arrange-bar {
+    display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s4); padding: var(--s3) var(--s4);
+    border: 1.5px solid var(--ink); border-radius: var(--radius-md); background: var(--bg-card);
+}
+.arrange-bar[hidden] { display: none; }
+.arrange-bar .ab-words { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--s2); }
+.arrange-bar .ab-words .caption { font-size: var(--fs-sm); }
+.arrange-bar .ab-error { flex-basis: 100%; font-size: var(--fs-sm); color: var(--pill-error-fg); }
+.arrange-bar .ab-error[hidden] { display: none; }
+.arrange-bar .btn { flex: none; }
+.arrange-bar .btn[hidden] { display: none; }
+
+/* who is not on the plan, by name, with the way to put them there */
+.plan-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px var(--s2); margin-top: var(--s4); font-size: var(--fs-sm); }
+.plan-foot[hidden] { display: none; }
+.plan-foot .pu-head { color: var(--text-muted); }
+.plan-foot .pu-item { display: inline-flex; align-items: center; gap: 6px; }
+.plan-foot .pu-name { color: var(--text); font-weight: 600; text-decoration: none; }
+.plan-foot .pu-name:hover { text-decoration: underline; text-underline-offset: 2px; }
+.plan-foot .pu-dot, .plan-foot .pu-sep { color: var(--text-muted); }
+.plan-foot .pu-sep { margin-left: -6px; }
+.plan-foot .pu-pick {
+    height: 32px; padding: 0 var(--s3); border-radius: var(--radius-pill); border: 1.5px dashed var(--border-strong);
+    background: var(--bg-card); color: var(--text); font: inherit; font-size: var(--fs-sm); font-weight: 600; cursor: pointer;
+}
+.plan-foot .pu-pick[aria-pressed="true"] { border-style: solid; border-color: var(--ink); }
+.plan-empty { margin: 0; padding: var(--s4); border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text-muted-sunken); font-size: var(--fs-sm); }
+.plan-empty[hidden] { display: none; }
+
+/* the Needs-you list: a 300px column beside the plan, tiles one to a row */
+.inst-map .needs-col { padding: var(--s4); position: sticky; top: var(--s4); margin: 0; }
+.inst-map .needs-col .bar { flex-wrap: wrap; row-gap: 2px; }
+.inst-map .needs-col .ntiles { grid-template-columns: minmax(0, 1fr); }
+.inst-map .needs-col .ntile:last-child:nth-child(odd) { grid-column: auto; }
+/* in the column a tile is two lines: the cause and its link, then the next step */
+.inst-map .needs-col .ntile { grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-rows: auto auto; padding: 10px var(--s3); }
+.inst-map .needs-col .ntile .tglyph { grid-row: 1 / span 2; }
+.inst-map .needs-col .ntile .t-word { grid-column: 2; grid-row: 1; }
+.inst-map .needs-col .ntile .t-link { grid-column: 3; grid-row: 1; align-self: center; padding-top: 0; white-space: nowrap; }
+.inst-map .needs-col .ntile .t-next { grid-column: 2 / span 2; grid-row: 2; }
+.level-seg a.has-cause::after { content: ""; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--ink); }
+
+/* below 1100 (the iPad's 820): the column goes under the plan, tiles 2-up */
+@media (max-width: 1099px) {
+    .map-layout { grid-template-columns: minmax(0, 1fr); }
+    .inst-map .needs-col { position: static; }
+    .inst-map .needs-col .ntiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .plan-card { padding: var(--s4); }
+}
+/* the phone: the floor map is a desk tool (its seg is not offered), but a
+   link to it still works: the bar wraps, the level seg scrolls, tiles 1-up */
+@media (max-width: 699px) {
+    .plan-bar { flex-wrap: wrap; row-gap: var(--s2); }
+    .level-seg { max-width: 100%; overflow-x: auto; }
+    .inst-map .needs-col .ntiles { grid-template-columns: minmax(0, 1fr); }
+    .arrange-bar { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { .bay { transition: none; } }

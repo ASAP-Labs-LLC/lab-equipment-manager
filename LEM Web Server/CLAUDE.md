@@ -1028,57 +1028,57 @@ extreme 2400x700, holds it IDENTICAL at all four so no viewport can bend it, and
 asserts exactly one line sets the tilt and takes the constant. Restoring 68 fails
 it at 1.08:1.
 
-## The 3D site is SEVERED — the SVG plan is the floor (2026-08-24)
+## The floor map lives in the shell; the 3D site is DELETED (2026-10-02)
 
-Ryan: "just dont have it render trains in 3d okay? We are going to focus on the
-SVG rendering."
+ia-final §3.2, piece 12. `/?view=map` is the Instruments page drawn as the
+floor plan: the same `/api/ui/instruments` answer (rows now carry
+`where.pos`, the saved bay or null, and the answer carries `default_level`),
+the same Needs-you card, in a 300px column. It used to 302 to `/floor`.
 
-**Do not "fix" the blank canvas. It is switched off on purpose.** One constant
-near the top of `floor.html`:
-
-```js
-const SITE_VIEW = false;   // ← true restores the 3D site, nothing else to do
-```
-
-Nothing under `static/world/` moved, was deleted, or was edited. It is still in
-the import map and `test_world_assets.py` still holds it to the same rules — the
-world is disconnected, not gone, and flipping the word back brings it up exactly
-as it was.
-
-- **The import is DYNAMIC** (`await import('world/index.js')`) inside the guard.
-  A static `import` is fetched and evaluated whether or not anything below it
-  runs, so guarding only `new LEMWorld(...)` would still pull three.js, the
-  terrain, the vegetation and the trains onto a bench PC to build a renderer
-  nothing starts. Severed has to mean the browser never asks. Keep it dynamic.
-- **Something has to show the plan.** The remembered view is applied inside
-  `__floorBridge.attach(world)`, and with the world severed nothing ever calls
-  attach. A boot block does it instead — and it lives down with `load()`, NOT
-  beside `setView`, because `setView` paints the toolbar, which reads
-  `ARRANGING`, a `let` declared further down. Any earlier and it is a top-level
-  TDZ ReferenceError that kills every listener after it on a page that still
-  looks perfectly normal. `tests/js/floorboot.mjs` caught exactly that.
-- **View, Quality and Arrange are hidden** while severed. All three reach for
-  `WORLD`: two views when there is one, a renderer that is not running, and
-  whole-floor buttons that return early on `!WORLD` with no dragging in the
-  plan. A button that silently does nothing is worse than a missing one.
-- **Known and accepted:** `planStations()` asks `WORLD.plan.byUid` first and
-  falls back to its own index grid, so with no world an instrument nobody has
-  dragged can sit in a different bay than the 3D floor put it. The other half of
-  this — two machines saved on the SAME bay overlapping — **is fixed**:
-  `claimPlanBays()` in `floor.html` is `claimBays()`' spill rule, same canonical
-  order, run over the level in view. If Arrange comes back, `arrangement()` is
-  still in `world/index.js` and would want the same treatment; it is already
-  pure and exported, and `tests/js/arrange.mjs` pulls it out by text.
-
-Tests: `tests/test_site_view_severed.py` (5) — the served page must not
-statically import the world, must still be able to reach it, and the switch must
-stay one named constant. Behaviour is in `tests/js/floorboot.mjs`, whose stub DOM
-now caches elements by selector and records attributes, so it can be asked what
-the page actually settled on rather than only whether it ran.
+- **`static/js/plan.js` (`LEMPlan`) is the one plan renderer**, for this view
+  and for the wall (piece 13). Pure first, node-tested in `tests/js/plan.mjs`:
+  a bay is `round(v / 2.05)` (production's pitch; a move writes `coord(i)`
+  back, 4.1, 6.15, -2.05); the grid is the **bounding box of the placed
+  bays** (judge J1: the old map was a half-width grid of empty dashed cells);
+  two saved on one bay spill the second (title, then uid) to the NEAREST free
+  bay, preferring inside the box; uniform cells fill the window's height
+  within 96-240px and never taller than wide; a floor whose bays would be
+  under 128px at a 12px gutter packs at 8px (`density`). Every line of a bay
+  is measured and cut in JS (`fit`): the name may take two lines, the verdict
+  falls back to its short word (`Not OK`, `OK, but…`) before it is ever cut,
+  the detail is cut at a word; the bay's `title` has the whole story. So no
+  line's scrollWidth exceeds its box (`tests/test_ui_floor_map_browser.py`
+  measures it at 1440x900 and 820x1180, both themes, demo and production's
+  7 by 5 shape).
+- **`static/js/floor_map.js` runs the view.** `?level=` (seg only when more
+  than one level holds instruments), `?cause=` (a Needs-you tile steps the
+  other bays back and dots the levels that have it), `?focus=<uid>` (ringed,
+  scrolled to, opens its level), `?arrange=1` (the record's "Move on the
+  map"). "Not on the map: X · Place it".
+- **Nothing moves until Arrange is entered (P15).** Arrange… is
+  `data-gated` (sign-in sheet titled "Sign in to arrange the floor"), shows
+  a ring of empty bays to grow into, and is left with Done. Outside it bays
+  are `<a draggable="false">` links to their record and `LEMPlan.canDrag` is
+  false; the browser test makes a real pointer drag onto a free bay, signed
+  in, and requires zero POSTs. The lab-wide freeze (`/api/map`) still
+  holds: a frozen floor says so and offers "Unfreeze and arrange"; a lock
+  that could not be read is said, never taken as unlocked. A refused move
+  is put back with the server's words.
+- **The 3D site is gone** (Ryan, decisions.md: "3D Site view: DELETE"):
+  `static/world/`, `static/vendor/three*.js`, the `worldmap()` import map,
+  the canvas, the View toggle, the Quality dialog and their tests
+  (`test_site_view_severed.py`, `test_world_assets.py`, `tests/js/arrange.mjs`,
+  `tests/js/layout.mjs`). `tests/test_floor_map_view.py` holds that nothing
+  serves or names it. `floor.html` keeps its SVG plan until piece 14 deletes
+  the page; its `WORLD` is a `const null` so its old guards keep meaning.
+- **The demo seeds at the saved pitch, three to a row** (`demo_floor.BAY_PITCH`),
+  from the same RNG draws as before, so every other seeded value is unchanged.
 
 ## The 3D floor (2026-08-06/07) — what cost days, so it doesn't again
 
-The floor map is a rendered 3D world now (`static/world/`, ~13 subsystem
+*History: this code was deleted on 2026-10-02 (see above); the lessons stand.*
+
+The floor map was a rendered 3D world (`static/world/`, ~13 subsystem
 modules). It was built against a real bar — PlayCanvas "After the Flood" for
 lighting, Transport Fever 2 and Train Sim World 4 for rail — judged by critics
 who compared our render against the reference blind, labels stripped, and were

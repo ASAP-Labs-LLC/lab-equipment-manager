@@ -1273,31 +1273,6 @@ def create_app(gateway, labcore_gateway=None,
     def _app_version() -> str:
         return APP_VERSION
 
-    # The 3D floor loads as ES modules, and a static `import` cannot carry a
-    # version of its own — so the import map is the only place a fingerprint can
-    # go. Without it a screen holding last week's terrain.js runs it against
-    # this week's renderer, which is precisely the stale-static failure
-    # `static_version` exists to prevent. Bare specifiers throughout:
-    # `import {Rail} from "world/rail.js"`.
-    @app.template_global("worldmap")
-    def _world_importmap() -> str:
-        import json as _json
-
-        root = app.static_folder or "static"
-        imports = {"three": "/static/vendor/three.module.min.js?v="
-                            + static_version(os.path.join(
-                                root, "vendor", "three.module.min.js"))}
-        try:
-            names = sorted(os.listdir(os.path.join(root, "world")))
-        except OSError:
-            names = []                      # never fatal: see static_version
-        for name in names:
-            if name.endswith(".js"):
-                imports["world/" + name] = (
-                    "/static/world/" + name + "?v="
-                    + static_version(os.path.join(root, "world", name)))
-        return _json.dumps({"imports": imports}, indent=1)
-
     app.secret_key = secret or os.environ.get("LABMGR_SECRET", "lem-v5-dev-secret")
 
     # Login is the suite-wide LabCore one (same accounts + NFC cards as
@@ -1554,11 +1529,11 @@ def create_app(gateway, labcore_gateway=None,
         """The Instruments home. The first paint carries the same answer
         `/api/ui/instruments` serves, so the verdicts are on screen without a
         second request (T1 at 0 clicks); instruments.js keeps it live."""
-        if (request.args.get("view") or "") == "map":
-            # The floor map in the shell is its own piece; until it lands the
-            # floor page IS the map, rather than a List view that ignores ?view.
-            return redirect(url_for("floor"))
-        return render_template("instruments.html", nav="instruments",
+        # ?view=map is the same page drawn as the floor plan (piece 12): the
+        # same answer, the same Needs-you card, so the two views cannot
+        # disagree. Anything else in ?view is the list.
+        view = "map" if (request.args.get("view") or "") == "map" else "list"
+        return render_template("instruments.html", nav="instruments", view=view,
                                data=_instruments_payload(),
                                has_quality=any(r.rule == "/quality"
                                                for r in app.url_map.iter_rules()))
@@ -1945,7 +1920,7 @@ def create_app(gateway, labcore_gateway=None,
         if _inst_memo["key"] != key:
             _inst_memo["value"] = ui_instruments.build(
                 machines=merged, overrides=overrides, levels=snap.get("levels") or [],
-                href=_record_href)
+                href=_record_href, default_level=snap.get("default_level") or "")
             _inst_memo["key"] = key
         return dict(_inst_memo["value"], **meta)
 
