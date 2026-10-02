@@ -30,9 +30,24 @@ fault plan are byte-for-byte today's. Three additions (spec §15.4):
 """
 import os
 import re
+import threading
 from collections import Counter
 
 from .target import BASELINE
+
+# Kills that fired on a thread other than the one running the scenario. A
+# `Kill` is "the process dies here"; on the poll thread `Ctx.poll` turns it
+# into a restart. Since round 3 a v2 bench files its confirmed readings from
+# the uploader thread, right after the sync that confirmed their factor — so
+# a LabCore write a kill plan aims at can run there, where the raise ends
+# only that thread and nothing would restart the bench. The world reads this
+# after the uploader settles and restarts the bench, as the poll would have.
+OFF_THREAD_KILLS = []
+
+
+def note_kill(where):
+    if threading.current_thread() is not threading.main_thread():
+        OFF_THREAD_KILLS.append(where)
 
 LABCORE_MAIN = os.path.join(BASELINE, "prod", "LabCore_main.py")
 
@@ -88,6 +103,13 @@ def make_gateway_class(lemharness):
             self.injected = 0
             self.per_index_errors = Counter()      # (lab, test) -> errors answered
             self.batch_results = []                # what each batch answered
+
+        def _apply(self, action, fn):
+            try:
+                return HGateway._apply(self, action, fn)
+            except lemharness.Kill:
+                note_kill("labcore " + str(action))
+                raise
 
         # ── analyst ──
         def cell(self, lab, test):

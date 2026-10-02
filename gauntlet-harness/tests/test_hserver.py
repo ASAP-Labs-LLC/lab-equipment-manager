@@ -152,6 +152,44 @@ def test_resent_records_are_counted_by_seq_and_by_content_key(srv):
     assert (srv.records_received, srv.records_resent) == (5, 2)
 
 
+def test_a_gzipped_sync_is_read_too(srv):
+    """The bench gzips a sync body over 64 KB (Content-Encoding: gzip) —
+    which is exactly the sync a long outage's backlog produces. The counter
+    used to json-parse the raw bytes, fail, and skip the body without a
+    word: every resend of a big catch-up read as 0 (T2L found it, at
+    records_resent 0 with hundreds re-sent). A body it cannot read is now a
+    harness error, never a silent 0."""
+    import gzip
+    r = lambda seq: {"kind": "run", "seq": seq, "epoch": "e1"}
+    for _ in range(2):
+        body = gzip.compress(json.dumps(
+            {"machine_uid": "b1", "epoch": "e1",
+             "records": [r(1), r(2)]}).encode())
+        req = urllib.request.Request(
+            B + "/api/v2/bench/b1/sync", data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "Content-Encoding": "gzip"})
+        try:                       # the toy app reads no gzip; the counter must
+            srv.urlopen(req, timeout=1).close()
+        except urllib.error.HTTPError:
+            pass
+    assert (srv.records_received, srv.records_resent) == (4, 2)
+
+
+def test_an_unreadable_sync_body_is_a_harness_error(srv):
+    req = urllib.request.Request(B + "/api/v2/bench/b1/sync", data=b"\x00nope",
+                                 method="POST",
+                                 headers={"Content-Type": "application/json"})
+    from gharness import hserver
+    before = len(hserver.OBSERVE_ERRORS)
+    with pytest.raises(RuntimeError):
+        srv.urlopen(req, timeout=1)
+    # ...and is recorded where the gate reports it (the bench's uploader
+    # would swallow the raise as a dark road).
+    assert len(hserver.OBSERVE_ERRORS) == before + 1
+    del hserver.OBSERVE_ERRORS[before:]
+
+
 def test_bad_road_or_mode_is_refused(srv):
     with pytest.raises(ValueError):
         srv.set_road("C", "up")

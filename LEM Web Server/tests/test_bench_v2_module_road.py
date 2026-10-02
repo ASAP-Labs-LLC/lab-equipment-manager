@@ -18,6 +18,11 @@ to the Flask test client by host, the way the gate's HServer does it. The
 bench's LabCore and the server's store are two different databases, so a
 statement that reaches LabCore is counted and cannot hide in the store.
 
+The bench's LEM traffic runs on its uploader thread, never on the poll, so
+after a bind, a poll or a pulse each test gives the uploader the time a real
+poll interval would (`settle`) before it counts anything — otherwise a test
+would be counting a race.
+
 What it does NOT claim: road selection under faults, enrolment approval and
 blind mode have their own tests (`LEM Station Module/tests/test_v2_road.py`
 and the server's enrolment tests).
@@ -186,6 +191,9 @@ def world(tmp_path, monkeypatch):
                      ("labcore_is_running", lab.is_running)):
         monkeypatch.setitem(m.__dict__, name, fn)
     monkeypatch.delitem(m.__dict__, "_run_in_thread", raising=False)
+    # One clock: a bind wakes the uploader at bench_now(), the polls run on
+    # T0 + 30 s steps (as the gate pins it).
+    monkeypatch.setattr(m, "bench_now", lambda: T0)
     path = tmp_path / "f.csv"
     path.write_text("")
     bench = qt.make_module()
@@ -196,6 +204,12 @@ def world(tmp_path, monkeypatch):
         mappings=[m.MethodMapping(methods=["Density"],
                                   selector=m.Selector(mode="cell", index=1))]),
         publish=True)
+
+    def settle():
+        assert bench._uploader_wait_idle(30.0), "the uploader never went idle"
+        up = bench._uploader
+        assert up is None or up.errors == 0, up.last_error
+    settle()
 
     class W:
         pass
@@ -210,7 +224,8 @@ def world(tmp_path, monkeypatch):
                 f.write("%s,0.%04d\n" % (labs[w.n], 8000 + w.n))
                 w.n += 1
         bench.process_now(T0 + timedelta(seconds=30 * k))
-    w.poll = poll
+        settle()
+    w.poll, w.settle = poll, settle
     yield w
     bench.shutdown()
     store.close()
@@ -271,4 +286,5 @@ class TestAFilingPollInV2:
             world.poll(k, prints=0)
             if k % 10 == 0:
                 world.bench._send_pulse(T0 + timedelta(seconds=30 * k))
+                world.settle()
         assert world.lab.since(mark) == []
