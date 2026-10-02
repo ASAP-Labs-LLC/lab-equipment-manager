@@ -32,7 +32,13 @@ from web_app import create_app
 # be on some pages and not others.
 # (the round, /checklists/<slot>, is a shell page: its #app-version is
 # checked with the others in tests/test_ui_shell_pages.py)
-PAGES = ("/", "/floor", "/maintenance", "/checklists/edit", "/logs")
+# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
+# covers it); "/maintenance" redirects to its filter, and the old PM page
+# lives at /maintenance/classic until the record and Settings › Imports take
+# over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
+# round (a new shell page, tests/test_round_page.py); the old checklists
+# page, with the editor, answers at /checklists/edit.
+PAGES = ("/floor", "/maintenance/classic", "/checklists/edit", "/logs")
 
 
 @pytest.fixture

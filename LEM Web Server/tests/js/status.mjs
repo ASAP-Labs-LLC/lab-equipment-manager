@@ -115,6 +115,24 @@ t.eq(S.liveWords({ connected: false, last_ok_at: 0 }, NOW), { state: 'connecting
 for (let s = 91; s < 600; s += 7) {
     t.eq(S.liveWords({ connected: true, last_ok_at: NOW - s * 1000 }, NOW).state, 'error', 'Live after ' + s + ' s');
 }
+// "Live · updated just now" with a green dot over a record LabCore stopped
+// refreshing told the opposite of the banner beside it (round 3's critic).
+// LEM answering is live; the RECORD it answers with is not, so the dot goes
+// hollow and the words say how old the record is, in the lab's clock.
+{
+    const stale = { labcore_online: false, snapshot_at: '2026-10-01T20:02:00+00:00', lab_tz: TZ };
+    t.eq(S.liveWords({ connected: true, last_ok_at: NOW - 2000 }, NOW, stale),
+         { state: 'stale', text: 'Live · record as of 13:02' });
+    t.eq(S.liveWords({ connected: true, last_ok_at: NOW - 2000 }, NOW,
+                     Object.assign({}, stale, { labcore_online: true, snapshot_stale: true })).state, 'stale');
+    t.eq(S.liveWords({ connected: true, last_ok_at: NOW - 8000 }, NOW,
+                     { labcore_online: true, snapshot_stale: false, snapshot_at: stale.snapshot_at }),
+         { state: 'fresh', text: 'Live · updated 8 s ago' });
+    // nothing read yet: no time to give, so the words stay LEM's own
+    t.eq(S.liveWords({ connected: true, last_ok_at: NOW - 2000 }, NOW, { labcore_online: false }).state, 'fresh');
+    // LEM not answering still outranks an old record
+    t.eq(S.liveWords({ connected: false, last_ok_at: NOW - 12000 }, NOW, stale).state, 'error');
+}
 t.eq(S.fleet({ fleet: { checking_in: 15, total: 17, live_road: 0 } }), { checking: 15, total: 17 });
 t.eq(S.fleet({ fleet: null }), null);
 t.eq(S.dur(59), '59 s');

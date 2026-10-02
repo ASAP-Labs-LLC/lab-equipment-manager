@@ -366,8 +366,8 @@ class TestTheBell:
     def test_same_reason_not_ok_merges_and_a_new_member_is_a_new_item(self):
         def ms(uids):
             return [{"machine_uid": u, "title": u.upper(), "module_state": "running", "module_running": True,
-                     "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True}],
-                     "maintenance": [{"kind": "calibration", "status": "RED"}]} for u in uids]
+                     "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": False}],
+                     "maintenance": []} for u in uids]
         def items(uids):
             m = ms(uids)
             ready = {x["machine_uid"]: ui_live.readiness(x, "") for x in m}
@@ -375,11 +375,26 @@ class TestTheBell:
                                       audit_spool=0, live_road=None, certificates=None,
                                       href=lambda u, s: "/floor", now=datetime(2026, 10, 1, 10))
         two = items(["a", "b"])
-        assert [i["message"] for i in two] == ["A and B are not OK to run: calibration overdue."]
+        assert [i["message"] for i in two] == ["A and B are not OK to run: QC out of spec: IBP."], \
+            "an acronym keeps its capitals ('qC out of spec' was the old lower-casing)"
         three = items(["a", "b", "c"])
         assert three[0]["key"] != two[0]["key"]
         one = items(["a"])
-        assert one[0]["message"] == "A is not OK to run: Calibration overdue."
+        assert one[0]["message"] == "A is not OK to run: QC out of spec: IBP."
+
+    def test_overdue_calibrations_are_one_bell_item(self):
+        """§5 lists "a calibration is overdue" as a bell item. It used to ride
+        inside "not OK to run"; since calibration is a warning (Ryan,
+        2026-10-01) it needs its own line, merged across instruments."""
+        m = [{"machine_uid": u, "title": u.upper(), "module_state": "running", "module_running": True,
+              "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True}],
+              "maintenance": [{"kind": "calibration", "status": "RED"}]} for u in ("a", "b")]
+        ready = {x["machine_uid"]: ui_live.readiness(x, "") for x in m}
+        items = ui_live.conditions(machines=m, ready=ready, overrides={}, round_=None,
+                                   audit_spool=0, live_road=None, certificates=None,
+                                   href=lambda u, s: "/i/%s#%s" % (u, s), now=datetime(2026, 10, 1, 10))
+        assert [i["message"] for i in items] == ["2 instruments are overdue for calibration: A and B."]
+        assert items[0]["href"] == "/?cause=ok_but-cal"
 
     def test_same_cause_merges(self):
         ms = [{"machine_uid": u, "title": t, "module_state": "running", "module_running": True,
@@ -408,11 +423,27 @@ class TestReadiness:
         assert self._r("SERVICE") == ui_live.OFF_LINE
         assert self._r(status="SERVICE") == ui_live.OFF_LINE
         assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False}]) == ui_live.NOT_OK
-        assert self._r(maintenance=[{"kind": "calibration", "status": "RED"}]) == ui_live.NOT_OK
+        assert self._r(maintenance=[{"kind": "calibration", "status": "RED"}]) == ui_live.OK_BUT
         assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": None}]) == ui_live.OK_BUT
         assert self._r(maintenance=[{"kind": "pm", "status": "RED"}]) == ui_live.OK_BUT
         assert self._r(module_running=False, module_state="stopped") == ui_live.CANT_TELL
         assert self._r(effective_specs=[], qc_targets=[]) == ui_live.NO_QC
+
+    def test_only_qc_or_an_override_can_say_no(self):
+        """Ryan, 2026-10-01: "PM overdue = warning, Calibration overdue =
+        WARNING too (not a stop). Only QC (and an explicit override / out of
+        service) can make the answer No." The spec had calibration as a stop;
+        his decision overrides it. An overdue calibration is a paperwork date,
+        and the QC check run against the certificate band is what says
+        whether the instrument still reads true."""
+        cal = ui_live.readiness(dict(self.BASE, maintenance=[{"kind": "calibration", "status": "RED"}]), "")
+        assert cal == {"state": ui_live.OK_BUT, "reason": "Calibration overdue"}
+        both = ui_live.readiness(dict(self.BASE, maintenance=[{"kind": "calibration", "status": "RED"},
+                                                              {"kind": "pm", "status": "RED"}]), "")
+        assert both["reason"] == "Calibration overdue", "the calibration is the bigger of the two"
+        failed = ui_live.readiness(dict(self.BASE, maintenance=[{"kind": "calibration", "status": "RED"}],
+                                        effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False}]), "")
+        assert failed["state"] == ui_live.NOT_OK, "QC out of spec still says No"
 
     def test_a_superseded_failure_is_not_a_failure(self):
         assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False,
