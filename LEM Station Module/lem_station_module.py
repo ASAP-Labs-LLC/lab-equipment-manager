@@ -1056,10 +1056,20 @@ class BenchJournal:
             return self._seq + 1
 
     def set_acked(self, acked: int, durable: Optional[int] = None) -> None:
+        """Adopt the server's answer: `acked` always (the N3 rule, and a 409
+        after a restore lowers it), `durable` when the answer carries one.
+
+        `durable` never exceeds `acked`. Retention deletes segments at or
+        below `durable`, so a durable the server does not even hold — a
+        broken answer, or the old durable surviving a 409 from a server
+        restored from an OLDER backup than the one that earned it — would let
+        the bench delete the only copy of a reading. Clamped to the acked
+        that came with it, the bench keeps everything the server lacks."""
         with self._lock:
             self.acked = int(acked)
             if durable is not None:
                 self.durable = int(durable)
+            self.durable = max(0, min(self.durable, self.acked))
             self._meta["acked"] = self.acked
             self._meta["durable"] = self.durable
             self._write_meta()

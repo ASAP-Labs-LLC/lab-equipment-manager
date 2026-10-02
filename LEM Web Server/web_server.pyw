@@ -227,6 +227,18 @@ def main(argv) -> int:
     # screen. Started before serving so the first page has something to show.
     snapshots = app.config["SNAPSHOTS"]
     snapshots.start()
+    # Backup and custody (transfer §11): the hourly checked backup, the
+    # nightly off-host copy and the monthly restore drill. A read-only store
+    # (the updater's candidate boot) runs none of it — `start` refuses. The
+    # drill boots a second server on a scratch port, so a --dev run, whose
+    # store is a throwaway, does not schedule it.
+    custody_service = app.config.get("CUSTODY")
+    if custody_service is not None and not store.read_only:
+        custody_service.schedule_drill = not args.dev
+        custody_service.start()
+        print("Backups: hourly into {0}; off-host: {1}".format(
+            custody_service.backup_dir,
+            custody_service.offsite_dir or "NO TARGET NAMED (LEM_BACKUP_OFFSITE)"))
     # The local copy of lem_machine_log, refreshed every five minutes. Same
     # rule as the snapshot: the factory builds it, the server owns its thread.
     # The first pull is the whole table (1.00s / 18.9 MB measured on the live
