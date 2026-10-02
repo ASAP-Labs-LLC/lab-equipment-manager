@@ -15,6 +15,7 @@ production runs against HttpLabCoreGateway — the app code is identical either 
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -259,10 +260,31 @@ def serialize_config(cfg: AppConfig) -> dict:
 class StatusProvider:
     """Computes the dashboard snapshot from live LabCore data on demand."""
 
-    def __init__(self, gateway) -> None:
-        self.gateway = gateway
+    def __init__(self, gateway, labcore=None) -> None:
+        # The configuration is LEM's (the store); the QC rows it judges are
+        # LabCore's `samples`/`sample_tests`. W3: GET /api/status used to cost
+        # five LabCore reads, four of them `lem_*` — now it costs LabCore only
+        # the rows that really are LabCore's.
+        self.labcore = labcore if labcore is not None else gateway
+        self.gateway = self.labcore
         self.store = DbConfigStore(gateway)
-        self.source = LabCoreDataSource(gateway)
+        self.source = LabCoreDataSource(self.labcore)
+        # The QC rows' shared copy (see `_qc_rows`). `clock` is injectable so
+        # a test can walk through an interval without sleeping it.
+        self.clock = time.monotonic
+        self._rows_lock = threading.Lock()
+        self._rows_key = None
+        self._rows: Optional[List[dict]] = None
+        self._rows_at: Optional[float] = None        # clock() of the good read
+        self._rows_wall: Optional[str] = None        # its wall time, for words
+        self._rows_error: Optional[BaseException] = None
+        self._rows_error_at: Optional[float] = None
+        self._online: Optional[bool] = None
+        self._online_at: Optional[float] = None
+
+    #: How long a failed read of LabCore is believed before it is tried
+    #: again. Per request would put a dead LabCore's every poll on the queue.
+    RETRY_FAILED_SECONDS = 15.0
 
     def load_config(self) -> AppConfig:
         return self.store.load()
@@ -270,12 +292,78 @@ class StatusProvider:
     def save_config(self, cfg: AppConfig):
         return self.store.save(cfg)
 
+    def _qc_rows(self, cfg: AppConfig, sample_id_column: str, ttl: float):
+        """The dashboard's QC rows: (rows, as_of_wall, error_or_None).
+
+        W3. These rows are LabCore's (`samples`/`sample_tests`), so they are
+        read from LabCore, but at most once per the dashboard's refresh
+        interval for EVERY screen together, keyed on what is watched (a
+        changed watch list is read at once), one read in flight at a time.
+        Every open dashboard polls this; one read per poll per screen was
+        the remaining LabCore cost of `/api/status`.
+
+        A failed read is never an empty dashboard. With rows from an earlier
+        read they are served WITH the failure, which the caller words as
+        "as of"; with none the failure is raised, as before. A failure is
+        believed for RETRY_FAILED_SECONDS before LabCore is asked again.
+        """
+        key = (sample_id_column, tuple(
+            (s.name, (s.sample_id_val or "").strip(),
+             tuple((t.value_col or "").strip() for t in s.tests))
+            for s in cfg.samples))
+        with self._rows_lock:
+            now = self.clock()
+            same = key == self._rows_key
+            if same and self._rows is not None and self._rows_at is not None \
+                    and now - self._rows_at < ttl:
+                return self._rows, self._rows_wall, None
+            if same and self._rows_error is not None \
+                    and self._rows_error_at is not None \
+                    and now - self._rows_error_at < self.RETRY_FAILED_SECONDS:
+                if self._rows is None:
+                    raise self._rows_error
+                return self._rows, self._rows_wall, self._rows_error
+            if not same:
+                self._rows = self._rows_at = self._rows_wall = None
+                self._rows_error = self._rows_error_at = None
+            try:
+                rows = self.source.load_rows(cfg.samples, sample_id_column)
+            except LabCoreError as exc:
+                self._rows_key = key
+                self._rows_error, self._rows_error_at = exc, now
+                self._online, self._online_at = False, now
+                if self._rows is None:
+                    raise
+                return self._rows, self._rows_wall, exc
+            self._rows_key = key
+            self._rows, self._rows_at = rows, now
+            self._rows_wall = datetime.now().isoformat(timespec="seconds")
+            self._rows_error = self._rows_error_at = None
+            if any((s.sample_id_val or "").strip() for s in cfg.samples):
+                # A read just answered: that IS LabCore being online, and
+                # asking again with a probe would be a second trip for it.
+                self._online, self._online_at = True, now
+            return rows, self._rows_wall, None
+
+    def _labcore_online(self, ttl: float) -> bool:
+        with self._rows_lock:
+            now = self.clock()
+            if self._online is not None and self._online_at is not None \
+                    and now - self._online_at < ttl:
+                return self._online
+        online = bool(self.gateway.is_running())
+        with self._rows_lock:
+            self._online, self._online_at = online, self.clock()
+        return online
+
     def build_snapshot(self) -> dict:
         cfg = self.load_config()
         sample_id_column = cfg.sample_id_column or "Lab ID"
         samples_by_name: Dict[str, SampleSpec] = {s.name: s for s in cfg.samples}
+        refresh_seconds = max(60, int(cfg.poll_minutes) * 60)
 
-        rows = self.source.load_rows(cfg.samples, sample_id_column)
+        rows, rows_as_of, rows_error = self._qc_rows(
+            cfg, sample_id_column, float(refresh_seconds))
         sample_index = build_sample_index(rows, sample_id_column)
 
         boxes_payload: List[dict] = []
@@ -323,13 +411,27 @@ class StatusProvider:
                 })
             boxes_payload.append(payload)
 
+        errors: List[str] = []
+        if rows_error is not None:
+            errors.append(
+                "LabCore did not answer ({0}); the QC values shown are as of "
+                "{1}.".format(str(rows_error) or type(rows_error).__name__,
+                              rows_as_of))
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "boxes": boxes_payload,
-            "errors": [],
-            "refresh_seconds": max(60, int(cfg.poll_minutes) * 60),
-            "labcore_online": bool(self.gateway.is_running()),
+            "errors": errors,
+            "refresh_seconds": refresh_seconds,
+            "qc_rows_as_of": rows_as_of,
+            "labcore_online": (False if rows_error is not None
+                               else self._labcore_online(
+                                   float(refresh_seconds))),
         }
+
+
+def _truthy(value) -> bool:
+    """A query-string switch: `1`, `true`, `yes`, `on` — anything else is off."""
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _now() -> datetime:
@@ -1086,10 +1188,41 @@ def _register_dev_tools(app, gateway, snapshots) -> None:
         return jsonify({"error": "Unknown action."}), 400
 
 
-def create_app(gateway, admin_password: Optional[str] = None,
+def create_app(gateway, labcore_gateway=None,
+               admin_password: Optional[str] = None,
                secret: Optional[str] = None, authenticator=None,
                live=None, live_token: Optional[str] = None,
-               documents_root=None, dev_tools: bool = False) -> Flask:
+               documents_root=None, labcore=None,
+               dev_tools: bool = False) -> Flask:
+    """The app, over TWO gateways: LEM's store and LabCore (transfer §5.3).
+
+    `gateway` is the STORE — every `lem_*` table, the machine log, the
+    snapshot, the log mirror, every store module. In production it is
+    `lem_store.LocalStoreGateway` on this server's disk.
+
+    `labcore_gateway` (alias `labcore=`, the name the gate harness passes) is
+    LabCore, and only the callers that need LabCore's OWN tables reach it:
+    sign-in (`LabCoreAuth`), the dashboard's QC rows (`LabCoreDataSource`, over
+    `samples`/`sample_tests`), and the test-method catalogue. Not one `lem_*`
+    statement goes there; `test_gateway_split.py` walks the pages with a
+    counting gateway in LabCore's place to prove it (S4).
+
+    Omitted, LabCore is the store's own gateway — the shape every test in this
+    suite uses, where one fake holds both LabCore's three tables and the LEM
+    store's. What is refused is the old production shape, LabCore AS the
+    store: the machine log there has no append-only triggers and no
+    `lem_machine_log_effective`, and every reader of the record now names that
+    view — so on LabCore they would fail, and a reader that treats "no such
+    table" as an empty log would report a lab with no history.
+    """
+    labcore = labcore_gateway if labcore_gateway is not None else labcore
+    if labcore is None:
+        labcore = gateway
+    from labcore_gateway import HttpLabCoreGateway
+    if isinstance(gateway, HttpLabCoreGateway):
+        raise ValueError(
+            "LabCore is not LEM's store any more: pass "
+            "create_app(LocalStoreGateway(path), labcore=HttpLabCoreGateway()).")
     # Per-app, never module-global — see throttled_warning.
     warn_seen: Dict[str, list] = {}
 
@@ -1158,11 +1291,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # escape hatch for --dev runs with no LabCore.
     from labcore_auth import LabCoreAuth
 
-    auth_backend = authenticator or LabCoreAuth(gateway=gateway)
+    auth_backend = authenticator or LabCoreAuth(gateway=labcore)
     admin_pw = admin_password or os.environ.get("LABMGR_ADMIN_PASSWORD")
 
-    provider = StatusProvider(gateway)
+    provider = StatusProvider(gateway, labcore)
+    app.config["STATUS_PROVIDER"] = provider
     app.config["PROVIDER"] = provider
+    app.config["STORE_GATEWAY"] = gateway
+    app.config["LABCORE_GATEWAY"] = labcore
 
     def _confirmed_write(sql: str, args: Optional[list] = None, *,
                          what: str = "") -> dict:
@@ -1195,9 +1331,175 @@ def create_app(gateway, admin_password: Optional[str] = None,
             res = gateway.sql(sql, args or [])
         except Exception as exc:                    # transport, not logic
             raise LabCoreUnavailable(
-                "LabCore could not be written to ({0}: {1})".format(
+                "{0} could not be written to ({1}: {2})".format(
+                    "the LEM store" if is_local_store(gateway) else "LabCore",
                     type(exc).__name__, exc)) from exc
         return check_write(res, what=what)
+
+    # ── one save, one transaction (transfer §5.2, W2) ─────────────────
+    #
+    # On the LEM store a change and everything that records it — the factor,
+    # its §7.8.2 receipt, its log line — commit together or not at all, and a
+    # browser retry carrying the same `X-Request-Id` is answered from
+    # `request_ledger` (written inside the same transaction) instead of being
+    # done twice. A gateway with no `transaction()` (a test double, LabCore
+    # itself) keeps the old one-statement-at-a-time path.
+    transactional = callable(getattr(gateway, "transaction", None))
+
+    def _request_id() -> str:
+        return (request.headers.get("X-Request-Id") or "").strip()[:128]
+
+    # WHAT AN ID NAMES. One request: this method on this path, this body,
+    # this person. The first version keyed on the id alone, so a DELETE sent
+    # with a POST's id was answered with the POST's 200 and removed nothing.
+    def _request_scope() -> tuple:
+        body = request.get_json(silent=True)
+        if body is not None:
+            # Canonical, so a retry that re-serialises the same JSON in
+            # another key order is still the same request.
+            raw = json.dumps(body, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8")
+        else:
+            raw = request.get_data() or b""
+        return ("{0} {1}".format(request.method, request.path),
+                str(session.get("user", "")),
+                hashlib.sha256(raw).hexdigest())
+
+    class _AlreadyDone(Exception):
+        """Raised inside a transaction that found its own request already in
+        the ledger: rolls back (nothing was written yet) and carries the
+        answer to give instead."""
+
+        def __init__(self, response):
+            super().__init__("already done")
+            self.response = response
+
+    def _replay(rid: str, still_true=None):
+        """The stored answer to THIS request if it was already done, a 422
+        if the id was used for a different request, a 409 if it was done but
+        a later change has since made its answer false, or None.
+
+        `still_true(answer) -> None | (in_force, sentence)`: a replayed 200
+        is read by the page as "this is the state now", and the ledger only
+        knows "this is what that request did". The two agree until somebody
+        changes the same thing again: round 3's critic saved 0.5 (answer
+        lost), saved 0.6, then saved 0.5 again with the page's kept id and
+        was told "correction 0.5" while 0.6 was in force. So the route says
+        what its answer claims about the record, the record is asked, and a
+        claim that is no longer true is never replayed. Nothing is done
+        either: it may be a genuine late retry, and doing it again would
+        overwrite a colleague's later change without a word.
+
+        A ledger that cannot be READ is not "not done yet": doing the work
+        again on a blip is the duplicate this exists to prevent, so it raises
+        and the route reports it like any other unreadable record. Called
+        once before the work (cheap, no lock) and once more INSIDE the
+        transaction (`_claim`), which is the look-up that decides."""
+        if not rid or not transactional:
+            return None
+        res = gateway.read_sql(
+            "SELECT route, who, fingerprint, status, body FROM request_ledger "
+            "WHERE request_id = ?", [rid])
+        found = labcore_rows(res)
+        if not found:
+            return None
+        row = found[0]
+        route, who, fingerprint = _request_scope()
+        if (row.get("route"), row.get("who") or "",
+                row.get("fingerprint") or "") != (route, who, fingerprint):
+            # Neither replayed nor performed. Only the route is named: the
+            # body and the person behind the first use are not this caller's.
+            response = jsonify({
+                "error": ("This request id was already used for a different "
+                          "request ({0}). Nothing was done; send this change "
+                          "with a new id.").format(row.get("route") or "?"),
+                "request_id_reused": True})
+            response.status_code = 422
+            return response
+        status = int(row.get("status") or 200)
+        if still_true is not None and 200 <= status < 300:
+            try:
+                answer = json.loads(row.get("body") or "{}")
+            except ValueError:
+                answer = {}
+            stale = still_true(answer)
+            if stale is not None:
+                in_force, sentence = stale
+                response = jsonify({"error": sentence, "superseded": True,
+                                    "in_force": in_force})
+                response.status_code = 409
+                return response
+        response = app.response_class(
+            row.get("body") or "{}", status=status,
+            mimetype="application/json")
+        response.headers["X-Request-Replayed"] = "true"
+        return response
+
+    def _claim(rid: str, still_true=None) -> None:
+        """Inside the transaction, before any write: if this id is in the
+        ledger now, another copy of the request committed while this one
+        waited for the writer. BEGIN IMMEDIATE makes this look-up and the
+        ledger INSERT one serialised step, so a burst of identical retries
+        is one change and N true answers, never a primary-key clash
+        reported as "NOT saved" about a save that landed."""
+        done = _replay(rid, still_true)
+        if done is not None:
+            raise _AlreadyDone(done)
+
+    def _ledger(rid: str, body: dict, status: int = 200) -> None:
+        if not rid:
+            return
+        route, who, fingerprint = _request_scope()
+        _confirmed_write(
+            "INSERT INTO request_ledger (request_id, route, status, body, at, "
+            "who, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [rid, route, status, json.dumps(body),
+             _now().isoformat(timespec="seconds"), who, fingerprint],
+            what="the record of this request was NOT written, so nothing "
+                 "was saved")
+
+    def _audit_line(action: str, machine_uid: str = "", detail=None) -> None:
+        """`_audit`'s INSERT, RAISING — for use inside a transaction, where a
+        refused log line must take the change back with it."""
+        _confirmed_write(
+            "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+            "test_name, value, detail) VALUES (?, ?, 'config', '', ?, '', ?)",
+            [machine_uid, _now().isoformat(timespec="seconds"), action,
+             json.dumps({"action": action, "by": session.get("user", ""),
+                         **(detail or {})})],
+            what="the log line for this change was NOT written")
+
+    def _rolled_back(exc, what: str):
+        """The answer for a correction transaction on the LEM store that did
+        not commit, whatever the reason: a refusal, a raised transport error,
+        a disk error, a bug in a step. JSON, never Flask's HTML 500.
+
+        Worded for what is TRUE of a rolled-back local transaction, which is
+        not what `_labcore_failed` says about a queue: the state is known
+        (nothing changed; `what` says what is still in force), and the
+        database is LEM's own, not LabCore. 503 because pressing again is
+        the right next step, and `retryable` because the same request id is
+        safe to send again: nothing was recorded under it."""
+        logger.warning("correction transaction rolled back: %s: %s",
+                       type(exc).__name__, exc)
+        reason = getattr(exc, "reason", None) or str(exc) or type(exc).__name__
+        return jsonify({
+            "error": "{0}{1}. The LEM store did not commit the change "
+                     "({2}), so all of it was rolled back: nothing was "
+                     "changed and nothing was recorded. Try again in a "
+                     "moment.".format(what[:1].upper(), what[1:],
+                                      str(reason)[:160]),
+            "detail": "{0}: {1}".format(type(exc).__name__, exc),
+            "saved": False, "retry": True, "retryable": True,
+            "store": "rolled_back",
+        }), 503
+
+    def _not_saved(exc, what: str):
+        """Re-word a refusal raised inside a rolled-back transaction: whatever
+        step said no, NOTHING was saved, and the sentence has to say that."""
+        from labcore_gateway import LabCoreRefused as _Refused
+        result = getattr(exc, "result", None) or {"error": str(exc)}
+        raise _Refused(result, what) from exc
 
     def authed() -> bool:
         return bool(session.get("user"))
@@ -1423,6 +1725,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    class _Done(Exception):
+        """Diagnostics: this row is written, go on to the next."""
+
     def _diagnostics() -> dict:
         """Settings › Diagnostics: what this server knows about itself.
 
@@ -1445,6 +1750,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 return iso
         health = _health()
         rows = []
+        split = labcore is not gateway
         snap = snapshots.get(build_if_missing=False)
         interval = int(getattr(snapshots, "interval", 12))
         if snap.get("ready"):
@@ -1456,7 +1762,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
                          "at": snap.get("built_at") or "",
                          "age_seconds": snap.get("age_seconds"),
                          "note": ("the last refresh failed: " + str(err)[:120]) if err else
-                                 "read from LabCore every %d s, one read for every screen" % interval})
+                                 "read from %s every %d s, one read for every screen" % (
+                                     "the LEM store" if is_local_store(gateway) else "LabCore",
+                                     interval)})
         else:
             err = snap.get("error")
             rows.append({"key": "record", "label": "Instrument record",
@@ -1464,14 +1772,34 @@ def create_app(gateway, admin_password: Optional[str] = None,
                          "value": "Could not be read" if err else "Not read yet",
                          "at": "", "age_seconds": None,
                          "note": str(err)[:120] if err else "the first read starts when the server does"})
-        online = health["labcore"]
-        rows.append({"key": "labcore", "label": "LabCore road",
-                     "glyph": {"reachable": "final", "unreachable": "error"}.get(online, "never"),
-                     "value": {"reachable": "Reachable", "unreachable": "Not answering"}.get(
-                         online, "Not asked yet"),
-                     "note": ("schema: " + health["schema"] +
-                              ((" (" + str(health["schema_error"])[:100] + ")")
-                               if health.get("schema_error") else ""))})
+        if split:
+            # The snapshot reads LEM's store now (transfer §5.3); what it
+            # knows about reachability is the STORE's, and saying "LabCore:
+            # Reachable" off it would be a sentence about the wrong database.
+            rows.append({"key": "labcore", "label": "LabCore",
+                         "glyph": "never", "value": "Not asked in the background",
+                         "note": "asked only for sign-in, the dashboard's QC "
+                                 "rows and the test-method list"})
+        else:
+            online = health["labcore"]
+            rows.append({"key": "labcore", "label": "LabCore road",
+                         "glyph": {"reachable": "final", "unreachable": "error"}.get(online, "never"),
+                         "value": {"reachable": "Reachable", "unreachable": "Not answering"}.get(
+                             online, "Not asked yet"),
+                         "note": ("schema: " + health["schema"] +
+                                  ((" (" + str(health["schema_error"])[:100] + ")")
+                                   if health.get("schema_error") else ""))})
+        store_h = health.get("store")
+        if store_h:
+            err = store_h.get("error") or ""
+            reach = store_h.get("reachable")
+            rows.append({"key": "store", "label": "LEM store",
+                         "glyph": "error" if (err or reach == "unreachable") else (
+                             "never" if reach == "unknown" else "final"),
+                         "value": ("Could not be read" if err or reach == "unreachable"
+                                   else "Read-only (candidate boot)"
+                                   if store_h.get("read_only") else "Read-write"),
+                         "note": err[:120] or str(store_h.get("path") or "")})
         # The live road, where the bell's "Benches can't reach LEM directly"
         # sends people. The same count /api/ui/live serves (fleet.live_road).
         fleet = _live_payload(None).get("fleet")
@@ -1494,10 +1822,38 @@ def create_app(gateway, admin_password: Optional[str] = None,
                      "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
                                if waiting else "Nothing waiting"),
                      "note": ("oldest " + str(health.get("audit_spool_oldest") or "")) if waiting
-                             else "every correction-factor change is in LabCore's audit table"})
+                             else "every correction-factor change is in %s audit table" % (
+                                 "the LEM store's" if is_local_store(gateway) else "LabCore's")})
         source = "source: LabCore lem_machine_log, copied here every 5 min"
         try:
             mirror = app.config["LOG_MIRROR"]
+            remembered = getattr(mirror, "remembered_state", None)
+            if callable(remembered):
+                # The record itself, read where it lives (transfer §5): not a
+                # copy, so "copied every 5 min" would send somebody looking
+                # for a lag that does not exist. And still memory only —
+                # this page is opened when things are slow, so it reports the
+                # count the last read of the log took, and says so, rather
+                # than counting 40,000 rows on the press.
+                source = "source: lem_machine_log in the LEM store, read in place"
+                mstate = remembered()
+                if mstate is None:
+                    rows.append({"key": "log_copy", "label": "Machine log",
+                                 "glyph": "never", "value": "Not counted yet",
+                                 "note": "counted the next time anything reads "
+                                         "the log; " + source})
+                    raise _Done()
+                why = mstate.get("stale_reason") or ""
+                n = int(mstate.get("rows") or 0)
+                rows.append({"key": "log_copy", "label": "Machine log",
+                             "glyph": "error" if why else "final",
+                             "value": ("Could not be read" if why else
+                                       "{:,} rows".format(n) if n else "No rows yet"),
+                             "note": "; ".join(x for x in (
+                                 why[:120], ("counted " + _local_hm(str(mstate.get("filled_at"))))
+                                 if mstate.get("filled_at") and not why else "",
+                                 source) if x)})
+                raise _Done()
             mstate = mirror.state()
             live = mirror.live_status() or {}
             n = int(mstate.get("rows") or 0)
@@ -1515,6 +1871,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 source) if x)
             rows.append({"key": "log_copy", "label": "Log copy", "glyph": glyph,
                          "value": value, "note": note})
+        except _Done:
+            pass
         except Exception as exc:                    # a local file; say it, never 0
             rows.append({"key": "log_copy", "label": "Log copy", "glyph": "error",
                          "value": "Could not be read", "note": str(exc)[:120] + "; " + source})
@@ -1848,12 +2206,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # Same lifecycle rule as the snapshot: constructed here, started by the
     # entry point, and correct with no thread at all — an unfilled mirror falls
     # back to reading LabCore rather than reporting a lab with no history.
-    from log_mirror import LogMirror, LogMirrorService
-    log_mirror = LogMirror(
-        gateway,
-        path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
-                          "log-mirror.sqlite3"),
-        jobs=app.config["JOBS"])
+    from log_mirror import LogMirror, LogMirrorService, StoreLogMirror
+    from lem_store import is_local_store
+    if is_local_store(gateway):
+        # The record is already a local file: read it, do not copy it. Same
+        # API, over `lem_machine_log_effective` (log_mirror.StoreLogMirror).
+        # No first fill, so nothing to show in "Running now".
+        log_mirror = StoreLogMirror(gateway, jobs=app.config["JOBS"])
+    else:
+        log_mirror = LogMirror(
+            gateway,
+            path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
+                              "log-mirror.sqlite3"),
+            jobs=app.config["JOBS"])
     app.config["LOG_MIRROR"] = log_mirror
     app.config["LOG_MIRROR_SERVICE"] = LogMirrorService(
         log_mirror,
@@ -2087,11 +2452,22 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # it takes the real signal with it.
         checked = getattr(snapshots, "schema_checked", True)
         schema = "ok" if schema_ok else ("degraded" if checked else "unknown")
+        reach = "unknown" if online is None else (
+            "reachable" if online else "unreachable")
+        store_info = None
+        if is_local_store(gateway):
+            # The snapshot reads the STORE now (transfer §5.3), so what it
+            # knows about reachability is the store's. LabCore is reported as
+            # "unknown" when it is a different gateway, because nothing in the
+            # background asks it anything any more — and inventing an answer
+            # here is the one thing this route must not do.
+            store_info = dict(gateway.health(), reachable=reach)
+        split = labcore is not gateway
         return {
             "status": "ok",
             "version": APP_VERSION,
-            "labcore": "unknown" if online is None else (
-                "reachable" if online else "unreachable"),
+            "labcore": "unknown" if split else reach,
+            "store": store_info,
             "schema": schema,
             "schema_error": getattr(snapshots, "schema_error", ""),
             # Correction-factor audit rows LabCore would not take yet
@@ -3135,7 +3511,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def api_delete_machine(machine_uid):
         """Retire a machine a station module registered — clears its live
         status, QC specs and control row. Its history in lem_machine_log is
-        kept unless purge_history is requested."""
+        always KEPT; `purge_history` hides it from every default view (a
+        `retired_at` on the config row) and deletes nothing."""
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
@@ -3178,6 +3555,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
                     if not is_missing_table(exc):
                         raise
             return go
+
+        def _hide_history():
+            when = _now().isoformat(timespec="seconds")
+            _confirmed_write(
+                "INSERT INTO lem_machine_config (machine_uid, title, config, "
+                "updated_at, updated_by, retired_at) VALUES (?, ?, '{}', ?, ?, ?) "
+                "ON CONFLICT(machine_uid) DO UPDATE SET "
+                "retired_at = excluded.retired_at, "
+                "updated_at = excluded.updated_at, "
+                "updated_by = excluded.updated_by",
+                [machine_uid, machine_uid, when, session.get("user", ""), when],
+                what="the history of “{0}” was NOT hidden".format(machine_uid))
 
         def _tolerating_missing(run):
             """`_drop`'s exemption, for the steps that go through a store.
@@ -3251,7 +3640,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
             ("documents", _tolerating_missing(_forget_documents)),
         ]
         if body.get("purge_history"):
-            steps.append(("history", _drop("lem_machine_log")))
+            # PURGE IS HIDE (transfer §5.2, D4). This was
+            # `DELETE FROM lem_machine_log WHERE machine_uid = ?` — the one
+            # route in the app that destroyed the 17025 record, on a click.
+            # The store's triggers refuse that statement now, and what
+            # replaces it removes nothing: a `retired_at` on the machine's
+            # config row, and every default reader (they all read
+            # `lem_machine_log_effective`) stops showing rows older than it.
+            # The rows are still in the record; un-retiring the uid brings
+            # them back. AFTER "configuration" on purpose: that step deletes
+            # the config, and this one leaves the tombstone that says why the
+            # history is not on screen.
+            steps.append(("history", _hide_history))
 
         removed = []
         for index, (label, step) in enumerate(steps):
@@ -3727,8 +4127,17 @@ def create_app(gateway, admin_password: Optional[str] = None,
         limit = None if _raw.lower() == "all" else max(1, int(_raw or 500))
         clause = ("WHERE " + " AND ".join(where)) if where else ""
         try:
-            sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                   f"detail FROM lem_machine_log {clause} ORDER BY ts DESC")
+            if _truthy(args.get("include_rereads")):
+                # The "include re-reads" switch (transfer §5.2): the WHOLE
+                # record, rows an approved annotation hides included. A person
+                # asked for it by name; the default stays the effective view.
+                sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                       f"detail FROM lem_machine_log {clause} "  # raw-log: the include-re-reads switch
+                       "ORDER BY ts DESC")
+            else:
+                sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                       f"detail FROM lem_machine_log_effective {clause} "
+                       "ORDER BY ts DESC")
             if limit is not None:
                 sql += " LIMIT ?"
             res = gateway.read_sql(
@@ -3809,13 +4218,21 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # read the page was already doing.
             raw = str(args.get("limit") or "").strip()
             lim = None if raw.lower() == "all" else max(1, int(raw or 500))
-            deep = mirror.query(
-                term=needle,
-                machine_uid=(args.get("machine") or "").strip(),
-                kind=(args.get("kind") or "").strip(),
-                since=(args.get("since") or "").strip(),
-                until=(args.get("until") or "").strip(),
-                limit=lim if lim is not None else 100000)
+            try:
+                deep = mirror.query(
+                    term=needle,
+                    machine_uid=(args.get("machine") or "").strip(),
+                    kind=(args.get("kind") or "").strip(),
+                    since=(args.get("since") or "").strip(),
+                    until=(args.get("until") or "").strip(),
+                    limit=lim if lim is not None else 100000)
+            except LabCoreError:
+                # The whole-record search could not be answered — on the LEM
+                # store the mirror IS a read, and reads can fail. Reported
+                # like the page read's failure, never served as "no match".
+                if failed is not None:
+                    failed["at"] = True
+                deep = []
             # The live page still has to be filtered — it was fetched without
             # the term. Dedupe on what identifies a row to a reader; `rowid` is
             # not in the LabCore page's columns.
@@ -3905,7 +4322,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # six fixed words. On the live table that is the same shape of query
             # that once took eight seconds — and it was running per request.
             res = gateway.read_sql(
-                "SELECT DISTINCT kind FROM lem_machine_log ORDER BY kind")
+                "SELECT DISTINCT kind FROM lem_machine_log_effective ORDER BY kind")
             try:
                 found = labcore_rows(res)
             except LabCoreError:
@@ -3990,7 +4407,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                                               "calibration"]
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
-            "SELECT ts, kind, detail FROM lem_machine_log "
+            "SELECT ts, kind, detail FROM lem_machine_log_effective "
             f"WHERE machine_uid = ? AND kind IN ({placeholders}) "
             "ORDER BY ts DESC LIMIT 500", [machine_uid] + kinds)
         try:
@@ -4040,7 +4457,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 return jsonify({"error": "limit must be a number, or 'all'."}), 400
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
-            "SELECT machine_uid, ts, kind, detail FROM lem_machine_log "
+            "SELECT machine_uid, ts, kind, detail FROM lem_machine_log_effective "
             f"WHERE kind IN ({placeholders}) ORDER BY ts DESC LIMIT ?",
             kinds + [limit])
         try:
@@ -4100,8 +4517,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
         the import idempotent, and an empty answer during a blip would report
         every completion in the file as new and write the lot again.
         """
+        # The RECORD, not the effective view: this read is what makes the
+        # import idempotent, and a completion that is merely hidden (a retired
+        # machine's history) is still a completion the file must not re-add.
         res = gateway.read_sql(
-            "SELECT machine_uid, detail FROM lem_machine_log "
+            "SELECT machine_uid, detail FROM lem_machine_log "  # raw-log: import dedupe
             "WHERE kind IN ('pm','calibration')")
         out = set()
         for row in labcore_rows(res):
@@ -4333,7 +4753,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             args.append(machine_uid)
         res = gateway.read_sql(
             "SELECT machine_uid, ts, lab_id, test_name, value, detail "
-            f"FROM lem_machine_log {where} ORDER BY ts ASC LIMIT ?",
+            f"FROM lem_machine_log_effective {where} ORDER BY ts ASC LIMIT ?",
             args + [int(limit)])
         # Raises rather than returning []. This feeds the control chart AND the
         # QC export an assessor asks for; a file that silently contains no QC at
@@ -4825,7 +5245,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             try:
                 res = gateway.read_sql(
                     "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                    "detail FROM lem_machine_log WHERE machine_uid = ? "
+                    "detail FROM lem_machine_log_effective WHERE machine_uid = ? "
                     "ORDER BY ts DESC LIMIT ?", [machine_uid, EVENT_LIMIT])
                 rows = [dict(r) for r in labcore_rows(res)]
             except LabCoreError as exc:
@@ -5047,8 +5467,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # Refused rather than coerced: a correction is added to every reading
             # this bench produces, and "a bit" would silently become 0.0.
             return jsonify({"error": f"{raw!r} is not a number."}), 400
+        rid = _request_id()
+        still = _correction_still(machine_uid, test_name, correction)
+        try:
+            replay = _replay(rid, still)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "whether this save was already made")
+        if replay is not None:
+            return replay
         existing = _corrections(machine_uid).get(test_name)
         previous = existing["correction"] if existing else 0.0
+        if transactional:
+            return _save_correction_in_one_transaction(
+                machine_uid, test_name, correction, previous, body, rid, still)
         # THE write this whole guard exists for. `corrected = raw + correction`
         # is applied to EVERY measurement this bench takes — before the QC
         # verdict, before the LabCore write, before anything is displayed — so a
@@ -5117,11 +5548,116 @@ def create_app(gateway, admin_password: Optional[str] = None,
         return jsonify({"ok": True, "test_name": test_name,
                         "correction": correction})
 
+    def _fmt_factor(v) -> str:
+        return "{0:g}".format(float(v))
+
+    def _correction_still(machine_uid, test_name, want):
+        """`still_true` for the correction routes (see `_replay`): the
+        answer claimed `want` is in force (None: that no correction is).
+        Reads the factor table, which every change goes through, with or
+        without an id, so a change made by an older page counts as well."""
+        def check(_answer):
+            now = _corrections(machine_uid).get(test_name)
+            have = None if now is None else now["correction"]
+            if have == want:
+                return None
+            if want is None:
+                did = "removed the correction for “{0}”".format(test_name)
+            else:
+                did = "set the correction for “{0}” to {1}".format(
+                    test_name, _fmt_factor(want))
+            if have is None:
+                now_txt = "no correction for “{0}” is in force".format(test_name)
+            else:
+                now_txt = "the correction in force is {0}".format(
+                    _fmt_factor(have))
+            again = ("Press Remove again to remove it." if want is None else
+                     "Press Save again to make it {0}.".format(
+                         _fmt_factor(want)))
+            return have, ("This request already {0}, but a later change "
+                          "replaced it: {1}. Nothing was changed now. {2}"
+                          ).format(did, now_txt, again)
+        return check
+
+    def _save_correction_in_one_transaction(machine_uid, test_name,
+                                            correction, previous, body, rid,
+                                            still=None):
+        """Factor, receipt, log line and ledger row: one commit (W2).
+
+        Every step RAISES here, unlike `_record_correction_change` and
+        `_audit`, which must never fail a change that has already landed.
+        Inside a transaction nothing has landed until the end, so a refused
+        receipt is a refused save — rolled back, and reported as NOT saved,
+        which for the first time is exactly what happened."""
+        units = str(body.get("units") or "")
+        what = (f"the correction for “{test_name}” was NOT saved and this "
+                f"instrument is still applying the previous one")
+        answer = {"ok": True, "test_name": test_name, "correction": correction}
+        # Declarations first and outside: DDL is not part of the change.
+        snapshots.ensure_schema()
+        _corrections_schema()
+        try:
+            with gateway.transaction():
+                _claim(rid, still)
+                # Re-read under the writer: what the receipt calls "previous"
+                # is what this commit replaces, not what was there when the
+                # request arrived and another save may since have changed.
+                was = _corrections(machine_uid).get(test_name)
+                previous = was["correction"] if was else 0.0
+                _confirmed_write(
+                    "INSERT INTO lem_correction_factors (machine_uid, "
+                    "test_name, correction, units, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
+                    "correction=excluded.correction, units=excluded.units, "
+                    "updated_at=excluded.updated_at, "
+                    "updated_by=excluded.updated_by",
+                    [machine_uid, test_name, correction, units,
+                     _now().isoformat(timespec="seconds"),
+                     session.get("user", "")], what=what)
+                correction_audit.record(
+                    machine_uid=machine_uid, test_name=test_name,
+                    previous=previous, new_value=correction, units=units,
+                    by=session.get("user", ""),
+                    reason=str(body.get("reason") or ""),
+                    when=_now().isoformat(timespec="seconds"),
+                    uid=uuid.uuid4().hex)
+                _audit_line("correction factor set", machine_uid,
+                            {"test": test_name, "previous": previous,
+                             "new": correction})
+                _ledger(rid, answer)
+        except _AlreadyDone as done:
+            return done.response
+        except LabCoreRefused as exc:
+            # A step's statement was REFUSED with a reason (busy, or broken
+            # and not worth retrying): `refusal_response` keeps that
+            # distinction and the Retry-After, worded as NOT saved.
+            _not_saved(exc, what)
+        except Exception as exc:                        # noqa: BLE001
+            # Anything else inside BEGIN IMMEDIATE … COMMIT — a raised
+            # transport or disk error, a bug in a step — was rolled back by
+            # the store too, and gets the same true sentence, as JSON.
+            return _rolled_back(exc, what)
+        # Committed. Only now is there anything for a bench to re-read.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+        _page_drop("logkinds")
+        snapshots.refresh_soon()
+        return jsonify(answer)
+
     @app.route("/api/machines/<machine_uid>/corrections/<test_name>",
                methods=["DELETE"])
     def api_delete_correction(machine_uid, test_name):
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
+        rid = _request_id()
+        still = _correction_still(machine_uid, test_name, None)
+        try:
+            replay = _replay(rid, still)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "whether this removal was already "
+                                            "made")
+        if replay is not None:
+            return replay
         try:
             existing = _corrections(machine_uid).get(test_name)
         except LabCoreError as exc:
@@ -5132,6 +5668,51 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                             "factors")
         if existing is None:
             return jsonify({"error": f"No correction for “{test_name}”."}), 404
+        if transactional:
+            what = (f"the correction for “{test_name}” was NOT removed and "
+                    f"this instrument is still applying it")
+            answer = {"ok": True, "deleted": test_name}
+            snapshots.ensure_schema()
+            try:
+                with gateway.transaction():
+                    _claim(rid, still)
+                    existing = _corrections(machine_uid).get(test_name)
+                    if existing is None:
+                        # Removed by another request while this one waited
+                        # for the writer: the same true 404 as above.
+                        raise _AlreadyDone(app.response_class(
+                            json.dumps({"error": "No correction for "
+                                                 "“{0}”.".format(test_name)}),
+                            status=404, mimetype="application/json"))
+                    _confirmed_write(
+                        "DELETE FROM lem_correction_factors "
+                        "WHERE machine_uid = ? AND test_name = ?",
+                        [machine_uid, test_name], what=what)
+                    # A removal is a change TO ZERO, not an absence.
+                    correction_audit.record(
+                        machine_uid=machine_uid, test_name=test_name,
+                        previous=existing["correction"], new_value=0.0,
+                        units=str(existing.get("units") or ""),
+                        by=session.get("user", ""),
+                        reason=str((request.get_json(silent=True) or {})
+                                   .get("reason") or ""),
+                        when=_now().isoformat(timespec="seconds"),
+                        uid=uuid.uuid4().hex)
+                    _audit_line("correction factor removed", machine_uid,
+                                {"test": test_name,
+                                 "previous": existing["correction"],
+                                 "new": 0.0})
+                    _ledger(rid, answer)
+            except _AlreadyDone as done:
+                return done.response
+            except LabCoreRefused as exc:
+                _not_saved(exc, what)
+            except Exception as exc:                    # noqa: BLE001
+                return _rolled_back(exc, what)
+            app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+            _page_drop("logkinds")
+            snapshots.refresh_soon()
+            return jsonify(answer)
         # Removing an offset changes every future reading exactly as setting
         # one does. A removal reported as done that did not happen leaves the
         # bench quietly still applying it, and the editor showing that it does
@@ -5821,7 +6402,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         try:
             res = gateway.read_sql(
                 "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                "detail FROM lem_machine_log ORDER BY ts DESC LIMIT ?",
+                "detail FROM lem_machine_log_effective ORDER BY ts DESC LIMIT ?",
                 [SEARCH_CORPUS_ROWS])
             got = labcore_rows(res)
         except LabCoreError as exc:
@@ -5960,7 +6541,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 try:
                     res = gateway.read_sql(
                         "SELECT machine_uid, ts, kind, lab_id, test_name, value "
-                        "FROM lem_machine_log WHERE lab_id = ? "
+                        "FROM lem_machine_log_effective WHERE lab_id = ? "
                         "ORDER BY ts DESC LIMIT 50", [query.strip()],
                         timeout=30)
                     rows = labcore_rows(res, missing_ok=True)
@@ -6090,12 +6671,36 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     @app.route("/api/qc-standards/certificates/<uid>/download")
     def api_download_certificate(uid):
+        # A download is a READ. `_document_failed` words a failed SAVE, and
+        # answered an unknown id with 503 "this certificate was NOT saved".
+        # Same three answers as the equipment documents' download instead:
+        # unreadable, no such certificate, or listed with its file gone.
+        try:
+            listed = certificate_store.get(uid)
+        except CertificateRejected as exc:
+            return jsonify({"error": str(exc)}), 404
+        except CertificateStoreError as exc:
+            cause = getattr(exc, "__cause__", None)
+            return _labcore_unreadable(
+                cause if isinstance(cause, LabCoreError) else exc,
+                "this certificate")
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this certificate")
+        if listed is None:
+            # Reached only through a read that SUCCEEDED.
+            return jsonify({"error": "No such certificate."}), 404
         try:
             cert, data = certificate_store.fetch(uid)
         except CertificateRejected as exc:
             return jsonify({"error": str(exc)}), 404
         except CertificateStoreError as exc:
-            return _document_failed(exc, "this certificate")
+            cause = getattr(exc, "__cause__", None)
+            if isinstance(cause, LabCoreError):
+                return _labcore_unreadable(cause, "this certificate")
+            logger.warning("certificate %r is listed and its file is "
+                           "missing: %s", uid, exc)
+            return jsonify({"error": str(exc), "retry": False,
+                            "storage": "missing"}), 500
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "this certificate")
         return Response(data, mimetype=cert.content_type or "application/pdf",
@@ -6432,7 +7037,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             args.append(kind)
         res = gateway.read_sql(
             "SELECT ts, kind, lab_id, test_name, value, detail FROM "
-            f"lem_machine_log {where} ORDER BY ts ASC LIMIT 20000", args)
+            f"lem_machine_log_effective {where} ORDER BY ts ASC LIMIT 20000", args)
         try:
             # A downloaded file with a header row and nothing under it is the
             # least recoverable version of this bug: it leaves the building.
@@ -6936,14 +7541,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if cached:
             return jsonify({"tests": cached, "cached": True})
         try:
-            names = gateway.get_test_names()
+            names = labcore.get_test_names()
         except Exception:                       # a client that raises outright
             names = None
         if names is None:
             # Couldn't ask LabCore. The DISTINCT scan is the safety net, and it
             # needs a generous timeout: it reads every result row in the lab.
             try:
-                res = gateway.read_sql(
+                res = labcore.read_sql(
                     "SELECT DISTINCT test_name FROM sample_tests "
                     "WHERE test_name IS NOT NULL AND TRIM(test_name) != '' "
                     "ORDER BY test_name", timeout=60)
@@ -6991,7 +7596,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     app.config["WARM"] = _warm
     app.config["PAGE"] = _page          # exercised directly by the cache tests
-    app.config["DEV_TOOLS"] = dev_tools_allowed(gateway, dev_tools)
+    # The fake is LabCore's, not the store's: under --dev the store is
+    # still a LocalStoreGateway, and it is LabCore that must be the fake.
+    app.config["DEV_TOOLS"] = dev_tools_allowed(labcore, dev_tools)
     if app.config["DEV_TOOLS"]:
         _register_dev_tools(app, gateway, snapshots)
     return app

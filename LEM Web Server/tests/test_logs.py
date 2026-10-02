@@ -60,7 +60,7 @@ def seed_log(gw):
         ("m2", "2026-07-05T12:00:00", "run", "37050", "", "", {}),
     ]
     for uid, ts, kind, lab, test, val, detail in rows:
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [uid, ts, kind, lab, test, val, json.dumps(detail)])
 
 

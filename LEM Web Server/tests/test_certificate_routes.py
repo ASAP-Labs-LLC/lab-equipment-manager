@@ -53,6 +53,7 @@ def app(tmp_path):
                              documents_root=str(tmp_path / "docs"))
     application.config.update(TESTING=True)
     application.config["GW"] = gw
+    application.config["CERT_ROOT_FOR_TEST"] = str(tmp_path / "docs")
     return application
 
 
@@ -85,6 +86,32 @@ class TestTheCertificateIsReachable:
         assert got.data == PDF
         assert got.headers["Content-Type"] == "application/pdf"
         assert "coa.pdf" in got.headers["Content-Disposition"]
+
+    def test_a_download_of_no_such_certificate_is_a_404_not_a_save(
+            self, client):
+        """A GET of an unknown id answered 503 "this certificate was NOT
+        saved — the document store could not be written". Nothing was being
+        saved and nothing failed to write: the id is not there, which is a
+        404, and a sentence about a failed save sends somebody to look for a
+        full disk that is not full."""
+        got = client.get("/api/qc-standards/certificates/nope/download")
+        assert got.status_code == 404, got.get_json()
+        assert "saved" not in got.get_json()["error"].lower()
+
+    def test_a_listed_certificate_whose_file_is_gone_says_so(
+            self, app, client):
+        """The other honest answer: listed, and its bytes are missing. Not
+        a 404 (the row says it exists) and not "not saved" either."""
+        uid = _upload(client).get_json()["certificate"]["uid"]
+        import pathlib
+        for f in pathlib.Path(app.config["CERT_ROOT_FOR_TEST"]).rglob("*"):
+            if f.is_file():
+                f.unlink()
+        got = client.get(f"/api/qc-standards/certificates/{uid}/download")
+        assert got.status_code == 500, got.get_json()
+        body = got.get_json()
+        assert body["storage"] == "missing"
+        assert "missing" in body["error"] and "saved" not in body["error"]
 
     def test_a_standard_with_no_certificate_says_so_and_is_not_an_error(
             self, client):

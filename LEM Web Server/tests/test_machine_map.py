@@ -237,7 +237,7 @@ class TestLastActivity:
                "test_name TEXT, value TEXT, detail TEXT)")
 
     def log(self, gw, uid, ts, kind="run"):
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [uid, ts, kind, "37157", "", "", "{}"])
 
     def test_last_activity_comes_from_the_log(self, gw, client):
@@ -325,7 +325,7 @@ class TestLivenessFallback:
                "test_name TEXT, value TEXT, detail TEXT)")
 
     def log(self, gw, uid, ts):
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [uid, ts, "run", "37169", "", "", "{}"])
 
     def test_recent_data_counts_as_running_without_a_heartbeat(self, gw, client):

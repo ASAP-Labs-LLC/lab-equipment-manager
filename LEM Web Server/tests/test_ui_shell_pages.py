@@ -324,21 +324,26 @@ class TestTheStatusWordsComeFromMemory:
         assert rec and rec.group(1) == snap["built_at"]
 
     def test_rendering_the_shell_costs_labcore_nothing(self, tmp_path):
-        app, gw = self._seeded(tmp_path)
-        calls = []
-        for name in ("sql", "read_sql"):
-            orig = getattr(gw, name)
-
-            def counted(*a, _orig=orig, _name=name, **kw):
-                calls.append((_name, str(a[0])[:60] if a else ""))
-                return _orig(*a, **kw)
-            setattr(gw, name, counted)
+        """LabCore, on a gateway of its own (transfer §5): the shell's words
+        come from memory and the LEM store, and LabCore sees not one call
+        across every shell page. Settings' Diagnostics reads the store's log
+        count — a local read, and the reason it is not counted here."""
+        from labcore_counter import CountingLabCore
+        gw = FakeLabCoreGateway()
+        lab = CountingLabCore()
+        app = create_app(gw, labcore=lab, authenticator=StubAuth(),
+                         secret="s", documents_root=str(tmp_path))
+        app.config["TESTING"] = True
+        import demo_floor
+        app.config["SNAPSHOTS"].ensure_schema()
+        demo_floor.seed(gw, documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].refresh()
         c = app.test_client()
         with c.session_transaction() as s:
             s["user"] = "x"
         for path in SHELL_PAGES:
             html(c, path)
-        assert calls == [], calls
+        assert lab.calls == [], lab.calls
 
 
 class TestSettingsThisBrowser:

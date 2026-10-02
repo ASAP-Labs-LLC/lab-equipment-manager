@@ -246,24 +246,23 @@ class TestTheDeepReadsComeFromTheLocalCopy:
 
     def test_a_deep_walk_does_not(self, gw, tmp_path):
         """The whole reason for the mirror. Reading LabCore here is what made
-        'show me everything' a load problem instead of a feature."""
+        'show me everything' a load problem instead of a feature.
+
+        Measured on a LabCore of its own since transfer §5: the record is in
+        the LEM store now, so the deep walk reads the store — a local file,
+        which is the point — and LabCore must see nothing at all."""
+        from labcore_counter import CountingLabCore
         _many(gw, 500)
-        app = self._app(gw, tmp_path)
+        lab = CountingLabCore()
+        app = create_app(gw, labcore=lab, secret="t",
+                         documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
         app.config["LOG_MIRROR"].refresh()
-        hits = {"n": 0}
-        real = gw.read_sql
-
-        def counted(sql, args=None, **kw):
-            if "lem_machine_log" in sql:
-                hits["n"] += 1
-            return real(sql, args, **kw)
-
-        gw.read_sql = counted
         body = self._signed_in(app).get(
             "/api/equipment/%s/history?limit=all" % UID).get_json()
         assert len(body["entries"]) == 500
-        assert hits["n"] == 0, (
-            "the deep read went to LabCore; the mirror exists so it does not")
+        assert lab.calls == [], (
+            "the deep read went to LabCore; the store exists so it does not")
 
     def test_an_unfilled_mirror_falls_back_rather_than_reporting_nothing(
             self, gw, tmp_path):

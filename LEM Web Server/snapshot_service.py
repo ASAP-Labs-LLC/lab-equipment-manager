@@ -132,7 +132,7 @@ _ARMS = (
     ("event",
      "SELECT * FROM (SELECT 'event' AS src, machine_uid AS c1, ts AS c2, "
      "kind AS c3, lab_id AS c4, test_name AS c5, value AS c6, detail AS c7, '' AS c8, '' AS c9 "
-     f"FROM lem_machine_log ORDER BY ts DESC LIMIT {EVENT_LIMIT})"),
+     f"FROM lem_machine_log_effective ORDER BY ts DESC LIMIT {EVENT_LIMIT})"),
     # What the module is ACTUALLY checking, with the band it judges against.
     # `lem_qc_specs` and `lem_machine_targets` are both *inputs*; most QC here is
     # resolved at runtime from the shared standards, so neither had a row for it
@@ -148,7 +148,7 @@ _ARMS = (
     ("activity",
      "SELECT 'activity' AS src, machine_uid AS c1, MAX(ts) AS c2, '' AS c3, "
      "'' AS c4, '' AS c5, '' AS c6, '' AS c7, '' AS c8, '' AS c9 "
-     "FROM lem_machine_log GROUP BY machine_uid"),
+     "FROM lem_machine_log_effective GROUP BY machine_uid"),
     # The lab, stacked. Three arms — the ladder, where each instrument stands,
     # and the floor-wide view default — so `build_machines` can place the WHOLE
     # fleet out of rows this read already fetched. Asking `LevelStore` from the

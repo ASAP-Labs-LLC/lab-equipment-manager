@@ -193,7 +193,7 @@ class TestExport:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["m1", "2026-08-03T16:24:51", "qc", "AO25", "Flash",
                 str(corrected), json.dumps(detail)])
 
@@ -215,7 +215,7 @@ class TestExport:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES "
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
                "('m1','2026-08-03T16:00:00','qc','AO25','Flash','65.0',"
                "'{\"in_spec\": true, \"expected\": 63.72}')")
         head, *body = self.rows(client.get("/api/export/qc.csv"))

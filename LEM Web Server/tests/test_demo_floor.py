@@ -230,6 +230,13 @@ class TestTheSeedWritesWhatTheBenchWrites:
         allowed = ddl_columns(ddl)
         rows = rows_of(seeded, f"SELECT * FROM {table} LIMIT 1")
         assert rows, f"{table} was never written"
+        if table == "lem_machine_log":
+            # The LEM store's custody columns (`id`, `origin`, `received_at`,
+            # …) are the STORE's, filled by its defaults — the seeder writes
+            # none of them, which is exactly what this test is about.
+            from lem_store import CUSTODY_COLUMNS
+            allowed = allowed | set(CUSTODY_COLUMNS)
+            assert all(r.get("origin") == "server" for r in rows)
         assert set(rows[0]) <= allowed, set(rows[0]) - allowed
 
     def test_qc_specs_rows_carry_no_band(self, seeded):

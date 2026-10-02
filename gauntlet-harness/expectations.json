@@ -1395,7 +1395,7 @@
     "res_wrong": 0,
     "cell_dup_sends": 0,
     "cell_dup_lands": 0,
-    "suppressed_rereads": 15
+    "suppressed_rereads": 3
    },
    "v4_spec": "0/0 · 0/0 · 0/0"
   },

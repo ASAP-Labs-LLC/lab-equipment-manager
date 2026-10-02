@@ -48,6 +48,17 @@ address into LabCore's `lem_meta`, and every bench reads from there. A release
 under test on a scratch port would point the whole floor at a port that closes
 seconds later.
 
+**And `--no-publish` opens the LEM store read-only** (transfer spec §5.1). The
+store — `C:\ASAPApps\lem\store\lem.db`, or `LEM_STORE_PATH` — is LEM's own
+record: every `lem_*` table and the append-only machine log. It lives outside
+the release folder (a deploy swaps that wholesale) and outside `data/` (which
+stays regenerable cache: the log file, documents). The candidate on 15557 opens
+the live store `mode=ro`, so it can be health-checked against real data and
+cannot migrate, declare or write a single row into it; if the store is not
+there it says so on every read and creates nothing. `/healthz` reports
+`store.path` and `store.read_only`. **Never delete or replace `lem.db` as part
+of a release** — unlike `data/`, it is not regenerable.
+
 ## 2. Choosing the number
 
 `MAJOR.MINOR.PATCH`, tag prefixed with `v`.
