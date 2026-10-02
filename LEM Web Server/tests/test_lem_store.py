@@ -48,16 +48,15 @@ def store(tmp_path):
     s.close()
 
 
-def _approved(store, uid="m1", rule="replay_duplicate"):
-    """An approved `annotation_approval` (D7): the store refuses any hiding
-    annotation that does not name one for the row's bench and rule."""
-    res = store.sql(
-        "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-        "approved_by, approved_at, decision) VALUES (?, ?, 'test', 'ryan', "
-        "'2026-10-01T09:00:00', 'approved')", [uid, rule])
-    assert "error" not in res, res
-    return store.read_sql("SELECT MAX(id) AS id FROM annotation_approval"
-                          )["rows"][0]["id"]
+def _approved(store, uid="m1", rule="replay_duplicate", members=None):
+    """An approved, signed `annotation_approval` (D7) that names `members`:
+    the store refuses any hiding annotation that does not name one for the
+    row's bench and rule, covering that row. With no members it covers a
+    row of its own."""
+    from approval_helper import signed_approval
+    if members is None:
+        members = [_log(store, uid=uid, lab="covered")]
+    return signed_approval(store, uid, rule, members)
 
 
 def _log(store, uid="m1", ts="2026-10-01T09:00:00", kind="run", lab="L1",
@@ -351,7 +350,7 @@ class TestNothingRewritesTheRecord:
         res = store.sql(
             verb + " INTO log_annotation (id, log_id, label, by, at, "
             "approval_id) VALUES (1, ?, 'replay_duplicate', 'forger', 't', ?)",
-            [rid, _approved(store)])
+            [rid, _approved(store, members=[rid])])
         assert "already in the record" in res.get("error", ""), res
         assert store.read_sql("SELECT label, by FROM log_annotation"
                               )["rows"] == [{"label": "replay_candidate",
@@ -367,7 +366,7 @@ class TestNothingRewritesTheRecord:
         assert "error" not in store.sql(
             "INSERT INTO log_annotation (id, log_id, label, by, at) "
             "VALUES (1, ?, 'replay_candidate', 'lem', 't')", [rid])
-        aid = _approved(store)
+        aid = _approved(store, members=[rid])
         con = sqlite3.connect(store.path)
         try:
             with pytest.raises(sqlite3.DatabaseError,
@@ -772,7 +771,8 @@ class TestTheEffectiveView:
         assert "error" not in store.sql(
             "INSERT INTO log_annotation (log_id, label, by, at, approval_id) "
             "VALUES (?, ?, 'ryan', 't', ?)",
-            [rid, label, _approved(store, rule=label) if hides else None])
+            [rid, label, _approved(store, rule=label, members=[rid])
+                         if hides else None])
 
     def _effective_ids(self, store):
         return [r["id"] for r in store.read_sql(

@@ -420,14 +420,8 @@ class TestTheLogIsTheRecordAndTheSpecIsACache:
         # record is append-only (the store's trigger refuses an UPDATE), so
         # this lab's log simply starts out holding the other test's reading.
         # (Hidden under an approval: the store refuses a hide without one.)
-        gw.sql("INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-               "approved_by, approved_at, decision) SELECT DISTINCT "
-               "machine_uid, 'import_leftover', 'test', 'test', 't', "
-               "'approved' FROM lem_machine_log_effective")
-        gw.sql("INSERT INTO log_annotation (log_id, label, by, at, "
-               "approval_id) SELECT l.id, 'import_leftover', 'test', 't', p.id"
-               " FROM lem_machine_log_effective l JOIN annotation_approval p "
-               "ON p.machine_uid = l.machine_uid")
+        from approval_helper import hide
+        hide(gw, "1 = 1", label="import_leftover")
         gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
                "test_name, value, detail) VALUES ('5fd04c0031f9', "
                "'2026-09-02T17:06:41', 'qc', 'AF26', 'Something Else', '9.9', "

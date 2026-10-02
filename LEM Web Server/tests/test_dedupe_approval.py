@@ -58,15 +58,19 @@ def _effective(store):
 
 
 def _approval(store, uid="m1", rule="replay_duplicate", decision="approved",
-              by="ryan", at="2026-10-01T09:00:00"):
-    res = store.sql(
-        "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-        "candidates, approved_by, approved_at, decision) "
-        "VALUES (?, ?, 'upto=1;sha=x', 1, ?, ?, ?)",
-        [uid, rule, by, at, decision])
-    assert "error" not in res, res
-    return store.read_sql("SELECT MAX(id) AS i FROM annotation_approval"
-                          )["rows"][0]["i"]
+              by="ryan", at="2026-10-01T09:00:00", members=None):
+    """A properly signed approval, written the only way the store takes one.
+    It covers `members`; by default a row of its own on its bench, so that
+    it is a real approval of SOMETHING, and of nothing else."""
+    if decision != "approved":
+        members = []
+    elif members is None:
+        members = [_log(store, uid=uid, lab="covered-%s" % rule)]
+    row = {"machine_uid": uid, "rule": rule, "run_id": "upto=1;sha=x",
+           "candidates": max(1, len(members)), "approved_by": by,
+           "approved_at": at, "decision": decision}
+    return store.record_approval(signature=store.sign_approval(row),
+                                 members=members, **row)
 
 
 def _log(store, uid="m1", lab="L1"):
@@ -121,19 +125,36 @@ class TestNoHideWithoutAnApproval:
         assert rid in _effective(store)
 
     def test_an_approval_nobody_signed_is_refused_at_the_door(self, store):
-        for by, at in ((None, "t"), ("", "t"), ("  ", "t"), ("ryan", None)):
-            res = store.sql(
-                "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-                "approved_by, approved_at, decision) VALUES "
-                "('m1', 'replay_duplicate', 'r', ?, ?, 'approved')", [by, at])
-            assert "error" in res, (by, at)
+        """On the bare file, where the store's own code is not in the way:
+        the trigger still wants a person, a time, a signature and a count."""
+        rid = _log(store)
+        con = sqlite3.connect(store.path)
+        try:
+            for by, at, sig in ((None, "t", "a" * 64), ("", "t", "a" * 64),
+                                ("  ", "t", "a" * 64), ("ryan", None, "a" * 64),
+                                ("ryan", "t", None), ("ryan", "t", "short"),
+                                ("ryan", "t", "Z" * 64)):
+                with pytest.raises(sqlite3.DatabaseError, match="approval"):
+                    con.execute(
+                        "INSERT INTO annotation_approval (machine_uid, rule, "
+                        "run_id, candidates, approved_by, approved_at, "
+                        "decision, signature) VALUES ('m1', "
+                        "'replay_duplicate', 'r', 1, ?, ?, 'approved', ?)",
+                        [by, at, sig])
+        finally:
+            con.close()
+        assert rid in _effective(store)
 
     def test_a_decision_must_be_one_of_the_two(self, store):
-        res = store.sql(
-            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-            "approved_by, approved_at, decision) VALUES "
-            "('m1', 'replay_duplicate', 'r', 'ryan', 't', 'maybe')")
-        assert "error" in res
+        con = sqlite3.connect(store.path)
+        try:
+            with pytest.raises(sqlite3.DatabaseError, match="decision"):
+                con.execute(
+                    "INSERT INTO annotation_approval (machine_uid, rule, "
+                    "run_id, approved_by, approved_at, decision) VALUES "
+                    "('m1', 'replay_duplicate', 'r', 'ryan', 't', 'maybe')")
+        finally:
+            con.close()
 
     def test_the_bare_file_meets_the_same_refusal(self, store):
         rid = _log(store)
@@ -160,14 +181,15 @@ class TestNoHideWithoutAnApproval:
         (`probable_duplicate`, `replay_candidate`) is not a reinstatement,
         and must not act as one by being the newest row."""
         rid = _log(store)
-        assert "error" not in _hide(store, rid, approval_id=_approval(store))
+        assert "error" not in _hide(
+            store, rid, approval_id=_approval(store, members=[rid]))
         assert "error" not in _hide(store, rid, "replay_candidate")
         assert rid not in _effective(store)
 
     def test_with_an_approval_the_row_leaves_and_reinstated_brings_it_back(
             self, store):
         rid = _log(store)
-        ok = _approval(store)
+        ok = _approval(store, members=[rid])
         assert "error" not in _hide(store, rid, approval_id=ok)
         assert rid not in _effective(store)
         assert "error" not in store.sql(
@@ -180,17 +202,28 @@ class TestApprovalsAreTheRecordOfTheDecision:
     def test_an_approval_cannot_be_edited_or_deleted(self, store):
         aid = _approval(store)
         assert "append-only" in store.sql(
+            "UPDATE annotation_approval_member SET log_id = 1")["error"]
+        assert "append-only" in store.sql(
+            "DELETE FROM annotation_approval_member")["error"]
+        assert "append-only" in store.sql(
             "UPDATE annotation_approval SET decision = 'rejected'")["error"]
         assert "append-only" in store.sql(
             "UPDATE annotation_approval SET approved_by = 'someone else'"
         )["error"]
         assert "append-only" in store.sql(
             "DELETE FROM annotation_approval")["error"]
-        res = store.sql("INSERT OR REPLACE INTO annotation_approval (id, "
-                        "machine_uid, rule, run_id, approved_by, approved_at, "
-                        "decision) VALUES (?, 'm1', 'replay_duplicate', 'r', "
-                        "'x', 't', 'approved')", [aid])
-        assert "already in the record" in res["error"]
+        con = sqlite3.connect(store.path)
+        try:
+            with pytest.raises(sqlite3.DatabaseError,
+                               match="already in the record"):
+                con.execute(
+                    "INSERT OR REPLACE INTO annotation_approval (id, "
+                    "machine_uid, rule, run_id, candidates, approved_by, "
+                    "approved_at, decision, signature) VALUES (?, 'm1', "
+                    "'replay_duplicate', 'r', 1, 'x', 't', 'approved', ?)",
+                    [aid, "a" * 64])
+        finally:
+            con.close()
 
     def test_the_view_needs_the_approval_even_if_the_trigger_was_bypassed(
             self, store, tmp_path):
@@ -502,75 +535,165 @@ class TestAnApprovalIsSignedByTheFlowThatShowedTheReport:
         assert len(row["signature"] or "") == 64
         assert dedupe.apply(store, aid, by="ryan")["annotated"] > 0
 
-    def test_an_approval_written_outside_the_flow_is_not_applied(
+    def test_an_approval_written_outside_the_flow_is_refused_by_the_store(
             self, sim_store):
+        """Round-3 critic (scope.py): a plain INSERT of an approval with no
+        signature, by 'anyone', covering a one-row unit — then a write that
+        hid an unrelated genuine row under it. The store now refuses the
+        INSERT itself: an approval is written by `record_approval` only."""
         store, lab = sim_store
         report = dedupe.dry_run(store, machine_uid="era")
         run_id = report["benches"][0]["run_ids"]["replay_duplicate"]
         res = store.sql(
             "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
             "candidates, approved_by, approved_at, decision) VALUES "
-            "('era', 'replay_duplicate', ?, 1, 'ryan', 't', 'approved')",
+            "('era', 'replay_duplicate', ?, 1, 'anyone', 't', 'approved')",
             [run_id])
-        assert "error" not in res
-        forged = store.read_sql("SELECT MAX(id) i FROM annotation_approval"
-                                )["rows"][0]["i"]
-        with pytest.raises(dedupe.DedupeRefused, match="signature"):
-            dedupe.apply(store, forged, by="ryan")
+        assert "not authorized" in res["error"]
+        assert "not authorized" in store.write("raw_sql", {
+            "sql": "INSERT INTO annotation_approval_member (approval_id, "
+                   "seq, log_id) VALUES (1, 0, 1)"})["error"]
+        assert store.read_sql("SELECT COUNT(*) n FROM annotation_approval"
+                              )["rows"][0]["n"] == 0
         assert _effective(store) == {r["id"] for r in lab.rows}
 
-    def test_a_signature_copied_onto_another_decision_does_not_verify(
+    def test_a_signature_that_does_not_verify_is_refused_by_the_store(
             self, sim_store):
-        store, _lab = sim_store
-        report = dedupe.dry_run(store)
-        era = next(b for b in report["benches"] if b["machine_uid"] == "era")
-        gc = next(b for b in report["benches"] if b["machine_uid"] == "gc")
+        from lem_store import ApprovalRefused
+        store, lab = sim_store
+        era_rows = [r["id"] for r in lab.bench_rows("era")][:1]
+        with pytest.raises(ApprovalRefused, match="signature"):
+            store.record_approval(
+                machine_uid="era", rule="replay_duplicate", run_id="r",
+                candidates=1, approved_by="ryan", approved_at="t",
+                decision="approved", signature="a" * 64, members=era_rows)
+
+    def test_an_approval_names_exactly_the_rows_it_covers(self, sim_store):
+        from lem_store import ApprovalRefused
+        store, lab = sim_store
+        era_rows = [r["id"] for r in lab.bench_rows("era")][:3]
+        row = {"machine_uid": "era", "rule": "replay_duplicate",
+               "run_id": "r", "candidates": 2, "approved_by": "ryan",
+               "approved_at": "t", "decision": "approved"}
+        sig = store.sign_approval(row)
+        for members in (era_rows[:1], era_rows, era_rows[:1] * 2):
+            with pytest.raises(ApprovalRefused, match="names exactly"):
+                store.record_approval(signature=sig, members=members, **row)
+        # a row of another bench is refused by the file itself
+        gc_row = [r["id"] for r in lab.bench_rows("gc")][0]
+        with pytest.raises(sqlite3.DatabaseError, match="its own bench"):
+            store.record_approval(signature=sig,
+                                  members=[era_rows[0], gc_row], **row)
+        assert store.read_sql("SELECT COUNT(*) n FROM annotation_approval"
+                              )["rows"][0]["n"] == 0
+
+    def test_the_file_bounds_an_approval_to_the_count_it_states(
+            self, sim_store):
+        """In the bare file a real approval for ONE row cannot be stretched
+        over more: its member slots are numbered 0 .. candidates-1, and
+        `record_approval` fills all of them in the same transaction."""
+        store, lab = sim_store
+        era = [r["id"] for r in lab.bench_rows("era")]
+        aid = _approval(store, uid="era", members=era[:1])
+        con = sqlite3.connect(store.path)
+        try:
+            for seq, rid in ((1, era[1]), (-1, era[1]), (5, era[2])):
+                with pytest.raises(sqlite3.DatabaseError, match="at most"):
+                    con.execute("INSERT INTO annotation_approval_member "
+                                "VALUES (?, ?, ?)", [aid, seq, rid])
+            with pytest.raises(sqlite3.DatabaseError, match="already"):
+                con.execute("INSERT INTO annotation_approval_member "
+                            "VALUES (?, 0, ?)", [aid, era[1]])
+        finally:
+            con.close()
+
+    def test_approve_names_the_candidate_set_it_was_shown(self, sim_store):
+        store, lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="era")
+        bench = report["benches"][0]
         aid = dedupe.approve(store, "era", "replay_duplicate",
-                             era["run_ids"]["replay_duplicate"],
+                             bench["run_ids"]["replay_duplicate"],
                              approved_by="ryan")["approval_id"]
-        sig = store.read_sql("SELECT signature FROM annotation_approval "
-                             "WHERE id = ?", [aid])["rows"][0]["signature"]
-        store.sql(
-            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-            "candidates, approved_by, approved_at, decision, signature) "
-            "VALUES ('gc', 'replay_duplicate', ?, 1, 'ryan', 't', "
-            "'approved', ?)", [gc["run_ids"]["replay_duplicate"], sig])
-        forged = store.read_sql("SELECT MAX(id) i FROM annotation_approval"
-                                )["rows"][0]["i"]
-        with pytest.raises(dedupe.DedupeRefused, match="signature"):
-            dedupe.apply(store, forged, by="ryan")
+        named = {r["log_id"] for r in store.read_sql(
+            "SELECT log_id FROM annotation_approval_member WHERE "
+            "approval_id = ?", [aid])["rows"]}
+        rows, upto = dedupe.read_store(store, "era")
+        want = set(dedupe.classify(rows, upto).ids("era", "replay_duplicate"))
+        assert named == want and len(named) == bench["candidates"][
+            "replay_duplicate"]
 
-    def test_a_whole_signed_row_moved_to_another_bench_does_not_verify(
-            self, sim_store):
-        """Every field the decision rests on is signed — the bench too. A
-        copy of Ryan's signed GC approval naming another bench is refused
-        for its signature, before anything else is looked at."""
-        store, _lab = sim_store
-        report = dedupe.dry_run(store, machine_uid="gc")
-        aid = _approve_all(store, report)[0]
-        store.sql(
-            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-            "candidates, examples, qc_impact, approved_by, approved_at, "
-            "decision, signature) SELECT 'era', rule, run_id, candidates, "
-            "examples, qc_impact, approved_by, approved_at, decision, "
-            "signature FROM annotation_approval WHERE id = ?", [aid])
-        moved = store.read_sql("SELECT MAX(id) i FROM annotation_approval"
-                               )["rows"][0]["i"]
-        with pytest.raises(dedupe.DedupeRefused, match="signature"):
-            dedupe.apply(store, moved, by="ryan")
+    def test_an_approval_cannot_hide_a_row_it_does_not_name(self, sim_store):
+        """The critic's second half: under a real, signed approval for this
+        bench and rule, a genuine row it does not name stays put — through
+        the store, and through the bare file with the trigger dropped
+        (the view checks the name too)."""
+        store, lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="era")
+        aid = dedupe.approve(store, "era", "replay_duplicate",
+                             report["benches"][0]["run_ids"][
+                                 "replay_duplicate"],
+                             approved_by="ryan")["approval_id"]
+        genuine = sorted(lab.ids(GENUINE)
+                         & {r["id"] for r in lab.bench_rows("era")})[0]
+        assert "names the row" in _hide(store, genuine,
+                                        approval_id=aid)["error"]
+        path = store.path
+        store.close()
+        con = sqlite3.connect(path)
+        con.execute("DROP TRIGGER ann_hide_needs_approval")
+        con.execute("INSERT INTO log_annotation (log_id, label, by, at, "
+                    "approval_id) VALUES (?, 'replay_duplicate', 'x', 't', ?)",
+                    [genuine, aid])
+        con.commit()
+        con.close()
+        again = LocalStoreGateway(path)
+        try:
+            assert genuine in _effective(again)
+        finally:
+            again.close()
 
-    def test_the_dry_run_names_an_unsigned_approval_that_hides_rows(
+    def test_a_forged_approval_in_the_bare_file_is_not_applied_and_is_named(
             self, sim_store):
+        """What the file cannot check is the HMAC itself: SQLite has no key.
+        A forger with the bare file can write a well-formed approval that
+        names a row and hide it. `apply` will not act on it, and every dry
+        run names it and how many rows it hides — visible, not silent."""
         store, lab = sim_store
         rid = sorted(lab.ids(DUP))[0]
         uid = next(r["machine_uid"] for r in lab.rows if r["id"] == rid)
-        forged = _approval(store, uid=uid)
-        assert "error" not in _hide(store, rid, approval_id=forged)
+        path = store.path
+        con = sqlite3.connect(path)
+        cur = con.execute(
+            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+            "candidates, approved_by, approved_at, decision, signature) "
+            "VALUES (?, 'replay_duplicate', 'r', 1, 'ryan', "
+            "'2026-10-01T09:00:00', 'approved', ?)", [uid, "a" * 64])
+        forged = cur.lastrowid
+        con.execute("INSERT INTO annotation_approval_member VALUES (?, 0, ?)",
+                    [forged, rid])
+        con.execute("INSERT INTO log_annotation (log_id, label, by, at, "
+                    "approval_id) VALUES (?, 'replay_duplicate', 'x', 't', ?)",
+                    [rid, forged])
+        con.commit()
+        con.close()
+        with pytest.raises(dedupe.DedupeRefused, match="signature"):
+            dedupe.apply(store, forged, by="ryan")
         report = dedupe.dry_run(store)
         assert report["unsigned_approvals"] == [{
             "approval_id": forged, "machine_uid": uid,
             "rule": "replay_duplicate", "approved_by": "ryan",
             "approved_at": "2026-10-01T09:00:00", "hides": 1}]
+
+    def test_a_signed_row_copied_to_another_bench_does_not_verify(
+            self, sim_store):
+        """Every field the decision rests on is signed — the bench too."""
+        store, _lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="gc")
+        aid = _approve_all(store, report)[0]
+        row = store.read_sql("SELECT * FROM annotation_approval WHERE id = ?",
+                             [aid])["rows"][0]
+        row["machine_uid"] = "era"
+        assert not dedupe.signature_ok(store, row)
 
     def test_a_store_from_before_signatures_gains_the_column(self, tmp_path):
         path = str(tmp_path / "old.db")
@@ -622,8 +745,9 @@ class TestAFailedReadIsNeverAnEmptyResult:
 def _invariant(store):
     """Every row missing from the effective view is missing because its
     newest DECIDING annotation (a hide or a `reinstated`; review notes decide
-    nothing) hides it under an approved approval for its own bench — or
-    because its machine was retired (not exercised here)."""
+    nothing) hides it under an approved approval for its own bench, whose
+    HMAC verifies, and which NAMES that row — or because its machine was
+    retired (not exercised here)."""
     res = store.read_sql(
         # raw-log: the invariant is about the rows the view leaves out.
         "SELECT l.id, l.machine_uid FROM lem_machine_log l "
@@ -631,7 +755,7 @@ def _invariant(store):
     assert "error" not in res, res
     for row in res["rows"]:
         newest = store.read_sql(
-            "SELECT a.label, p.decision, p.machine_uid, p.approved_by "
+            "SELECT a.label, a.approval_id, p.* "
             "FROM log_annotation a LEFT JOIN annotation_approval p "
             "ON p.id = a.approval_id WHERE a.log_id = ? AND a.label IN "
             "('replay_duplicate', 'import_leftover', 'reinstated') "
@@ -642,6 +766,10 @@ def _invariant(store):
         assert n["decision"] == "approved", row
         assert n["machine_uid"] == row["machine_uid"], row
         assert (n["approved_by"] or "").strip(), row
+        assert dedupe.signature_ok(store, n), row
+        assert store.read_sql(
+            "SELECT 1 FROM annotation_approval_member WHERE approval_id = ? "
+            "AND log_id = ?", [n["approval_id"], row["id"]])["rows"], row
 
 
 @pytest.mark.parametrize("seed", range(6))
@@ -653,7 +781,7 @@ def test_no_row_leaves_the_effective_view_without_an_approval(store, seed):
     uids = sorted({r["machine_uid"] for r in lab.rows})
     for _step in range(40):
         op = rnd.choice(["forge", "forge_other", "approve_apply", "reinstate",
-                         "reject", "visible"])
+                         "reject", "visible", "forge_raw", "forge_sig"])
         rid = rnd.choice(ids)
         if op == "forge":
             _hide(store, rid, rnd.choice(["replay_duplicate",
@@ -662,6 +790,21 @@ def test_no_row_leaves_the_effective_view_without_an_approval(store, seed):
         elif op == "forge_other":
             aid = _approval(store, uid=rnd.choice(uids))
             _hide(store, rid, "replay_duplicate", approval_id=aid)
+        elif op == "forge_raw":
+            # the critic's scope.py: a plain INSERT, unsigned, by anyone
+            store.sql("INSERT INTO annotation_approval (machine_uid, rule, "
+                      "run_id, candidates, approved_by, approved_at, "
+                      "decision) VALUES (?, 'replay_duplicate', 'r', 1, "
+                      "'anyone', 't', 'approved')", [rnd.choice(uids)])
+            _hide(store, rid, approval_id=rnd.randint(1, 50))
+        elif op == "forge_sig":
+            from lem_store import ApprovalRefused
+            uid = next(r["machine_uid"] for r in lab.rows if r["id"] == rid)
+            with pytest.raises(ApprovalRefused):
+                store.record_approval(
+                    machine_uid=uid, rule="replay_duplicate", run_id="r",
+                    candidates=1, approved_by="anyone", approved_at="t",
+                    decision="approved", signature="b" * 64, members=[rid])
         elif op == "reject":
             aid = _approval(store, uid=rnd.choice(uids), decision="rejected")
             _hide(store, rid, approval_id=aid)

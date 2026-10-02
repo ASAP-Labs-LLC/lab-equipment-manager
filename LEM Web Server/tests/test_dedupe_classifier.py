@@ -75,7 +75,7 @@ class TestEachRule:
         return dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
 
     def _seed(self, lab, uid, n):
-        lines = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(n)]
+        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(n)]
         for line in lines:
             lab.poll(uid, [line], [GENUINE])
         return lines
@@ -85,7 +85,7 @@ class TestEachRule:
         replay even when the twins are fewer than 80 % of it."""
         lab = SimLab()
         lines = self._seed(lab, "b", 4)
-        new = [SimLab.run_line("N%d" % k, {"v": "x%d" % k}) for k in range(16)]
+        new = [SimLab.run_line("N41%03d" % k, {"v": "x%d" % k}) for k in range(16)]
         ids = lab.poll("b", lines + new, [DUP] * 4 + [GENUINE] * 16)
         got = self._classify(lab).candidates
         assert [got[i].label for i in ids[:4]] == ["replay_duplicate"] * 4
@@ -95,7 +95,7 @@ class TestEachRule:
     def test_nineteen_rows_with_few_twins_is_not_a_burst(self):
         lab = SimLab()
         lines = self._seed(lab, "b", 4)
-        new = [SimLab.run_line("N%d" % k, {"v": "x%d" % k}) for k in range(15)]
+        new = [SimLab.run_line("N41%03d" % k, {"v": "x%d" % k}) for k in range(15)]
         ids = lab.poll("b", lines + new, [GENUINE] * 19)
         got = self._classify(lab).candidates
         assert {got[i].label for i in ids[:4]} == {"probable_duplicate"}
@@ -128,7 +128,7 @@ class TestEachRule:
 
     def test_a_resent_batch_is_a_resend_and_points_at_its_original(self):
         lab = SimLab()
-        batch = [SimLab.run_line("R%d" % k, {"v": str(k)}) for k in range(4)]
+        batch = [SimLab.run_line("R42%03d" % k, {"v": str(k)}) for k in range(4)]
         ts = lab.tick()
         first = lab.poll("r", batch, [GENUINE] * 4, ts=ts)
         again = lab.poll("r", batch, [DUP] * 4, ts=ts)
@@ -151,14 +151,20 @@ class TestEachRule:
             ("probable_duplicate", "repeat_in_poll")      # listed, visible
 
     def test_operator_and_calibration_do_not_make_a_replay_new(self):
+        """A replayed QC print comes back stamped with whoever is signed in
+        and today's calibration; it is still the same reading. (The replay
+        holds two samples too: QC rows alone are never proposed, see
+        `TestAStandardIsNotASample`.)"""
         lab = SimLab()
         q = [SimLab.qc_line("AF26", "S", 2.0 + k / 10, operator="ana",
                             calibration_id="c1") for k in range(5)]
-        for line in q:
+        s = [SimLab.run_line("4170%d" % k, {"S": "1%d.2" % k})
+             for k in range(2)]
+        for line in q + s:
             lab.poll("q", [line], [GENUINE])
         restamped = [SimLab.qc_line("AF26", "S", 2.0 + k / 10, operator="zed",
                                     calibration_id="c9") for k in range(5)]
-        ids = lab.poll("q", restamped, [DUP] * 5)
+        ids = lab.poll("q", restamped + s, [DUP] * 7)
         got = self._classify(lab).candidates
         assert {got[i].label for i in ids} == {"replay_duplicate"}
 
@@ -456,10 +462,10 @@ class TestACatchUpPollIsNotAReplay:
         one poll. Two samples in the file's order is a stretch — the copies
         are proposed, the new rows are not."""
         lab = SimLab()
-        old = [SimLab.run_line("R%d" % k, {"v": "r%d" % k}) for k in range(5)]
+        old = [SimLab.run_line("R42%03d" % k, {"v": "r%d" % k}) for k in range(5)]
         for line in old:
             lab.poll("rs", [line], [GENUINE])
-        new = [SimLab.run_line("N%d" % k, {"v": "n%d" % k})
+        new = [SimLab.run_line("N41%03d" % k, {"v": "n%d" % k})
                for k in range(22)]
         ids = lab.poll("rs", old[3:] + new, [DUP] * 2 + [GENUINE] * 22)
         got = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
@@ -472,14 +478,146 @@ class TestACatchUpPollIsNotAReplay:
         re-read, a twin separated from the others by one changed row is
         still part of the re-read."""
         lab = SimLab()
-        old = [SimLab.run_line("M%d" % k, {"v": "m%d" % k})
+        old = [SimLab.run_line("M43%03d" % k, {"v": "m%d" % k})
                for k in range(24)]
         for line in old:
             lab.poll("mj", [line], [GENUINE])
-        changed = SimLab.run_line("M12", {"v": "re-integrated"})
+        changed = SimLab.run_line("M43012", {"v": "re-integrated"})
         poll = old[:12] + [changed] + old[12:]
         ids = lab.poll("mj", poll, [DUP] * 12 + [GENUINE] + [DUP] * 12)
         got = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
         assert {got.candidates[i].label for i in ids[:12] + ids[13:]} == {
             "replay_duplicate"}
         assert ids[12] not in got.candidates
+
+
+class TestAStandardIsNotASample:
+    """Round-3 critic: the 80 % majority rule had none of the guards the
+    burst path had, and a Blank and a Solvent counted as "two samples".
+
+    * Five QC standards read again the next morning, every value the same
+      (whole degrees), in a poll of their own: 100 % twins, so all five were
+      proposed as a replay.
+    * Four QC repeats and one new sample: 80 % twins, four hidden.
+    * The daily Blank and Solvent run lines at the head of a 32-row overnight
+      catch-up poll: two consecutive twins with two distinct Lab IDs, so a
+      "stretch of two samples", both hidden.
+
+    Every one of those is a genuine reading. What the three share is that
+    nothing in the repeat is a SAMPLE. A lab reads its standards, blanks and
+    solvents every day, by design, and they read the same when the
+    instrument is in control; that is their whole purpose. A replay re-reads
+    a run of the FILE, and a bench's file is mostly samples. So, on both
+    paths, the twins have to include at least two samples — Lab IDs the way
+    LabCore numbers a sample (four or more digits at the start: 39878,
+    40528, 091823-7945, 28967 Top). A named ID (Blank, Solvent, AF26,
+    Cal STD, RT 6.29, ASTM2887-12) is a standard or a blank, whether the
+    bench logs it as `qc` or as `run`. On the server's log-mirror copy
+    79,517 of the benches' own 82,272 `run` rows (96.7 %) carry a sample's
+    Lab ID; the named ones are Blank, AF25, AF24, AF26, AJ24, ...
+
+    A repeat with fewer than two samples in it is listed for review
+    (`probable_duplicate`, rule `fewer_than_two_samples`), never proposed."""
+
+    def _cls(self, lab):
+        return dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+
+    def _standards(self):
+        return [SimLab.qc_line(s, "Flash", v, low=v - 3, high=v + 3)
+                for s, v in (("AF26", 62.0), ("AO25", 70.0), ("AB10", 45.0),
+                             ("AC11", 88.0), ("AD12", 101.0))]
+
+    def test_five_standards_read_again_in_their_own_poll(self):
+        lab = SimLab()
+        stds = self._standards()
+        lab.poll("fl", stds, [GENUINE] * 5)
+        for k in range(3):
+            lab.poll("fl", [SimLab.run_line("4050%d" % k, {"F": "5%d" % k})],
+                     [GENUINE])
+        ids = lab.poll("fl", stds, [GENUINE] * 5)
+        got = self._cls(lab).candidates
+        assert [(got[i].label, got[i].rule) for i in ids] == [
+            ("probable_duplicate", "fewer_than_two_samples")] * 5
+
+    def test_four_standards_and_one_new_sample(self):
+        lab = SimLab()
+        stds = self._standards()[:4]
+        lab.poll("fl", stds, [GENUINE] * 4)
+        ids = lab.poll("fl", stds + [SimLab.run_line("40600", {"F": "60"})],
+                       [GENUINE] * 5)
+        got = self._cls(lab).candidates
+        assert {got[i].label for i in ids[:4]} == {"probable_duplicate"}
+        assert ids[4] not in got
+
+    def test_a_blank_and_a_solvent_ahead_of_a_catch_up_poll(self):
+        lab = SimLab()
+        blank = SimLab.run_line("Blank", {"N": "0.00"})
+        solvent = SimLab.run_line("Solvent", {"N": "0.00"})
+        lab.poll("gcb", [blank], [GENUINE])
+        lab.poll("gcb", [solvent], [GENUINE])
+        night = [SimLab.run_line("40%03d" % (700 + k),
+                                 {"N": "%d.%d" % (20 + k, k)})
+                 for k in range(30)]
+        ids = lab.poll("gcb", [blank, solvent] + night, [GENUINE] * 32)
+        got = self._cls(lab).candidates
+        assert [got[i].label for i in ids[:2]] == ["probable_duplicate"] * 2
+        assert not any(c.label in dedupe.HIDE_CANDIDATE_LABELS
+                       for c in got.values())
+
+    def test_a_replayed_file_tail_of_standards_and_samples_is_still_a_copy(
+            self):
+        """The guard asks for two samples, not for no standards: a restart
+        that re-reads the morning's standards and two samples re-reads the
+        file, and every row of it is a copy — the standards too."""
+        lab = SimLab()
+        stds = self._standards()[:3]
+        s = [SimLab.run_line("4080%d" % k, {"F": "7%d" % k}) for k in range(2)]
+        for line in stds + s:
+            lab.poll("tl", [line], [GENUINE])
+        ids = lab.poll("tl", stds + s, [DUP] * 5)
+        got = self._cls(lab).candidates
+        assert {got[i].label for i in ids} == {"replay_duplicate"}
+
+    def test_a_named_id_is_a_standard_whether_logged_as_qc_or_run(self):
+        assert not dedupe.is_sample_id("Blank")
+        assert not dedupe.is_sample_id("AF26")
+        assert not dedupe.is_sample_id("Cal STD")
+        assert not dedupe.is_sample_id("RT 6.29")
+        assert not dedupe.is_sample_id("")
+        assert not dedupe.is_sample_id("ASTM2887-12")
+        assert not dedupe.is_sample_id("RGO 011623")
+        assert not dedupe.is_sample_id("D2887-STD")
+        assert not dedupe.is_sample_id("D2887 Cal Std")
+        assert dedupe.is_sample_id("39878")
+        assert dedupe.is_sample_id("091823-7945")
+        assert dedupe.is_sample_id("28018N1")
+        assert dedupe.is_sample_id("28967 Top")
+
+    def test_standards_inside_a_whole_file_re_read_are_still_copies(self):
+        """The guard must not open a hole in a real re-read. Agilent GC 2's
+        09-23 poll re-read its whole file, which holds some readings more
+        often than the record does; those extra copies stay visible, and
+        between them sat a run of AF26 copies around one sample (39888).
+        Judged as a run of its own that is "one sample", but it is the middle
+        of a re-read: every row around it is a reading the record already
+        holds. A stretch is measured across every such row, so the
+        standards' twins in it are copies like the samples'."""
+        lab = SimLab()
+        p = [SimLab.run_line("4000%d" % k, {"v": "p%d" % k}) for k in range(4)]
+        q = [SimLab.run_line("AF26", {"v": "a1"}),
+             SimLab.run_line("AF26", {"v": "a2"}),
+             SimLab.run_line("40005", {"v": "q5"}),
+             SimLab.run_line("Blank", {"v": "0"})]
+        for line in p + q:
+            lab.poll("g2", [line], [GENUINE])
+        new = [SimLab.run_line("4100%d" % k, {"v": "n%d" % k})
+               for k in range(10)]
+        back = p[::-1]           # GC 2's file runs newest-first in places
+        ids = lab.poll("g2", p + back + q + back + new,
+                       [DUP] * 4 + [GENUINE] * 4 + [DUP] * 4 + [GENUINE] * 4
+                       + [GENUINE] * 10)
+        got = self._cls(lab).candidates
+        assert [got[i].label for i in ids[8:12]] == ["replay_duplicate"] * 4
+        assert {got[i].label for i in ids[4:8] + ids[12:16]} == {
+            "probable_duplicate"}
+        assert all(i not in got for i in ids[16:])

@@ -460,9 +460,13 @@ class TestEveryReaderNamesTheEffectiveView:
         # existence check, reading back the custody row it just wrote, and
         # the §4.4 occurrence count. Each must see hidden rows: a row an
         # annotation hides is still in the record and still holds its key.
+        # lem_store.py gains one in round 4: an approval may name only rows
+        # on its own bench, so `apm_names_a_candidate` reads the named row's
+        # bench — hidden or not, as the hide trigger already does.
         assert files == ["bench_api.py", "bench_api.py", "bench_api.py",
                          "dedupe.py", "dedupe.py",
                          "lem_store.py", "lem_store.py", "lem_store.py",
+                         "lem_store.py",
                          "log_mirror.py", "log_mirror.py",
                          "web_app.py", "web_app.py"], allowed
 

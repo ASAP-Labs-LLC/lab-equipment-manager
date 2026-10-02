@@ -71,13 +71,17 @@ for a question it could not ask.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import hmac
+import json
 import os
+import secrets
 import queue
 import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 #: Where production keeps the store (§5.1). Outside the release folder, which a
 #: deploy swaps wholesale, and outside `data/`, which RELEASING.md calls
@@ -91,7 +95,7 @@ SCHEMA_VERSION = 1
 #: the store exactly as they were on LabCore.
 STORE_TABLES = (
     "lem_machine_log", "log_annotation", "annotation_approval",
-    "bench_cursor", "bench_token", "bench_source", "result_ledger",
+    "annotation_approval_member", "bench_cursor", "bench_token", "bench_source", "result_ledger",
     "result_conflict", "projection_outbox", "import_run", "log_digest",
     "store_meta", "unknown_records", "request_ledger", "lem_machine_config",
     "bench_record",
@@ -121,7 +125,8 @@ GUARD_TRIGGERS = ("lem_log_no_update", "lem_log_no_delete",
                   "lem_log_no_overwrite", "ann_no_update", "ann_no_delete",
                   "ann_no_overwrite", "ann_hide_needs_approval",
                   "apr_no_update", "apr_no_delete", "apr_no_overwrite",
-                  "apr_signed", "cfg_no_future_retire_insert",
+                  "apr_signed", "apm_no_update", "apm_no_delete",
+                  "apm_no_overwrite", "apm_names_a_candidate", "cfg_no_future_retire_insert",
                   "cfg_no_future_retire_update", "bench_record_no_update",
                   "bench_record_no_delete", "bench_record_no_overwrite")
 
@@ -138,7 +143,8 @@ GUARD_OBJECTS = GUARD_TRIGGERS + ("lem_machine_log_effective",)
 #: and the view itself. Only `_migrate`, which runs before the guard is
 #: installed, reshapes these.
 PROTECTED = frozenset(("lem_machine_log", "log_annotation",
-                       "annotation_approval", "lem_machine_config",
+                       "annotation_approval", "annotation_approval_member",
+                       "lem_machine_config",
                        "lem_machine_log_effective", "bench_record"))
 
 #: What may not be DROPPED or ALTERed: the above, plus every table §5.2 adds.
@@ -167,6 +173,22 @@ _LOCKED_PRAGMAS = frozenset(("writable_schema", "recursive_triggers",
                              "ignore_check_constraints", "legacy_alter_table"))
 
 
+#: The two tables only `LocalStoreGateway.record_approval` writes.
+APPROVAL_TABLES = frozenset(("annotation_approval",
+                             "annotation_approval_member"))
+
+#: The fields an approval's HMAC covers: every one the decision rests on.
+APPROVAL_SIGNED_FIELDS = ("machine_uid", "rule", "run_id", "candidates",
+                          "approved_by", "approved_at", "decision")
+
+#: Set (per thread) only inside `record_approval`.
+_APPROVAL_WRITER = threading.local()
+
+
+class ApprovalRefused(RuntimeError):
+    """An approval `record_approval` will not write, and why."""
+
+
 def _guard(action, arg1, arg2, _db, _src):
     """sqlite3 authorizer for every store connection after migration.
 
@@ -176,6 +198,14 @@ def _guard(action, arg1, arg2, _db, _src):
     hold for the bare file too.
     """
     a = sqlite3
+    if (action == a.SQLITE_INSERT and arg1 in APPROVAL_TABLES
+            and not getattr(_APPROVAL_WRITER, "on", False)):
+        # D7. An approval is written by `record_approval` only, which checks
+        # its signature and names the rows it covers in the same
+        # transaction. Round-3 critic: a bare `INSERT INTO
+        # annotation_approval` with no signature, by 'anyone', covering a
+        # one-row unit, let a later write hide an unrelated genuine row.
+        return a.SQLITE_DENY
     if action in (a.SQLITE_ATTACH, a.SQLITE_DETACH):
         # A second schema is a second place for an unqualified name to
         # resolve. LEM has one file and never attaches another.
@@ -312,9 +342,49 @@ _DDL = (
     "annotation_approval WHEN NEW.decision IS NULL "
     " OR NEW.decision NOT IN ('approved', 'rejected')"
     " OR NEW.approved_by IS NULL OR trim(NEW.approved_by) = ''"
-    " OR NEW.approved_at IS NULL OR trim(NEW.approved_at) = '' "
+    " OR NEW.approved_at IS NULL OR trim(NEW.approved_at) = ''"
+    # An approval that hides anything carries the HMAC the approval flow
+    # signed it with (64 hex digits; `record_approval` verifies it, the dry
+    # run re-verifies every one) and says how many rows it covers.
+    " OR (NEW.decision = 'approved' AND (NEW.signature IS NULL"
+    "     OR length(NEW.signature) <> 64"
+    "     OR NEW.signature GLOB '*[^0-9a-f]*'"
+    "     OR typeof(NEW.candidates) <> 'integer' OR NEW.candidates < 1)) "
     "BEGIN SELECT RAISE(ABORT, 'an annotation_approval needs a decision "
-    "(approved or rejected), the person who made it and when'); END",
+    "(approved or rejected), the person who made it and when, and an "
+    "approval needs its signature and the number of rows it covers'); END",
+    # The rows an approval covers, named one by one: the candidate set Ryan
+    # was shown, written in the same transaction as the approval. `seq`
+    # numbers them 0 .. candidates-1, so an approval can never cover more
+    # rows than it says it does, and every row is on the approval's bench.
+    "CREATE TABLE IF NOT EXISTS annotation_approval_member ("
+    " approval_id INTEGER NOT NULL REFERENCES annotation_approval(id),"
+    " seq INTEGER NOT NULL,"
+    " log_id INTEGER NOT NULL REFERENCES lem_machine_log(id),"
+    " PRIMARY KEY (approval_id, seq), UNIQUE (approval_id, log_id))",
+    "CREATE TRIGGER IF NOT EXISTS apm_no_update BEFORE UPDATE ON "
+    "annotation_approval_member BEGIN SELECT RAISE(ABORT, "
+    "'annotation_approval_member is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS apm_no_delete BEFORE DELETE ON "
+    "annotation_approval_member BEGIN SELECT RAISE(ABORT, "
+    "'annotation_approval_member is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS apm_no_overwrite BEFORE INSERT ON "
+    "annotation_approval_member WHEN EXISTS (SELECT 1 FROM "
+    "annotation_approval_member WHERE approval_id = NEW.approval_id AND "
+    "(seq = NEW.seq OR log_id = NEW.log_id)) BEGIN SELECT RAISE(ABORT, "
+    "'annotation_approval_member is append-only: that row is already "
+    "named'); END",
+    # raw-log: the member's bench, hidden or not.
+    "CREATE TRIGGER IF NOT EXISTS apm_names_a_candidate BEFORE INSERT ON "
+    "annotation_approval_member WHEN NOT EXISTS (SELECT 1 FROM "
+    "annotation_approval p WHERE p.id = NEW.approval_id"
+    " AND p.decision = 'approved' AND p.signature IS NOT NULL"
+    " AND typeof(NEW.seq) = 'integer' AND NEW.seq >= 0"
+    " AND NEW.seq < p.candidates"
+    " AND p.machine_uid = (SELECT m.machine_uid FROM lem_machine_log m"
+    "                      WHERE m.id = NEW.log_id)) "
+    "BEGIN SELECT RAISE(ABORT, 'an approval names at most as many rows as "
+    "it covers, each on its own bench'); END",
     # §10.5 "no automatic hiding anywhere", kept by the FILE: a hiding
     # annotation must name an APPROVED approval for the row's own bench and
     # for that rule (`resend` hides as `replay_duplicate`). Without this any
@@ -325,6 +395,11 @@ _DDL = (
     "log_annotation WHEN NEW.label IN ('replay_duplicate', 'import_leftover') "
     "AND NOT EXISTS (SELECT 1 FROM annotation_approval p "
     " WHERE p.id = NEW.approval_id AND p.decision = 'approved'"
+    " AND p.signature IS NOT NULL"
+    # ...and the approval NAMES this row: approving one bench's replays is
+    # not a licence to hide any row of that bench.
+    " AND EXISTS (SELECT 1 FROM annotation_approval_member mm"
+    "             WHERE mm.approval_id = p.id AND mm.log_id = NEW.log_id)"
     " AND p.machine_uid = (SELECT m.machine_uid FROM lem_machine_log m"
     "                      WHERE m.id = NEW.log_id)"
     # An approval's rule is a label, or a label and a storm day
@@ -334,8 +409,8 @@ _DDL = (
     "      OR (substr(p.rule || '@', 1, instr(p.rule || '@', '@') - 1)"
     "          = 'resend' AND NEW.label = 'replay_duplicate'))) "
     "BEGIN SELECT RAISE(ABORT, 'hiding a reading needs an approved "
-    "annotation_approval for its bench and rule (D7): nothing was "
-    "hidden'); END",
+    "annotation_approval for its bench and rule that names the row (D7): "
+    "nothing was hidden'); END",
     # The machine's configuration row, declared HERE (with its owner's exact
     # columns from machine_configs.CONFIG_DDL) because the effective view
     # reads `retired_at` from it and a view naming a missing table fails every
@@ -455,7 +530,10 @@ _DDL = (
     "  AND a.label IN ('replay_duplicate', 'import_leftover') "
     "  AND EXISTS (SELECT 1 FROM annotation_approval p "
     "    WHERE p.id = a.approval_id AND p.decision = 'approved' "
-    "    AND p.machine_uid = l.machine_uid)) "
+    "    AND p.signature IS NOT NULL "
+    "    AND p.machine_uid = l.machine_uid "
+    "    AND EXISTS (SELECT 1 FROM annotation_approval_member mm "
+    "      WHERE mm.approval_id = p.id AND mm.log_id = l.id))) "
     "AND NOT EXISTS (SELECT 1 FROM lem_machine_config c "
     "  WHERE c.machine_uid = l.machine_uid AND c.retired_at IS NOT NULL "
     "  AND l.ts < c.retired_at)",
@@ -566,7 +644,8 @@ def _error(exc: BaseException) -> dict:
         # own words so the cause is searchable.
         text += (" (the LEM store refuses statements that would drop, alter "
                  "or unguard the append-only record, or switch off its "
-                 "durability; nothing was changed)")
+                 "durability, and approvals written outside the approval "
+                 "flow (D7); nothing was changed)")
     out = {"error": text}
     if "locked" in str(exc).lower() or "busy" in str(exc).lower():
         out["busy"] = True
@@ -867,6 +946,106 @@ class LocalStoreGateway:
                 except sqlite3.Error:
                     pass
                 raise
+
+    # ── D7: approvals ─────────────────────────────────────────────────
+    def approval_key(self) -> bytes:
+        """The key approvals are signed with: a file BESIDE the store, never
+        in it (`<store>.approval-key`, created 0600 on first use), so a
+        statement that can write the store cannot sign. A store with no file
+        on disk keeps one per process."""
+        path = self.path
+        if path and os.path.isfile(path):
+            kpath = path + ".approval-key"
+            try:
+                with open(kpath, "rb") as fh:
+                    key = fh.read().strip()
+                if key:
+                    return key
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise ApprovalRefused("the approval key {0} cannot be read: "
+                                      "{1}".format(kpath, exc))
+            try:
+                fd = os.open(kpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                             0o600)
+            except FileExistsError:
+                return self.approval_key()     # another writer made it first
+            except OSError as exc:
+                raise ApprovalRefused("the approval key {0} cannot be "
+                                      "created: {1}".format(kpath, exc))
+            key = secrets.token_hex(32).encode("ascii")
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(key)
+            return key
+        key = getattr(self, "_approval_key_mem", None)
+        if not key:
+            key = secrets.token_hex(32).encode("ascii")
+            self._approval_key_mem = key
+        return key
+
+    def sign_approval(self, row: Dict[str, Any]) -> str:
+        """HMAC-SHA256 over every field the decision rests on."""
+        msg = json.dumps([None if row.get(f) is None else str(row.get(f))
+                          for f in APPROVAL_SIGNED_FIELDS],
+                         separators=(",", ":"))
+        return hmac.new(self.approval_key(), msg.encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+
+    def approval_signature_ok(self, row: Dict[str, Any]) -> bool:
+        sig = str(row.get("signature") or "")
+        return bool(sig) and hmac.compare_digest(sig, self.sign_approval(row))
+
+    def record_approval(self, *, machine_uid: str, rule: str, run_id: str,
+                        candidates: int, approved_by: str, approved_at: str,
+                        decision: str, signature: str,
+                        members: Sequence[int] = (),
+                        examples: Optional[str] = None,
+                        qc_impact: Optional[str] = None) -> int:
+        """Write one approval and the rows it covers, in one transaction.
+
+        The ONLY way an approval reaches the store: the authorizer refuses
+        a plain INSERT into either table. Refused unless the signature
+        verifies with the key beside the store, and, for an approval, unless
+        it names exactly `candidates` distinct rows. The triggers then hold
+        the bare file to the same shape (signed, bounded, on its bench)."""
+        row = {"machine_uid": machine_uid, "rule": rule, "run_id": run_id,
+               "candidates": candidates, "approved_by": approved_by,
+               "approved_at": approved_at, "decision": decision,
+               "signature": signature}
+        if not self.approval_signature_ok(row):
+            raise ApprovalRefused(
+                "that approval's signature does not verify: it was not "
+                "signed by the approval flow that showed the report (D7)")
+        ids = [int(i) for i in members]
+        if decision == "approved" and (len(ids) != int(candidates)
+                                       or len(set(ids)) != len(ids)):
+            raise ApprovalRefused(
+                "an approval names exactly the {0} rows it covers, once each "
+                "(it named {1}, {2} distinct)".format(
+                    candidates, len(ids), len(set(ids))))
+        if decision != "approved" and ids:
+            raise ApprovalRefused("a rejection covers no rows")
+        with self.transaction():
+            _APPROVAL_WRITER.on = True
+            try:
+                con = self._writer
+                cur = con.execute(
+                    "INSERT INTO annotation_approval (machine_uid, rule, "
+                    "run_id, candidates, examples, qc_impact, approved_by, "
+                    "approved_at, decision, signature) VALUES "
+                    "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [machine_uid, rule, run_id, int(candidates), examples,
+                     qc_impact, approved_by, approved_at, decision,
+                     signature])
+                aid = int(cur.lastrowid)
+                con.executemany(
+                    "INSERT INTO annotation_approval_member (approval_id, "
+                    "seq, log_id) VALUES (?, ?, ?)",
+                    [(aid, k, rid) for k, rid in enumerate(ids)])
+            finally:
+                _APPROVAL_WRITER.on = False
+        return aid
 
     # ── what it is ────────────────────────────────────────────────────
     def health(self) -> dict:

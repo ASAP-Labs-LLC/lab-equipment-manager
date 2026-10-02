@@ -49,6 +49,19 @@ poll ("≥ 20 rows" alone made every twin in it a copy):
   Multitek NS 08-31 shape) — all genuine;
 * a restart that re-reads only the last two samples before the night's new
   rows — a copy, however short.
+
+Added after the round-3 critic hid genuine QC repeats through the 80 %
+majority rule, and a Blank and a Solvent as a "stretch of two samples":
+
+* five QC standards read again the next morning, every value the same
+  (whole degrees), in a poll of their own — genuine;
+* four of them again with one new sample (80 % twins) — genuine;
+* the daily Blank and Solvent run lines at the head of a 32-row overnight
+  catch-up poll — genuine;
+* and the shape that guard must not break (Agilent GC 2, 09-23): a whole
+  file re-read that holds some readings more often than the record does,
+  with a run of standards and one sample between those extra copies — the
+  standards' copies are copies.
 """
 
 from __future__ import annotations
@@ -288,14 +301,14 @@ def build() -> SimLab:
     lab.poll(dbl, pair + pair, [GENUINE] * 4)           # printed twice
 
     gc1 = "stretch"
-    work = [SimLab.run_line("S%03d" % k, {"IBP": "15%d.%d" % (k % 10, k)})
+    work = [SimLab.run_line("S1%03d" % k, {"IBP": "15%d.%d" % (k % 10, k)})
             for k in range(25)]
     for line in work:
         lab.poll(gc1, [line], [GENUINE])
     lab.poll(gc1, work + work, [DUP] * 50)    # replay, the stretch twice
 
     storm = "storm"
-    tail_lines = [SimLab.run_line("T%03d" % k, {"v": "t%d" % k})
+    tail_lines = [SimLab.run_line("T1%03d" % k, {"v": "t%d" % k})
                   for k in range(22)]
     for line in tail_lines:
         lab.poll(storm, [line], [GENUINE])
@@ -313,13 +326,46 @@ def build() -> SimLab:
     blank = SimLab.run_line("Blank", {"N": "1.45"})
     lab.poll(cu, [af, ao], [GENUINE, GENUINE])
     lab.poll(cu, [blank], [GENUINE])
-    night = [SimLab.run_line("C%03d" % k, {"N": "%d.%d" % (20 + k, k)})
+    night = [SimLab.run_line("C1%03d" % k, {"N": "%d.%d" % (20 + k, k)})
              for k in range(30)]
     lab.poll(cu, [af] + night[:10] + [blank] + night[10:20] + [af, ao]
              + night[20:], [GENUINE] * 34)
     # ...and the other side of the line: a restart re-reads the last two
     # samples from a stale offset, then the next night's new rows follow.
-    more = [SimLab.run_line("C%03d" % k, {"N": "%d.%d" % (60 + k, k)})
+    more = [SimLab.run_line("C2%03d" % k, {"N": "%d.%d" % (60 + k, k)})
             for k in range(22)]
     lab.poll(cu, night[-2:] + more, [DUP] * 2 + [GENUINE] * 22)
+
+    # ── ROUND 4: a standard is not a sample ─────────────────────────────
+    fl = "flashqc"
+    stds = [SimLab.qc_line(s, "Flash", v, low=v - 3, high=v + 3)
+            for s, v in (("AF26", 62.0), ("AO25", 70.0), ("AB10", 45.0),
+                         ("AC11", 88.0), ("AD12", 101.0))]
+    lab.poll(fl, stds, [GENUINE] * 5)
+    for k in range(3):
+        lab.poll(fl, [SimLab.run_line("4050%d" % k, {"F": "5%d" % k})],
+                 [GENUINE])
+    lab.poll(fl, stds, [GENUINE] * 5)              # the next morning
+    lab.poll(fl, stds[:4] + [SimLab.run_line("40600", {"F": "60"})],
+             [GENUINE] * 5)
+    bs = "blanksolvent"
+    blank0 = SimLab.run_line("Blank", {"N": "0.00"})
+    solvent = SimLab.run_line("Solvent", {"N": "0.00"})
+    lab.poll(bs, [blank0], [GENUINE])
+    lab.poll(bs, [solvent], [GENUINE])
+    lab.poll(bs, [blank0, solvent] + [
+        SimLab.run_line("40%03d" % (700 + k), {"N": "%d.%d" % (20 + k, k)})
+        for k in range(30)], [GENUINE] * 32)
+    g2 = "wholefile"
+    p = [SimLab.run_line("4000%d" % k, {"v": "p%d" % k}) for k in range(4)]
+    q = [SimLab.run_line("AF26", {"v": "a1"}),
+         SimLab.run_line("AF26", {"v": "a2"}),
+         SimLab.run_line("40005", {"v": "q5"}),
+         SimLab.run_line("Blank", {"v": "0"})]
+    for line in p + q:
+        lab.poll(g2, [line], [GENUINE])
+    back = p[::-1]
+    lab.poll(g2, p + back + q + back + [
+        SimLab.run_line("4100%d" % k, {"v": "n%d" % k}) for k in range(10)],
+        [DUP] * 4 + [GENUINE] * 4 + [DUP] * 4 + [GENUINE] * 14)
     return lab

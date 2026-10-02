@@ -76,7 +76,7 @@ class TestTheDryRun:
         and the dry run reports both side by side for a window, so the
         prediction can be checked rather than restated."""
         lab = SimLab()
-        lines = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(25)]
+        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(25)]
         lab.poll("w", lines, [GENUINE] * 25, ts="2026-08-31T10:00:00")
         lab.poll("w", lines, [DUP] * 25, ts="2026-09-02T10:00:00")
         rep = _report(lab, since="2026-09-01")
@@ -94,7 +94,7 @@ class TestTheDryRun:
         Days like that are listed on their own, so they are reviewed as
         events rather than approved as part of a total."""
         lab = SimLab()
-        lines = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(6)]
+        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(6)]
         for line in lines:
             lab.poll("s", [line], [GENUINE], ts="2026-08-17T09:00:00")
         for k in range(12):
@@ -115,11 +115,11 @@ class TestTheDryRun:
         lab = SimLab()
         lab.poll("s", [SimLab.imported_line("I0", "IBP", "150", "f.csv")],
                  [GENUINE], ts="2026-08-01T00:00:00")
-        lab.poll("s", [SimLab.run_line("L0", {"v": "1"})], [GENUINE],
+        lab.poll("s", [SimLab.run_line("L40000", {"v": "1"})], [GENUINE],
                  ts="2026-08-02T00:00:00")
         for k in range(10):
             lines = ([SimLab.run_line("I0", {"IBP": "150.%d" % k}),
-                      SimLab.run_line("L0", {"v": "2.%d" % k})] +
+                      SimLab.run_line("L40000", {"v": "2.%d" % k})] +
                      [SimLab.run_line("N%d_%d" % (k, j), {"v": "x"})
                       for j in range(18)])
             lab.poll("s", lines, [GENUINE] * 20,
@@ -146,7 +146,7 @@ class TestQcImpact:
         Hidden, the last verdict moves back to the 1st — Ryan sees that
         before he approves."""
         lab = SimLab()
-        lines = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(25)]
+        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(25)]
         lab.poll("g", lines + [self._qc(2.1)], [GENUINE] * 26,
                  ts="2026-08-01T09:00:00")
         lab.poll("g", lines + [self._qc(2.1, operator="zed")], [DUP] * 26,
@@ -167,7 +167,7 @@ class TestQcImpact:
         for v in vals:
             lab.poll("u", [self._qc(v)], [GENUINE])
         # replay: all four QC again plus 20 run lines, in one burst
-        runs = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(20)]
+        runs = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(20)]
         lab.poll("u", runs, [GENUINE] * 20, ts="2026-08-01T00:00:01")
         lab.poll("u", [self._qc(v) for v in vals] + runs, [DUP] * 24)
         [s] = _report(lab)["qc_impact"]
@@ -200,7 +200,7 @@ class TestStormsGoToReviewOnTheirOwn:
 
     def _lab(self):
         lab = SimLab()
-        lines = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(25)]
+        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(25)]
         lab.poll("s", lines, [GENUINE] * 25, ts="2026-08-17T09:00:00")
         storm = []
         for k in range(12):
@@ -251,13 +251,13 @@ class TestThePredictionIsChecked:
 
     def _lab(self):
         lab = SimLab()
-        first = [SimLab.run_line("F%d" % k, {"v": "f%d" % k})
+        first = [SimLab.run_line("F44%03d" % k, {"v": "f%d" % k})
                  for k in range(25)]
         lab.poll("b", first, [GENUINE] * 25, ts="2026-09-02T09:00:00")
         lab.poll("b", first, [DUP] * 25, ts="2026-09-03T09:00:00")
         # a second archive arrives whole and is never replayed: these rows
         # are the record's only copy of their readings
-        other = [SimLab.run_line("G%d" % k, {"v": "g%d" % k})
+        other = [SimLab.run_line("G45%03d" % k, {"v": "g%d" % k})
                  for k in range(25)]
         lab.poll("b", other, [GENUINE] * 25, ts="2026-09-04T09:00:00")
         return lab
@@ -387,7 +387,7 @@ class TestO9IsClosedByArithmeticNotByExplanation:
         the ceiling (every row with an earlier copy), not from what the
         rules propose."""
         lab = self._lab()
-        again = SimLab.run_line("G3", {"v": "g3"})       # a lone re-test
+        again = SimLab.run_line("G45003", {"v": "g3"})       # a lone re-test
         [rid] = lab.poll("b", [again], [GENUINE], ts="2026-09-05T09:00:00")
         chk = self._check(lab)
         [b] = chk["benches"]
@@ -411,3 +411,64 @@ class TestO9IsClosedByArithmeticNotByExplanation:
         assert chk["benches"][0]["burst_rows_accounted"] == {
             "hide_candidates": 24, "listed_for_review": 0,
             "first_copy_of_its_reading": 50, "unlabelled_twin": 1}
+
+
+class TestTheBandIsJudgedWithoutOurKey:
+    """Round-3 critic: "the builder replaced the requirement with the burst
+    proxy it was predicted from"; every bound so far used §10.5's own
+    fingerprint, so a reader could still ask whether a looser idea of a
+    duplicate reaches the band. This bound uses no fingerprint at all.
+
+    A bench can only send AGAIN what it has sent before. So a row whose Lab
+    ID its bench never logged in an earlier poll is a first appearance under
+    ANY definition of a re-emission — exact copy, re-processed result,
+    re-test, anything keyed on the sample. Counting every other row as
+    re-emitted (re-tests and re-integrations included, which is far too
+    generous) is the most any definition can reach. Where even that is under
+    the band's floor, the band is not reachable by a looser rule, only by a
+    revised prediction; and the report names the first appearances, which
+    are what hiding the difference would erase."""
+
+    def _lab(self):
+        lab = SimLab()
+        first = [SimLab.run_line("F44%03d" % k, {"v": "f%d" % k})
+                 for k in range(25)]
+        lab.poll("b", first, [GENUINE] * 25, ts="2026-09-02T09:00:00")
+        # the same samples re-processed: every number moved, a re-emission
+        # under a loose definition, not a copy under §10.5
+        again = [SimLab.run_line("F44%03d" % k, {"v": "r%d" % k})
+                 for k in range(25)]
+        lab.poll("b", again, [GENUINE] * 25, ts="2026-09-03T09:00:00")
+        other = [SimLab.run_line("G45%03d" % k, {"v": "g%d" % k})
+                 for k in range(25)]
+        lab.poll("b", other, [GENUINE] * 25, ts="2026-09-04T09:00:00")
+        return lab
+
+    def _check(self, lab, burst_rows):
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        return dedupe.prediction_check(result, {
+            "since": "2026-09-01", "total": [40, 60], "band": 0.10,
+            "benches": {"b": {"name": "Bench B", "burst_rows": burst_rows}}})
+
+    def test_first_appearances_bound_every_definition(self):
+        chk = self._check(self._lab(), 75)
+        [b] = chk["benches"]
+        assert b["ceiling"] == 0                  # nothing is a copy
+        assert b["any_definition_ceiling"] == 25  # the re-processed rows
+        assert b["first_appearances"] == 50
+        assert b["reachable_by_any_definition"] is False
+        shown = b["first_appearance_examples"]          # spread, at most 20
+        assert len(shown) == 20 and shown[0]["lab_id"] == "F44000"
+        assert {e["ts"][:10] for e in shown} == {"2026-09-02", "2026-09-04"}
+        t = chk["total"]
+        assert t["any_definition_ceiling"] == 25
+        assert t["reachable_by_any_definition"] is False
+
+    def test_a_band_a_loose_definition_could_reach_says_so(self):
+        """The bound does not pretend: where re-processed rows would fill
+        the band, it says the band is reachable by SOME definition — and the
+        §10.5 ceiling still says what a faithful rule can do."""
+        chk = self._check(self._lab(), 25)
+        [b] = chk["benches"]
+        assert b["reachable_by_any_definition"] is True
+        assert b["reachable"] is False

@@ -33,9 +33,13 @@ WHAT IT DOES, AND WHAT IT NEVER DOES
    the history.
 
 There is no automatic hiding anywhere. The store enforces that, not this
-module: `lem_store` refuses a hiding annotation that does not name an
-approved approval for the same bench and rule, and the effective view hides
-a row only through such an approval.
+module: an approval reaches the store only through `record_approval`, which
+verifies its HMAC and writes the exact rows it covers beside it
+(`annotation_approval_member`); `lem_store` refuses a hiding annotation
+unless its approval is approved, signed, for the same bench and rule, and
+NAMES that row; and the effective view hides a row only through such an
+approval. What SQLite cannot check is the HMAC itself, so `apply` re-verifies
+it and every dry run names an approval that does not verify.
 
 THE RULES (§10.5), PER BENCH, IN `(ts, id)` ORDER
 -------------------------------------------------
@@ -54,10 +58,14 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
   poll, in a poll in which ≥ 80 % of the rows have such twins (the majority
   rule; it needs at least 5 rows, because C's 2-row/50 % rule was rejected
   as too eager and a 1-row poll is "100 %"), or in a poll that carried ≥ 20
-  rows where the twin lies in a replayed STRETCH: consecutive twins
-  spanning two or more samples (`_replayed_stretches`). A restart re-reads
-  a run of its file; a lone twin among new rows is what a genuine repeat in
-  a catch-up poll looks like.
+  rows where the twin lies in a replayed STRETCH: consecutive rows the
+  record already holds, spanning two or more samples
+  (`_replayed_stretches`). A restart re-reads a run of its file; a lone
+  twin among new rows is what a genuine repeat in a catch-up poll looks
+  like. On BOTH paths the twins must include two or more SAMPLES
+  (`is_sample_id`: a Lab ID numbered the way LabCore numbers a sample). A
+  lab reads its standards, blanks and solvents every day by design, and a
+  repeat of only those is a QC repeat until a person says otherwise.
 * `probable_duplicate` — a twin that is NOT in such a poll or stretch: a
   genuine identical re-test or a QC repeat looks exactly like this. Always
   visible; listed for review.
@@ -78,12 +86,9 @@ from __future__ import annotations
 
 import collections
 import hashlib
-import hmac
 import json
 import math
-import os
 import re
-import secrets
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -115,6 +120,17 @@ DROPPED_DETAIL_KEYS = frozenset((
     "imported", "source_file"))
 
 CLASSIFIED_KINDS = ("run", "qc")
+
+#: A sample's Lab ID as LabCore numbers it: four or more digits at the
+#: start, after at most one letter, with anything after (39878, 40528,
+#: 091823-7945, 28018N1, 28967 Top, 19138T). Standards, blanks, solvents and
+#: cal checks are NAMED (Blank, AF26, Cal STD, RT 6.29, ASTM2887-12,
+#: RGO 011623), whether the bench logs them as `qc` or as `run`; a named
+#: reference that starts like a number says so (D2887-STD, D2887 Cal Std).
+#: On the server's log-mirror copy 79,517 of the benches' own 82,272 `run`
+#: rows carry a sample's Lab ID.
+_SAMPLE_ID = re.compile(r"[A-Za-z]?\d{4,}")
+_NAMED_REFERENCE = re.compile(r"(?i)std|standard|blank|solvent|check|\bcal\b")
 
 #: Labels the classifier proposes for hiding. Each needs its own approval.
 HIDE_CANDIDATE_LABELS = ("replay_duplicate", "resend", "import_leftover")
@@ -198,6 +214,20 @@ def fingerprint(row: LogRow) -> Tuple[str, ...]:
                           if k not in DROPPED_DETAIL_KEYS},
                          sort_keys=True, ensure_ascii=False)
     return (row.kind, row.lab_id, row.test_name, row.value, det)
+
+
+def is_sample_id(lab_id: str) -> bool:
+    """True for a Lab ID numbered the way LabCore numbers a sample."""
+    text = str(lab_id or "").strip()
+    return bool(_SAMPLE_ID.match(text)) and not _NAMED_REFERENCE.search(text)
+
+
+def _samples(rows: Iterable[LogRow]) -> set:
+    """The distinct SAMPLES among rows: `run` rows with a numbered Lab ID.
+    A repeat that holds fewer than two is a repeat of the lab's standards
+    and blanks, which it reads every day by design."""
+    return {r.lab_id for r in rows
+            if r.kind == "run" and is_sample_id(r.lab_id)}
 
 
 def _exact(row: LogRow) -> Tuple[str, ...]:
@@ -402,26 +432,33 @@ def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
 
 
 def _replayed_stretches(poll: List[LogRow], rest: List[int],
-                        twin_of: Dict[int, int]) -> set:
+                        twin_of: Dict[int, int], seen: set) -> set:
     """The twins of a big poll that a re-read put there (positions in
     `poll`), for a poll that is NOT mostly twins.
 
     A restart re-reads a RUN of its file, so its copies arrive as a stretch:
     consecutive rows (in the poll's order, re-sent rows set aside), every
-    one with an earlier twin, spanning two or more SAMPLES. A twin outside
-    such a stretch — one row among new ones, or only QC standards, which a
-    lab measures every day by design — is what a genuine repeat looks like
-    in a catch-up poll, and is left to review (round-2 critic: a QC repeat
-    in a 24-row catch-up; Multitek NS row 216039 on 08-31)."""
+    one a reading the record already holds (`seen`), spanning two or more
+    SAMPLES (`_samples`: a standard or a blank is not one). The twins in such
+    a stretch are copies. A twin outside one — a row among new ones, or a
+    run of standards and blanks, which a lab measures every day by design —
+    is what a genuine repeat looks like in a catch-up poll, and is left to
+    review (round-2 critic: a QC repeat in a 24-row catch-up; Multitek NS
+    row 216039 on 08-31; round-3 critic: a Blank and a Solvent).
+
+    A row the record holds but whose copies are all accounted for (the file
+    holds that reading more often than the record does) still belongs to
+    the re-read: it does not break the stretch around it, and it is not
+    itself a twin, so it stays visible. Agilent GC 2's 09-23 re-read of its
+    whole file has such rows between its copies of AF26 and 39888."""
     out: set = set()
     run: List[int] = []
     for k in rest + [-1]:                  # -1 closes the last run
-        if k >= 0 and k in twin_of:
+        if k >= 0 and k in seen:
             run.append(k)
             continue
-        samples = {poll[j].lab_id for j in run if poll[j].kind == "run"}
-        if len(run) >= 2 and len(samples) >= 2:
-            out.update(run)
+        if len(run) >= 2 and len(_samples(poll[j] for j in run)) >= 2:
+            out.update(j for j in run if j in twin_of)
         run = []
     return out
 
@@ -483,6 +520,8 @@ def classify(rows: Iterable[LogRow],
             rest = [k for k in range(n) if k not in resent]
             used: Dict[Tuple[str, ...], int] = collections.Counter()
             twin_of: Dict[int, int] = {}
+            # readings the record already held before this poll
+            seen = {k for k in rest if kept.get(fingerprint(poll[k]))}
             for k in rest:
                 f = fingerprint(poll[k])
                 if used[f] < len(kept[f]):
@@ -491,10 +530,17 @@ def classify(rows: Iterable[LogRow],
             m = len(twin_of)
             majority = (m > 0 and n >= MAJORITY_MIN_ROWS
                         and m >= MAJORITY_SHARE * len(rest))
-            if majority:
+            # Either way, a repeat with fewer than two SAMPLES in it is the
+            # lab's standards and blanks read again (round-3 critic: five QC
+            # standards re-read the next morning; a Blank and a Solvent at
+            # the head of a catch-up poll) and is left to review.
+            standards_only = len(_samples(poll[k] for k in twin_of)) < 2
+            if majority and not standards_only:
                 copied = set(twin_of)
+            elif majority:
+                copied = set()
             elif n >= BURST_ROWS:
-                copied = _replayed_stretches(poll, rest, twin_of)
+                copied = _replayed_stretches(poll, rest, twin_of, seen)
             else:
                 copied = set()
             rule = "burst" if n >= BURST_ROWS else "majority"
@@ -518,7 +564,8 @@ def classify(rows: Iterable[LogRow],
                         in_poll.setdefault(f, r.id)
                         continue
                     put(k, "probable_duplicate",
-                        "lone_twin_in_burst" if n >= BURST_ROWS
+                        "fewer_than_two_samples" if majority
+                        else "lone_twin_in_burst" if n >= BURST_ROWS
                         else "twin_not_in_burst", twin_of[k])
                 elif f in in_poll:
                     # The same reading again in this poll with nothing to
@@ -789,6 +836,7 @@ def prediction_check(result: Classification,
     everywhere: Dict[Tuple[str, ...], int] = collections.Counter(
         fingerprint(r) for r in result.rows.values())
     has_earlier = _has_earlier(result.rows.values())
+    firsts = _first_appearances(result.rows.values())
     by_machine: Dict[str, List[LogRow]] = collections.defaultdict(list)
     for r in result.rows.values():
         by_machine[r.machine_uid].append(r)
@@ -826,6 +874,10 @@ def prediction_check(result: Classification,
                       key=lambda r: (r.ts, r.id))
         step = max(1, len(only) // EXAMPLES_PER_BENCH)
         need = int(math.ceil(lo - 1e-9))
+        new = sorted((r for r in runs if r.id in firsts),
+                     key=lambda r: (r.ts, r.id))
+        loose = len(runs) - len(new)
+        nstep = max(1, len(new) // EXAMPLES_PER_BENCH)
         benches.append({
             "machine_uid": uid, "name": want.get("name", uid),
             "since": since, "predicted": predicted, "band": [lo, hi],
@@ -848,6 +900,14 @@ def prediction_check(result: Classification,
                                    only[::step][:EXAMPLES_PER_BENCH]],
             "within_band": lo <= proposed <= hi,
             "reachable": ceiling >= lo,
+            # Without §10.5's key: every row of the window except the first
+            # appearance of its Lab ID on the bench. Re-tests and
+            # re-processed results count here, so this is generous.
+            "any_definition_ceiling": loose,
+            "first_appearances": len(new),
+            "first_appearance_examples": [
+                r.brief() for r in new[::nstep][:EXAMPLES_PER_BENCH]],
+            "reachable_by_any_definition": loose >= lo,
         })
     t_lo, t_hi = prediction["total"]
     replay = sum(1 for c in result.candidates.values()
@@ -871,6 +931,9 @@ def prediction_check(result: Classification,
             "within_band": t_lo <= replay <= t_hi,
             "reachable": ceiling >= t_lo,
             "readings_erased_at_floor": max(0, int(t_lo) - ceiling),
+            "any_definition_ceiling": len(result.rows) - len(firsts),
+            "reachable_by_any_definition":
+                len(result.rows) - len(firsts) >= t_lo,
         },
         "benches": benches,
     }
@@ -896,6 +959,21 @@ def prediction_check(result: Classification,
                         for u, n in sorted(claim.get("benches", {}).items())],
         }
     return out
+
+
+def _first_appearances(rows: Iterable[LogRow]) -> set:
+    """Ids of the first row of each (bench, Lab ID), in (ts, id) order.
+
+    A bench can only send AGAIN what it has sent before, so these rows are
+    first appearances under ANY definition of a re-emission — exact copy,
+    re-processed result, re-test — and every other row is, at most, one.
+    No fingerprint is involved: this bound does not lean on §10.5's key."""
+    first: Dict[Tuple[str, str], Tuple[str, int]] = {}
+    for r in rows:
+        k = (r.machine_uid, r.lab_id)
+        if k not in first or (r.ts, r.id) < first[k]:
+            first[k] = (r.ts, r.id)
+    return {i for _ts, i in first.values()}
 
 
 def _has_earlier(rows: Iterable[LogRow]) -> set:
@@ -1080,59 +1158,20 @@ def _one_bench(gateway, machine_uid: str, upto: int) -> Classification:
 
 # ── the approval's signature ────────────────────────────────────────────────
 
-_SIGNED_FIELDS = ("machine_uid", "rule", "run_id", "candidates",
-                  "approved_by", "approved_at", "decision")
-
-
 def approval_key(gateway) -> bytes:
-    """The key approvals are signed with: a file BESIDE the store, never in
-    it (`<store>.approval-key`, created 0600 on first use), so a statement
-    that can write the store cannot sign. A store with no file on disk (the
-    in-memory test stores) keeps one per process."""
-    path = getattr(gateway, "path", None)
-    if isinstance(path, str) and path and os.path.isfile(path):
-        kpath = path + ".approval-key"
-        try:
-            with open(kpath, "rb") as fh:
-                key = fh.read().strip()
-            if key:
-                return key
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise DedupeRefused("the approval key {0} cannot be read: {1}"
-                                .format(kpath, exc))
-        try:
-            fd = os.open(kpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            return approval_key(gateway)       # another writer made it first
-        except OSError as exc:
-            raise DedupeRefused("the approval key {0} cannot be created: {1}"
-                                .format(kpath, exc))
-        key = secrets.token_hex(32).encode("ascii")
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(key)
-        return key
-    key = getattr(gateway, "_lem_approval_key", None)
-    if not key:
-        key = secrets.token_hex(32).encode("ascii")
-        try:
-            setattr(gateway, "_lem_approval_key", key)
-        except AttributeError:
-            pass
-    return key
+    """The key beside the store (`LocalStoreGateway.approval_key`)."""
+    try:
+        return gateway.approval_key()
+    except Exception as exc:                            # noqa: BLE001
+        raise DedupeRefused(str(exc))
 
 
-def _sign(key: bytes, row: Dict[str, Any]) -> str:
-    msg = json.dumps([None if row.get(f) is None else str(row.get(f))
-                      for f in _SIGNED_FIELDS], separators=(",", ":"))
-    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+def _sign(gateway, row: Dict[str, Any]) -> str:
+    return gateway.sign_approval(row)
 
 
 def signature_ok(gateway, row: Dict[str, Any]) -> bool:
-    sig = str(row.get("signature") or "")
-    return bool(sig) and hmac.compare_digest(
-        sig, _sign(approval_key(gateway), row))
+    return bool(gateway.approval_signature_ok(row))
 
 
 def unsigned_approvals(gateway) -> List[Dict[str, Any]]:
@@ -1198,22 +1237,18 @@ def approve(gateway, machine_uid: str, label: str, run_id: str, *,
     signed = {"machine_uid": machine_uid, "rule": unit, "run_id": run_id,
               "candidates": len(ids), "approved_by": approved_by.strip(),
               "approved_at": now or _now(), "decision": decision}
-    signature = _sign(approval_key(gateway), signed)
-    with gateway.transaction():
-        res = gateway.sql(
-            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
-            "candidates, examples, qc_impact, approved_by, approved_at, "
-            "decision, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [machine_uid, unit, run_id, len(ids), json.dumps(examples),
-             json.dumps(qc_impact(result, machine_uid, now, (label,), ids)),
-             signed["approved_by"], signed["approved_at"], decision,
-             signature])
-        if res.get("error"):
-            raise DedupeRefused("the approval was not recorded: {0}"
-                                .format(res["error"]))
-        got = _read(gateway, "SELECT last_insert_rowid() AS i", [],
-                    "the approval's id")
-    return {"approval_id": got[0]["i"], "machine_uid": machine_uid,
+    signature = _sign(gateway, signed)
+    try:
+        aid = gateway.record_approval(
+            signature=signature,
+            members=ids if decision == "approved" else (),
+            examples=json.dumps(examples),
+            qc_impact=json.dumps(qc_impact(result, machine_uid, now,
+                                           (label,), ids)),
+            **signed)
+    except Exception as exc:                            # noqa: BLE001
+        raise DedupeRefused("the approval was not recorded: {0}".format(exc))
+    return {"approval_id": aid, "machine_uid": machine_uid,
             "label": label, "unit": unit, "candidates": len(ids),
             "decision": decision}
 
@@ -1441,6 +1476,25 @@ def o9_lines(pred: Dict[str, Any]) -> List[str]:
         for b in e["benches"]:
             out.append("    {0:<13} claimed {1:>6,}  ceiling then {2:>6,}"
                        .format(b["name"], b["claimed"], b["ceiling_then"]))
+    out.append(
+        "  WITHOUT OUR KEY: rows whose Lab ID their bench had sent in an "
+        "earlier poll (any content: re-tests and re-processed results "
+        "counted as re-emissions too) = {0:,} -> {1}.".format(
+            t["any_definition_ceiling"],
+            "the floor is reached only by also hiding re-tests and "
+            "re-processed results, which are readings" if
+            t["reachable_by_any_definition"] else
+            "no definition reaches the floor"))
+    for b in pred["benches"]:
+        out.append(
+            "  since {0} {1:<13} any definition at most {2:>6,} "
+            "(first appearances {3:,}) -> {4}".format(
+                b["since"], b["name"], b["any_definition_ceiling"],
+                b["first_appearances"],
+                "NO definition reaches the band"
+                if not b["reachable_by_any_definition"] else
+                "reached only by also hiding re-tests and re-processed "
+                "results" if not b["reachable"] else "reachable"))
     for b in pred["benches"]:
         out.append(
             "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "
