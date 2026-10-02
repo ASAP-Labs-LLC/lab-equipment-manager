@@ -5525,7 +5525,12 @@ def post_live(url: str, token: str, payload: dict,
             str(url).rstrip("/") + LIVE_PATH,
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json",
-                     "X-LEM-Token": str(token or "")},
+                     "X-LEM-Token": str(token or ""),
+                     # Every request names itself (§6.1): through the public
+                     # road Cloudflare refuses urllib's default with 1010.
+                     "User-Agent": lem_user_agent(
+                         (payload or {}).get("machine_uid")
+                         if isinstance(payload, dict) else "")},
             method="POST")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if not 200 <= int(getattr(response, "status", 200) or 200) < 300:
@@ -5728,7 +5733,8 @@ def fetch_floor_config(url: str, token: str, machine_uid: str,
         request = urllib.request.Request(
             build_floor_config_url(url, machine_uid),
             headers={"Accept": "application/json",
-                     "X-LEM-Token": str(token or "")},
+                     "X-LEM-Token": str(token or ""),
+                     "User-Agent": lem_user_agent(machine_uid)},
             method="GET")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             if not 200 <= int(getattr(response, "status", 200) or 200) < 300:
@@ -6119,6 +6125,10 @@ class _TransferState:
     def __init__(self) -> None:
         self.lock = threading.RLock()
         self.mode = "unknown"           # unknown | v2 | legacy
+        # The uid an uploader was started for. A state no uploader owns (the
+        # one __init__ makes, before any bind) is not a v2 bench: it has no
+        # journal to hold in.
+        self.uid = ""
         self.token: Optional[str] = None
         self.enrol = ""                 # why there is no token yet, or ""
         self.shared_token = ""
@@ -6181,6 +6191,21 @@ def recorrect_row(row: dict, corrections: dict) -> dict:
     for key, value in raw.items():
         base[key] = value
     return apply_row_corrections([base], corrections)[0]
+
+
+def _recorrected(row, corrections: dict):
+    """`recorrect_row` that keeps the row's journal reference — and the very
+    same object when nothing changes (the parked queue is matched by
+    identity). Anything that is not a row is passed through untouched."""
+    if not isinstance(row, dict):
+        return row
+    out = recorrect_row(row, corrections)
+    if out is row:
+        return row
+    out = dict(out)
+    if row.get(JOURNAL_KEY):
+        out[JOURNAL_KEY] = row[JOURNAL_KEY]
+    return out
 
 
 
@@ -7879,7 +7904,19 @@ class LEMStationModule:
                 getattr(self, "_journal_owed", None) or [])
         if backlog:
             with self._results_lock:
-                self._identity_backlog = backlog + list(self._identity_backlog)
+                if _v2(self):
+                    # A v2 bench's unsettled readings are results the 60 s
+                    # rule has not cleared: they wait in the factor queue,
+                    # which is uncapped and re-corrects them when LEM next
+                    # confirms the factors (CF2 across a restart). Put
+                    # straight into the identity backlog they were filed with
+                    # the factor they were parsed with, and past its cap the
+                    # oldest of a long outage's were dropped.
+                    wait = getattr(self, "_factor_wait", None)
+                    self._factor_wait = backlog + list(wait or [])
+                else:
+                    self._identity_backlog = backlog + list(
+                        self._identity_backlog)
         if journal.had_history:
             self._held_restored = True
         self._journal_carry = [_keyed(text, pk, src="serial")
@@ -8187,14 +8224,23 @@ class LEMStationModule:
         return st
 
     def _v2_active(self) -> bool:
-        """True when this bench's bookkeeping goes to LEM, not LabCore: it
-        holds a per-bench token and LEM has answered v2 (now, or in a past
-        process — journal.meta remembers the handshake)."""
+        """True when this bench's bookkeeping goes to LEM, not LabCore.
+
+        That is every bench with a journal and an uploader EXCEPT one LEM has
+        answered with a 404 (§6.1, §12.2: the only "old server" signal). A
+        bench whose state is merely unknown — it bound while both roads were
+        down or LEM answered 503, it holds no token yet, or its re-enrolment
+        waits for a person — journals and holds exactly as a v2 bench in an
+        outage does. It used to take the legacy road instead, which cost
+        LabCore 311 ops an idle hour (heartbeat, status, DDL, log rows) and
+        put the same records in both stores once the roads came back (critic,
+        round 1). The first 404 sends it the old way, projecting what it
+        journaled meanwhile (`_v2_fell_back`), so holding loses nothing."""
         st = getattr(self, "_transfer", None)
         if st is None:
             return False
         with st.lock:
-            return st.mode == "v2" and bool(st.token)
+            return bool(st.uid) and st.mode != "legacy"
 
     def _uploader_start(self, machine) -> None:
         """Start (or keep) the uploader for the bound machine. GUI thread or
@@ -8214,6 +8260,7 @@ class LEMStationModule:
         if journal is None:
             return       # no journal, no custody: v2 needs one (§3)
         st = self._transfer = _TransferState()
+        st.uid = uid
         self._upl_journal = journal
         lan = str(getattr(self, "_live_url", "") or "").strip() or LEM_LAN_URL
         if lan.rstrip("/") == LEM_PUBLIC_URL:
@@ -8299,10 +8346,104 @@ class LEMStationModule:
             wait, self._factor_wait = list(getattr(self, "_factor_wait", None)
                                            or []), []
             self._identity_backlog = wait + list(self._identity_backlog)
-        if entries or wait:
+        events = self._v2_project_bookkeeping(machine, journal)
+        if entries or wait or events:
             messages.append(
-                f"LEM answered as an older server: {len(entries)} log row(s) "
-                f"and {len(wait)} held result(s) go the old way (LabCore).")
+                f"LEM answered as an older server: {len(entries) + events} log "
+                f"row(s) and {len(wait)} held result(s) go the old way "
+                "(LabCore).")
+
+    #: Journal kinds that are not an operator's event: the runs (projected by
+    #: their own `log`), the source bookkeeping, and the v2 status/specs/config
+    #: records, which the legacy road re-derives or handles below.
+    _V2_NOT_EVENTS = frozenset({
+        "run", "frame", "consumed", "known", "state", "specs", "config",
+        "periodic", "rotation_overlap", "no_snapshot", "ambiguity"})
+
+    def _v2_project_bookkeeping(self, machine, journal) -> int:
+        """The rest of a fall-back: what the bench did on the v2 side that LEM
+        never acknowledged, made into what v3.9 would have written.
+
+        Needed since an UNKNOWN bench holds on the v2 side (only a 404 means
+        "old server"): an operator's note, override or maintenance record, a
+        factor saved, the machine's setup saved — all journal records while
+        LEM was unreachable. On an old server they are LabCore rows or they
+        are nowhere. The status and specs the v2 sync journaled are marked
+        unpublished so the legacy sync publishes them.
+
+        Exactly once: `legacy_projected_seq` in the journal's meta remembers
+        how far this has gone, so a second fall-back (v2 found, then rolled
+        back) starts after it. Returns the log rows queued."""
+        self._published_specs = None
+        self._last_status_pushed = None
+        if machine is None or journal is None:
+            return 0
+        try:
+            done = int(journal.meta("legacy_projected_seq") or 0)
+        except (TypeError, ValueError):
+            done = 0
+        start = max(int(journal.acked or 0), done) + 1
+        last = journal.last_seq()
+        if start > last:
+            return 0
+        events, corrections, configured = [], {}, False
+        seq = start
+        try:
+            while seq <= last:
+                batch = journal.records_from(seq, 500)
+                if not batch:
+                    break
+                for rec in batch:
+                    seq = int(rec.get("seq") or seq) + 1
+                    kind = str(rec.get("kind") or "")
+                    if kind == "config":
+                        if isinstance(rec.get("machine"), dict):
+                            configured = True
+                        if isinstance(rec.get("corrections"), dict):
+                            corrections.update(rec["corrections"])
+                            events.append(("config", rec))
+                        continue
+                    if not kind or kind in self._V2_NOT_EVENTS:
+                        continue
+                    events.append(("held_expired" if kind == "given_up"
+                                   else kind, rec))
+        except JournalError:
+            return 0       # nothing marked: the next fall-back tries again
+        run_sql = globals().get("labcore_sql")
+        if corrections and callable(run_sql):
+            who = self._current_operator() or UNKNOWN_OPERATOR
+            units = {t.name: t.units for t in machine.tests or []}
+            try:
+                run_sql(CORRECTIONS_DDL)
+                for name, value in corrections.items():
+                    if value:
+                        sql, args = build_correction_upsert(
+                            machine.uid, name, value, units.get(name, ""),
+                            datetime.now(), who)
+                    else:
+                        sql, args = build_correction_delete(machine.uid, name)
+                    run_sql(sql, args)
+            except Exception:                         # noqa: BLE001
+                return 0   # LabCore refused: nothing marked, tried again
+            self._corrections_read_at = None
+        if configured:
+            self._publish_config_labcore(machine)
+        for kind, rec in events:
+            try:
+                ts = datetime.fromisoformat(str(rec.get("ts")))
+            except (TypeError, ValueError):
+                ts = datetime.now()
+            detail = rec.get("detail") if isinstance(rec.get("detail"),
+                                                     dict) else {}
+            self._pending_events.append(build_log_insert(
+                machine.uid, kind, ts, lab_id=str(rec.get("lab_id") or ""),
+                test_name=str(rec.get("test_name") or ""),
+                value=str(rec.get("value") or ""), detail=detail))
+        try:
+            journal.update_meta(legacy_projected_seq=seq - 1)
+        except JournalError:
+            pass
+        return len(events)
 
     def _transfer_status(self, now: datetime) -> str:
         """One sentence for the bench card about LEM (§14): said only when
@@ -8593,12 +8734,26 @@ class LEMStationModule:
             return {"identities": {}, "filed": [], "stored": True,
                     "notice": self._held_notice, "given_up": ""}
         with self._results_lock:
-            taking, self._factor_wait = list(wait), []
+            # No faster than the results road can take them. Its identity
+            # backlog is capped (IDENTITY_BACKLOG_LIMIT) and drops its OLDEST
+            # past the cap — fine for a backlog a bench parses itself into,
+            # a silent loss for results D2 held through a long outage. What
+            # does not fit waits here, uncapped and journal-backed, and goes
+            # on a later poll (behind a fresh confirmation, as it should).
+            room = max(0, IDENTITY_BACKLOG_LIMIT - len(self._identity_backlog)
+                       - len(self._parked_rows))
+            taking, self._factor_wait = list(wait[:room]), list(wait[room:])
         corrections = dict(machine.corrections or {})
-        taking = [dict(recorrect_row(row, corrections),
-                       **({JOURNAL_KEY: row[JOURNAL_KEY]}
-                          if row.get(JOURNAL_KEY) else {}))
-                  for row in taking]
+        taking = [_recorrected(row, corrections) for row in taking]
+        # EVERY reading not yet filed is filed with the factor LEM has just
+        # confirmed — not only the ones this process parked in `_factor_wait`.
+        # A restart during the outage brings the held readings back from the
+        # journal into `_identity_backlog`, carrying the correction they were
+        # PARSED with; filed as they stand, the readings journaled before the
+        # restart reached LabCore with the factor LEM had already replaced
+        # (critic, round 1: 6 of 12 stale). The same holds for a reading that
+        # waits on its sample (held/parked) while the factor moves.
+        self._v2_recorrect_queues(corrections)
         st = self._transfer_state()
         with st.lock:
             at = st.confirmed_at
@@ -8618,6 +8773,30 @@ class LEMStationModule:
             return self._parked_storage(self._park(taking, messages))
         return self._store_results(machine, taking, read_sql, run_sql, write,
                                    messages, now)
+
+    def _v2_recorrect_queues(self, corrections: dict) -> int:
+        """Re-correct, from their raw readings, the unfiled readings in the
+        backlog, held and parked queues. Returns how many changed.
+
+        Rows whose correction already agrees are left as the SAME object:
+        the parked queue is matched by identity at commit (`_commit_held`),
+        so it is only replaced when a factor really moved — and then under
+        `_storing`, so no store in flight is holding the old objects."""
+        if not self._storing.acquire(False):
+            return 0       # a store is in flight; the next poll does this
+        try:
+            changed = 0
+            with self._results_lock:
+                for name in ("_identity_backlog", "_held_rows", "_parked_rows"):
+                    rows = getattr(self, name, None) or []
+                    out = [_recorrected(row, corrections) for row in rows]
+                    moved = sum(1 for a, b in zip(rows, out) if a is not b)
+                    if moved:
+                        setattr(self, name, out)
+                        changed += moved
+            return changed
+        finally:
+            self._storing.release()
 
     def _lem(self, method: str, path: str, now: datetime,
              body: Optional[bytes] = None,
@@ -9103,6 +9282,24 @@ class LEMStationModule:
             return False
         try:
             machine = Machine.from_dict(cache["machine"])
+        except (TypeError, ValueError, KeyError):
+            return False
+        if machine.uid != uid:
+            return False
+        self.set_machine(machine, publish=False)
+        return True
+
+    def _v2_bind_from_canvas(self, uid: str) -> bool:
+        """A v2 bench whose journal folder (config.json with it) is gone binds
+        from the machine its canvas saved — no LabCore read (§6.3). Only for
+        the uid the canvas says had a v2 journal; anything else binds the old
+        way."""
+        canvas = getattr(self, "_canvas_v2", None) or {}
+        snap = canvas.get("machine")
+        if canvas.get("uid") != uid or not isinstance(snap, dict):
+            return False
+        try:
+            machine = Machine.from_dict(snap)
         except (TypeError, ValueError, KeyError):
             return False
         if machine.uid != uid:
@@ -12542,6 +12739,15 @@ class LEMStationModule:
                                "epoch": journal.epoch}
         elif getattr(self, "_canvas_v2", None):
             state["lem_v2"] = dict(self._canvas_v2)
+        if state.get("lem_v2") and self._machine is not None \
+                and self._machine.uid == state["lem_v2"].get("uid"):
+            # The binding itself, beside the evidence. config.json lives in
+            # the journal folder, so a wiped folder takes it along — and a v2
+            # bench never reads its configuration from LabCore (§6.3), where
+            # a machine configured since v4 does not even exist. The canvas
+            # outlives the folder; the bench binds from this and LEM's next
+            # configuration takes over as it always does.
+            state["lem_v2"]["machine"] = self._machine.to_dict()
         return state
 
     def restore_state(self, state: dict) -> None:
@@ -12574,6 +12780,8 @@ class LEMStationModule:
             # A v2 bench binds from config.json (no LabCore read); anything
             # else — or a cache that is missing or unreadable — the old way.
             if self._v2_bind_from_cache(uid):
+                return
+            if self._v2_bind_from_canvas(uid):
                 return
             self._adopt_config(uid)
             return
@@ -12698,19 +12906,26 @@ class LEMStationModule:
                 LEMStationModule._uploader_wake(self, bench_now())
             return
 
-        def work():
-            run_sql = globals().get("labcore_sql")
-            if not callable(run_sql):
-                return None
-            try:
-                run_sql(CONFIG_TABLE_DDL, source="LEM Station")
-                sql, args = build_config_upsert(snapshot, now, by=user)
-                run_sql(sql, args, source="LEM Station")
-            except Exception:
-                return None       # LabCore down: the bench still runs
-            return True
+        _in_thread(lambda: self._publish_config_labcore(snapshot, now, user),
+                   lambda _ok: None)
 
-        _in_thread(work, lambda _ok: None)
+    def _publish_config_labcore(self, machine: Machine,
+                                now: Optional[datetime] = None,
+                                user: Optional[str] = None) -> Optional[bool]:
+        """The legacy road's configuration upsert. Worker-side, never raises."""
+        run_sql = globals().get("labcore_sql")
+        if not callable(run_sql) or machine is None:
+            return None
+        snapshot = Machine.from_dict(machine.to_dict())
+        now = now or datetime.now()
+        user = user or self._current_operator() or UNKNOWN_OPERATOR
+        try:
+            run_sql(CONFIG_TABLE_DDL, source="LEM Station")
+            sql, args = build_config_upsert(snapshot, now, by=user)
+            run_sql(sql, args, source="LEM Station")
+        except Exception:
+            return None       # LabCore down: the bench still runs
+        return True
 
     def _check_config_still_exists(self) -> None:
         """LabCore owns the configuration, so a config deleted from the floor

@@ -391,13 +391,31 @@ Spec: transfer-final.md §6; Ryan's D2 overrides §6.6 (no LabCore replica).
   the journal, never capped) and is re-corrected with the confirmed factor
   before filing. A factor saved at the bench waits for LEM to echo it.
 - **Retirement** only on an explicit `machine: "retired"` from LEM.
+- **Unknown is not legacy** (round 2): `_v2_active` is true for every bench
+  with an uploader EXCEPT one LEM answered with a 404. A bench that bound
+  while the roads were down or 503, holds no token yet, or waits for a person
+  to approve its re-enrolment journals and holds — it never runs the legacy
+  road (heartbeat, DDL, status, log rows) on a guess. The first 404 projects
+  what it journaled (`_v2_fell_back` + `_v2_project_bookkeeping`: runs, notes,
+  overrides, saved factors and setup, then status/specs re-published; exactly
+  once, via `legacy_projected_seq`). Module tests that pin the legacy road
+  start "after a 404" via `tests/old_server.py` unless they install FakeLem.
+- **Every unfiled reading is re-corrected** when LEM confirms the factors —
+  the backlog, held and parked queues too, not just `_factor_wait` — and a
+  v2 restart puts the journal's unsettled readings back in `_factor_wait`
+  (uncapped), not the capped identity backlog (CF2r; a long outage loses
+  none to IDENTITY_BACKLOG_LIMIT).
+- **Bind after a wiped journal** comes from the canvas (`lem_v2.machine`),
+  never a LabCore config read (§6.3).
 - **Not moved**: a bench on the legacy (404) road keeps v3.9's live push and
   floor-config GET on the poll worker — that is legacy projection's (P5).
+  Both now send the `LEM-Station/<ver> (<uid>)` User-Agent too.
 
 Tests: `tests/test_bench_uploader.py` (fake server at the wire,
 `tests/fake_lem_v2.py`); server side `LEM Web Server/tests/
 test_bench_v2_bench_edits.py`. Gate: E0 0 ops / 110 polls, E2 0/0, T1, T2,
-T4, T4b, D1, CF1, CF2, all with 0 LEM requests on the poll thread.
+T4, T4b (every LabCore op vs the twin, not only the results road), D1, CF1,
+CF2, CF2r, N404, N503, all with 0 LEM requests on the poll thread.
 
 ## Threading model (approved & implemented 2026-07-28)
 
