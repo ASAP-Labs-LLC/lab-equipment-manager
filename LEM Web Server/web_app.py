@@ -214,10 +214,15 @@ def _is_background(path: str, method: str) -> bool:
     reader loses at most the ~10s the floor takes to repoll.
 
     ``/api/live`` is excluded even though it is a POST: that is a bench module
-    pushing liveness, not a person.
+    pushing liveness, not a person. So is everything under ``/api/v2/bench/``
+    (transfer spec §6.1): a v4 bench syncs once per poll, and 17 benches doing
+    that would otherwise pin ``idle_seconds`` near zero for good — the same
+    silent failure as above, with benches in place of wall displays. A person
+    approving a bench's enrolment is at ``/api/transfer/...``, and counts.
+    Pinned by ``test_bench_posts_are_background``.
     """
     if method in _WRITE_METHODS:
-        return path == "/api/live"
+        return path == "/api/live" or path.startswith("/api/v2/bench/")
     return True
 
 
@@ -1224,6 +1229,15 @@ def create_app(gateway, labcore_gateway=None,
         raise ValueError(
             "LabCore is not LEM's store any more: pass "
             "create_app(LocalStoreGateway(path), labcore=HttpLabCoreGateway()).")
+    # Who LabCore IS, decided before it is wrapped: "is LabCore the store?"
+    # (the single-gateway shape) and "is it the in-memory fake?" (dev tools)
+    # are questions about the gateway, not about the meter around it.
+    labcore_raw = labcore
+    labcore_split = labcore_raw is not gateway
+    # Every LabCore call this app makes, counted by outcome for /healthz
+    # (baseline item 2: watchdog kills were unmeasured). Forwards everything.
+    from labcore_meter import LabCoreMeter
+    labcore = LabCoreMeter(labcore_raw)
     # Per-app, never module-global — see throttled_warning.
     warn_seen: Dict[str, list] = {}
 
@@ -1300,6 +1314,7 @@ def create_app(gateway, labcore_gateway=None,
     app.config["PROVIDER"] = provider
     app.config["STORE_GATEWAY"] = gateway
     app.config["LABCORE_GATEWAY"] = labcore
+    app.config["LABCORE_METER"] = labcore
 
     def _confirmed_write(sql: str, args: Optional[list] = None, *,
                          what: str = "") -> dict:
@@ -1530,10 +1545,24 @@ def create_app(gateway, labcore_gateway=None,
     # Login → mode selector → Map or Checklists. The floor used to be the root,
     # which is wrong on a phone: someone walking the lab wants their checklist
     # or the map, not a 3D floor plan to pinch past.
+    # `/` is Instruments (ia-final §1, §3.2): find an instrument and see who
+    # needs you. It used to be a chooser between two big buttons, a click tax
+    # with no way to QC; the question every visitor brings ("can it run?")
+    # is now answered on arrival, in the table's Can it run? column.
     @app.route("/")
+    @app.route("/instruments")
     def home():
-        """Two big targets, and nothing else to get wrong."""
-        return render_template("home.html", active="/")
+        """The Instruments home. The first paint carries the same answer
+        `/api/ui/instruments` serves, so the verdicts are on screen without a
+        second request (T1 at 0 clicks); instruments.js keeps it live."""
+        if (request.args.get("view") or "") == "map":
+            # The floor map in the shell is its own piece; until it lands the
+            # floor page IS the map, rather than a List view that ignores ?view.
+            return redirect(url_for("floor"))
+        return render_template("instruments.html", nav="instruments",
+                               data=_instruments_payload(),
+                               has_quality=any(r.rule == "/quality"
+                                               for r in app.url_map.iter_rules()))
 
     @app.route("/floor")
     def floor():
@@ -1543,7 +1572,18 @@ def create_app(gateway, labcore_gateway=None,
 
     @app.route("/maintenance")
     def maintenance_page():
-        """Every machine's PM and calibration in one place, worst first."""
+        """PM and calibration are a filter of Instruments now (ia-final §1):
+        a schedule belongs to its instrument's record, and a nav item for a
+        table with 0 rows in production was a judged defect (§12)."""
+        return redirect("/instruments?filter=maintenance")
+
+    @app.route("/maintenance/classic")
+    def maintenance_classic():
+        """The old fleet-wide PM page, kept reachable (from Instruments'
+        Maintenance view) because two of its jobs have no other door yet:
+        marking a task done across the lab and importing PM history. The
+        record's Maintenance section and Settings › Imports take them over;
+        then this goes with the template (ia-final §10)."""
         return render_template("maintenance.html", active="/maintenance")
 
     # ── the round (ia-final §3.3, piece 9) ─────────────────────────────
@@ -1686,6 +1726,58 @@ def create_app(gateway, labcore_gateway=None,
             jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
             now=_now(), tz=ui_live.lab_tz())
 
+    # ── the Instruments home's answer (ia-final §3.2, §5) ───────────────
+    # Built once per snapshot cycle: the memo key is the snapshot's build
+    # stamp plus what the live road and the overrides changed since, so a
+    # page refetching between cycles gets the same object back. Memory only.
+    _inst_memo: dict = {"key": None, "value": None}
+
+    def _instruments_payload() -> dict:
+        import ui_instruments
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        meta = {"built_at": (snap.get("built_at") or None) if snap.get("ready") else None,
+                "stale": bool(snap.get("stale")) if snap.get("ready") else None,
+                "labcore_online": snap.get("labcore_online")}
+        if not snap.get("ready"):
+            err = snap.get("error")
+            if err:
+                # "SnapshotReadError('LabCore is not running.')" -> its words
+                m = re.match(r"^\w+\((['\"])(.*)\1\)$", str(err), re.S)
+                err = "LabCore did not answer the first read: %s" % (
+                    (m.group(2) if m else str(err)).strip().rstrip(".")[:200])
+            return dict(ui_instruments.unread(err), **meta)
+        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        overrides = ui_live.overrides_from_tables(snapshots.tables())
+        key = (snap.get("built_at"),
+               tuple((m.get("machine_uid"), m.get("status"), bool(m.get("live")),
+                      m.get("last_poll"), m.get("module_state")) for m in merged),
+               tuple(sorted((overrides or {}).items())) if overrides is not None else None)
+        if _inst_memo["key"] != key:
+            _inst_memo["value"] = ui_instruments.build(
+                machines=merged, overrides=overrides, levels=snap.get("levels") or [],
+                href=_record_href)
+            _inst_memo["key"] = key
+        return dict(_inst_memo["value"], **meta)
+
+    @app.route("/api/ui/instruments")
+    def api_ui_instruments():
+        """Readiness per instrument, the Needs-you card and the fleet pill:
+        see ui_instruments. 0 LabCore ops; /api/machines is not touched."""
+        resp = jsonify(_instruments_payload())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.template_filter("json_island")
+    def _json_island(value) -> str:
+        """JSON safe inside <script type="application/json">: no "</" can
+        close the tag, whatever an instrument is named."""
+        import json as _json
+        from markupsafe import Markup
+        text = _json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return Markup(text.replace("<", "\\u003c").replace(">", "\\u003e")
+                      .replace("&", "\\u0026"))
+
     @app.route("/api/ui/live")
     def api_ui_live():
         """Every open page's global status: see ui_live.payload."""
@@ -1719,7 +1811,7 @@ def create_app(gateway, labcore_gateway=None,
                 return iso
         health = _health()
         rows = []
-        split = labcore is not gateway
+        split = labcore_split
         snap = snapshots.get(build_if_missing=False)
         interval = int(getattr(snapshots, "interval", 12))
         if snap.get("ready"):
@@ -2126,6 +2218,18 @@ def create_app(gateway, labcore_gateway=None,
     # refresh_soon() refreshes inline, so behaviour stays correct either way.
     app.config["SNAPSHOTS"] = snapshots
 
+    # ── the v2 bench protocol (transfer spec §6) ───────────────────────
+    # Sync, config v2, checkpoint, adoption digest, enrolment and ping, all
+    # on the STORE: `bench_api.register` is never handed LabCore.
+    import bench_api
+    bench_registry = bench_api.BenchRegistry()
+    app.config["BENCH_REGISTRY"] = bench_registry
+    bench_api.register(app, gateway, snapshots=snapshots,
+                       live=app.config["LIVE"], registry=bench_registry,
+                       authed=lambda: bool(session.get("user")),
+                       current_user=lambda: session.get("user", ""),
+                       version=APP_VERSION)
+
     def _mirrored_last_qc():
         """The newest QC verdict per (machine, test) from the local log copy.
 
@@ -2431,7 +2535,7 @@ def create_app(gateway, labcore_gateway=None,
             # background asks it anything any more — and inventing an answer
             # here is the one thing this route must not do.
             store_info = dict(gateway.health(), reachable=reach)
-        split = labcore is not gateway
+        split = labcore_split
         return {
             "status": "ok",
             "version": APP_VERSION,
@@ -2460,6 +2564,15 @@ def create_app(gateway, labcore_gateway=None,
             # LEM has no per-user sessions the way COA does; the floor is
             # anonymous. Reported for a uniform shape across both apps.
             "active_sessions": 0,
+            # This server's own LabCore traffic over five minutes, by outcome
+            # (transfer §12.3; closes baseline item 2, "watchdog kills:
+            # unmeasured"). Beside `labcore`, not in it: `labcore` is today's
+            # reachability STRING, which the updater and Diagnostics read, and
+            # a superset of today's keys cannot change what one of them is.
+            # Counted in memory by `LabCoreMeter`: reading it asks nobody.
+            "labcore_ops": labcore.counts(),
+            # v2 benches, from what their syncs said (memory only).
+            "benches": bench_registry.summary(),
         }
 
     # ── the page cache ────────────────────────────────────────────────
@@ -3323,9 +3436,18 @@ def create_app(gateway, labcore_gateway=None,
         # more recently than the queue could carry it. Failover, not merge —
         # see live_presence.merge_machines.
         from live_presence import merge_machines
-        return jsonify({"machines": merge_machines(snap.get("machines") or [],
-                                                   app.config["LIVE"],
-                                                   STATUS_COLORS),
+        machines = merge_machines(snap.get("machines") or [],
+                                  app.config["LIVE"], STATUS_COLORS)
+        # Transfer spec §12.3: ONE additive field per machine, from memory —
+        # the v2 bench's road, its backlog and how long since it synced; null
+        # for a bench that has never synced over v2. Every other key is
+        # exactly what it was (GC hub reads uid, title, status, closed_reason).
+        bench_registry.hydrate(gateway)
+        clock = time.time()
+        for machine in machines:
+            machine["transfer"] = bench_api.transfer_field(
+                bench_registry.get(machine.get("machine_uid")), clock)
+        return jsonify({"machines": machines,
                         "labcore_online": snap.get("labcore_online", True),
                         "age_seconds": snap.get("age_seconds"),
                         "stale": snap.get("stale", False),
@@ -7585,6 +7707,8 @@ def create_app(gateway, labcore_gateway=None,
         server that dies warming a cache is worse than a slow first page.
         """
         for label, job in (("floor", lambda: snapshots.get()),
+                           # which benches are v2, for the floor's `transfer`
+                           ("benches", lambda: bench_registry.hydrate(gateway)),
                            ("checklists", lambda: _page(
                                f"checklists:{_today()}", _build_checklist_day)),
                            ("archive", lambda: _page(
@@ -7614,7 +7738,7 @@ def create_app(gateway, labcore_gateway=None,
                          checklist_editor_bridge)
     # The fake is LabCore's, not the store's: under --dev the store is
     # still a LocalStoreGateway, and it is LabCore that must be the fake.
-    app.config["DEV_TOOLS"] = dev_tools_allowed(labcore, dev_tools)
+    app.config["DEV_TOOLS"] = dev_tools_allowed(labcore_raw, dev_tools)
     if app.config["DEV_TOOLS"]:
         _register_dev_tools(app, gateway, snapshots)
     # §10.5: dedupe dry run, per-bench approval, apply, reinstate. On the

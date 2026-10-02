@@ -358,6 +358,6 @@ class TestEndpoints:
         assert any("import" in e["action"] for e in entries)
 
     def test_the_page_offers_it(self, client):
-        body = client.get("/maintenance").get_data(as_text=True)
+        body = client.get("/maintenance/classic").get_data(as_text=True)
         assert "maintenance-import" in body
         assert 'id="impFile"' in body

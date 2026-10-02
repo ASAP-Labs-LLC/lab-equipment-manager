@@ -456,7 +456,12 @@ class TestEveryReaderNamesTheEffectiveView:
         purpose — the list is the decision, not a side effect."""
         _offenders, allowed = self._offenders()
         files = sorted(a.split(":")[0] for a in allowed)
-        assert files == ["dedupe.py", "dedupe.py",
+        # bench_api.py: the v2 ingest (transfer §6.1) — the custody key's
+        # existence check, reading back the custody row it just wrote, and
+        # the §4.4 occurrence count. Each must see hidden rows: a row an
+        # annotation hides is still in the record and still holds its key.
+        assert files == ["bench_api.py", "bench_api.py", "bench_api.py",
+                         "dedupe.py", "dedupe.py",
                          "lem_store.py", "lem_store.py", "lem_store.py",
                          "log_mirror.py", "log_mirror.py",
                          "web_app.py", "web_app.py"], allowed

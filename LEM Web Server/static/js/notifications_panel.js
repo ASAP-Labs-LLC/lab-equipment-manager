@@ -58,9 +58,26 @@
     function badge(n) { return !n ? '' : n > 99 ? '99+' : String(n); }
     function bellLabel(n) { return n ? 'Notifications: ' + n : 'Notifications'; }
     function without(list, id) { return (list || []).filter((n) => n.id !== id); }
-    /** The items this browser has not dismissed. */
-    function visible(list, dismissed) {
-        return sorted(list).filter((n) => !dismissed.has(n.id));
+    /** The items this browser has not dismissed, less the ones this page
+        folds: a page that names each instrument's problems on its own rows
+        (Instruments) folds the lines `about` instruments, which would be
+        their second telling there. They are not listed and not counted. */
+    function visible(list, dismissed, fold) {
+        return sorted(list).filter((n) => !dismissed.has(n.id) && !(fold && n.about === fold));
+    }
+    /** Did this page fold anything the person has not dismissed? */
+    function folded(list, dismissed, fold) {
+        return !!fold && (list || []).some((n) => n.about === fold && !dismissed.has(n.id));
+    }
+    const FOLD_NOTES = { instruments: 'Instrument problems are on this page, each on its own row.' };
+    function foldNote(fold) { return FOLD_NOTES[fold] || ''; }
+    /** The sentence when nothing is listed. Not answered yet is not "no
+        notifications", and neither is "all of them are on this page". */
+    function emptyText(o) {
+        if (!o || !o.known) return 'Checking for notifications…';
+        if (o.folded) return 'Nothing else. ' + foldNote(o.fold || 'instruments');
+        if (o.any) return 'Nothing new. Everything here was dismissed on this computer.';
+        return 'No notifications. Instruments that stop being OK to run, overdue rounds and LabCore trouble will show here.';
     }
     /** Dismissed ids that still name a live item (the rest are forgotten, so
         the stored list cannot grow without end). */
@@ -89,7 +106,7 @@
     }
 
     const pure = { DISMISS_KEY, level, link, when, sorted, title, badge, bellLabel, without,
-                   visible, prune, loadDismissed, saveDismissed };
+                   visible, folded, foldNote, emptyText, prune, loadDismissed, saveDismissed };
     if (typeof module !== 'undefined' && module.exports) { module.exports = pure; return; }
     root.LEMNotesLogic = pure;
     if (typeof document === 'undefined') return;
@@ -99,6 +116,12 @@
     let notes = [];
     let known = false;            // has the live feed answered yet?
     let dismissed = loadDismissed();
+    // what this page already says on its own (Instruments: each row's problems)
+    let fold = '';
+    function readFold() {
+        const at = document.querySelector('[data-bell-folds]');
+        fold = at ? at.getAttribute('data-bell-folds') || '' : '';
+    }
 
     function el(tag, cls, text) {
         const e = document.createElement(tag);
@@ -109,8 +132,9 @@
     function toast(msg) { if (root.LEMShell && root.LEMShell.toast) root.LEMShell.toast(msg); }
 
     function render() {
-        const list = visible(notes, dismissed);
+        const list = visible(notes, dismissed, fold);
         const count = list.length;
+        const isFolded = folded(notes, dismissed, fold);
         const c = $('bell-count');
         if (c) { c.hidden = !count; c.textContent = badge(count); }
         const bell = $('bell');
@@ -151,10 +175,13 @@
         const empty = $('bell-empty');
         if (empty) {
             empty.hidden = count > 0;
-            // not answered yet is not "no notifications"
-            empty.textContent = !known ? 'Checking for notifications…'
-                : notes.length ? 'Nothing new. Everything here was dismissed on this computer.'
-                : 'No notifications. Instruments that stop being OK to run, overdue rounds and LabCore trouble will show here.';
+            empty.textContent = emptyText({ known, any: notes.length > 0, folded: isFolded, fold });
+        }
+        // folded lines are said to be here, with no name and no number
+        const note = $('bell-fold');
+        if (note) {
+            note.hidden = !(isFolded && count > 0);
+            note.textContent = foldNote(fold);
         }
         const clear = $('bell-clear');
         if (clear) clear.hidden = !count;
@@ -165,11 +192,11 @@
         saveDismissed(dismissed);
         render();
         const bell = $('bell');
-        if (!visible(notes, dismissed).length && bell) bell.focus();
+        if (!visible(notes, dismissed, fold).length && bell) bell.focus();
     }
 
     function dismissAll() {
-        const list = visible(notes, dismissed);
+        const list = visible(notes, dismissed, fold);
         for (const n of list) dismissed.add(n.id);
         saveDismissed(dismissed);
         render();
@@ -191,6 +218,7 @@
 
     document.addEventListener('DOMContentLoaded', () => {
         if (!$('bell-panel')) return;
+        readFold();
         $('bell-clear').addEventListener('click', (ev) => { ev.stopPropagation(); dismissAll(); });
         render();
         if (root.LEMLive) { root.LEMLive.subscribe(onUpdate); root.LEMLive.start(); }

@@ -203,7 +203,10 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .round .page-head .meta { font-size: var(--fs-sm); }
 .round .pill { height: 26px; font-size: var(--fs-sm); }
 .round .pill.part { background: var(--bg-sunken); color: var(--text); }
-.glyph.half { border-radius: 50%; border: 1.5px solid var(--text); background: linear-gradient(90deg, var(--text) 50%, transparent 50%); }
+/* the round's pill: "part done" is progress, not a status, so its half
+   glyph is ink. Scoped to .round: the bare .glyph.half is the §4.1 status
+   glyph (OK to run, but… / QC due) Instruments draws in held amber. */
+.round .glyph.half { border-radius: 50%; border: 1.5px solid var(--text); background: linear-gradient(90deg, var(--text) 50%, transparent 50%); }
 .pill.held .glyph.error { background: var(--pill-held-fg); }
 
 .round-card { overflow: hidden; position: relative; }
@@ -370,6 +373,209 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
 }
 @media (prefers-reduced-motion: reduce) {
     .rrow .tick svg { transition: none; }
+}
+
+/* ── status glyphs LEM adds to GC's set (§4.1) ────────────────────────────
+   half-ring: OK to run, but… / QC due; rotated square: Off line; dashed
+   ring: Can't tell. GC's final (dot), error (triangle) and never (hollow
+   ring) are used as they are. A shape per state: never colour alone. */
+.glyph.half { border-radius: 50%; border: 1.5px solid var(--st-held);
+    background: linear-gradient(90deg, transparent 50%, var(--st-held) 50%); }
+.glyph.off { width: 9px; height: 9px; margin: 0 1px; border: 1.5px solid var(--text); transform: rotate(45deg); border-radius: 1px; }
+.glyph.dashed { border-radius: 50%; border: 1.5px dashed var(--text-muted); }
+
+/* ── Instruments (ia-final §3.2) ───────────────────────────────────────── */
+.topbar .bar-title { margin-right: var(--s3); white-space: nowrap; }
+.view-seg a { color: var(--text-muted-sunken); text-decoration: none; font-size: var(--fs-sm); padding: 5px 14px; border-radius: var(--radius-pill); }
+.view-seg a[aria-current="page"] { background: var(--bg-card); color: var(--text); box-shadow: var(--e1); font-weight: 600; }
+.view-seg a:not([aria-current]):hover { color: var(--text); }
+
+/* the find box: GC's samples search, in the topbar */
+.find { position: relative; display: flex; align-items: center; }
+.find-box {
+    display: flex; align-items: center; gap: var(--s2); width: 380px; height: 36px; padding: 0 var(--s2) 0 var(--s3);
+    border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--text-muted);
+}
+.find-box:focus-within { border-color: var(--border-focus); box-shadow: var(--ring); }
+.find-box svg { width: 16px; height: 16px; flex: none; }
+.gc .find-box input { border: 0; height: 32px; padding: 0; flex: 1; min-width: 0; background: transparent; outline: none; }
+.gc .find-box input::-webkit-search-cancel-button { display: none; }
+.find-box kbd { font: inherit; font-size: 11px; color: var(--text-muted-sunken); background: var(--bg-sunken); border-radius: var(--radius-sm); padding: 1px 6px; white-space: nowrap; }
+.find-open { display: none; }
+.find-pop {
+    position: absolute; top: calc(100% + 6px); right: 0; width: 440px; max-width: calc(100vw - 32px); z-index: 40;
+    background: var(--bg-elevated); border: 1px solid var(--border-light); border-radius: var(--radius-lg); box-shadow: var(--e3);
+    padding: var(--s2);
+}
+.find-list { list-style: none; margin: 0; padding: 0; max-height: min(60vh, 420px); overflow: auto; }
+.find-list li a {
+    display: grid; grid-template-columns: 76px minmax(0, 1fr); column-gap: var(--s3); align-items: baseline;
+    padding: 8px var(--s2); border-radius: var(--radius-sm); text-decoration: none; color: var(--text);
+}
+.find-list li[aria-selected="true"] a, .find-list li a:hover { background: var(--bg-active); }
+.find-list .fk { grid-row: 1 / span 2; font-size: var(--fs-xs); color: var(--text-muted); }
+.find-list .fl { font-weight: 600; font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.find-list .fd { font-size: var(--fs-xs); color: var(--text-muted); }
+.find-list li[aria-selected="true"] .fd, .find-list li[aria-selected="true"] .fk { color: var(--text); }
+.find-state { margin: 0; padding: var(--s2); font-size: var(--fs-sm); color: var(--text); }
+.find-state:empty { display: none; }
+.find-state.busy::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: var(--s2); vertical-align: -1px;
+    border-radius: 50%; border: 1.5px solid var(--border); border-top-color: var(--st-working); animation: gc-spin 0.9s linear infinite; }
+.find-state.err { color: var(--st-error); }
+.find-note { margin: 0; padding: var(--s2) var(--s2) var(--s1); border-top: 1px solid var(--border-light); }
+.find-note:empty { display: none; }
+
+/* the page-head is the fleet line only: the title is in the topbar */
+.content.inst-home { padding-top: var(--s4); }
+.inst-home .page-head { margin-bottom: var(--s3); }
+.inst-home .page-head .meta { min-height: 26px; }
+.unread { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s4) var(--s5); margin-bottom: var(--s6); }
+.unread .glyph { margin-top: 6px; }
+.unread p { margin: 2px 0 0; }
+
+/* Needs you: GC's checklist card with glyph-circle tiles. A tile is a cause
+   and its next step; it names nobody (the rows do) and counts nothing. The
+   current tile (only the cause the table is filtered to; none on the whole
+   list) has GC's 1.5px ink border. No red fill, no red border, no red title:
+   on a tile, status colour lives only in the glyph (§0.1); the row's verdict
+   is the one glyph-and-word in colour. The glyph sits beside the words, not
+   above them, so the card costs the table one line less. */
+.inst-home .needs { padding: var(--s4) var(--s5) var(--s5); margin-bottom: 0; }
+.needs .bar { margin-bottom: var(--s3); }
+.needs .bar .caption { font-size: var(--fs-xs); }
+.ntiles { display: grid; grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr)); gap: var(--s2); }
+.ntile {
+    display: grid; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: auto auto 1fr;
+    column-gap: var(--s3); row-gap: 2px; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s3);
+    border-radius: var(--radius-md); background: var(--bg-sunken); border: 1.5px solid transparent;
+    text-decoration: none; color: var(--text);
+    transition: border-color var(--t-fast) var(--ease-std), background var(--t-fast) var(--ease-std);
+}
+.ntile:hover { border-color: var(--border-strong); }
+.ntile.current { background: var(--bg-card); border-color: var(--ink); }
+.ntile .tglyph { width: 22px; height: 22px; grid-row: 1 / span 3; }
+.ntile .t-word, .ntile .t-word[class*="s-"] { font-size: var(--fs-md); font-weight: 600; line-height: 22px; color: var(--text); }
+.ntile .t-word.s-more { color: var(--text); }
+.ntile .t-next { font-size: var(--fs-xs); color: var(--text-muted-sunken); line-height: 1.4; }
+.ntile.current .t-next { color: var(--text-muted); }
+.ntile .t-link { align-self: end; padding-top: var(--s1); font-size: var(--fs-xs); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.needs-empty { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s3) var(--s4); border-radius: var(--radius-md);
+    background: var(--bg-sunken); color: var(--text-muted-sunken); font-size: var(--fs-sm); }
+
+/* the 22px circles (instruments.js draws them as SVG) */
+.tglyph .fill { fill: currentColor; }
+.tglyph .ring { fill: none; stroke: currentColor; stroke-width: 1.5; }
+.tglyph .ring.dashed { stroke-dasharray: 3 2.6; }
+.tglyph .mark { fill: none; stroke: var(--bg-card); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tglyph .mark2 { fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.tglyph.g-ok, .tglyph.g-final { color: var(--ink); }
+.tglyph.g-bad, .tglyph.g-error { color: var(--st-error); }
+.tglyph.g-due, .tglyph.g-half { color: var(--st-held); }
+.tglyph.g-off { color: var(--text); }
+.tglyph.g-unknown, .tglyph.g-dashed, .tglyph.g-never, .tglyph.g-more { color: var(--text-muted-sunken); }
+
+/* the verdict words (glyph + word; the only status colour on the page) */
+.s-not_ok { color: var(--st-error); }
+.s-ok_but { color: var(--pill-held-fg); }
+.verdict.s-off_line, .verdict.s-cant_tell, .verdict.s-no_qc, .verdict.s-ok { color: var(--text); }
+
+/* the table */
+.inst-table { margin-top: var(--s5); }
+.inst-table .table-head { align-items: center; padding: var(--s3) var(--s4); }
+.inst-table .chips { gap: var(--s2); align-items: center; }
+.inst-table .chip { display: inline-flex; align-items: center; gap: 6px; }
+.inst-table .chip .x { font-size: 15px; line-height: 1; }
+.chip-sep { width: 1px; height: 20px; background: var(--border-light); margin: 0 var(--s1); }
+.tbl.inst th { padding: 10px var(--s4); }
+.tbl.inst td { padding: 10px var(--s4); vertical-align: top; }
+.tbl.inst tbody tr:last-child td { border-bottom: 0; }
+.tbl.inst .irow { cursor: pointer; }
+.tbl.inst .irow:hover td { background: var(--bg-hover); }
+.tbl.inst .sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); }
+.tbl.inst .iname { font-weight: 600; color: var(--text); text-decoration: none; }
+.tbl.inst .iname:hover { text-decoration: underline; text-underline-offset: 2px; }
+.tbl.inst .iname::after { content: ""; }
+.tbl.inst .fold-bench { display: none; }
+.tbl.inst .verdict, .tbl.inst .bstate { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
+.tbl.inst .bstate { font-weight: 500; }
+.tbl.inst .c-run { width: 40%; }
+.tbl.inst .c-run .sub { padding-left: 18px; }
+.tbl.inst .c-bench .sub { padding-left: 18px; }
+.tbl.inst .none { color: var(--text-muted); }
+/* the Maintenance view's Next due cell: due soon is a half glyph + words */
+.tbl.inst .fold-label { display: none; }
+.tbl.inst .c-due .due-soon { display: inline-flex; align-items: center; gap: var(--s2); }
+/* the one column a view is sorted by says so (Maintenance: Next due, soonest first) */
+.tbl.inst th .sort-ind { margin-left: 4px; font-weight: 600; color: var(--text); }
+.view-note { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s3) var(--s4);
+    border-bottom: 1px solid var(--border-light); font-size: var(--fs-sm); color: var(--text-muted); }
+.view-note a { color: var(--text); }
+.view-note .ico { flex: none; }
+.table-empty { margin: var(--s4) var(--s5); font-size: var(--fs-sm); color: var(--text-muted); }
+.table-foot { margin: 0; padding: var(--s3) var(--s4); border-top: 1px solid var(--border-light); }
+
+/* 1100-1399: the rail; tiles 3-up */
+@media (max-width: 1260px) {
+    .ntiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+/* 700-1099 (iPad 820: 756px of content): the table drops Where and folds
+   Bench into a caption under the name; the find box narrows */
+@media (max-width: 1099px) {
+    .find-box { width: 300px; }
+    .tbl.inst .c-where, .tbl.inst .c-bench { display: none; }
+    .tbl.inst .fold-bench { display: block; }
+    .tbl.inst .c-run { width: 42%; }
+}
+@media (max-width: 860px) {
+    .ntiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* an odd last tile takes the row rather than leave half of it empty */
+    .ntile:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+/* the phone: the seg goes (the floor map is a desk tool), the find box is a
+   button that opens across the bar, tiles are compact rows, and the table
+   is two-line rows: name and verdict, then what it means */
+@media (max-width: 699px) {
+    .view-seg { display: none; }
+    .find-box { display: none; }
+    .find-open { display: inline-grid; }
+    .find.open { position: absolute; left: var(--s2); right: var(--s2); top: 10px; z-index: 30; }
+    .find.open .find-box { display: flex; width: 100%; background: var(--bg-card); }
+    .find.open .find-box kbd, .find.open .find-open { display: none; }
+    .find-pop { width: 100%; }
+    .needs { padding: var(--s4); }
+    .ntiles { grid-template-columns: 1fr; gap: var(--s1); }
+    /* compact rows (§6): the problem and its link on one line; the next
+       step is on the record and on the wider screens */
+    .ntile { grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-rows: auto; align-items: center;
+             padding: 10px var(--s3); min-height: 44px; }
+    .ntile .tglyph { grid-row: 1; }
+    .ntile .t-next { display: none; }
+    .ntile .t-link { grid-column: 3; grid-row: 1; align-self: center; padding-top: 0; }
+    .inst-home .needs { padding: var(--s3) var(--s3) var(--s3); }
+    .inst-table .table-head { padding: var(--s3); }
+    /* the chips wrap onto a second line: every view is on screen, none
+       hides past the edge of a strip that may or may not scroll */
+    .inst-table .chips { flex-wrap: wrap; row-gap: var(--s2); max-width: 100%; }
+    .inst-table .chip-sep { display: none; }
+    .inst-table .table-head .spacer, .inst-table #inst-shown { display: none; }
+    .tbl.inst thead { display: none; }
+    .tbl.inst, .tbl.inst tbody { display: block; }
+    .tbl.inst .irow { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); padding: var(--s3); border-bottom: 1px solid var(--border-light); }
+    .tbl.inst tbody .irow:last-child { border-bottom: 0; }
+    .tbl.inst td { display: block; padding: 0; border: 0; width: auto; }
+    .tbl.inst .c-qc, .tbl.inst .c-bench, .tbl.inst .c-where { display: none; }
+    .tbl.inst .c-name { grid-column: 1; grid-row: 1; min-width: 0; }
+    .tbl.inst .fold-bench { display: none; }
+    .tbl.inst .c-run { display: contents; }
+    .tbl.inst .c-run .verdict { grid-column: 2; grid-row: 1; justify-self: end; font-size: var(--fs-sm); white-space: nowrap; }
+    .tbl.inst .c-run .sub { grid-column: 1 / -1; grid-row: 2; padding-left: 0; }
+    .tbl.inst .irow:hover td { background: transparent; }
+    /* in the Maintenance view the phone row keeps its Next due line */
+    .tbl.inst .c-qc.c-due { display: block; grid-column: 1 / -1; grid-row: 3; margin-top: var(--s1);
+                            font-size: var(--fs-xs); color: var(--text-muted); }
+    .tbl.inst .c-due .fold-label { display: inline; }
+    .tbl.inst .c-due .sub { display: inline; margin: 0 0 0 var(--s1); }
+    .tbl.inst .c-due .sub::before { content: "· "; }
 }
 
 /* ── Settings, all sections (piece 11; templates/settings.html) ──────────

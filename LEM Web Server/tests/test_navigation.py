@@ -1,4 +1,4 @@
-"""Login → mode selector → Map or Checklists.
+"""Login → Instruments (it was a mode selector) → the floor or Checklists.
 
 The floor used to be the whole app, which is wrong on a phone: an operator
 walking the lab wants "checklists" or "the map", not a 3D floor plan they have
@@ -34,29 +34,28 @@ def home(client):
     return client.get("/").get_data(as_text=True)
 
 
-class TestTheModeSelector:
-    def test_root_is_the_mode_selector_not_the_floor(self, client):
+class TestTheHomeIsInstruments:
+    """The root was a chooser between two big buttons (Map, Checklists). It
+    was a click tax with no way to QC, and the question nearly everyone
+    brings — "can this instrument run?" — needed five clicks (ia-final §8,
+    T1 baseline 5/0/6). Since 2026-10-01 the root IS Instruments: the answer
+    is in the table on arrival, and the shell's nav carries Checklists, QC,
+    Log and Settings one click away, as the chooser's two targets were."""
+
+    def test_root_is_instruments_not_the_floor(self, client):
         body = client.get("/").get_data(as_text=True)
         assert "LAB FLOOR" not in body.upper()
+        assert 'data-testid="instruments-page"' in body
 
-    def test_it_offers_exactly_two_ways_in(self, home):
-        assert 'href="/floor"' in home
-        assert 'href="/checklists"' in home
-
-    def test_both_targets_are_named_plainly(self, home):
-        assert re.search(r"Map|Floor", home)
-        assert "Checklist" in home
-
-    def test_the_targets_are_big_enough_for_a_gloved_thumb(self, home):
-        """Two big buttons was the requirement, so the choice must not be a
-        pair of text links."""
-        assert 'class="mode"' in home
+    def test_the_two_old_ways_in_are_still_one_click(self, home):
+        assert 'href="/floor"' in home          # the List · Floor map seg
+        assert 'href="/checklists"' in home     # the nav
 
     def test_it_says_who_is_signed_in_here_too(self, home):
-        assert 'id="who"' in home
+        assert 'data-testid="user-chip"' in home
 
     def test_it_carries_a_sign_in_route(self, home):
-        assert "/api/login" in home or 'id="btnAuth"' in home
+        assert "/signin" in home
 
 
 class TestTheFloorMoved:

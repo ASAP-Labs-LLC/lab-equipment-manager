@@ -23,3 +23,7 @@
 .notes-empty { margin: 0; padding: var(--s5) var(--s4); font-size: var(--fs-sm); color: var(--text-muted); }
 
 .ico-x { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E"); }
+/* A page that lists instruments' problems on its own rows folds those lines
+   out of its bell; this says so, with no name and no number. */
+.notes-fold { margin: 0; padding: var(--s3) var(--s4); font-size: var(--fs-sm); color: var(--text-muted);
+              border-top: 1px solid var(--border); }

@@ -36,9 +36,15 @@ T = ROOT / "templates"
 JS = ROOT / "static" / "js"
 CSS = ROOT / "static" / "css"
 
-SHELL_PAGES = ["/settings", "/help", "/checklists/opening"]
+SHELL_PAGES = ["/settings", "/help", "/checklists/opening", "/"]
 # pages still drawn by the old _nav.html (later pieces replace them)
-OLD_PAGES = ["/", "/floor", "/maintenance", "/checklists/edit", "/logs", "/checklists/trends"]
+# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
+# covers it); "/maintenance" redirects to its filter, and the old PM page
+# lives at /maintenance/classic until the record and Settings › Imports take
+# over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
+# round (a new shell page, tests/test_round_page.py); the old checklists
+# page, with the editor, answers at /checklists/edit.
+OLD_PAGES = ["/floor", "/maintenance/classic", "/checklists/edit", "/logs", "/checklists/trends"]
 WALL_PAGES = ["/qc"]
 NAV = [("instruments", "Instruments", "/"), ("checklists", "Checklists", "/checklists"),
        ("qc", "QC", None), ("log", "Log", "/logs"), ("settings", "Settings", "/settings")]
@@ -313,9 +319,14 @@ class TestTheStatusWordsComeFromMemory:
         page = html(c, "/settings")
         assert text(by_id(page, "rs-fleet")) == "%d of %d benches checking in" % (running, total)
         qc = re.search(r'data-nav="qc"[^>]*aria-label="([^"]+)"[^>]*>(.*?)</a>', page, re.S)
-        assert qc.group(1) == "QC, %d out of spec" % out
+        # "checks", said: round 2's critic read "QC 3 out of spec" beside the
+        # Instruments pill "2 not OK to run" as two counts of one problem.
+        # They count different things (checks vs instruments); the nav says
+        # its unit so the two numbers cannot read as a disagreement.
+        unit = "check" if out == 1 else "checks"
+        assert qc.group(1) == "QC, %d %s out of spec" % (out, unit)
         assert text(re.search(r'<span class="rail-badge"[^>]*>(.*?)</span>', qc.group(2)).group(1)) == str(out)
-        assert text(re.search(r'<span class="nav-meta"[^>]*>(.*?)</span>', qc.group(2)).group(1)) == "%d out of spec" % out
+        assert text(re.search(r'<span class="nav-meta"[^>]*>(.*?)</span>', qc.group(2)).group(1)) == "%d %s out of spec" % (out, unit)
         rec = re.search(r'id="rs-record"[^>]*data-at="([^"]+)"', page)
         assert rec and rec.group(1) == snap["built_at"]
 

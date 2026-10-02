@@ -323,7 +323,7 @@ def test_a_wrong_password_keeps_the_sheet_and_the_act(drv, base, server, round_u
 
 def test_a_signed_out_mark_done_signs_in_then_opens_its_own_sheet(drv, base):
     d = drv
-    _load(d, base + "/maintenance")
+    _load(d, base + "/maintenance/classic")
     assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, "[data-done]")) > 0)
     btn = d.find_element(By.CSS_SELECTOR, "[data-done]")
     uid = btn.get_attribute("data-done")
@@ -358,9 +358,9 @@ def test_a_signed_out_mark_done_signs_in_then_opens_its_own_sheet(drv, base):
 
 def test_mark_done_needs_a_note(drv, base):
     d = drv
-    _load(d, base + "/maintenance")
+    _load(d, base + "/maintenance/classic")
     _sign_in_api(d, "Cody")
-    _load(d, base + "/maintenance")
+    _load(d, base + "/maintenance/classic")
     assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, "[data-done]")) > 0)
     d.find_element(By.CSS_SELECTOR, "[data-done]").click()
     assert _wait(lambda: _js(d, "return document.getElementById('done-sheet').open;"))
