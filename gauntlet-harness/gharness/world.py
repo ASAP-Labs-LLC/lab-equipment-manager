@@ -49,6 +49,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 import zlib
 from collections import Counter
 
@@ -85,6 +86,18 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
     # World from an earlier make_world (World over World recurses in tally).
     Ctx = rf.__dict__.setdefault("_gate_original_ctx", rf.Ctx)
     Kill = lh.Kill
+    # A kill on the uploader thread ends that thread by design (see
+    # hgateway.OFF_THREAD_KILLS); its traceback is not news. Anything else a
+    # thread raises still goes to the hook that was there.
+    if not getattr(threading.excepthook, "_gate_quiet_kill", False):
+        prior_hook = threading.excepthook
+
+        def quiet_kill(args, _prior=prior_hook, _kill=Kill):
+            if args.exc_type is not None and issubclass(args.exc_type, _kill):
+                return
+            _prior(args)
+        quiet_kill._gate_quiet_kill = True
+        threading.excepthook = quiet_kill
     plumbing = hasattr(mod, "fault_point") and \
         hasattr(getattr(mod, "LEMStationModule", object), "_fault_point")
     original_hook = getattr(mod, "fault_point", None)
@@ -155,13 +168,23 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
         def settle_uploader(self):
             """The uploader finishes what it was woken for (v4 only)."""
             wait = getattr(self.m, "_uploader_wait_idle", None)
-            if callable(wait) and not wait(120.0):
-                raise RuntimeError("the bench's uploader did not go idle in 120 s")
+            up = getattr(self.m, "_uploader", None)
+            thread = getattr(up, "thread", None)
+            if callable(wait):
+                # Idle, or dead of a kill: a thread that died mid-cycle can
+                # leave a wake pending (its own journal write woke it) that
+                # nothing will ever take, so "idle" alone would wait 120 s.
+                deadline = time.monotonic() + 120.0
+                while not wait(0.2):
+                    if OFF_THREAD_KILLS and thread is not None \
+                            and not thread.is_alive():
+                        break
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(
+                            "the bench's uploader did not go idle in 120 s")
             if OFF_THREAD_KILLS:
                 # The process died on the uploader thread (see hgateway): the
                 # poll had finished, the bench had not — restart it.
-                up = getattr(self.m, "_uploader", None)
-                thread = getattr(up, "thread", None)
                 if thread is not None:
                     thread.join(30.0)
                 del OFF_THREAD_KILLS[:]
