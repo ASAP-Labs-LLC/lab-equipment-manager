@@ -349,8 +349,20 @@ window.LEM = (function () {
       });
     }
 
+    /* ONE field: does a repaint have to leave it alone? True while it has
+     * the caret or holds text that was not saved. The round (static/js/
+     * round.js) asks this per reading input and repaints everything else,
+     * because guarding the whole round with `busy` is what kept a tick from
+     * ever showing (P1: a tapped row kept focus, so the round was "busy"). */
+    function holds(el, doc) {
+      if (!el) return false;
+      doc = doc || (typeof document !== 'undefined' ? document : null);
+      if (doc && doc.activeElement === el) return true;
+      return dirty(el);
+    }
+
     return {busy: busy, defer: defer, release: release, watch: watch,
-            dirty: dirty};
+            dirty: dirty, holds: holds};
   })();
 
   return {live: live, get: get, fresh: fresh, bust: bust, prefetch: prefetch,

@@ -31,7 +31,7 @@
 </head>
 {#- `anon` and data-user are known before any script runs, so a gated
     control is dimmed on the first paint (signin.js keeps them current). -#}
-<body class="gc lem{% if not session.get('user') %} anon{% endif %}" data-nav="{{ nav or '' }}" data-user="{{ session.get('user') or '' }}">
+<body class="gc lem{% if not session.get('user') %} anon{% endif %}{% if bench %} bench{% endif %}" data-nav="{{ nav or '' }}" data-user="{{ session.get('user') or '' }}">
   <a class="skip-link" href="#main">Skip to content</a>
   <div class="app">
     {% include "_shell.html" %}
@@ -46,6 +46,9 @@
       {#- one line, only while the data is degraded (status.js fills it) -#}
       <div id="paused-banner" class="paused-banner" data-testid="paused-banner" role="status" hidden></div>
       {% block content %}{% endblock %}
+      {#- the round's bench bar (§3.3) stands where the words strip stands,
+          and says the same live words; body.bench hides the strip -#}
+      {% block bench %}{% endblock %}
       {%- set S = shell_state() %}
       {#- rail mode (§2.1): the sidebar foot, in words. Same values as the foot. -#}
       <div class="rail-status" id="rail-status" role="status" aria-label="Status" data-testid="rail-status">

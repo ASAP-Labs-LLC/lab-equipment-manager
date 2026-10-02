@@ -27,8 +27,8 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from flask import (Flask, Response, g, jsonify, redirect, render_template,
-                   request, session, url_for)
+from flask import (Flask, Response, abort, g, jsonify, redirect,
+                   render_template, request, session, url_for)
 
 from data_source import build_sample_index, evaluate_box, qc_is_stale
 from db_config_store import DbConfigStore
@@ -1545,11 +1545,56 @@ def create_app(gateway, labcore_gateway=None,
         """Every machine's PM and calibration in one place, worst first."""
         return render_template("maintenance.html", active="/maintenance")
 
+    # ── the round (ia-final §3.3, piece 9) ─────────────────────────────
+    # `/checklists` is the tablet's bookmark: it goes to the round that is
+    # open now. `/checklists/<slot>` is the round itself. Neither reads
+    # LabCore to draw: the day comes from the page cache when it is in
+    # memory, and from the browser's own GET when it is not.
+    ROUND_SLOTS = ("opening", "closing")
+
+    def _day_in_memory(day: str):
+        """Today's `/api/checklists` answer if it is in memory, else None.
+        A peek, never a read: a cold cache is unknown, not empty."""
+        with _pages_lock:
+            return _pages.get(f"checklists:{day}")
+
+    def _slot_open_now() -> str:
+        """The slot the bookmark opens. The round due next by the same rule
+        as the nav's "Opening 3/5" (ui_live.round_summary), so the two can
+        never point at different rounds. With nothing in memory the clock
+        decides (opening before noon): a redirect that waited on LabCore
+        would be a blank tablet."""
+        import ui_live as _ui_live
+        summary = _ui_live.round_summary(_day_in_memory(_today()), _now())
+        if summary and summary.get("slot") in ROUND_SLOTS:
+            return summary["slot"]
+        return "opening" if _now().hour < 12 else "closing"
+
     @app.route("/checklists")
     def checklists():
-        """Opening and closing rounds. The checklist system itself isn't built
-        yet — this page says so rather than pretending."""
-        return render_template("checklists.html", active="/checklists")
+        """The bookmark: 302 to the round that is open now."""
+        qs = request.query_string.decode("utf-8", "replace")
+        return redirect("/checklists/" + _slot_open_now() + ("?" + qs if qs else ""), 302)
+
+    @app.route("/checklists/<slot>")
+    def checklist_round(slot):
+        """Do today's round. Tablet first (ia-final §3.3)."""
+        if slot not in ROUND_SLOTS:
+            abort(404)
+        day = _today()
+        cached = _day_in_memory(day)
+        mine = None
+        if isinstance(cached, dict):
+            mine = dict(cached)
+            mine["checklists"] = [cl for cl in (cached.get("checklists") or [])
+                                  if cl.get("slot") == slot]
+            mine["state"] = {cl["uid"]: (cached.get("state") or {}).get(cl["uid"], {})
+                             for cl in mine["checklists"]}
+        when = datetime.fromisoformat(day)
+        return render_template(
+            "round.html", nav="checklists", slot=slot, round=mine, day=day,
+            day_label=when.strftime("%A ") + str(when.day) + when.strftime(" %b"),
+            title=slot.capitalize() + " round", bench=True)
 
     # ── the shell (ia-final §2) ───────────────────────────────────────
     # What the sidebar foot, the rail badges and the words strip say on first
@@ -2682,6 +2727,15 @@ def create_app(gateway, labcore_gateway=None,
                {"checklist": (existing.name if existing else uid)})
         return jsonify({"ok": True})
 
+    def _log_undo(checklist, item_uid: str, day: str, was: dict) -> None:
+        """One line in the machine log for an Undo: what was undone, whose
+        tick it was and when, and who undid it (`_audit` adds `by`)."""
+        item = next((i for i in checklist.items if i.uid == item_uid), None)
+        _audit("checklist tick undone", "", {
+            "checklist": checklist.name, "item": item.text if item else item_uid,
+            "day": day, "was_by": was.get("user", ""), "was_at": was.get("at", ""),
+            "was_value": was.get("value", "")})
+
     @app.route("/api/checklists/<uid>/toggle", methods=["POST"])
     def api_toggle_checklist(uid):
         if not authed():
@@ -2699,9 +2753,21 @@ def create_app(gateway, labcore_gateway=None,
         if not item_uid:
             return jsonify({"error": "Which item?"}), 400
         day = (str(body.get("day") or "").strip() or _today())
+        checked = bool(body.get("checked"))
+        # Undo is logged as a new state (ia-final §3.3). The state table holds
+        # ONE row per item per day, so an untick overwrites who ticked it and
+        # when; the machine log keeps that, so the record of the round is
+        # never rewritten. Read before the write, and only on an untick: a
+        # tick, the common case, costs nothing extra.
+        was = {}
+        if not checked:
+            try:
+                was = (checklist_store.state(day).get(checklist.uid) or {}).get(item_uid) or {}
+            except LabCoreError:
+                was = {}
         try:
             touched = checklist_store.toggle(
-                checklist, item_uid, bool(body.get("checked")), day,
+                checklist, item_uid, checked, day,
                 session.get("user", ""))
         except LabCoreError as exc:
             # `toggle` writes the item and can cascade to its parent, so a
@@ -2713,6 +2779,8 @@ def create_app(gateway, labcore_gateway=None,
         # answer is still correct and there is no reason to make someone pay for
         # it again.
         _page_drop(f"checklists:{day}", "checklisthistory")
+        if not checked and was.get("checked"):
+            _log_undo(checklist, item_uid, day, was)
         return jsonify({"ok": True, "touched": touched})
 
     @app.route("/api/checklists/<uid>/value", methods=["POST"])
@@ -2745,6 +2813,13 @@ def create_app(gateway, labcore_gateway=None,
                                          + (f" in {item.units}." if item.units
                                             else ".")}), 400
         day = (str(body.get("day") or "").strip() or _today())
+        was = {}
+        if not value:
+            # clearing a reading is its Undo, logged like a tick's (see toggle)
+            try:
+                was = (checklist_store.state(day).get(uid) or {}).get(item_uid) or {}
+            except LabCoreError:
+                was = {}
         try:
             checklist_store.set_value(uid, item_uid, value, day,
                                       session.get("user", ""))
@@ -2753,6 +2828,8 @@ def create_app(gateway, labcore_gateway=None,
             # it leaves a gap nobody knows to go back and fill.
             return _labcore_failed(exc, "that reading")
         _page_drop(f"checklists:{day}", "checklisthistory")
+        if not value and was.get("checked"):
+            _log_undo(checklist, item_uid, day, was)
         return jsonify({"ok": True})
 
     @app.route("/api/checklists/<uid>/values")
@@ -7519,6 +7596,21 @@ def create_app(gateway, labcore_gateway=None,
 
     app.config["WARM"] = _warm
     app.config["PAGE"] = _page          # exercised directly by the cache tests
+
+    # ── the round editor, until piece 10 builds it ─────────────────────
+    # The round page links "Edit this round" and "Set it up →" to
+    # /checklists/edit…, the editor ia-final §3.4 describes. Until that page
+    # exists the old checklists page, which holds the editor dialog, answers
+    # there, so neither link is a dead end. Registered last and only when
+    # nothing else has claimed the URL, so the real editor replaces it by
+    # being registered at all.
+    if not any(r.rule == "/checklists/edit" for r in app.url_map.iter_rules()):
+        def checklist_editor_bridge(uid=None):
+            return render_template("checklists.html", active="/checklists")
+        app.add_url_rule("/checklists/edit", "checklist_editor_bridge",
+                         checklist_editor_bridge)
+        app.add_url_rule("/checklists/edit/<uid>", "checklist_editor_bridge_uid",
+                         checklist_editor_bridge)
     # The fake is LabCore's, not the store's: under --dev the store is
     # still a LocalStoreGateway, and it is LabCore that must be the fake.
     app.config["DEV_TOOLS"] = dev_tools_allowed(labcore, dev_tools)
