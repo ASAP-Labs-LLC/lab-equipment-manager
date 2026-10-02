@@ -1996,9 +1996,11 @@
     "idle_labcore_ops": 0,
     "v2_syncs": {
      "ge": 1
-    }
+    },
+    "polls": 110,
+    "lem_requests_on_poll_thread": 0
    },
-   "v4_spec": "0 LabCore ops in 120 idle polls, v2 mode (today 4.86/min)"
+   "v4_spec": "0 LabCore ops over the 110 steady polls (+10 heartbeats) of a 120-poll idle hour, v2 mode (today 4.86/min); 0 LEM requests made on the poll thread"
   },
   "E1": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2173,9 +2175,12 @@
     "cell_dup_lands": 0,
     "roads_used": [
      "B"
-    ]
+    ],
+    "default_ua_gets_1010": true,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0 · 0/0, road = public"
+   "v4_spec": "0/0 · 0/0, road = public; the LAN is dark from before enrolment and road B refuses urllib's default agent with 1010 (enforced, and checked: default_ua_gets_1010)"
   },
   "T2": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2223,9 +2228,12 @@
     "cell_dup_lands": 0,
     "v2_syncs": {
      "ge": 1
-    }
+    },
+    "filed_while_dark": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0 · 0/0; results keep filing"
+   "v4_spec": "0/0 · 0/0 after the road returns; 0 results filed while dark. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
   "D1": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2268,7 +2276,6 @@
    "v4": {
     "lost": 0,
     "dup": 0,
-    "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
     "cell_dup_lands": 0,
@@ -2277,9 +2284,16 @@
     },
     "v2_syncs": {
      "ge": 1
-    }
+    },
+    "filed_while_dark": 0,
+    "res_lost_final": 0,
+    "polls_to_file": {
+     "le": 30
+    },
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0; drains in ≤ 10 polls"
+   "v4_spec": "record 0/0 and drained in ≤ 10 polls; results held while dark (0 filed), then all filed — res_lost_final 0 — at the results road's 300 identity lookups a poll (16 polls for 4,800, after ≤ 10 of backoff), bound ≤ 30 polls. res_lost at poll 10 is not 0 under D2 and is no longer asserted. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
   "A1w": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2313,9 +2327,16 @@
     "res_wrong": 0,
     "cell_dup_sends": 0,
     "cell_dup_lands": 0,
-    "records_resent": 0
+    "records_resent": 0,
+    "extra_guard_ops": {
+     "le": 0
+    },
+    "approved": 200,
+    "blind_after": false,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0; 0 records re-sent"
+   "v4_spec": "0/0; 0 records re-sent; 0 results-road LabCore ops beyond an unwiped twin. The wipe takes bench.key with it, so re-enrolment needs a person (§6.4) — the scenario approves through Settings › Transfer's endpoint; extra_guard_ops ≤ 0 against the twin (never more results-road ops)"
   },
   "T4b": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2326,9 +2347,18 @@
     "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
-    "cell_dup_lands": 0
+    "cell_dup_lands": 0,
+    "records_resent": 0,
+    "extra_guard_ops": {
+     "le": 0
+    },
+    "blind_while_dark": true,
+    "blind_after": false,
+    "approved": 200,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0 (blind; source waits)"
+   "v4_spec": "0/0 (blind; the file source waits while both roads are down, then resumes at LEM's mirrored cursor); 0 re-sent; extra_guard_ops ≤ 0 against an unwiped twin (the blind bench reads what waited in one poll after it resumes, so it may file in fewer batches than the twin — never more)"
   },
   "T5": {
    "v3.9_source": "none: the scenario needs a v4 capability (kill_not_reached)",
@@ -2348,21 +2378,36 @@
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
    "v3.9": null,
    "v4": {
+    "lost": 0,
+    "dup": 0,
     "res_lost": 0,
+    "res_wrong": 0,
+    "filed_while_dark": 0,
     "factor_confirmed_within_s": {
      "le": 60
-    }
+    },
+    "filings": {
+     "ge": 1
+    },
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "results file; factor confirmed through the replica within 60 s"
+   "v4_spec": "both roads dark, LabCore up: 0 results filed once the confirmation is older than 60 s; after a road returns all file, each with its factor confirmed ≤ 60 s before. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
   "CF2": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
    "v3.9": null,
    "v4": {
+    "lost": 0,
+    "dup": 0,
     "res_wrong": 0,
-    "filed_with_stale_factor": 0
+    "filed_with_stale_factor": 0,
+    "filed_after_change": 10,
+    "filed_while_dark": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "the new factor is applied before filing; readings in between held"
+   "v4_spec": "a factor changed in LEM while both roads are dark: the 10 readings made after it are held, then filed with the NEW factor (res_wrong measured against raw + new factor). Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
   "U1": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",

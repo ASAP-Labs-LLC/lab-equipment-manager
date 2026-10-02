@@ -329,7 +329,9 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         r = economy("single_csv", 0)
         return {"idle_labcore_ops": r["steady_ops"],
                 "idle_labcore_ops_per_min": round(r["steady_ops"] / r["steady_minutes"], 3),
-                "v2_syncs": r["v2_syncs"]}
+                "v2_syncs": r["v2_syncs"],
+                "polls": r["steady_polls"],
+                "lem_requests_on_poll_thread": r["lem_requests_on_poll_thread"]}
 
     @new("E1")
     def e1():
@@ -354,9 +356,8 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
     # ── legacy projection (v4 bench against a server that answers 404) ──────
     @new("L1")
     def l1():
-        c = W()
-        if c.server:
-            c.server.set_roads("404")
+        # An old server from before the bench exists: it never spoke v2.
+        c = W(road_modes={"A": "404", "B": "404"})
         c.emit(3); c.poll()
         c.emit(3)
         c.gw.plan = rf.nth("sql:machine_log", 1, "raise_after")
@@ -366,9 +367,8 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 
     @new("L2")
     def l2():
-        c = W()
-        if c.server:
-            c.server.set_roads("404")
+        # An old server from before the bench exists: it never spoke v2.
+        c = W(road_modes={"A": "404", "B": "404"})
         c.emit(3); c.poll()
         lab = lab_id(10)
         c.emit_line(lab, "0.8010")
@@ -378,39 +378,241 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         return c.tally("L2 single_csv", "legacy projection: two genuine prints of one lab_id and test in one poll")
 
     # ── roads (§6.2) ────────────────────────────────────────────────────────
+    v2_target = hasattr(mod, "BenchUploader")
+
+    def need_v2(sid, what):
+        if not v2_target:
+            _unsupported(sid, what)
+
+    def cells_for(c, labs):
+        res = c.gw.results("Density")
+        return sum(1 for lab in labs if res.get(lab) not in (None, ""))
+
+    def last_heard(c):
+        """When the bench last heard from LEM before the roads went dark:
+        the previous poll's sync, or its bind if it has not polled yet."""
+        return c.now - rf.POLL if c.k else c.now
+
+    def unconfirmed(c, heard):
+        """True for a print made now if the 60 s rule forbids filing it: the
+        bench has not heard LEM confirm its factors for more than 60 s."""
+        return (c.now - heard).total_seconds() > 60
+
     @new("T1")
     def t1():
-        c = W()
-        c.server.set_road("A", "drop_before")           # LAN dark: silently dropped
+        """The LAN is dark from before the bench exists, and the public road
+        is Cloudflare: a request that does not name itself gets 1010. Every
+        reading still arrives — over the public road, because the bench says
+        who it is."""
+        c = W(road_modes={"A": "drop_before", "B": "1010-without-UA"})
         for _ in range(10):
             c.emit(3); c.poll()
         c.settle()
-        return c.tally("T1 single_csv", "LAN road dark throughout")
+        t = c.tally("T1 single_csv", "LAN road dark throughout")
+        t["default_ua_gets_1010"] = _default_ua_refused(c.server)
+        return t
 
     @new("T2")
     def t2():
+        """D2: both LEM roads dark for 2 h while the bench prints 240 times.
+        Results are HELD in the journal (no replica, no unconfirmed factor),
+        then filed — none lost — once a road returns."""
         c = W()
+        heard = last_heard(c)
         c.server.set_roads("down")
+        dark = []
         for _ in range(240):
-            c.emit(1); c.poll()
+            labs = [lab for _i, lab in _labs(c.emit(1))]
+            if unconfirmed(c, heard):
+                dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
         c.server.set_roads("up")
         c.settle(polls=10)
-        return c.tally("T2 single_csv", "LEM down 2 h, 240 prints; results keep filing")
+        # (The "what" text is phase 1's, kept so the v3.9 row reproduces;
+        # under D2 v4 holds the results and files them after — see v4_spec.)
+        t = c.tally("T2 single_csv", "LEM down 2 h, 240 prints; results keep filing")
+        t["filed_while_dark"] = filed_dark
+        return t
 
     @new("D1")
     def d1():
         c = W(n_samples=5000)                           # 4,803 prints, all fileable
+        heard = last_heard(c)
         c.server.set_roads("down")
+        dark = []
         for _ in range(480):
-            c.emit(10); c.poll()
+            labs = [lab for _i, lab in _labs(c.emit(10))]
+            if unconfirmed(c, heard):
+                dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
         c.server.set_roads("up")
         drained = None
+        filed = None
         for k in range(1, 11):
             c.poll()
             if drained is None and _drained(c):
                 drained = k
+            if filed is None and _filed(c):
+                filed = k
         t = c.tally("D1 single_csv", "both roads down 4 h, 4,800 prints")
         t["polls_to_drain"] = drained
+        t["filed_while_dark"] = filed_dark
+        # D2 holds results while LEM is dark, so they file after the record
+        # has drained, at the results road's own pace (2 identity reads a
+        # poll): keep polling — v4 only, so the v3.9 row stays phase 1's —
+        # and say how long it took.
+        k = 10
+        while v2_target and filed is None and k < 60:
+            k += 1
+            c.poll()
+            if _filed(c):
+                filed = k
+        t["polls_to_file"] = filed
+        t["res_lost_final"] = _res_lost(c)
+        return t
+
+    # ── journal wiped: blind mode and /checkpoint (§6.5) ────────────────────
+    # Polls after the roads are up in which the bench asks to re-enrol and a
+    # person approves it: the uploader may still be in its 300 s backoff from
+    # the dark spell, so up to ten polls before it asks, then one to collect.
+    AFTER_WIPE_POLLS = 12
+
+    def _wiped(sid, dark_polls):
+        need_v2(sid, "journal wipe + /checkpoint blind mode (P8)")
+        c = W()
+        for _ in range(5):
+            c.emit(3); c.poll()
+        c.settle(polls=2)
+        ops_before = _results_ops(c)
+        c.before_next_restart(c.wipe_journal)
+        if dark_polls:
+            c.server.set_roads("down")
+        c.restart()
+        blind_reads = []
+        for _ in range(dark_polls):
+            c.emit(3); c.poll()
+            blind_reads.append(c.m._transfer_blind())
+        c.server.set_roads("up")
+        approved = None
+        for _ in range(AFTER_WIPE_POLLS):
+            c.poll()           # the bench asks to re-enrol; a person approves
+            if approved is None and c.m._transfer.enrol:
+                approved = c.approve_reenrolment()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("%s single_csv" % sid, "journal wiped; roads %s"
+                    % ("down %d polls" % dark_polls if dark_polls else "up"))
+        t["records_resent"] = c.server.records_resent
+        t["approved"] = approved
+        t["blind_while_dark"] = all(blind_reads) if blind_reads else None
+        t["blind_after"] = c.m._transfer_blind()
+        return t, c, ops_before
+
+    def _twin_ops(dark_polls):
+        """The same bench, the same prints, nothing wiped: the results road's
+        LabCore ops are what the wiped bench may spend and no more."""
+        c = W()
+        for _ in range(5):
+            c.emit(3); c.poll()
+        c.settle(polls=2)
+        before = _results_ops(c)
+        if dark_polls:
+            c.server.set_roads("down")
+        c.restart()
+        for _ in range(dark_polls):
+            c.emit(3); c.poll()
+        c.server.set_roads("up")
+        for _ in range(AFTER_WIPE_POLLS):
+            c.poll()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.settle()
+        return _results_ops(c) - before
+
+    @new("T4")
+    def t4():
+        t, c, before = _wiped("T4", 0)
+        t["extra_guard_ops"] = (_results_ops(c) - before) - _twin_ops(0)
+        return t
+
+    @new("T4b")
+    def t4b():
+        t, c, before = _wiped("T4b", 3)
+        t["extra_guard_ops"] = (_results_ops(c) - before) - _twin_ops(3)
+        return t
+
+    # ── the 60 s factor rule, confirmed by the sync (§6.6; D2: no replica) ──
+    @new("CF1")
+    def cf1():
+        """Both roads dark, LabCore up. The confirmation ages out (4 polls
+        with nothing printed), then 12 prints: none may be filed with a factor
+        nobody confirmed in 60 s. When a road returns they are filed, each
+        with a factor confirmed ≤ 60 s before it was filed."""
+        need_v2("CF1", "the 60 s factor rule via the sync's config_rev (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        heard = last_heard(c)
+        c.server.set_roads("down")
+        for _ in range(4):
+            c.poll()
+        dark = []
+        for _ in range(6):
+            labs = [lab for _i, lab in _labs(c.emit(2))]
+            if not unconfirmed(c, heard):
+                raise RuntimeError("CF1 printed inside the 60 s window")
+            dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
+        c.server.set_roads("up")
+        c.settle(polls=12)
+        t = c.tally("CF1 single_csv", "both roads dark, LabCore up: results held, then filed")
+        ages = list(getattr(c.m, "_factor_ages", []) or [])
+        t["filed_while_dark"] = filed_dark
+        t["factor_confirmed_within_s"] = max(ages) if ages else None
+        t["filings"] = len(ages)
+        return t
+
+    @new("CF2")
+    def cf2():
+        """The factor changes in LEM while both roads are dark. The readings
+        made after the change wait, and are filed with the NEW factor."""
+        need_v2("CF2", "the 60 s factor rule via the sync's config_rev (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        c.server.set_roads("down")
+        for _ in range(4):
+            c.poll()
+        c.set_lem_factor("Density", 0.001)
+        after = {}
+        for _ in range(5):
+            for _i, lab in _labs(c.emit(2)):
+                after[lab] = c.printed[lab]
+            c.poll()
+        filed_dark = cells_for(c, list(after))
+        c.server.set_roads("up")
+        c.settle(polls=12)
+        t = c.tally("CF2 single_csv", "factor changed while both roads dark")
+        res = c.gw.results("Density")
+        wrong = stale = 0
+        for lab, raw in after.items():
+            got = res.get(lab)
+            if got in (None, ""):
+                continue
+            if abs(float(got) - (float(raw) + 0.001)) > 1e-9:
+                wrong += 1
+            if abs(float(got) - float(raw)) <= 1e-12:
+                stale += 1
+        # The ledger's res_wrong compares with the PRINTED value; for these
+        # readings the right result is the corrected one, so it is measured
+        # here instead, and over every reading made after the change.
+        t["res_wrong"] = wrong
+        t["filed_with_stale_factor"] = stale
+        t["filed_after_change"] = sum(1 for lab in after
+                                      if res.get(lab) not in (None, ""))
+        t["filed_while_dark"] = filed_dark
         return t
 
     # ── needs a v4 capability with no code yet ─────────────────────────────
@@ -445,10 +647,6 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 V4_ONLY = {
     "A1w": "journal wipe + /checkpoint blind mode (P1, P7, P8)",
     "T3": "store restored from a backup: a 409 cursor answer from /api/v2 sync (P7, P11)",
-    "T4": "journal deletion with the server reachable: /checkpoint (P1, P7, P8)",
-    "T4b": "journal deleted with both roads down: blind mode (P1, P8)",
-    "CF1": "the LabCore factor replica, `config_rev:<uid>` in lem_meta (P8, P9)",
-    "CF2": "a factor change while both roads are dark: replica + held readings (P8, P9)",
     "U1": "adoption at the first v4 start (P4)",
     "U2": "adoption: `recovered` rows (P4)",
     "U3": "adoption: raw-value matching across a factor change (P4)",
@@ -479,6 +677,49 @@ def _drained(c):
     from .ledger import tally
     t = tally(c.ledger.truth(), c.stored_rows())
     return t["lost"] == 0
+
+
+def _res_lost(c):
+    from .ledger import results
+    return results(c.ledger, c.gw.results("Density"))["res_lost"]
+
+
+def _filed(c):
+    return _res_lost(c) == 0
+
+
+def _results_ops(c):
+    """LabCore ops of the results road: identity (guard) reads + batches."""
+    return sum(n for k, n in c.gw.counts.items()
+               if k in ("read:identity", "write:batch"))
+
+
+def _labs(emitted):
+    """(i, lab_id) of what `emit` printed."""
+    return [(i, line.split(",")[0]) for i, line in emitted]
+
+
+def _default_ua_refused(server):
+    """The harness's own check that road B enforces the User-Agent: a
+    request carrying urllib's default agent gets Cloudflare's 1010. Made with
+    the poll-thread tally switched off — it is the harness asking, not the
+    bench."""
+    import urllib.error
+    import urllib.request
+    keep, server.poll_thread = server.poll_thread, None
+    mode = server.modes["B"]
+    try:
+        server.set_road("B", "1010-without-UA")
+        req = urllib.request.Request("https://lem.asaplabs.net/api/v2/ping")
+        req.add_header("User-agent", "Python-urllib/3.12")
+        try:
+            server.urlopen(req)
+        except urllib.error.HTTPError as e:
+            return e.code == 403 and b"1010" in e.read()
+        return False
+    finally:
+        server.set_road("B", mode)
+        server.poll_thread = keep
 
 
 def _baseline_id(fn_name):
@@ -515,29 +756,48 @@ def _economy_run(GateGateway, server_factory, mod, lh, source_type, prints, road
     from datetime import datetime
     from .world import fresh_world_dirs
     from .hserver import HServer
+    import threading
+    from .world import _published
     fresh_world_dirs()
     d = tempfile.mkdtemp(); path = os.path.join(d, "f.csv"); open(path, "w").close()
-    gw = GateGateway(); gw.seed_samples([lh.lab_id(i) for i in range(5000)])
-    holder = SimpleNamespace(gw=gw)
+    v2_target = hasattr(mod, "BenchUploader")
+    gw = _published(GateGateway(), v2_target)
+    gw.seed_samples([lh.lab_id(i) for i in range(5000)])
+    holder = SimpleNamespace(gw=gw, uid="b1")
     server = HServer(lambda: server_factory(holder)).install()
+    server.poll_thread = threading.get_ident()
     if roads:
         server.set_roads(roads)
     t0 = datetime(2026, 10, 1, 9, 0, 0)
+    clock = {"k": 0}
+    if v2_target:
+        mod.bench_now = lambda: t0 + timedelta(seconds=clock["k"] * 30)
     m = lh.new_bench(gw, lh.density_machine("b1", path, source_type=source_type))
+
+    def settle():
+        # The uploader finishes what the bind / poll / pulse woke it for:
+        # the time between two polls (v4 only; v3.9 has no uploader).
+        wait = getattr(m, "_uploader_wait_idle", None)
+        if callable(wait) and not wait(120.0):
+            raise RuntimeError("the bench's uploader did not go idle")
+    settle()
     POLL = 30
     bind = gw.snapshot()
     n = 0
     first = warm = None
     steps = int(minutes * 60 / POLL)
     for k in range(steps):
+        clock["k"] = k
         now = t0 + timedelta(seconds=k * POLL)
         if source_type == "single_csv" and prints:
             with open(path, "a") as f:
                 for _ in range(prints):
                     f.write(lh.print_line(n)); n += 1
         lh.poll(m, now)
+        settle()
         if k % (mod.HEARTBEAT_SECONDS // POLL) == 0 and k:
             m._send_pulse(now)
+            settle()
         if k == 0:
             first = gw.snapshot() - bind
         if k == int(warm_minutes * 60 / POLL) - 1:
@@ -559,4 +819,5 @@ def _economy_run(GateGateway, server_factory, mod, lh, source_type, prints, road
             "prints": n, "log_rows": sum(gw.log_runs().values()),
             "steady_ops": sum(steady.values()),
             "steady_polls": steps - int(warm_minutes * 60 / POLL),
-            "v2_syncs": server.v2_syncs()}
+            "v2_syncs": server.v2_syncs(),
+            "lem_requests_on_poll_thread": server.poll_thread_requests}

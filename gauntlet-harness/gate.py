@@ -126,7 +126,13 @@ def run(args):
     # tree under test. Same call, rooted in tmp.
     import web_app
     _create_app = web_app.create_app
+    import functools
 
+    # functools.wraps keeps create_app's signature visible: servers.py asks
+    # `inspect.signature` whether the server takes `labcore=` (a LEM store,
+    # P6) — through a bare (*a, **k) wrapper the answer was always "no", so
+    # every World ran the LabCore-backed server whatever the target had.
+    @functools.wraps(_create_app)
     def create_app(*a, **k):
         k.setdefault("documents_root", os.path.join(tmp_root, "data", "documents"))
         return _create_app(*a, **k)

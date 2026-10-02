@@ -357,6 +357,48 @@ intercepts `import sqlite3`), stdlib only. Spec: transfer-final.md §3.
 Tests: `test_bench_journal.py` (29), `test_journal_custody.py` (19). Gate:
 K8, K9, K1b 0/0; K8r exactly 1 lost; T5 0/0 with the tail repaired.
 
+## Transfer v2 at the bench — one thread talks to LEM (2026-10-02, v4 P8)
+
+A v2 bench keeps its bookkeeping in LEM, not LabCore: status, heartbeat,
+specs, the machine log and its configuration travel in the journal's records
+over `POST /api/v2/bench/<uid>/sync`; LabCore is left with the results road.
+Spec: transfer-final.md §6; Ryan's D2 overrides §6.6 (no LabCore replica).
+
+- **The uploader** (`BenchUploader`) is a daemon thread that makes EVERY LEM
+  request. The poll appends to the journal and wakes it — never waits. `_lem`
+  answers only on that thread; anywhere else it returns None and counts
+  `_transfer.wrong_thread`. Wake-driven, no timer of its own: each wake carries
+  the poll's time, so backoff and the 60 s rule run on the poll clock
+  (`bench_now()` is the seam for wakes that are not polls).
+- **Roads** (`BenchRoads`): LAN `http://192.168.1.5:5557` 1.5 s, public
+  `https://lem.asaplabs.net` 10 s; every request `User-Agent: LEM-Station/<ver>
+  (<uid>)` (Cloudflare answers urllib's default with 1010). A failed road is
+  re-tried once per 10 min; the last road that worked is always tried; both
+  dark → 30, 60, 120, 300 s. Only HTTP 404 means an old server (→ legacy road,
+  v2 asked again in 15 min); timeouts and 5xx never.
+- **Enrolment**: ping, then the shared token (canvas, else ONE lem_meta read
+  on the uploader thread), then `/enroll` with a persisted enroll_key;
+  `bench.key` holds the per-bench token. A wiped bench is "already enrolled"
+  and waits for a person (Settings › Transfer).
+- **Blind mode**: a journal this process minted, plus evidence LEM may hold
+  records (the canvas's `lem_v2`, or "already enrolled"), keeps FILE sources
+  from reading until `/checkpoint` installs LEM's mirrored cursor. Serial and
+  manual readings are journaled regardless.
+- **config.json** caches LEM's config and the bench's own binding; a v2
+  restart binds from it with no LabCore read.
+- **60 s rule (D2)**: a result is filed only if the sync confirmed its
+  config_rev within 60 s. Otherwise it waits in `_factor_wait` (unsettled in
+  the journal, never capped) and is re-corrected with the confirmed factor
+  before filing. A factor saved at the bench waits for LEM to echo it.
+- **Retirement** only on an explicit `machine: "retired"` from LEM.
+- **Not moved**: a bench on the legacy (404) road keeps v3.9's live push and
+  floor-config GET on the poll worker — that is legacy projection's (P5).
+
+Tests: `tests/test_bench_uploader.py` (fake server at the wire,
+`tests/fake_lem_v2.py`); server side `LEM Web Server/tests/
+test_bench_v2_bench_edits.py`. Gate: E0 0 ops / 110 polls, E2 0/0, T1, T2,
+T4, T4b, D1, CF1, CF2, all with 0 LEM requests on the poll thread.
+
 ## Threading model (approved & implemented 2026-07-28)
 
 Polls run ingest → parse → evaluate → ALL LabCore HTTP in the worker

@@ -279,6 +279,17 @@ class TestRoads:
         assert gaps[:4] == [30, 60, 120, 300], gaps
         assert set(gaps[4:]) <= {300}, gaps
 
+    def test_the_bench_says_lem_is_unreachable_and_that_nothing_is_lost(
+            self, bench, lem):
+        """§14's bench card: a dark LEM is said, with what waits and the
+        promise that is true — the journal holds it."""
+        b = bench()
+        lem.modes = {"lan": "down", "public": "down"}
+        b.print_lines(("L-1", "0.8000"))
+        b.poll(4)
+        text = b.m._status_label.text()
+        assert "LEM unreachable" in text and "nothing is lost" in text, text
+
     def test_records_wait_in_the_journal_and_drain_when_a_road_returns(
             self, bench, lem):
         b = bench()

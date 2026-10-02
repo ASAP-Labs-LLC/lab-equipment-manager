@@ -35,6 +35,7 @@ import email.message
 import io
 import json
 import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -106,6 +107,13 @@ class HServer:
         self._seen_pk = set()
         self.records_received = 0
         self.records_resent = 0
+        # Which thread made each request. `poll_thread` is the thread the
+        # harness polls on; a request from it is LEM I/O on the poll, which
+        # transfer §6.3 forbids (`poll_thread_requests` must stay 0).
+        self.poll_thread = None
+        self.poll_thread_requests = 0
+        self.request_threads = Counter()
+        self.user_agents = Counter()
 
     # ── configuration ──
     def set_road(self, road, mode, times=None):
@@ -150,6 +158,11 @@ class HServer:
                 self._remaining[road] = None
         method = req.get_method()
         path = parts.path + (("?" + parts.query) if parts.query else "")
+        ident = threading.get_ident()
+        self.request_threads[ident] += 1
+        if self.poll_thread is not None and ident == self.poll_thread:
+            self.poll_thread_requests += 1
+        self.user_agents[(req.get_header("User-agent") or "")[:40]] += 1
         self.requests[(road, method, parts.path)] += 1
         self.outcomes[(road, mode)] += 1
         if mode == "down":

@@ -50,8 +50,17 @@ def test_a_clean_world_tallies_zero_and_matches_phase_one(W):
         c.emit(3); c.poll()
     c.settle()
     t = c.tally("t", "t")
-    assert (t["lost"], t["dup"], t["log_lost"], t["log_dup"]) == (0, 0, 0, 0)
+    assert (t["lost"], t["dup"]) == (0, 0)
     assert t["truth_prints"] == t["stored_effective"] == 9
+    if c.store_kind() == "lem":
+        # A v2 bench (P8) keeps its record in LEM's store, and the phase-1
+        # columns count LabCore's lem_machine_log — which v2 leaves alone.
+        # That they read "all 9 lost" is the point, not a fault: LabCore was
+        # spared every one of these rows.
+        assert (t["log_lost"], t["log_rows"]) == (9, 0)
+        assert t["v2_syncs"] >= 1
+    else:
+        assert (t["log_lost"], t["log_dup"]) == (0, 0)
 
 
 def test_an_armed_kill_that_is_never_reached_is_an_error(W, loaded):
@@ -94,14 +103,18 @@ def test_the_t0_mutation_deletes_one_stored_row(W):
         t = c.tally("t", "t")
     finally:
         W.mutation = None
-    assert (t["lost"], t["stored_effective"], t["log_lost"]) == (1, 2, 1)
+    assert (t["lost"], t["stored_effective"]) == (1, 2)
+    # On LabCore T0 is a real DELETE (phase-1 columns see it too); on a v2
+    # bench's LEM store it drops at read, and LabCore holds none of the rows.
+    assert t["log_lost"] == (1 if c.store_kind() == "labcore" else 3)
 
 
 def test_unmeasurable_counters_are_none_not_zero(W):
-    c = W()
+    # A bench that never spoke v2 (an old server answers 404 from the start):
+    # nothing reached a LEM store, there is no expect and no v2 sync.
+    c = W(road_modes={"A": "404", "B": "404"})
     c.emit(1); c.poll()
     t = c.tally("t", "t")
-    # v3.9-shaped server: no LEM store, no expect, no v2 sync
     assert t["conflicts"] is None
     assert t["expect_audit_hits"] is None
     assert t["records_resent"] is None
@@ -134,7 +147,9 @@ def _lem_store_world(W, rows, annotations=()):
     import os
     import sqlite3
     import types
-    c = W()
+    # Roads answer 404, so the bench never builds the real server's store:
+    # this store is the hand-made one below, and nothing else writes it.
+    c = W(road_modes={"A": "404", "B": "404"})
     c.emit(3)
     con = sqlite3.connect(os.environ["LEM_STORE_PATH"])
     con.executescript(SPEC_STORE)
@@ -148,6 +163,7 @@ def _lem_store_world(W, rows, annotations=()):
     con.commit()
     con.close()
     c.server._app = types.SimpleNamespace(config={"LEM_STORE": True})
+    c.record_in = "lem"
     assert c.store_kind() == "lem"
     return c
 
@@ -197,9 +213,10 @@ def test_t0_on_the_lem_store_drops_a_row_that_counts(W):
 def test_a_missing_lem_store_is_an_error_not_an_empty_store(W):
     import os
     import types
-    c = W()
+    c = W(road_modes={"A": "404", "B": "404"})
     c.emit(3)
     c.server._app = types.SimpleNamespace(config={"LEM_STORE": True})
+    c.record_in = "lem"
     assert not os.path.exists(os.environ["LEM_STORE_PATH"])
     with pytest.raises(RuntimeError, match="missing store is not an empty one"):
         c.tally("t", "t")
