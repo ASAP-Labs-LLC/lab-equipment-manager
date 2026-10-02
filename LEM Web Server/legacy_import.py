@@ -9,41 +9,57 @@ the whole lab at ~1.5 ops/s and kills any read past 8 s. This module carries
 them across, and every design choice is about not paying that queue for it
 and not believing a copy that has not been proven:
 
-1. **The log is seeded from a COPY of the log mirror.** The v3.9 server
+1. **The log is staged from a COPY of the log mirror.** The v3.9 server
    already keeps the whole `lem_machine_log` in `data/log-mirror.sqlite3`
    (`log_mirror.LogMirror`, rowid-cursored). The file is copied first and the
    copy read: the live file may be held by a running v3.9 pull, and a reader
    left on it leaves a lock and a -wal beside it. 258k rows cost LabCore 0.
    Without a mirror the log comes over in chunks of `CHUNK` rows by rowid.
+   Either way the rows go into `legacy_index` — the import's STAGED copy —
+   and not into the record: `lem_machine_log` is append-only, so a row put in
+   from a copy that later proves wrong (a stale mirror, a chunk read before a
+   VACUUM renumbered the rest) could never be taken out again.
 
-2. **Proven in two reads.** ONE read over LabCore's covering index
-   `idx_lem_log_uid_kind_ts` counts rows per (rowid range, machine, kind) for
-   `rowid <= cut` — the spec's "GROUP BY machine_uid, kind" refined by range,
-   in the same single read, so a disagreement also says WHERE. ONE read of
-   1,000 sampled rows compares them field by field. A range that disagrees is
-   re-read by rowid, `BUCKET` rows per read, at one read per 2 s, honouring
-   `busy`/`retry_after`, and the ranges are counted again. Only a clean count
-   makes the log "verified".
+2. **The staged copy is proven in two reads.** ONE read over LabCore's
+   covering index `idx_lem_log_uid_kind_ts` gives, per (rowid range, machine,
+   kind) for `rowid <= cut`, the row count AND two sums over the indexed
+   `ts` — the spec's "GROUP BY machine_uid, kind" refined by range in the
+   same single index-only read, so a disagreement also says WHERE, and a
+   range holding OTHER rows (renumbered) disagrees even when it holds as many
+   of each kind. ONE read of 1,000 sampled rows compares them field by
+   field. A range that disagrees is re-read by rowid at one read per 2 s,
+   honouring `busy`/`retry_after` — adjacent ranges share a read up to the
+   walk's own `CHUNK` rows, so a mirror a VACUUM moved costs what walking the
+   log would — and the ranges are counted again.
 
-3. **The other tables**: one `SELECT *` each (the largest in production is
+3. **Then the record, then the proof of the record.** The proven copy is
+   settled into `lem_machine_log` in one transaction, and "verified" is said
+   only after every `legacy_labcore` row the store holds has been re-hashed
+   from its stored columns: its content must match its key, and the content
+   multiset must equal the proven copy's — nothing lost, nothing extra. The
+   only extra rows allowed are ones the record already held, verified,
+   before this numbering began (LabCore deleted them since; kept, and said).
+
+4. **The other tables**: one `SELECT *` each (the largest in production is
    `lem_checklist_state`, 4,774 rows), copied in one store transaction that
    also reads the copy back: row count and an ordered SHA-256 must match
    LabCore's or the transaction rolls back and the table stays undone.
 
-4. **A failed read is never an empty result.** A chunk or table read that is
+5. **A failed read is never an empty result.** A chunk or table read that is
    refused is never marked done (`import_run.verified` stays NULL); the run
    says why and keeps going with what does not depend on it; the next run
    resumes from `import_run` and the persisted cursors. Until every table is
    verified, `store_meta.sync_hold` makes `/api/v2/bench/*/sync` answer 503 +
    Retry-After (`bench_api._hold`), so no bench adds to a record still moving.
 
-5. **Identity is content.** `legacy_key = 'lc:' + H(uid, ts, kind, lab_id,
-   test_name, value, detail) + ':' + k` — the k-th copy of that exact row.
-   LabCore's rowid is only a cursor (`legacy_rowid`): a VACUUM after deletes
-   renumbers it. Per numbering ("generation"), `legacy_index` maps each
-   LabCore rowid to the copy it is, so a re-walk of a renumbered log finds
-   every row it already holds and adds 0, and v3.9's N3 double write (two
-   byte-identical rows) stays two rows however often it is imported.
+   **Identity is content.** `legacy_key = 'lc:' + H(uid, ts, kind, lab_id,
+   test_name, value, detail) + ':' + k` — the k-th copy of that exact row, k
+   counted over the WHOLE staged generation in rowid order (never a partial
+   count). LabCore's rowid is only a cursor (`legacy_rowid`): a VACUUM after
+   deletes renumbers it. A re-walk of a renumbered log is a new generation;
+   it finds every row the record holds by key and adds 0, and v3.9's N3
+   double write (two byte-identical rows) stays two rows however often it is
+   imported.
 
 6. **`jk` links projected rows to bench records.** A v4 bench in legacy
    projection mode (§10.3) writes its rows to LabCore with `detail.jk =
@@ -55,7 +71,9 @@ and not believing a copy that has not been proven:
 
 Cost, counted into `store_meta.import_reads` and shown as
 `/healthz.store.import.reads`: 2 log reads + 1 schema read + 1 per table in
-the happy path, plus 1 per repaired range and 1 per re-count.
+the happy path, plus 1 per repaired run of ranges (at most cut / CHUNK) and
+1 per re-count. Production-sized (258k rows, 32 tables): 37 with one bad
+range, 49 when a VACUUM moved the whole mirror.
 
 Running this against production LabCore is a deploy step that needs Ryan
 (transfer §10.1 `[RYAN]`). The command line refuses without
@@ -76,6 +94,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -112,15 +131,25 @@ HOLD_PREFIX = "importing LEM's record from LabCore"
 HOLD_TEXT = (HOLD_PREFIX + ": not verified yet (transfer §10.1). Nothing is "
              "lost: hold and retry.")
 
-#: Side tables. Not the record: `legacy_index` is "which LabCore rowid is
-#: which copy" for one numbering of LabCore's rowids, and can always be
-#: rebuilt by walking LabCore again; `legacy_fp` is the replay fingerprint
-#: of each legacy run/qc row (the bridge's live `replay_candidate`).
-SIDE_DDL = (
+#: Side tables. Not the record. `legacy_index` is the import's staged copy
+#: of LabCore's log for one numbering of LabCore's rowids ("generation"):
+#: each LabCore rowid's content, its hash, and — once settled — the content
+#: key it is and the record row that holds it. It can always be rebuilt by
+#: walking LabCore again. `legacy_fp` is the replay fingerprint of each
+#: legacy run/qc row (the bridge's live `replay_candidate`).
+LEGACY_INDEX_DDL = (
     "CREATE TABLE IF NOT EXISTS legacy_index (gen INTEGER NOT NULL,"
-    " src_rowid INTEGER NOT NULL, h TEXT NOT NULL, legacy_key TEXT NOT NULL,"
-    " log_id INTEGER, PRIMARY KEY (gen, src_rowid))",
+    " src_rowid INTEGER NOT NULL, h TEXT NOT NULL, legacy_key TEXT,"
+    " log_id INTEGER,"
+    # The seven columns with v3.9's own affinities, so a staged value is
+    # stored — and later copied into the record — exactly as LabCore has it.
+    " machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT,"
+    " value TEXT, detail TEXT,"
+    " PRIMARY KEY (gen, src_rowid))")
+SIDE_DDL = (
+    LEGACY_INDEX_DDL,
     "CREATE INDEX IF NOT EXISTS ix_legacy_index_h ON legacy_index(gen, h)",
+    "CREATE INDEX IF NOT EXISTS ix_legacy_index_log ON legacy_index(gen, log_id)",
     "CREATE TABLE IF NOT EXISTS legacy_fp (log_id INTEGER PRIMARY KEY,"
     " machine_uid TEXT, ts TEXT, fp TEXT, twin_of INTEGER)",
     "CREATE INDEX IF NOT EXISTS ix_legacy_fp ON legacy_fp(machine_uid, fp)",
@@ -221,6 +250,12 @@ def _x(store, sql: str, args=None, what: str = "write") -> dict:
 
 
 def ensure_tables(store) -> None:
+    have = {r["name"] for r in _q(store, 'PRAGMA table_info("legacy_index")')}
+    if have and "detail" not in have:
+        # Round 1's shape (no staged content). It is a rebuildable map, never
+        # the record: dropped, the next pull re-walks LabCore in a new
+        # numbering and finds every row it holds by content.
+        _x(store, "DROP TABLE legacy_index")
     for ddl in SIDE_DDL:
         _x(store, ddl, what="declare the import's side tables")
 
@@ -315,16 +350,26 @@ def cached_status(store) -> dict:
 
 # ── applying LabCore rows to the store ──────────────────────────────────────
 
-class LegacyWriter:
-    """Applies rows read from LabCore's `lem_machine_log` (in rowid order) to
-    the store, for one numbering generation. Used by the import (seed, chunk,
-    repair) and by the bridge's pull. Call inside `store.transaction()`.
+#: Rows per multi-row INSERT into the staging index (8 values each).
+_STAGE_ROWS = 100
 
-    The rule, per distinct content h: LabCore holds n copies of h in this
-    numbering (the `legacy_index` entries for h); the store must hold rows
-    keyed `h:0 … h:n-1`. Missing ones are added, and only those. That is
-    order-independent, so a repair in the middle of the log, a resume, and a
-    re-walk after renumbering all come out the same."""
+
+class LegacyWriter:
+    """Stages rows read from LabCore's `lem_machine_log` into `legacy_index`
+    for one numbering generation, and settles staged contents into the
+    record. Used by the import (seed, chunk, repair: `stage`, then one
+    `settle` once the whole copy is proven) and by the bridge's pull
+    (`apply`: a pull's rows are LabCore's own answer, read in one go and
+    anchored at the cursor, so they stage and settle together). Call inside
+    `store.transaction()`.
+
+    The rule, per distinct content h: the generation's staged entries for h,
+    in rowid order, are keyed `h:0 … h:n-1`, and the record must hold a row
+    under each of those keys. Missing ones are added, and only those. That is
+    computed from the WHOLE generation's entries for h at settle time —
+    never from a partial count plus entries outside a range — so nothing is
+    keyed off a stale numbering, and a row only ever enters the (append-only)
+    record from a staged copy that has been proven or read just now."""
 
     def __init__(self, store, gen: int, annotate: bool = False,
                  by: str = "lem-import") -> None:
@@ -336,78 +381,109 @@ class LegacyWriter:
         self.linked = 0
         self.candidates = 0
 
-    def apply(self, rows: List[dict],
-              replace: Optional[Tuple[int, int]] = None) -> Dict[str, int]:
-        """`rows`: dicts with `rid` and the seven columns, ascending `rid`.
-        `replace=(lo, hi)`: every entry in [lo, hi] is replaced by `rows`
-        (a repaired range; rows may be empty)."""
+    # ── staging ──
+    def stage(self, rows: List[dict],
+              replace: Optional[Tuple[int, int]] = None) -> None:
+        """Write `rows` (dicts with `rid` and the seven columns) into this
+        generation's index — content and hash, no key yet. `replace=(lo,
+        hi)`: every entry in [lo, hi] is replaced by `rows` (a repaired
+        range; rows may be empty). The record is not touched."""
         store, gen = self.store, self.gen
-        added0, linked0 = self.added, self.linked
         if replace is not None:
             _x(store, "DELETE FROM legacy_index WHERE gen = ? AND src_rowid "
                       ">= ? AND src_rowid <= ?", [gen, replace[0], replace[1]])
         if not rows:
+            return
+        rids = [int(r["rid"]) for r in rows]
+        # A resumed read can start on a row it already staged.
+        _x(store, "DELETE FROM legacy_index WHERE gen = ? AND src_rowid >= ? "
+                  "AND src_rowid <= ?", [gen, min(rids), max(rids)])
+        cols = ("gen", "src_rowid", "h") + LOG_COLS
+        one = "(%s)" % ", ".join("?" * len(cols))
+        for part in _chunks(rows, _STAGE_ROWS):
+            args: List[Any] = []
+            for r in part:
+                args += [gen, int(r["rid"]), row_hash(r)] + \
+                    [r.get(c) for c in LOG_COLS]
+            _x(store, "INSERT OR REPLACE INTO legacy_index (%s) VALUES %s" % (
+                ", ".join(cols), ", ".join([one] * len(part))), args,
+               what="stage LabCore rows")
+
+    def apply(self, rows: List[dict]) -> Dict[str, int]:
+        """The bridge's pull: stage `rows` (ascending `rid`, all after what
+        this generation already holds) and settle the contents they carry."""
+        if not rows:
             return {"added": 0, "linked": 0}
         rids = [int(r["rid"]) for r in rows]
-        lo, hi = min(rids), max(rids)
-        # A resumed read can start on a row it already indexed.
-        _x(store, "DELETE FROM legacy_index WHERE gen = ? AND src_rowid >= ? "
-                  "AND src_rowid <= ?", [gen, lo, hi])
-        hs = [row_hash(r) for r in rows]
-        before, after = {}, {}
-        for part in _chunks(sorted(set(hs))):
-            for r in _q(store,
-                        "SELECT h, SUM(src_rowid < ?) AS b, SUM(src_rowid > ?) "
-                        "AS a FROM legacy_index WHERE gen = ? AND h IN (%s) "
-                        "GROUP BY h" % ",".join("?" * len(part)),
-                        [lo, hi, gen] + part):
-                before[r["h"]] = int(r["b"] or 0)
-                after[r["h"]] = int(r["a"] or 0)
-        seen: Dict[str, int] = {}
-        keys = []
-        for h in hs:
-            k = before.get(h, 0) + seen.get(h, 0)
-            seen[h] = seen.get(h, 0) + 1
-            keys.append(legacy_key(h, k))
-        # Copies that sit AFTER this range in the numbering (a repair, or a
-        # resume over a hole) shift up: h:0..n-1 must exist for the new n.
-        needed = {legacy_key(h, i): h for h in seen
-                  for i in range(before.get(h, 0) + seen[h] + after.get(h, 0))}
-        sample = {}
-        for r, h in zip(rows, hs):
-            sample.setdefault(h, r)
-        held = self._held(list(needed))
-        ids: Dict[str, Optional[int]] = dict(held)
-        new_ids: List[Tuple[int, dict]] = []
-        for key, h in needed.items():
-            if key in held:
-                continue
-            r = sample[h]
-            log_id, inserted = self._insert(key, r)
-            ids[key] = log_id
-            if inserted and log_id is not None and \
-                    r.get("kind") in ("run", "qc"):
-                new_ids.append((log_id, r))
-        for r, h, key in zip(rows, hs, keys):
-            _x(store, "INSERT OR REPLACE INTO legacy_index (gen, src_rowid, h, "
-                      "legacy_key, log_id) VALUES (?, ?, ?, ?, ?)",
-               [gen, int(r["rid"]), h, key, ids.get(key)])
-        for h in seen:
-            if after.get(h, 0):
-                self._renumber(h)
+        self.stage(rows)
+        return self.settle((min(rids), max(rids)))
+
+    # ── settling into the record ──
+    def settle(self, span: Optional[Tuple[int, int]] = None) -> Dict[str, int]:
+        """Key every staged entry of the contents in scope (all of this
+        generation, or the contents staged in rowid `span`), add the rows
+        the record lacks, and point each entry at its record row."""
+        store, gen = self.store, self.gen
+        added0, linked0 = self.added, self.linked
+        if span is None:
+            scope, sargs = "", []
+        else:
+            scope = (" AND h IN (SELECT h FROM legacy_index WHERE gen = ? AND "
+                     "src_rowid >= ? AND src_rowid <= ?)")
+            sargs = [gen, int(span[0]), int(span[1])]
+        base = _q(store, "SELECT COALESCE(MAX(id), 0) AS m FROM "
+                         "lem_machine_log")[0]["m"]  # raw-log: ids, every row
+        # 1. The k-th entry of h, in this numbering's rowid order, is h:k.
+        _x(store, "UPDATE legacy_index AS x SET legacy_key = r.key, log_id = "
+                  "NULL FROM (SELECT src_rowid, 'lc:' || h || ':' || "
+                  "(ROW_NUMBER() OVER (PARTITION BY h ORDER BY src_rowid) - 1) "
+                  "AS key FROM legacy_index WHERE gen = ?%s) AS r WHERE "
+                  "x.gen = ? AND x.src_rowid = r.src_rowid AND x.legacy_key IS "
+                  "NOT r.key" % scope, [gen] + sargs + [gen],
+           what="key the staged LabCore rows")
+        # 2. Rows the record lacks, in LabCore's order. A row carrying `jk`
+        #    may be a bench record the store already holds: step 3.
+        res = _x(store,
+                 "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                 "test_name, value, detail, origin, legacy_key, legacy_rowid) "
+                 "SELECT x.machine_uid, x.ts, x.kind, x.lab_id, x.test_name, "
+                 "x.value, x.detail, 'legacy_labcore', x.legacy_key, "
+                 "x.src_rowid FROM legacy_index x WHERE x.gen = ?%s AND "
+                 "x.log_id IS NULL AND (x.detail IS NULL OR instr(x.detail, "
+                 "'\"jk\"') = 0) AND NOT EXISTS (SELECT 1 FROM "
+                 # raw-log: the legacy key is unique over every row
+                 "lem_machine_log l WHERE l.legacy_key = x.legacy_key) "
+                 "ORDER BY x.src_rowid" % scope.replace(" h IN", " x.h IN"),
+                 [gen] + sargs, what="add LabCore rows to the record")
+        self.added += int(res.get("rows_affected") or 0)
+        # 3. `jk` rows one at a time: linked to the bench record if held.
+        for e in _q(store,
+                    "SELECT src_rowid AS rid, legacy_key, machine_uid, ts, kind, "
+                    "lab_id, test_name, value, detail FROM legacy_index x "
+                    "WHERE x.gen = ?%s AND x.log_id IS NULL AND instr(x.detail, "
+                    "'\"jk\"') > 0 AND NOT EXISTS (SELECT 1 FROM "
+                    # raw-log: the legacy key is unique over every row
+                    "lem_machine_log l WHERE l.legacy_key = x.legacy_key) "
+                    "ORDER BY src_rowid" % scope.replace(" h IN", " x.h IN"),
+                    [gen] + sargs):
+            log_id, _inserted = self._insert(e["legacy_key"], e)
+            _x(store, "UPDATE legacy_index SET log_id = ? WHERE gen = ? AND "
+                      "src_rowid = ?", [log_id, gen, e["rid"]])
+        # 4. Every other entry points at the row its key names.
+        _x(store, "UPDATE legacy_index SET log_id = (SELECT id FROM "
+                  # raw-log: the legacy key is unique over every row
+                  "lem_machine_log l WHERE l.legacy_key = legacy_index."
+                  "legacy_key) WHERE gen = ?%s AND log_id IS NULL"
+                  % scope, [gen] + sargs)
+        # 5. The new rows' replay fingerprints (and, live, their labels).
+        new_ids = [(r["id"], r) for r in _q(
+            store, "SELECT id, machine_uid, ts, kind, lab_id, test_name, value, "
+                   # raw-log: the rows this call just added
+                   "detail FROM lem_machine_log WHERE id > ? AND origin = "
+                   "'legacy_labcore' AND kind IN ('run', 'qc') ORDER BY id",
+            [base])]
         self._fingerprints(new_ids)
         return {"added": self.added - added0, "linked": self.linked - linked0}
-
-    def _held(self, keys: List[str]) -> Dict[str, int]:
-        out = {}
-        for part in _chunks(keys):
-            for r in _q(self.store,
-                        # raw-log: identity is checked against every row,
-                        # hidden or not
-                        "SELECT id, legacy_key FROM lem_machine_log WHERE "
-                        "legacy_key IN (%s)" % ",".join("?" * len(part)), part):
-                out[r["legacy_key"]] = r["id"]
-        return out
 
     def _insert(self, key: str, r: dict) -> Tuple[Optional[int], bool]:
         """Add one row: (its id, True). When the row is a bench record the
@@ -454,19 +530,6 @@ class LegacyWriter:
             self.added += 1
         return (got[0]["id"] if got else None), bool(res.get("rows_affected"))
 
-    def _renumber(self, h: str) -> None:
-        """Re-key every entry of h in this generation in rowid order (only
-        when a range was filled in BEFORE later copies of the same row)."""
-        entries = _q(self.store, "SELECT src_rowid FROM legacy_index WHERE "
-                                 "gen = ? AND h = ? ORDER BY src_rowid",
-                     [self.gen, h])
-        for i, e in enumerate(entries):
-            key = legacy_key(h, i)
-            got = self._held([key])
-            _x(self.store, "UPDATE legacy_index SET legacy_key = ?, log_id = ? "
-                           "WHERE gen = ? AND src_rowid = ?",
-               [key, got.get(key), self.gen, e["src_rowid"]])
-
     def _fingerprints(self, new_ids: List[Tuple[int, dict]]) -> None:
         """Record each new run/qc row's replay fingerprint; with `annotate`,
         label a v3.9 replay burst visibly (§10.4): a poll (uid, ts) in which
@@ -475,18 +538,28 @@ class LegacyWriter:
         if not new_ids:
             return
         store = self.store
+        if not self.annotate:
+            # The import: no labels, so no twin lookups — one statement per
+            # 200 rows rather than one per row.
+            for part in _chunks(new_ids, 200):
+                args: List[Any] = []
+                for log_id, r in part:
+                    args += [log_id, r.get("machine_uid"), r.get("ts"),
+                             replay_fingerprint(r)]
+                _x(store, "INSERT OR REPLACE INTO legacy_fp (log_id, "
+                          "machine_uid, ts, fp, twin_of) VALUES %s" % ", ".join(
+                              ["(?, ?, ?, ?, NULL)"] * len(part)), args)
+            return
         polls = set()
         for log_id, r in new_ids:
             fp = replay_fingerprint(r)
-            twin = None
-            if self.annotate:
-                got = _q(store, "SELECT log_id FROM legacy_fp WHERE "
-                                "machine_uid = ? AND fp = ? AND ts <> ? AND "
-                                "log_id < ? ORDER BY log_id LIMIT 1",
-                         [r.get("machine_uid"), fp, r.get("ts"), log_id])
-                twin = got[0]["log_id"] if got else None
-                if twin is not None:
-                    polls.add((r.get("machine_uid"), r.get("ts")))
+            got = _q(store, "SELECT log_id FROM legacy_fp WHERE "
+                            "machine_uid = ? AND fp = ? AND ts <> ? AND "
+                            "log_id < ? ORDER BY log_id LIMIT 1",
+                     [r.get("machine_uid"), fp, r.get("ts"), log_id])
+            twin = got[0]["log_id"] if got else None
+            if twin is not None:
+                polls.add((r.get("machine_uid"), r.get("ts")))
             _x(store, "INSERT OR REPLACE INTO legacy_fp (log_id, machine_uid, "
                       "ts, fp, twin_of) VALUES (?, ?, ?, ?, ?)",
                [log_id, r.get("machine_uid"), r.get("ts"), fp, twin])
@@ -614,14 +687,24 @@ class Importer:
         gen = int(get_meta(store, "legacy_gen") or 0) + 1
         set_meta(store, "legacy_gen", gen)
         for key in ("import_cut", "import_log_cursor", "import_seed_cursor",
-                    "import_seeded", "legacy_cursor"):
+                    "import_seeded", "import_index_proven",
+                    "import_source_rows", "legacy_cursor"):
             set_meta(store, key, None)
+        # Rows the record held before this numbering began: the only ones
+        # the proof may find LabCore no longer holds (it deleted them after
+        # they were verified; the record is append-only and keeps them).
+        set_meta(store, "legacy_gen_base_id", _q(
+            store, "SELECT COALESCE(MAX(id), 0) AS m FROM "
+                   "lem_machine_log")[0]["m"])     # raw-log: ids, every row
         _x(store, "DELETE FROM import_run WHERE table_name = 'lem_machine_log'")
         # The old numbering describes rowids LabCore no longer has.
         _x(store, "DELETE FROM legacy_index WHERE gen < ?", [gen])
 
     # ── the log ──
     def _log(self) -> None:
+        """Stage → prove the staged copy against LabCore → settle it into the
+        record → prove the record. Each step resumes where it stopped; the
+        record is touched only by the third, and only with a proven copy."""
         store = self.store
         row = _q(store, "SELECT verified FROM import_run WHERE table_name = "
                         "'lem_machine_log'")
@@ -634,7 +717,12 @@ class Importer:
             else:
                 self._walk_labcore(gen)
             set_meta(store, "import_seeded", "1")
-        self._verify(gen)
+        if get_meta(store, "import_index_proven") != str(gen):
+            self._verify(gen)
+        writer = LegacyWriter(store, gen)
+        with store.transaction():
+            writer.settle()
+        self._prove(gen)
 
     def _seed_from_mirror(self, gen: int) -> None:
         store = self.store
@@ -668,7 +756,7 @@ class Importer:
                     if not batch:
                         break
                     with store.transaction():
-                        writer.apply(batch)
+                        writer.stage(batch)
                         since = int(batch[-1]["rid"])
                         set_meta(store, "import_seed_cursor", since)
             finally:
@@ -705,11 +793,24 @@ class Importer:
             if not rows:
                 break
             with store.transaction():
-                writer.apply(rows)
+                writer.stage(rows)
                 since = int(rows[-1]["rid"])
                 set_meta(store, "import_log_cursor", since)
 
+    #: Per (rowid range, machine, kind): how many rows, the sum of their
+    #: timestamps in whole seconds, and the sum of the timestamps' lengths.
+    #: All three come off LabCore's covering index (machine_uid, kind, ts),
+    #: so the read stays the index-only scan §10.1 prices. The two sums make
+    #: the proof see WHICH rows sit in a range, not only how many: after a
+    #: VACUUM renumbers, a range holds other rows — usually as many of each
+    #: machine and kind, never with the same timestamps.
+    _PROOF_COLS = ("COUNT(*) AS n, SUM(CAST(strftime('%s', ts) AS INTEGER)) "
+                   "AS t, SUM(LENGTH(ts)) AS l")
+
     def _verify(self, gen: int) -> None:
+        """Prove the staged copy against LabCore: ONE GROUP BY read and ONE
+        sample read; repair what disagrees; count again. Marks the copy
+        proven (`import_index_proven`) — the record is not touched here."""
         store = self.store
         cut = int(get_meta(store, "import_cut") or 0)
         B = self.bucket
@@ -718,65 +819,77 @@ class Importer:
         for _round in range(VERIFY_ROUNDS):
             res = self._ask(
                 # raw-log: LabCore's own table, counted to prove the copy
-                "SELECT rowid / ? AS b, machine_uid, kind, COUNT(*) AS n FROM "
+                "SELECT rowid / ? AS b, machine_uid, kind, %s FROM "
                 "lem_machine_log INDEXED BY idx_lem_log_uid_kind_ts WHERE "
-                "rowid <= ? GROUP BY b, machine_uid, kind", [B, cut])
-            theirs = {(r["b"], r["machine_uid"], r["kind"]): r["n"]
-                      for r in res.get("rows") or []}
-            ours = {(r["b"], r["machine_uid"], r["kind"]): r["n"] for r in _q(
-                store, "SELECT x.src_rowid / ? AS b, l.machine_uid, l.kind, "
-                       "COUNT(*) AS n FROM legacy_index x JOIN lem_machine_log "
-                       # raw-log: the import counts every row it copied
-                       "l ON l.id = x.log_id WHERE x.gen = ? AND x.src_rowid "
-                       "<= ? GROUP BY b, l.machine_uid, l.kind", [B, gen, cut])}
+                "rowid <= ? GROUP BY b, machine_uid, kind" % self._PROOF_COLS,
+                [B, cut])
+            theirs = {(r["b"], r["machine_uid"], r["kind"]):
+                      (r["n"], r["t"], r["l"]) for r in res.get("rows") or []}
+            ours = {(r["b"], r["machine_uid"], r["kind"]):
+                    (r["n"], r["t"], r["l"]) for r in _q(
+                store, "SELECT src_rowid / ? AS b, machine_uid, kind, %s FROM "
+                       "legacy_index WHERE gen = ? AND src_rowid <= ? GROUP BY "
+                       "b, machine_uid, kind" % self._PROOF_COLS, [B, gen, cut])}
             bad = {k[0] for k in set(theirs) | set(ours)
                    if theirs.get(k) != ours.get(k)}
             if not sampled:
                 bad |= self._sample(gen, cut)
                 sampled = True
+            n = sum(v[0] for v in theirs.values())
             if not bad:
-                n = sum(theirs.values())
                 with store.transaction():
                     _x(store, "INSERT INTO import_run (table_name, source_rows, "
-                              "max_rowid, copied, verified, finished_at) VALUES "
-                              "('lem_machine_log', ?, ?, ?, ?, ?) ON CONFLICT"
-                              "(table_name) DO UPDATE SET source_rows = "
-                              "excluded.source_rows, max_rowid = "
-                              "excluded.max_rowid, copied = excluded.copied, "
-                              "verified = excluded.verified, finished_at = "
-                              "excluded.finished_at",
-                       [n, cut, sum(ours.values()),
-                        "counts by range/machine/kind and %d sampled rows "
-                        "match (generation %d)" % (min(self.sample, n), gen),
-                        _now()])
-                    set_meta(store, "legacy_cursor", cut)
-                    set_meta(store, "legacy_cursor_gen", gen)
+                              "max_rowid, copied) VALUES ('lem_machine_log', ?, "
+                              "?, NULL) ON CONFLICT(table_name) DO UPDATE SET "
+                              "source_rows = excluded.source_rows, max_rowid = "
+                              "excluded.max_rowid, verified = NULL",
+                       [n, cut])
+                    set_meta(store, "import_source_rows", n)
+                    set_meta(store, "import_index_proven", gen)
                 return
-            self._record_partial(cut, theirs, ours)
+            self._record_partial(cut, n, sum(v[0] for v in ours.values()))
             writer = LegacyWriter(store, gen)
-            for b in sorted(bad):
-                lo, hi = b * B, min((b + 1) * B - 1, cut)
+            for lo, hi in self._ranges(sorted(bad), cut):
                 # raw-log: LabCore's own table, a range re-read to repair it
                 got = self._ask("SELECT %s FROM lem_machine_log WHERE rowid >= ? "
                                 "AND rowid <= ? ORDER BY rowid" % _LOG_SELECT,
                                 [lo, hi], paced=True)
                 with store.transaction():
-                    writer.apply(list(got.get("rows") or []), replace=(lo, hi))
+                    writer.stage(list(got.get("rows") or []), replace=(lo, hi))
         raise ImportFailed("rowid ranges %s still disagree with LabCore after "
                            "%d rounds" % (sorted(bad)[:20], VERIFY_ROUNDS))
 
-    def _record_partial(self, cut, theirs, ours) -> None:
+    def _ranges(self, buckets: List[int], cut: int) -> List[Tuple[int, int]]:
+        """Bad buckets as rowid ranges to re-read. Adjacent buckets share a
+        read up to `chunk` rowids — the walk's and the pull's own read size,
+        so no read is heavier than one the queue already takes. A mirror
+        whose numbering a VACUUM moved is bad from the first deleted row to
+        the end; re-read in `bucket`-sized pieces that would cost 52 reads
+        on production's 258k rows, in `chunk`-sized ones 13."""
+        B = self.bucket
+        per = max(1, self.chunk // B)
+        out: List[Tuple[int, int]] = []
+        run: List[int] = []
+        for b in buckets + [None]:
+            if run and (b is None or b != run[-1] + 1 or len(run) >= per):
+                out.append((run[0] * B, min((run[-1] + 1) * B - 1, cut)))
+                run = []
+            if b is not None:
+                run.append(b)
+        return out
+
+    def _record_partial(self, cut, theirs_n, ours_n) -> None:
         _x(self.store, "INSERT INTO import_run (table_name, source_rows, "
                        "max_rowid, copied) VALUES ('lem_machine_log', ?, ?, ?) "
                        "ON CONFLICT(table_name) DO UPDATE SET source_rows = "
                        "excluded.source_rows, max_rowid = excluded.max_rowid, "
                        "copied = excluded.copied, verified = NULL",
-           [sum(theirs.values()), cut, sum(ours.values())])
+           [theirs_n, cut, ours_n])
 
     def _sample(self, gen: int, cut: int) -> set:
-        """1,000 rows the store holds, compared field by field with LabCore's
-        at the same rowid. The ranges of any that differ (or that LabCore no
-        longer has) come back for repair."""
+        """1,000 staged rows compared field by field with LabCore's at the
+        same rowid. The ranges of any that differ (or that LabCore no longer
+        has) come back for repair."""
         store = self.store
         held = [r["src_rowid"] for r in _q(
             store, "SELECT src_rowid FROM legacy_index WHERE gen = ? AND "
@@ -791,22 +904,136 @@ class Importer:
         ours = {}
         for part in _chunks(pick):
             for r in _q(store,
-                        "SELECT x.src_rowid AS rid, l.origin, l.machine_uid, "
-                        "l.ts, l.kind, l.lab_id, l.test_name, l.value, l.detail "
-                        # raw-log: the import compares the rows it copied
-                        "FROM legacy_index x JOIN lem_machine_log l ON l.id = "
-                        "x.log_id WHERE x.gen = ? AND x.src_rowid IN (%s)"
-                        % ",".join("?" * len(part)), [gen] + part):
+                        "SELECT src_rowid AS rid, machine_uid, ts, kind, lab_id, "
+                        "test_name, value, detail FROM legacy_index WHERE gen = "
+                        "? AND src_rowid IN (%s)" % ",".join("?" * len(part)),
+                        [gen] + part):
                 ours[int(r["rid"])] = r
         bad = set()
         for rid in pick:
             a, b = theirs.get(rid), ours.get(rid)
-            if a is None or b is None:
-                bad.add(rid // self.bucket)
-            elif b.get("origin") == "legacy_labcore" and \
+            if a is None or b is None or \
                     any(a.get(c) != b.get(c) for c in LOG_COLS):
                 bad.add(rid // self.bucket)
         return bad
+
+    #: Record rows read per page while the proof re-hashes them.
+    _PROOF_PAGE = 20000
+
+    def _prove(self, gen: int) -> None:
+        """"Verified" is said of the RECORD: every `legacy_labcore` row the
+        store holds is re-hashed from its stored columns and the content
+        multiset compared with the proven copy of LabCore's log. Local reads
+        only. Fails — never quietly — on:
+
+        * a stored row whose content does not match its key;
+        * a LabCore row the record lacks (lost);
+        * a record row LabCore does not hold (an extra copy or a fabricated
+          reading), unless the record already held it, verified, before this
+          numbering began and LabCore has deleted it since (kept and said:
+          the record is append-only).
+        """
+        store = self.store
+        cut = int(get_meta(store, "import_cut") or 0)
+        entries = _q(store, "SELECT x.h, x.log_id, l.origin, x.detail FROM "
+                            # raw-log: the import proves every row it copied
+                            "legacy_index x LEFT JOIN lem_machine_log l ON l.id "
+                            "= x.log_id WHERE x.gen = ?", [gen])
+        expected: Counter = Counter()
+        unheld = 0
+        legacy_ids: Counter = Counter()
+        linked = 0
+        for e in entries:
+            if e["log_id"] is None or e["origin"] is None:
+                unheld += 1
+            elif e["origin"] == "legacy_labcore":
+                expected[e["h"]] += 1
+                legacy_ids[e["log_id"]] += 1
+            elif jk_of(e["detail"]) is not None:
+                linked += 1                 # the bench's own record (jk)
+            else:
+                unheld += 1
+        problems = []
+        if unheld:
+            problems.append("%d of LabCore's rows have no row in the record"
+                            % unheld)
+        shared = sum(n - 1 for n in legacy_ids.values() if n > 1)
+        if shared:
+            problems.append("%d of LabCore's rows share a record row with "
+                            "another" % shared)
+        stored: Counter = Counter()
+        mismatched: List[int] = []
+        orphans: List[int] = []
+        since = 0
+        while True:
+            page = _q(store,
+                      "SELECT id, legacy_key, machine_uid, ts, kind, lab_id, "
+                      "test_name, value, detail FROM lem_machine_log WHERE "
+                      # raw-log: the proof reads every row the import put in
+                      "origin = 'legacy_labcore' AND id > ? ORDER BY id LIMIT ?",
+                      [since, self._PROOF_PAGE])
+            if not page:
+                break
+            for r in page:
+                h = row_hash(r)
+                key = r.get("legacy_key") or ""
+                if not key.startswith("lc:%s:" % h):
+                    mismatched.append(r["id"])
+                stored[h] += 1
+                if r["id"] not in legacy_ids:
+                    orphans.append(r["id"])
+            since = page[-1]["id"]
+        if mismatched:
+            problems.append("%d record rows' content does not match its key "
+                            "(first id %s)" % (len(mismatched), mismatched[0]))
+        lost = sum(max(0, n - stored[h]) for h, n in expected.items())
+        extra = sum(max(0, n - expected[h]) for h, n in stored.items())
+        if lost:
+            problems.append("%d of LabCore's rows are missing from the record"
+                            % lost)
+        kept = 0
+        if extra or orphans:
+            base = get_meta(store, "legacy_gen_base_id")
+            earlier = get_meta(store, "legacy_verified_gen") is not None
+            allowed = [i for i in orphans if earlier and base is not None
+                       and i <= int(base)]
+            kept = len(allowed)
+            if extra > kept or len(orphans) > kept:
+                problems.append(
+                    "the record holds %d legacy_labcore rows LabCore does not "
+                    "hold (first id %s): a copy the import cannot account for "
+                    "— it is not verified, and a person must look"
+                    % (max(extra, len(orphans)) - kept,
+                       next((i for i in orphans if i not in allowed), "?")))
+        if problems:
+            raise ImportFailed("the record is not LabCore's log: "
+                               + "; ".join(problems))
+        n = int(get_meta(store, "import_source_rows") or 0)
+        cursor = _q(store, "SELECT COALESCE(MAX(src_rowid), 0) AS m FROM "
+                           "legacy_index WHERE gen = ?", [gen])[0]["m"]
+        note = ("the record's %d legacy rows match LabCore's %d rows at rowid "
+                "<= %d by content, row for row (%d linked to bench records); "
+                "counts, timestamp sums by range/machine/kind and %d sampled "
+                "rows matched first (generation %d)" % (
+                    sum(stored.values()) - kept, n, cut, linked,
+                    min(self.sample, n), gen))
+        if kept:
+            note += ("; %d rows kept that LabCore deleted after they were "
+                     "verified" % kept)
+        with store.transaction():
+            _x(store, "INSERT INTO import_run (table_name, source_rows, "
+                      "max_rowid, copied, verified, finished_at) VALUES "
+                      "('lem_machine_log', ?, ?, ?, ?, ?) ON CONFLICT"
+                      "(table_name) DO UPDATE SET source_rows = "
+                      "excluded.source_rows, max_rowid = excluded.max_rowid, "
+                      "copied = excluded.copied, verified = excluded.verified, "
+                      "finished_at = excluded.finished_at",
+               [n, cut, sum(expected.values()) + linked, note, _now()])
+            # The bridge pulls from the last row LabCore had in this
+            # numbering (its anchor), not from a cut LabCore may not reach.
+            set_meta(store, "legacy_cursor", cursor)
+            set_meta(store, "legacy_cursor_gen", gen)
+            set_meta(store, "legacy_verified_gen", gen)
 
     # ── the other tables ──
     def _tables(self) -> List[str]:

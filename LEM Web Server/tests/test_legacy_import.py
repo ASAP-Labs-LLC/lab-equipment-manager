@@ -183,12 +183,14 @@ class TestRepair:
         truth = kit.lc_multiset(lab)
         stored = kit.store_multiset(store)
         # Nothing LabCore holds is missing, and nothing is doubled …
-        lost, dup = kit.lost_and_dup(truth, stored)
-        assert lost == 0
-        # … except the mirror's wrong row, which is KEPT (the record is
-        # append-only) and simply not counted as LabCore's row 300 any more.
-        assert dup == 1
-        assert sum(stored.values()) == 386
+        # The mirror's wrong row never enters the record: nothing goes in
+        # until the copy is proven, and the repaired range replaced it in the
+        # import's staging before then. (Round 1 kept it: dup == 1, a 9.999
+        # reading LabCore never held, visible in a "verified" record. The
+        # record is append-only, so a row put in early can never come out.)
+        assert kit.lost_and_dup(truth, kit.store_multiset(
+            store, effective=False)) == (0, 0)
+        assert sum(stored.values()) == 385
 
     def test_a_range_that_will_not_verify_is_never_called_verified(
             self, tmp_path, mirror):
@@ -205,6 +207,208 @@ class TestRepair:
         assert import_row(store, "lem_machine_log")["verified"] is None
         assert meta(store, "sync_hold")
         assert any("lem_machine_log" in p for p in out["problems"]), out
+
+
+# ── the proof is over the record ────────────────────────────────────────────
+
+def lc_upto(lab, cut):
+    """LabCore's rows at rowid <= cut, as a content multiset."""
+    return kit.Counter(tuple(r[c] for c in kit.LOG_COLS) for r in lab.q(
+        "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail FROM "
+        "lem_machine_log WHERE rowid <= ?", [cut]))
+
+
+class TestTheProofIsTheRecord:
+    """Round 1 proved its own index (`legacy_index` joined to the log), not
+    the rows the record holds, and keyed a repair's copies from index
+    entries outside the repaired range — entries that, after a VACUUM, name
+    rows LabCore no longer has at those rowids. Every numbering mismatch
+    became visible duplicate readings under a "verified" import (critic
+    round 1: +21 walk mode, +101 mirror mode on 30k rows; about +1,020 on
+    258k from a stale mirror, at 88 reads).
+
+    What these pin: nothing enters the record until the import's copy of
+    the log is proven against LabCore; the per-range proof is sensitive to
+    WHICH rows sit in a range (a sum of their timestamps, read from the same
+    covering index), not only how many; and "verified" is then said of the
+    record itself — the content multiset of every `legacy_labcore` row the
+    store holds must equal LabCore's, row for row."""
+
+    def test_a_vacuum_between_a_failed_chunk_and_its_resume_doubles_nothing(
+            self, tmp_path):
+        """S5 with a VACUUM in the gap: the watchdog kills chunk 3, LabCore
+        deletes 20 early rows and VACUUMs (every later rowid moves down by
+        20), and the resume carries on from its cursor in the NEW numbering.
+        The staged chunks 1–2 now describe rowids LabCore has renumbered.
+        The record must come out exactly LabCore's rows: none lost, none
+        doubled, and the 20 deleted rows — never proven — not in it."""
+        rows = kit.synthetic_rows(3000)
+        lab = kit.LabCore()
+        kit.load_log(lab, rows)
+        store = make_store(tmp_path)
+        lab.fail_on("ORDER BY rowid LIMIT", nth=3)
+        first = importer(store, lab, chunk=500, bucket=500).run()
+        assert first["state"] != "verified"
+        kit.vacuum_renumber(lab, delete_rowids=range(50, 70))
+        second = importer(store, lab, chunk=500, bucket=500).run()
+        assert second["state"] == "verified", second
+        assert kit.lost_and_dup(kit.lc_multiset(lab), kit.store_multiset(
+            store, effective=False)) == (0, 0)
+
+    def test_a_vacuum_after_a_mirror_seed_whose_verify_died_doubles_nothing(
+            self, tmp_path):
+        """Mirror mode: the seed lands, the GROUP BY read is killed, LabCore
+        VACUUMs, the resume verifies. Round 1: +101 on 30k rows."""
+        rows = kit.synthetic_rows(3000)
+        lab = kit.LabCore()
+        kit.load_log(lab, rows)
+        path = kit.make_mirror(str(tmp_path / "m.sqlite3"), rows)
+        store = make_store(tmp_path)
+        lab.fail_on("GROUP BY b", nth=1)
+        first = importer(store, lab, mirror_path=path, bucket=500).run()
+        assert first["state"] != "verified"
+        kit.vacuum_renumber(lab, delete_rowids=range(50, 70))
+        second = importer(store, lab, mirror_path=path, bucket=500).run()
+        assert second["state"] == "verified", second
+        assert kit.lost_and_dup(kit.lc_multiset(lab), kit.store_multiset(
+            store, effective=False)) == (0, 0)
+
+    def test_a_mirror_filled_before_a_vacuum_is_repaired_not_believed(
+            self, tmp_path):
+        """v3.9's mirror only checks that a row still exists at its own max
+        rowid, so a mirror filled before a delete + VACUUM survives it, in
+        the OLD numbering. Every range after the first deleted row is
+        shifted. The proof must see that (the counts alone can match: a
+        shifted range holds as many rows of each machine and kind), the
+        repair must re-walk it, and the record must come out LabCore's —
+        at no more reads than walking the log would have cost."""
+        rows = kit.synthetic_rows(30000)
+        lab = kit.LabCore()
+        kit.load_log(lab, rows)
+        path = kit.make_mirror(str(tmp_path / "m.sqlite3"), rows)
+        kit.vacuum_renumber(lab, delete_rowids=range(50, 70))
+        for i in range(100):
+            kit.append_log(lab, ("gc-1", "2026-10-02T10:%02d:%02d" % (
+                i // 60, i % 60), "run", "L-x%d" % i, "S", "1", "{}"))
+        store = make_store(tmp_path)
+        out = importer(store, lab, mirror_path=path).run()
+        assert out["state"] == "verified", out
+        cut = int(meta(store, "import_cut"))
+        assert cut == rows[-1][0]          # the mirror's max rowid
+        assert kit.lost_and_dup(lc_upto(lab, cut), kit.store_multiset(
+            store, effective=False)) == (0, 0)
+        log_reads = [s for k, s in lab.calls
+                     if k == "read" and "FROM lem_machine_log" in s]
+        # GROUP BY + sample, the re-walk at the walk's own read size
+        # (ceil(30000 / 20000) = 2 reads), and the GROUP BY that proves it.
+        assert len(log_reads) <= 2 + 2 + 1, log_reads
+        # The rows past the cut are the bridge's first pull.
+        import bridge
+        bridge.Bridge(store, lab, clock=lambda: 0.0).pull()
+        assert kit.lost_and_dup(kit.lc_multiset(lab), kit.store_multiset(
+            store, effective=False)) == (0, 0)
+
+    def test_a_row_the_record_holds_that_labcore_does_not_is_never_verified(
+            self, tmp_path, mirror):
+        """The proof reads the record, not the import's map of it. A
+        `legacy_labcore` row LabCore has never held — here put in by hand,
+        as round 1's stale-key repair used to — must stop "verified", and
+        the problem must say what it is. Proving the index alone would pass
+        (the index never mentions the row)."""
+        import legacy_import as li
+        store = make_store(tmp_path)
+        vals = ("gc-2", "2026-09-30T10:00:00", "run", "L-NEVER", "Sulfur",
+                "9.999", "{}")
+        key = li.legacy_key(li.content_hash(*vals), 0)
+        store.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                  "test_name, value, detail, origin, legacy_key, legacy_rowid) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, 'legacy_labcore', ?, 7)",
+                  list(vals) + [key])
+        lab = kit.labcore_from_mirror(mirror)
+        out = importer(store, lab, mirror_path=mirror).run()
+        assert out["state"] != "verified", out
+        assert import_row(store, "lem_machine_log")["verified"] is None
+        assert meta(store, "sync_hold")
+        assert any("LabCore does not hold" in p for p in out["problems"]), out
+
+    def test_a_row_held_under_a_key_its_content_does_not_match_is_caught(
+            self, tmp_path, mirror):
+        """A key names content. A row stored under LabCore row 1's key but
+        holding another value would let the import believe row 1 is in the
+        record when the record shows something else. The proof re-hashes
+        every stored row against its key."""
+        import legacy_import as li
+        rows = kit.mirror_rows(mirror)
+        rid, vals = rows[0]
+        key = li.legacy_key(li.content_hash(*vals), 0)
+        bad = vals[:5] + ("9.999",) + vals[6:]
+        store = make_store(tmp_path)
+        store.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                  "test_name, value, detail, origin, legacy_key, legacy_rowid) "
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, 'legacy_labcore', ?, ?)",
+                  list(bad) + [key, rid])
+        lab = kit.labcore_from_mirror(mirror)
+        out = importer(store, lab, mirror_path=mirror).run()
+        assert out["state"] != "verified", out
+        assert any("does not match its key" in p for p in out["problems"]), \
+            out
+
+
+    def test_a_power_cut_at_any_store_write_then_a_vacuum_still_comes_out_exact(
+            self, tmp_path):
+        """Every write the import makes to the store, in turn, is the one the
+        power cut kills; then LabCore deletes 20 rows and VACUUMs; then the
+        import runs again on the reopened store. Every one of those runs must
+        end verified with nothing LabCore holds missing and nothing in the
+        record that LabCore never held. The only rows allowed beyond
+        LabCore's are the 20 it deleted, and only when the cut came after
+        they were proven and put in the record — they were LabCore's rows
+        then, and the record is append-only."""
+        from lem_store import LocalStoreGateway
+
+        class Cut(Exception):
+            pass
+
+        def one(kill_at, where):
+            lab = kit.labcore_from_mirror(kit.MIRROR_FIXTURE)
+            path = str(where / "lem.db")
+            store = LocalStoreGateway(path)
+            real, n = store.sql, [0]
+
+            def sql(q, a=None, **kw):
+                n[0] += 1
+                if n[0] == kill_at:
+                    raise Cut("power cut")
+                return real(q, a, **kw)
+            store.sql = sql
+            try:
+                importer(store, lab, chunk=100, bucket=50).run()
+            except Cut:
+                pass
+            deleted = kit.Counter(tuple(r[c] for c in kit.LOG_COLS) for r in
+                                  lab.q("SELECT * FROM lem_machine_log WHERE "
+                                        "rowid >= 30 AND rowid < 50"))
+            kit.vacuum_renumber(lab, delete_rowids=range(30, 50))
+            again = LocalStoreGateway(path)
+            out = importer(again, lab, chunk=100, bucket=50).run()
+            truth = kit.lc_multiset(lab)
+            held = kit.store_multiset(again, effective=False)
+            lost = sum(max(0, c - held[k]) for k, c in truth.items())
+            unexplained = sum(max(0, c - truth[k] - deleted[k])
+                              for k, c in held.items())
+            return out["state"], lost, unexplained, n[0]
+
+        (tmp_path / "count").mkdir()
+        total = one(10 ** 9, tmp_path / "count")[3]   # writes in a whole run
+        assert total > 50                       # the sweep is not vacuous
+        bad = []
+        for k in range(1, total + 1):
+            where = tmp_path / ("k%d" % k)
+            where.mkdir()
+            state, lost, unexplained, _n = one(k, where)
+            if (state, lost, unexplained) != ("verified", 0, 0):
+                bad.append((k, state, lost, unexplained))
+        assert bad == [], bad
 
 
 # ── S5: a failed chunk is never "done" ──────────────────────────────────────
@@ -225,8 +429,14 @@ class TestS5:
         assert import_row(store, "lem_machine_log") is None or \
             import_row(store, "lem_machine_log")["verified"] is None
         assert meta(store, "sync_hold")
-        held = sum(kit.store_multiset(store).values())
-        assert held == 200
+        # Chunks 1–2 are kept — staged in the import's index, NOT in the
+        # record: a row enters the record only once the whole log is proven,
+        # because the record is append-only and a row put in on an unproven
+        # numbering could never be taken out again.
+        staged = kit.store_rows(store, "SELECT COUNT(*) AS n FROM "
+                                       "legacy_index")[0]["n"]
+        assert staged == 200
+        assert sum(kit.store_multiset(store, effective=False).values()) == 0
         mark = len(lab.calls)
         second = importer(store, lab, chunk=100).run()
         assert second["state"] == "verified", second
@@ -516,6 +726,33 @@ class TestProductionCost:
         print("…plus the bridge's first pull: %d reads in all" % lab.reads)
         assert kit.lost_and_dup(kit.Counter(v for _r, v in rows),
                                 kit.store_multiset(store)) == (0, 0)
+
+
+    def test_a_mirror_a_vacuum_moved_still_costs_at_most_70_reads(
+            self, tmp_path):
+        """The worst mirror there is short of none: filled before LabCore
+        deleted 20 early rows and VACUUMed, so every range after row 50 is
+        in the old numbering (v3.9's mirror only checks a row still exists
+        at its max rowid, so it survives that). Round 1 verified this at 88
+        reads with about 1,020 doubled readings. The whole log must be
+        re-read — at the walk's own read size — and the record must come out
+        exactly LabCore's, inside the 70-read estimate."""
+        import legacy_import
+        rows = kit.synthetic_rows(257996)
+        lab = kit.LabCore()
+        kit.load_log(lab, rows)
+        for i in range(32):
+            lab.x("CREATE TABLE lem_t%02d (k TEXT PRIMARY KEY, v TEXT)" % i)
+        path = kit.make_mirror(str(tmp_path / "m.sqlite3"), rows)
+        kit.vacuum_renumber(lab, delete_rowids=range(50, 70))
+        store = make_store(tmp_path)
+        out = importer(store, lab, mirror_path=path).run()
+        assert out["state"] == "verified", out
+        reads = legacy_import.status(store)["reads"]
+        print("production-sized import from a moved mirror: %d reads" % reads)
+        assert reads <= 70 and reads == lab.reads
+        assert kit.lost_and_dup(kit.lc_multiset(lab), kit.store_multiset(
+            store, effective=False)) == (0, 0)
 
 
 # ── the server's boot ───────────────────────────────────────────────────────
