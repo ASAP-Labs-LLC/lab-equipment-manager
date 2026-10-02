@@ -286,16 +286,20 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 
     @new("A1j")
     def a1j():
-        """A1 with the bench journal LOST before the restart: the guard read,
+        """A1 with the bench journal LOST before the restart, and a LEM that
+        cannot say where the bench's record ends — an old server (404) — so
+        the bench reads its file from the top again and the guard read,
         alone, has to protect the analyst. Not a spec row — the spec's A1w
-        also demands 0 re-sent records, which needs /checkpoint (P8) — but
-        the half of it that is the results road's: with the journal (and so
-        LEM's ledger of what it filed) gone, the cell holding a value LEM
-        cannot vouch for must be a conflict, never overwritten. A1 alone can
-        not show this: there the journal suppresses the re-read before the
-        guard is ever asked, so `guard_off` leaves A1 green."""
+        (below) is the same wipe with LEM up, where blind mode means nothing
+        is re-read at all — but the half of it that is the results road's:
+        with the journal (and so LEM's ledger of what it filed) gone, a cell
+        holding a value LEM cannot vouch for must be a conflict, never
+        overwritten. A1 alone cannot show this: there the journal suppresses
+        the re-read before the guard is ever asked. With LEM up (as this row
+        first ran, before P8's blind mode) the checkpoint now suppresses it
+        too, so the old server is what keeps the guard the only defence."""
         import shutil
-        c = W()
+        c = W(road_modes={"A": "404", "B": "404"})
         c.emit(5); c.poll()
         for k in range(5):
             c.analyst_edit(lab_id(k), "0.7%03d" % k)
@@ -305,6 +309,38 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         c.settle()
         return c.tally("A1j single_csv",
                        "analyst corrects 5 filed cells; journal lost; restart")
+
+    @new("A1w")
+    def a1w():
+        """§9 A1w: A1 with the journal wiped and LEM up. Blind mode (§6.5):
+        the wiped bench does not read its file until LEM's checkpoint has
+        said where its record ends, so the five filed readings are not read
+        again — 0 re-sent — and the analyst's five corrections are never
+        even questioned, let alone overwritten. The wipe takes bench.key, so
+        re-enrolment needs a person (approved through Settings › Transfer,
+        as T4 does); afterwards the bench must be working, not merely
+        stuck-and-harmless: two new prints arrive and file."""
+        need_v2("A1w", "journal wipe + /checkpoint blind mode (P8)")
+        c = W()
+        c.emit(5); c.poll()
+        c.settle(polls=2)
+        for k in range(5):
+            c.analyst_edit(lab_id(k), "0.7%03d" % k)
+        c.before_next_restart(c.wipe_journal)
+        c.restart()
+        approved = None
+        for _ in range(AFTER_WIPE_POLLS):
+            c.poll()
+            if approved is None and c.m._transfer.enrol:
+                approved = c.approve_reenrolment()
+        c.emit(2); c.poll()
+        c.settle()
+        t = c.tally("A1w single_csv", "analyst corrects 5 filed cells; "
+                    "journal wiped; restart with LEM up")
+        t["records_resent"] = c.server.records_resent
+        t["approved"] = approved
+        t["blind_after"] = c.m._transfer_blind()
+        return t
 
     @new("A3")
     def a3():
@@ -730,6 +766,47 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         t["filed_while_dark"] = filed_dark
         return t
 
+    # ── round 3 (T-P8): the critic's remaining point, kept in the gate ──────
+    @new("CF2u")
+    def cf2u():
+        """The factor changes in LEM while the roads are UP. A confirmation
+        from before a reading was read — however recent, inside the 60 s
+        rule — says nothing about a factor saved since, and round 3's critic
+        found the 2 readings printed straight after a change filed with the
+        factor LEM had already replaced. Every reading made after the change
+        must be filed with the NEW factor, and in the poll interval it was
+        read in (filed_late 0): holding it a poll would be a new delay, not a
+        fix."""
+        need_v2("CF2u", "filing on a confirmation made after the read (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        c.set_lem_factor("Density", 0.001)
+        after, late = {}, 0
+        for _ in range(3):
+            labs = [lab for _i, lab in _labs(c.emit(2))]
+            for lab in labs:
+                after[lab] = c.printed[lab]
+            c.poll()
+            late += len(labs) - cells_for(c, labs)
+        c.settle(polls=4)
+        t = c.tally("CF2u single_csv", "factor changed while the roads are up")
+        res = c.gw.results("Density")
+        wrong = stale = 0
+        for lab, raw in after.items():
+            got = res.get(lab)
+            if got in (None, ""):
+                continue
+            if abs(float(got) - (float(raw) + 0.001)) > 1e-9:
+                wrong += 1
+            if abs(float(got) - float(raw)) <= 1e-12:
+                stale += 1
+        t["res_wrong"] = wrong
+        t["filed_with_stale_factor"] = stale
+        t["filed_after_change"] = sum(1 for lab in after
+                                      if res.get(lab) not in (None, ""))
+        t["filed_late"] = late
+        return t
+
     # ── round 2 (T-P8): the critic's two gaps, kept in the gate ─────────────
     @new("CF2r")
     def cf2r():
@@ -837,7 +914,6 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 
 
 V4_ONLY = {
-    "A1w": "journal wipe + /checkpoint blind mode (P1, P7, P8)",
     "T3": "store restored from a backup: a 409 cursor answer from /api/v2 sync (P7, P11)",
     "U1": "adoption at the first v4 start (P4)",
     "U2": "adoption: `recovered` rows (P4)",

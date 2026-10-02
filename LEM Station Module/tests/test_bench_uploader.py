@@ -521,19 +521,40 @@ class TestBenchEditsGoToLem:
         """The operator sets a factor at the bench. LEM does not have it yet,
         so the configuration LEM confirms every sync is the one WITHOUT it:
         a result filed now would carry a factor LEM never confirmed. It waits
-        for LEM's next configuration, then files with the new factor."""
+        for LEM's next configuration, then files with the new factor.
+
+        "LEM does not have it yet" is held open here on purpose: since the
+        uploader files right after its own sync (round 3), a LEM that applies
+        the record at once is echoing it within that same cycle, and the
+        reading then files correctly in the poll it was read in. So this LEM
+        stores the record but leaves its configuration as it was — its
+        config_rev keeps confirming the one WITHOUT the factor — until it
+        gets to it."""
         b = bench()
         lab.samples.add("L-1")
         b.poll()
+        real_handle = lem.handle
+        rev_before = lem.config_rev
+
+        def slow_to_apply(*a, **kw):
+            out = real_handle(*a, **kw)
+            lem.config_rev, lem.corrections = rev_before, []
+            return out
+        lem.handle = slow_to_apply
         b.m._v2_save_corrections(b.machine, {"Density": 0.001})
         assert b.machine.corrections == {"Density": 0.001}
         b.print_lines(("L-1", "0.8000"))
         b.poll()
+        b.poll(2)
         assert lab.cells == {}, "filed before LEM confirmed the new factor"
-        b.poll(3)
-        assert lab.cells[("L-1", "Density")] in ("0.801", "0.8010")
         sent = [r for r in lem.records if r.get("kind") == "config"]
         assert sent[-1]["corrections"] == {"Density": 0.001}
+        lem.handle = real_handle                   # LEM gets to it
+        lem.corrections = [{"machine_uid": UID, "test_name": "Density",
+                            "correction": 0.001}]
+        lem.config_rev = "rev-with-the-bench-factor"
+        b.poll(3)
+        assert lab.cells[("L-1", "Density")] in ("0.801", "0.8010")
 
     def test_an_override_set_here_reaches_lem_as_a_record(self, bench, lab,
                                                             lem):

@@ -53,6 +53,7 @@ import zlib
 from collections import Counter
 
 from . import env
+from .hgateway import OFF_THREAD_KILLS, note_kill
 from .hserver import HServer
 from .ledger import Ledger, tally as ledger_tally, results as ledger_results
 
@@ -107,6 +108,7 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
         def __init__(self, source="single_csv", publish=True, batch_mode=None,
                      n_samples=None, road_modes=None):
             self.ledger = Ledger("Density")
+            del OFF_THREAD_KILLS[:]
             self.home = fresh_world_dirs()
             if v2_target:
                 # The bench's clock for wakes that are not polls (its bind):
@@ -155,6 +157,17 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
             wait = getattr(self.m, "_uploader_wait_idle", None)
             if callable(wait) and not wait(120.0):
                 raise RuntimeError("the bench's uploader did not go idle in 120 s")
+            if OFF_THREAD_KILLS:
+                # The process died on the uploader thread (see hgateway): the
+                # poll had finished, the bench had not — restart it.
+                up = getattr(self.m, "_uploader", None)
+                thread = getattr(up, "thread", None)
+                if thread is not None:
+                    thread.join(30.0)
+                del OFF_THREAD_KILLS[:]
+                self.kills += 1
+                self.gw.plan = None
+                self.restart()
 
         # ── serial, through the module's own reader (v4) ──
         def _attach_reader(self):
@@ -417,6 +430,7 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 if hits["n"] == n:
                     world._kill = None
                     world._kills_fired.append(name)
+                    note_kill("fault point " + name)
                     raise Kill("fault point " + name)
                 return None
             self._kill = name

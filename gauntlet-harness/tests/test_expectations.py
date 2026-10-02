@@ -29,7 +29,9 @@ LEGACY_REPLAYS = ["F1L", "N2L"]
 ROUND_2 = ["CF2r", "N404", "N503"]
 # Round 3: T2 with lost answers, and the store asked directly whether it
 # refuses a (uid, epoch, seq) it holds (unique_seq_off had no row to fail).
-ROUND_3 = ["T2L"]
+# And CF2u: a factor changed in LEM with the roads UP is applied to the very
+# next print (round 2 filed the first 2 with the replaced factor).
+ROUND_3 = ["T2L", "CF2u"]
 
 BASELINE_19 = set("K1 K2 K3 K4 K5 K6 K7 K8 K9 N3 N4 F3 F4 F5 R2 R3 R4 R5 R6".split())
 

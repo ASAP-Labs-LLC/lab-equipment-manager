@@ -8621,6 +8621,16 @@ class LEMStationModule:
         canvas = getattr(self, "_canvas_v2", None) or {}
         st.blind_evidence = bool(canvas.get("epoch")) and \
             canvas.get("uid", uid) == uid
+        # A bench that starts anywhere but legacy is on the v2 side until a
+        # 404 says otherwise, and journals as one (the setup dialog's save is
+        # a `config` record). The poll's fall-back fires on v2 -> legacy; if
+        # the first 404 arrives before the first poll (an old server from the
+        # start: the uploader probes at bind), a flag that only a poll set
+        # would never have seen v2, the fall-back would never run, and what
+        # was journaled meanwhile — the configuration itself — would reach
+        # LabCore never (gate A1j: a restart without config.json could not
+        # bind). The projection is exactly-once (legacy_projected_seq).
+        self._v2_was_active = st.mode != "legacy"
         self._uploader_uid = uid
         self._v2_applied_rev = None
         self._uploader = BenchUploader(self._uploader_cycle,
@@ -8676,6 +8686,7 @@ class LEMStationModule:
         with self._results_lock:
             wait, self._factor_wait = list(getattr(self, "_factor_wait", None)
                                            or []), []
+            self._factor_read_at = {}
             self._identity_backlog = wait + list(self._identity_backlog)
         events = self._v2_project_bookkeeping(machine, journal)
         if entries or wait or events:
@@ -9039,17 +9050,34 @@ class LEMStationModule:
         too; nothing is capped and nothing is lost. When a sync confirms the
         configuration again they are filed, corrected with the factor in force
         then (CF2: a factor changed during the outage is applied before
-        filing). While held, the bench asks LabCore nothing at all."""
+        filing). While held, the bench asks LabCore nothing at all.
+
+        And a reading is filed only on a confirmation made AFTER it was read
+        (`_v2_take_confirmed`). A confirmation from before the read, however
+        recent, says nothing about a factor a person saved in LEM in between:
+        with the roads up, the two readings printed straight after a factor
+        change were filed with the factor LEM had already replaced (critic,
+        round 3: 2 stale). The sync that follows this poll on the uploader
+        thread is that confirmation, and the uploader files them right after
+        it (`_upl_file_confirmed`) — in the same poll interval, so nothing
+        waits a poll longer — with the factor it confirmed."""
         wait = getattr(self, "_factor_wait", None)
         if wait is None:
             wait = self._factor_wait = []
         with self._results_lock:
+            if rows:
+                read = getattr(self, "_factor_read_at", None)
+                if read is None:
+                    read = self._factor_read_at = {}
+                for row in rows:
+                    read[id(row)] = now
             wait.extend(rows or [])
             pending = (len(wait) + len(self._identity_backlog)
                        + len(self._held_rows) + len(self._parked_rows))
         if not pending:
-            return {"identities": {}, "filed": [], "stored": True,
-                    "notice": self._held_notice, "given_up": ""}
+            return self._v2_with_uploader_outcome(
+                {"identities": {}, "filed": [], "stored": True,
+                 "notice": self._held_notice, "given_up": ""}, messages)
         if not self._v2_factor_confirmed(now):
             st = self._transfer_state()
             with st.lock:
@@ -9061,15 +9089,56 @@ class LEMStationModule:
                 f"bench's correction factors{since}, so they are not filed "
                 "yet. They are filed as soon as it does; nothing is lost.") \
                 if n else self._held_notice
-            return {"identities": {}, "filed": [], "stored": True,
-                    "notice": self._held_notice, "given_up": ""}
+            return self._v2_with_uploader_outcome(
+                {"identities": {}, "filed": [], "stored": True,
+                 "notice": self._held_notice, "given_up": ""}, messages)
+        st = self._transfer_state()
+        with st.lock:
+            at = st.confirmed_at
         with self._results_lock:
-            # All of them, now: the identity backlog they join is uncapped
-            # (§3.2 retired IDENTITY_BACKLOG_LIMIT with the other count caps)
-            # and drains at the identity ceiling a poll, so a long outage's
-            # held results are never dropped to make room.
-            taking, self._factor_wait = list(wait), []
-        corrections = dict(machine.corrections or {})
+            # All of them that a confirmation has covered, now: the identity
+            # backlog they join is uncapped (§3.2 retired
+            # IDENTITY_BACKLOG_LIMIT with the other count caps) and drains at
+            # the identity ceiling a poll, so a long outage's held results
+            # are never dropped to make room.
+            taking = self._v2_take_confirmed(at)
+            others = (len(self._identity_backlog) + len(self._held_rows)
+                      + len(self._parked_rows))
+        if not taking and not others:
+            return self._v2_with_uploader_outcome(
+                {"identities": {}, "filed": [], "stored": True,
+                 "notice": self._held_notice, "given_up": ""}, messages)
+        return self._v2_with_uploader_outcome(self._v2_file(
+            machine, taking, dict(machine.corrections or {}), now, messages),
+            messages)
+
+    def _v2_take_confirmed(self, confirmed_at) -> List[dict]:
+        """Under `_results_lock`: take from the factor queue the readings a
+        confirmation at `confirmed_at` covers — those read at or before it;
+        the rest wait for the next sync. A reading with no read time (one a
+        restart brought back from the journal) was read before any
+        confirmation this process has seen."""
+        wait = list(getattr(self, "_factor_wait", None) or [])
+        read = getattr(self, "_factor_read_at", None) or {}
+        taking, keep = [], []
+        for row in wait:
+            at = read.get(id(row))
+            try:
+                covered = at is None or (confirmed_at is not None
+                                         and at <= confirmed_at)
+            except TypeError:          # naive vs aware: the old 60 s rule
+                covered = True
+            (taking if covered else keep).append(row)
+        self._factor_wait = keep
+        self._factor_read_at = {id(r): read[id(r)] for r in keep
+                                if id(r) in read}
+        return taking
+
+    def _v2_file(self, machine: Machine, taking: List[dict],
+                 corrections: dict, now: datetime,
+                 messages: List[str]) -> dict:
+        """File confirmed readings: re-corrected with `corrections` (the
+        factor LEM confirmed), then the guarded results road."""
         taking = [_recorrected(row, corrections) for row in taking]
         # EVERY reading not yet filed is filed with the factor LEM has just
         # confirmed — not only the ones this process parked in `_factor_wait`.
@@ -9087,7 +9156,10 @@ class LEMStationModule:
             ages = getattr(self, "_factor_ages", None)
             if ages is None:
                 ages = self._factor_ages = deque(maxlen=1000)
-            ages.append((now - at).total_seconds())
+            try:
+                ages.append((now - at).total_seconds())
+            except TypeError:
+                pass
         write = globals().get("labcore_write")
         run_sql = globals().get("labcore_sql")
         read_sql = globals().get("labcore_read_sql")
@@ -9099,6 +9171,75 @@ class LEMStationModule:
             return self._parked_storage(self._park(taking, messages))
         return self._store_results(machine, taking, read_sql, run_sql, write,
                                    messages, now)
+
+    def _upl_file_confirmed(self, now: datetime) -> None:
+        """Uploader thread, right after a sync LEM answered: file the readings
+        that sync's confirmation covers, with the factor it confirmed (taken
+        from the configuration it cached, so it does not wait for the next
+        poll to apply it). LabCore only — LEM I/O stays where it was. What it
+        filed is shown by the next poll (`_v2_with_uploader_outcome`)."""
+        machine = getattr(self, "_machine", None)
+        if machine is None or machine.uid != getattr(self, "_uploader_uid", ""):
+            return
+        st = self._transfer_state()
+        with st.lock:
+            at, rev, cfg, mode = (st.confirmed_at, st.confirmed_rev,
+                                  dict(st.config or {}), st.mode)
+        if mode != "v2" or at is None or not rev or cfg.get("config_rev") != rev:
+            return
+        if getattr(self, "_v2_awaiting", None) == rev:
+            return             # a factor saved here that LEM has not echoed
+        try:
+            if abs((now - at).total_seconds()) > FACTOR_CONFIRM_SECONDS:
+                return
+        except TypeError:
+            return
+        res = v2_config_results(cfg.get("body"), machine.uid)
+        if res is None:
+            return
+        corrections = parse_correction_rows(res["corrections"]["rows"])
+        with self._results_lock:
+            taking = self._v2_take_confirmed(at)
+        if not taking:
+            return
+        messages: List[str] = []
+        outcome = self._v2_file(machine, taking, corrections, now, messages)
+        with self._results_lock:
+            prior = getattr(self, "_upl_outcome", None)
+            if prior:
+                merged = dict(outcome)
+                merged["filed"] = list(prior.get("filed") or []) + list(
+                    outcome.get("filed") or [])
+                ids = dict(prior.get("identities") or {})
+                ids.update(outcome.get("identities") or {})
+                merged["identities"] = ids
+                merged["messages"] = list(prior.get("messages") or []) + messages
+                outcome = merged
+            else:
+                outcome = dict(outcome, messages=messages)
+            self._upl_outcome = outcome
+
+    def _v2_with_uploader_outcome(self, result: dict,
+                                  messages: Optional[List[str]] = None) -> dict:
+        """This poll's storage outcome with what the uploader filed since the
+        last poll folded in, so the card and the Results hand-off show it."""
+        with self._results_lock:
+            extra, self._upl_outcome = getattr(self, "_upl_outcome", None), None
+        if not extra:
+            return result
+        if messages is not None:
+            messages.extend(extra.get("messages") or [])
+        out = dict(result)
+        out["filed"] = list(extra.get("filed") or []) + list(
+            result.get("filed") or [])
+        ids = dict(extra.get("identities") or {})
+        if result.get("identities") is not None:
+            ids.update(result.get("identities") or {})
+        out["identities"] = ids
+        if extra.get("given_up") and not out.get("given_up"):
+            out["given_up"] = extra["given_up"]
+        out["stored"] = True
+        return out
 
     def _v2_recorrect_queues(self, corrections: dict) -> int:
         """Re-correct, from their raw readings, the unfiled readings in the
@@ -9171,6 +9312,7 @@ class LEMStationModule:
                     not self._upl_checkpoint(now, t, journal):
                 return
             self._upl_sync(now, t, journal)
+            self._upl_file_confirmed(now)
         except RoadsDown as exc:
             self._upl_backoff(now, t, "roads_down", str(exc))
         except JournalError as exc:

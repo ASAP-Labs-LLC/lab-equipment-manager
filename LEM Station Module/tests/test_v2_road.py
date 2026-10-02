@@ -318,6 +318,40 @@ class TestV2Mode:
             world.poll(m, k, prints=0)
         assert sorted(lab.cells()) == LABS[:6]
 
+    def test_a_factor_changed_in_LEM_reaches_the_very_next_print(self, world):
+        """The 60 s rule says a factor may be applied if LEM confirmed it
+        within the last minute — but a minute-old confirmation says nothing
+        about a factor a person saved in LEM ten seconds ago. With the roads
+        UP, the critic (round 3) found the two readings printed straight
+        after a factor change filed to LabCore with the factor LEM had
+        already replaced: values LabCore keeps, that LEM no longer stands
+        behind. A reading is now filed only on a confirmation made AFTER it
+        was read — the uploader's sync that follows the poll — and with the
+        factor that sync confirmed. That sync runs within the same poll
+        interval, so nothing waits a poll longer, and the poll itself still
+        never talks to LEM (`test_the_poll_thread_never_talks_to_lem`)."""
+        lab = LabCore()
+        m = world.bench(lab)
+        world.poll(m, 0)
+        world.poll(m, 1)
+        assert sorted(lab.cells()) == LABS[:2]
+        world.lem.corrections = [{"machine_uid": UID, "test_name": "Density",
+                                  "correction": 0.001}]
+        world.lem.config_rev = "rev-factor-saved-in-LEM"
+        for k in range(2, 5):
+            world.poll(m, k, prints=2)
+            # filed in the poll interval it was read in, not one later
+            assert set(LABS[:2 + 2 * (k - 1)]) <= set(lab.cells()), k
+        cells = lab.cells()
+        stale = [lab_id for lab_id in LABS[2:8]
+                 if abs(float(cells[lab_id]) -
+                        (0.8 + LABS.index(lab_id) / 10000) - 0.001) > 1e-9]
+        assert stale == [], "filed with the factor LEM had replaced: %s" % (
+            {k: cells[k] for k in stale})
+        for lab_id in LABS[:2]:                        # before the change
+            assert abs(float(cells[lab_id]) -
+                       (0.8 + LABS.index(lab_id) / 10000)) < 1e-9
+
     def test_a_restart_in_v2_stays_v2_while_LEM_is_dark(self, world):
         """The journal remembers the handshake: a LabStation restart during an
         outage must not send the bench back to writing `lem_*` into LabCore."""
@@ -364,6 +398,49 @@ class TestV2Mode:
         assert set(LABS[1:3]) <= set(landed), landed
         assert LABS[0] not in landed, (
             "a reading LEM had already acked was sent to LabCore as well")
+
+
+    def test_a_bench_set_up_against_an_old_server_publishes_its_setup_there(
+            self, qapp, world, monkeypatch):
+        """M3 from the very first moment: a v4 bench set up on a floor whose
+        LEM is v3.9 (it answers 404). The setup dialog's save happens while
+        the bench's state is still UNKNOWN, so it is journaled as a `config`
+        record — and the uploader's first probe hears the 404 before the
+        first poll. The fall-back that projects journaled bookkeeping to
+        LabCore used to fire only on a poll that SAW the bench go from v2 to
+        legacy; a bench that was never seen as v2 by a poll skipped it, and
+        its configuration reached LabCore never. On an old server LabCore's
+        lem_machine_config is the only place the floor reads a bench's setup
+        from, and the only place a restart that has lost config.json can bind
+        from (the gate's A1j: "restart did not bind")."""
+        lab = LabCore()
+        world.lem.set_modes(lan="404", public="404")
+        for name, fn in (("labcore_write", lab.write),
+                         ("labcore_sql", lab.sql),
+                         ("labcore_read_sql", lab.read_sql),
+                         ("labcore_is_running", lab.is_running)):
+            monkeypatch.setitem(mod.__dict__, name, fn)
+        m = make_module()
+        try:
+            m.set_machine(Machine(
+                uid=UID, title="Bench b1", source_type="single_csv",
+                csv_path=str(world.path), delimiter=",",
+                lab_id=mod.Selector(mode="cell", index=0),
+                mappings=[mod.MethodMapping(
+                    methods=["Density"],
+                    selector=mod.Selector(mode="cell", index=1))]),
+                publish=True)
+            assert m._uploader_wait_idle(30.0)
+            assert m._v2_active() is False, "the 404 was not heard at bind"
+            world.poll(m, 1, prints=1)
+            rows = lab.db.execute(
+                "SELECT machine_uid, title FROM lem_machine_config").fetchall()
+            assert [tuple(r) for r in rows] == [(UID, "Bench b1")]
+            world.poll(m, 2, prints=0)
+            assert len(lab.db.execute(
+                "SELECT * FROM lem_machine_config").fetchall()) == 1
+        finally:
+            m.shutdown()
 
 
 class TestRoads:

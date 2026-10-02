@@ -1852,7 +1852,7 @@
     "analyst_overwritten": 0,
     "conflicts": 5
    },
-   "v4_spec": "0 overwritten with the journal lost (today 5): the guard read alone (harness row; A1w adds 0 re-sent, P8)"
+   "v4_spec": "0 overwritten with the journal lost (today 5): the guard read alone (harness row). Run against an old server (404), so no checkpoint can tell the bench where its record ends and it re-reads its file: all 5 re-sent readings meet the analyst's values and become conflicts. (Round 3: with LEM up, P8's blind mode now suppresses the re-read, which is A1w's row.)"
   },
   "A3": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2375,9 +2375,16 @@
    "v3.9": null,
    "v4": {
     "analyst_overwritten": 0,
-    "records_resent": 0
+    "records_resent": 0,
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "approved": 200,
+    "blind_after": false,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0 overwritten, 0 re-sent (checkpoint)"
+   "v4_spec": "0 overwritten, 0 re-sent (checkpoint). Built with P8's blind mode (round 3): LEM up, the wipe takes bench.key so a person approves re-enrolment (200); the bench must then be working, not stuck — blind_after false, and 2 new prints filed (lost 0, res_lost 0)."
   },
   "T3": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2491,6 +2498,21 @@
     "uploader_errors": 0
    },
    "v4_spec": "a factor changed in LEM while both roads are dark: the 10 readings made after it are held, then filed with the NEW factor (res_wrong measured against raw + new factor). Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
+  },
+  "CF2u": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_wrong": 0,
+    "filed_with_stale_factor": 0,
+    "filed_after_change": 6,
+    "filed_late": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 3 (critic, T-P8 round 2): a factor changed in LEM while the roads are UP. The 6 readings printed after it are filed with the NEW factor (round 2 filed the first 2 with the replaced one: the 60 s rule allowed it), each in the poll interval it was read in (filed_late 0). A reading is filed only on a confirmation made after it was read: the uploader's sync that follows the poll, which files it right after."
   },
   "U1": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
