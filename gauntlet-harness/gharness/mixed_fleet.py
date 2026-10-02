@@ -441,63 +441,75 @@ def m6(rw):
 # ── DG1 ─────────────────────────────────────────────────────────────────────
 
 def dg1(rw):
-    """A v2 bench printing every 30 s for 3 h, syncing its source offset;
-    the bridge cycling every 6 s. At 12 moments — including the last cycle
-    before each mirror is due — the real v3.9.0 module restarts from
-    LabCore's config and tails the file: the age of the oldest print it
-    reads again is the replay."""
+    """A v2 bench printing and syncing its source offset; the bridge on its
+    real 1 s loop. Three cadences, out of step with each other and with the
+    mirror on purpose (round 3: aligned ticks hid 15.2 min): prints every 30
+    s synced at once, every 30 s synced 29 s late, and every 7 s with a 30 s
+    poll, 3 hours each. From 20 min on, EVERY second is a downgrade: the real v3.9.0
+    module restarts from LabCore's config and tails the file, and the age of
+    the oldest print it reads again is the replay. The worst one counts."""
     _need_bridge()
     import bridge
     v39 = v39_module()
     uid = "pac-flash-1"
-    lab = _lab(rw)
-    store = _store("dg1")
-    _verified(store, lab)
-    client = _bench_app(store, lab).test_client()
-    bench = _Bench(client, uid)
-    br = bridge.Bridge(store, lab, clock=lambda: 0.0)
     base = os.path.dirname(os.environ["LEM_STORE_PATH"])
-    path = os.path.join(base, "dg1-%03d.csv" % next(_serial))
-    open(path, "w").close()
-    printed = []
-    checks = {600, 2100, 3570, 3594, 4500, 5394, 5400, 6300, 7170, 8100,
-              9000, 10794}
-    replays = []
-
-    def replayed(now):
-        sql, args = v39.build_config_fetch(uid)
-        row = lab.fake.read_sql(sql, args)["rows"][0]
-        m = v39.machine_from_config_payload(row["config"], uid)
-        text, _ = v39.tail_new_text(path, m.last_position)
-        n = len([ln for ln in text.splitlines() if ln.strip()])
-        return 0.0 if not n else (now - printed[len(printed) - n][1]) / 60.0
-
-    t = 0.0
-    while t <= 3 * 3600:
-        if int(t) % 30 == 0:
-            with open(path, "a") as f:
-                f.write("L-%05d,%.2f\n" % (len(printed), 60 + len(printed)
-                                           % 7 / 10))
-            printed.append((os.path.getsize(path), t))
-            bench.journal({"kind": "run", "ts": "2026-10-02T09:00:00-07:00",
-                           "module": "4.0.0", "src": "file",
-                           "lab_id": "L-%05d" % len(printed),
-                           "values": {"Flash": "60"}, "raw": {},
-                           "corrections": {}, "origin": "live"})
-            r = bench.sync(sources=[{"src": "C:/data/flash.csv",
-                                     "cursor": {"offset": printed[-1][0]}}])
-            assert r.status_code == 200, r.get_json()
-        br.cycle(now=t)
-        if int(t) in checks:
-            replays.append(round(replayed(t), 2))
-        t += 6.0
-    # Today: no bridge, so LabCore keeps the offset saved on 09-23.
+    worst_by_case = {}
+    for print_every, poll_every, phase in ((30, 30, 0), (30, 30, 29),
+                                           (7, 30, 15)):
+        lab = _lab(rw)
+        store = _store("dg1")
+        _verified(store, lab)
+        client = _bench_app(store, lab).test_client()
+        bench = _Bench(client, uid)
+        br = bridge.Bridge(store, lab, clock=lambda: 0.0)
+        path = os.path.join(base, "dg1-%03d.csv" % next(_serial))
+        open(path, "w").close()
+        printed = []
+        worst = 0.0
+        next_print, next_poll = 0.0, float(phase)
+        t = 0.0
+        while t <= 3 * 3600:
+            if t >= next_print:
+                with open(path, "a") as f:
+                    f.write("L-%05d,%.2f\n" % (len(printed), 60 + len(printed)
+                                               % 7 / 10))
+                printed.append((os.path.getsize(path), t))
+                next_print += print_every
+            if t >= next_poll:
+                bench.journal({"kind": "run", "ts": "2026-10-02T09:00:00-07:00",
+                               "module": "4.0.0", "src": "file",
+                               "lab_id": "L-%05d" % len(printed),
+                               "values": {"Flash": "60"}, "raw": {},
+                               "corrections": {}, "origin": "live"})
+                r = bench.sync(sources=[{"src": "C:/data/flash.csv", "cursor":
+                                         {"offset": os.path.getsize(path)}}])
+                assert r.status_code == 200, r.get_json()
+                next_poll += poll_every
+            br.cycle(now=t)
+            if t >= 1200:
+                sql, args = v39.build_config_fetch(uid)
+                m = v39.machine_from_config_payload(
+                    lab.fake.read_sql(sql, args)["rows"][0]["config"], uid)
+                text, _ = v39.tail_new_text(path, m.last_position)
+                n = len([ln for ln in text.splitlines() if ln.strip()])
+                if n:
+                    worst = max(worst, (t - printed[len(printed) - n][1]) / 60.0)
+            t += 1.0
+        if not worst_by_case:
+            today_path, today_printed, today_t = path, printed, t - 1.0
+        worst_by_case["prints %ds, poll %ds at +%ds" % (
+            print_every, poll_every, phase)] = round(worst, 2)
+    # Today: no bridge, so LabCore keeps the offset saved on 09-23. Measured
+    # on the first cadence (prints every 30 s, synced at once), at its end.
     lab_today = _lab(rw)
     sql, args = v39.build_config_fetch(uid)
     m = v39.machine_from_config_payload(
         lab_today.fake.read_sql(sql, args)["rows"][0]["config"], uid)
-    text, _ = v39.tail_new_text(path, m.last_position)
+    text, _ = v39.tail_new_text(today_path, m.last_position)
     n = len([ln for ln in text.splitlines() if ln.strip()])
-    return {"replayed_minutes": max(replays), "at_each_downgrade": replays,
+    return {"replayed_minutes": max(worst_by_case.values()),
+            "worst_by_cadence": worst_by_case,
+            "mirror_every_s": bridge.MIRROR_EVERY_S,
             "today_without_bridge_minutes":
-                (t - 6.0 - printed[len(printed) - n][1]) / 60.0 if n else 0.0}
+                (today_t - today_printed[len(today_printed) - n][1]) / 60.0
+                if n else 0.0}

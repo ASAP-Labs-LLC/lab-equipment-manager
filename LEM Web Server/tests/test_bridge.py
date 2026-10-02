@@ -135,6 +135,170 @@ class TestRenumbering:
         gens = kit.store_rows(store, "SELECT DISTINCT gen FROM legacy_index")
         assert [g["gen"] for g in gens] == [1]          # the old map is gone
 
+    # Round 3's critic found the hole these close. The pull used to decide
+    # "did LabCore's rowids move?" from ONE row: the row now at the cursor,
+    # hashed, against the row held for that rowid. v3.9's N3 double write
+    # puts byte-identical rows a batch apart, so a delete below the cursor
+    # plus a VACUUM can slide the never-pulled second copy onto the cursor
+    # rowid. Its hash matches, the pull says "nothing moved", skips it with
+    # rows[1:], and the copy is lost for good with no error anywhere.
+    #
+    # Comparing one more row (the one before the cursor) is not enough
+    # either: a doubled batch of three slides three identical rows into
+    # place. What the pull compares now is the whole prefix: in the same
+    # single read, LabCore returns how many rows sit at rowid <= cursor and a
+    # positional checksum of (rowid, machine, kind, ts) over them — taken
+    # from its covering index, so no table pages are read — and the store
+    # computes the same over the rows it holds for that numbering. A row that
+    # left the prefix or entered it, or any row now at another rowid, changes
+    # it; then the log is walked again in a new numbering, which adds only
+    # what the record lacks.
+
+    def _n3_moved_onto_cursor(self, tmp_path, batch):
+        lab = empty_labcore()
+        store = verified_store(tmp_path, lab)
+        for vals in v39_rows(40):
+            kit.append_log(lab, vals)
+        rows = v39_rows(batch, uid="gc-1", start=900)
+        for vals in rows:                       # the v3.9 bench writes a batch
+            kit.append_log(lab, vals)
+        br = bridge_for(store, lab)
+        assert br.pull()["ok"] is True          # cursor: the batch's last row
+        for vals in rows:                       # N3: the batch written again
+            kit.append_log(lab, vals)
+        kit.append_log(lab, v39_rows(1, uid="gc-1", start=950)[0])
+        # 'purge history' deletes `batch` old rows; the nightly VACUUM
+        kit.vacuum_renumber(lab, delete_rowids=range(5, 5 + batch))
+        outs = [br.pull() for _ in range(4)]
+        return lab, store, br, outs
+
+    @pytest.mark.parametrize("batch", [1, 3])
+    def test_an_n3_copy_a_vacuum_slid_onto_the_cursor_is_not_skipped(
+            self, tmp_path, batch):
+        lab, store, br, outs = self._n3_moved_onto_cursor(tmp_path, batch)
+        assert outs[0].get("renumbered") is True, outs
+        assert all(o["ok"] for o in outs), outs
+        truth, held = kit.lc_multiset(lab), kit.store_multiset(store)
+        lost = sum(max(0, n - held[k]) for k, n in truth.items())
+        extra = sum(max(0, n - truth[k]) for k, n in held.items())
+        # 0 lost; the only extra rows are the `batch` LabCore deleted, which
+        # the append-only record keeps.
+        assert (lost, extra) == (0, batch)
+        for vals in v39_rows(batch, uid="gc-1", start=900):
+            assert held[vals] == 2 == truth[vals]
+        assert br.status()["pull"]["renumbered"] == 1
+
+    def test_the_prefix_proof_rides_in_the_one_pull_read_off_the_index(
+            self, tmp_path):
+        """Still ONE LabCore read per pull, and the proof's part of it is an
+        index-only scan of `idx_lem_log_uid_kind_ts` — the read §10.1 prices
+        for the import's own proof — so a 258k-row log is not read from its
+        table pages every minute."""
+        import bridge
+        lab = empty_labcore()
+        store = verified_store(tmp_path, lab)
+        for vals in v39_rows(30):
+            kit.append_log(lab, vals)
+        br = bridge_for(store, lab)
+        br.pull()
+        mark = len(lab.calls)
+        out = br.pull()
+        assert out["ok"] is True and out["added"] == 0
+        assert lab.ops_since(mark) == 1
+        sql = lab.calls[-1][1]
+        plan = " ".join(str(r) for r in lab.q("EXPLAIN QUERY PLAN " + sql,
+                                               bridge.Bridge._pull_args(30, 5)))
+        assert "COVERING INDEX idx_lem_log_uid_kind_ts" in plan, plan
+        assert br.status()["pull"]["proven_through"] == 30
+
+    def test_an_answer_without_the_proof_is_a_failed_read(self, tmp_path):
+        """A failed read is never an empty result: an 'ok' answer with no
+        rows at all — not even the proof row the statement always yields —
+        is an error the status shows, not 'nothing new', and the cursor
+        does not move."""
+        lab = empty_labcore()
+        store = verified_store(tmp_path, lab)
+        for vals in v39_rows(10):
+            kit.append_log(lab, vals)
+        br = bridge_for(store, lab)
+        br.pull()
+        cursor = br.status()["pull"]["cursor"]
+        lab.fail_on("FROM lem_machine_log", answer={"rows": []})
+        out = br.pull()
+        assert out["ok"] is False and "proof" in out["error"]
+        assert br.status()["pull"]["last_error"]
+        assert br.status()["pull"]["cursor"] == cursor
+        assert br.enabled() is True
+        assert br.status_items()[0]["key"] == "bridge_pull"
+
+    def test_a_delete_without_a_vacuum_re_walks_and_adds_0(self, tmp_path):
+        """A deleted row below the cursor moves nothing yet, but the prefix
+        is no longer the one held: the pull cannot tell this apart from a
+        renumbering, so it walks again. That costs reads, never rows: +0."""
+        lab = empty_labcore()
+        store = verified_store(tmp_path, lab)
+        for vals in v39_rows(60):
+            kit.append_log(lab, vals)
+        br = bridge_for(store, lab, chunk=25)
+        while br.pull().get("rows"):
+            pass
+        held = len(legacy_keys(store))
+        lab.x("DELETE FROM lem_machine_log WHERE rowid = 7")
+        assert br.pull().get("renumbered") is True
+        while br.pull().get("rows"):
+            pass
+        assert len(legacy_keys(store)) == held
+
+    def test_n3_deletes_and_vacuums_at_random_lose_nothing(self, tmp_path):
+        """60 seeds: v3.9 batches (a third of them doubled, N3), pulls with
+        a small chunk so cursors land mid-batch, and between pulls random
+        deletes — sometimes followed by a VACUUM — anywhere in the log.
+        Against LabCore at the end: 0 lost, and the only extra rows are ones
+        LabCore deleted."""
+        import random
+        for seed in range(60):
+            rng = random.Random(seed)
+            lab = empty_labcore()
+            store = verified_store(tmp_path, lab, name="s%d.db" % seed)
+            br = bridge_for(store, lab, chunk=rng.choice([3, 7, 50]))
+            deleted = 0
+            n = 0
+            for _step in range(25):
+                size = rng.randint(1, 4)
+                rows = v39_rows(size, uid=rng.choice(["gc-1", "gc-2"]),
+                                start=n)
+                n += size
+                for _ in range(2 if rng.random() < 0.34 else 1):
+                    for vals in rows:
+                        kit.append_log(lab, vals)
+                if rng.random() < 0.6:
+                    br.pull()
+                if rng.random() < 0.25:
+                    top = lab.q("SELECT MAX(rowid) AS m FROM "
+                                "lem_machine_log")[0]["m"] or 0
+                    if top > 2:
+                        k = rng.randint(1, min(3, top - 1))
+                        gone = rng.sample(range(1, top + 1), k)
+                        before = kit.lc_multiset(lab)
+                        if rng.random() < 0.7:
+                            kit.vacuum_renumber(lab, delete_rowids=gone)
+                        else:
+                            for rid in gone:
+                                lab.x("DELETE FROM lem_machine_log WHERE "
+                                      "rowid = ?", [rid])
+                        deleted += sum((before - kit.lc_multiset(lab))
+                                       .values())
+            for _ in range(200):
+                out = br.pull()
+                assert out["ok"], (seed, out)
+                if not out.get("rows") and not out.get("renumbered"):
+                    break
+            truth, held = kit.lc_multiset(lab), kit.store_multiset(store)
+            lost = sum(max(0, c - held[k]) for k, c in truth.items())
+            extra = sum(max(0, c - truth[k]) for k, c in held.items())
+            assert lost == 0, (seed, lost)
+            assert extra <= deleted, (seed, extra, deleted)
+
 
 # ── W1 ──────────────────────────────────────────────────────────────────────
 
@@ -544,7 +708,7 @@ class TestDG1:
     def test_a_v4_to_v39_downgrade_replays_at_most_15_minutes(self, tmp_path):
         """A v2 bench prints every 30 s for 3 hours and syncs after every
         print, reporting its source offset. The bridge cycles every 12 s and
-        mirrors that offset into LabCore with one json_set every 15 min. At
+        mirrors that offset into LabCore with one json_set every 10 min. At
         twelve moments — including the second before a mirror is due — the
         bench is rolled back: the real v3.9.0 module reads its config from
         LabCore and tails the file from the stored offset. Everything it
@@ -564,7 +728,7 @@ class TestDG1:
         open(path, "w").close()
         printed = []                              # (end offset, print time)
         worst = []
-        # Mirrors run at 0, 900, 1800 … s; 3594 and 5394 are the last cycles
+        # Mirrors run at 0, 600, 1200 … s; 3594 and 5394 are the last cycles
         # before one, where the bound is tightest.
         checks = {600, 2100, 3570, 3594, 4500, 5394, 5400, 6300, 7170,
                   8100, 9000, 10794}
@@ -587,13 +751,61 @@ class TestDG1:
         print("DG1 replayed minutes at each downgrade:", worst)
         assert len(worst) == len(checks)
         assert max(worst) <= 15.0, worst
-        assert bridge_mod.MIRROR_EVERY_S == 900.0
+        assert bridge_mod.MIRROR_EVERY_S == 600.0
 
         # Today: no mirror. The offset is the one a person saved on 09-23.
         lab2 = empty_labcore()
         today = self.replayed_minutes(v39, lab2, path, printed, t - 6.0)
         print("DG1 today (no mirror):", today, "minutes")
         assert today > 170
+
+    # Round 3's critic: the test above passes at 14.4 min only because its
+    # prints, syncs and mirror ticks line up. The bound is really "mirror
+    # interval + how far the bench's last sync lags its last print": with a
+    # 900 s mirror there is no room for any lag, and unaligned prints reached
+    # 15.18-15.22 min. The mirror now runs every 600 s, leaving 5 minutes for
+    # the bench's poll lag, a refused json_set's retries and the cycle tick.
+    # These walk the real 1 s loop with prints, polls and mirrors out of step.
+    @pytest.mark.parametrize("print_every,poll_every,phase,fault", [
+        (7, 30, 15, None),        # prints faster than the bench polls
+        (30, 30, 29, None),       # each print waits 29 s for its poll
+        (30, 30, 0, 2),           # a watchdog on the 2nd json_set
+        (11, 45, 44, 1),          # slow polls and the first json_set refused
+    ])
+    def test_unaligned_prints_still_replay_at_most_15_minutes(
+            self, tmp_path, print_every, poll_every, phase, fault):
+        v39 = kit.v39_module()
+        lab = empty_labcore()
+        store = verified_store(tmp_path, lab)
+        client = bk.make_app(store, labcore=lab).test_client()
+        bench = bk.Bench(client, bk.enroll(client, uid=self.UID), uid=self.UID)
+        br = bridge_for(store, lab)
+        if fault:
+            lab.fail_on("json_set", nth=fault, kind="write")
+        path = str(tmp_path / "flash.csv")
+        open(path, "w").close()
+        printed, worst = [], 0.0
+        next_print, next_poll = 0.0, float(phase)
+        t = 0.0
+        while t <= 3600:
+            if t >= next_print:
+                with open(path, "a") as f:
+                    f.write("L-%05d,60.1\n" % len(printed))
+                printed.append((os.path.getsize(path), t))
+                next_print += print_every
+            if t >= next_poll:      # the bench reads the file and syncs
+                bench.journal(1)
+                r = bench.sync(sources=[{"src": "C:/data/flash.csv", "cursor":
+                                         {"offset": os.path.getsize(path)}}])
+                assert r.status_code == 200, r.get_json()
+                next_poll += poll_every
+            br.cycle(now=t)
+            if t > 1200:            # a downgrade now
+                worst = max(worst, self.replayed_minutes(v39, lab, path,
+                                                         printed, t))
+            t += 1.0
+        print("DG1 unaligned worst replay:", round(worst, 2), "min")
+        assert 0 < worst <= 15.0, worst
 
     def replayed_minutes(self, v39, lab, path, printed, now):
         sql, args = v39.build_config_fetch(self.UID)

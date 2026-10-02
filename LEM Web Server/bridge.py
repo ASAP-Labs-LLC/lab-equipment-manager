@@ -11,9 +11,15 @@ bench exists, server v4 has to carry both directions across:
 
 **In — the legacy pull** (`pull`, every 60 s): `lem_machine_log WHERE rowid >=
 cursor ORDER BY rowid LIMIT 20000`, ONE read, applied by
-`legacy_import.LegacyWriter` — content keys, so nothing lands twice, and a
-VACUUM that renumbered LabCore's rowids is recognised at the cursor row and
-answered with a re-walk that adds nothing. Rows carrying `detail.jk` link to
+`legacy_import.LegacyWriter` — content keys, so nothing lands twice. The same
+read carries a PROOF of everything below the cursor: LabCore's row count and a
+positional checksum of (rowid, machine, kind, ts) at rowid <= cursor, summed
+off its covering index, compared with the same sums over the rows the store
+holds for that numbering, plus the cursor row's full content. Any row that
+left the prefix, joined it or now sits at another rowid (a delete; a VACUUM
+after deletes, which can slide a never-pulled N3 copy onto the cursor)
+changes it, and is answered with a re-walk that adds only what is missing.
+Rows carrying `detail.jk` link to
 the bench record they project (a v4 bench in legacy projection mode), so its
 later v2 sync does not double them (M6). A v3.9 replay burst — a poll of ≥ 20
 rows that each have an earlier identical twin — arrives with a VISIBLE
@@ -41,12 +47,14 @@ configuration never overwrites the cursor keys a v3.9 bench keeps in it
 (`last_position`, `last_mtime`, `last_result_file`): a web edit cannot rewind
 a bench into a replay.
 
-**Out — the downgrade bound** (`mirror_cursors`, every 15 min): for each v2
+**Out — the downgrade bound** (`mirror_cursors`, every 10 min): for each v2
 bench, its mirrored source offset is written into LabCore with a SINGLE-KEY
 `json_set(config, '$.last_position', ?)` — only when it changed, through the
 outbox. A bench rolled back to the v3.9 module starts from there and replays
 at most 15 minutes of prints (DG1), where today it replays everything since
-its offset was last saved by hand (09-23/09-24).
+its offset was last saved by hand (09-23/09-24). The spec says "every 15
+min"; that is the bound, and a mirror that runs as often as the bound leaves
+no room for the bench's own sync lag, so it runs every 10.
 
 There are deliberately NO replica tables and no LabCore DDL: Ryan declined
 D2's factor/override replica (decisions.md). Every write here lands in a
@@ -75,7 +83,14 @@ logger = logging.getLogger(__name__)
 
 PULL_EVERY_S = 60.0
 STATE_EVERY_S = 12.0
-MIRROR_EVERY_S = 900.0
+#: The downgrade mirror's cadence. DG1's bound is 15 minutes of replayed
+#: prints, and the replay at a downgrade is this interval PLUS how far the
+#: bench's last sync lagged its last print, plus any retry of a refused
+#: json_set. At 900 s (the spec's "every 15 min") there was no room for that
+#: lag: unaligned prints replayed 15.2 min. 600 s leaves 5 minutes for it,
+#: for ≤ 6 single-key writes per v2 bench per hour, and only when the
+#: offset moved.
+MIRROR_EVERY_S = 600.0
 PULL_CHUNK = li.CHUNK
 #: Outbox retry: 5 s doubling to 5 min.
 BACKOFF_MIN_S = 5.0
@@ -136,6 +151,34 @@ _STATE_ARMS = (
       "updated_at")),
 )
 _WIDTH = max(len(c) for _s, _t, c in _STATE_ARMS)
+
+
+#: The prefix proof's modulus (2^31 - 1, prime): each row's term is reduced
+#: by it, so a sum over a million rows stays far inside SQLite's int64.
+_PROOF_MOD = 2147483647
+
+
+def _text_sig(col: str) -> str:
+    """A small number from a text column: its length and its last three
+    characters (machine uids differ at the end: gc-1, gc-2)."""
+    return ("(COALESCE(LENGTH({c}), 0) + COALESCE(unicode(substr({c}, -1)), 0)"
+            " * 37 + COALESCE(unicode(substr({c}, -2, 1)), 0) * 1369 + "
+            "COALESCE(unicode(substr({c}, -3, 1)), 0) * 50653)").format(c=col)
+
+
+def _prefix_term(rid: str) -> str:
+    """One row's term of the prefix checksum: its rowid times a number made
+    of its machine, kind and timestamp — the columns of LabCore's covering
+    index `idx_lem_log_uid_kind_ts`, so LabCore sums it without reading the
+    table. Positional on purpose: the sum changes when a row leaves the
+    prefix, joins it, or sits at another rowid, which is exactly what a
+    VACUUM after deletes does. The store computes the same expression over
+    `legacy_index` (`rid` = 'src_rowid')."""
+    value = ("(COALESCE(CAST(strftime('%s', ts) AS INTEGER), 0) + {u} * 7919 "
+             "+ {k} * 104729 + COALESCE(LENGTH(ts), 0) * 13)").format(
+                 u=_text_sig("machine_uid"), k=_text_sig("kind"))
+    return "((%s %% %d) * (%s %% %d) %% %d)" % (
+        rid, _PROOF_MOD, value, _PROOF_MOD, _PROOF_MOD)
 
 
 def _now_iso() -> str:
@@ -261,7 +304,8 @@ class Bridge:
         self._declared = False
         self.info: Dict[str, dict] = {
             "pull": {"last_ok_at": None, "last_error": None, "added": 0,
-                     "linked": 0, "renumbered": 0, "cursor": None, "gen": None},
+                     "linked": 0, "renumbered": 0, "cursor": None, "gen": None,
+                     "proven_through": None},
             "state": {"last_ok_at": None, "last_error": None, "updated": 0},
             "outbox": {"pending": None, "oldest": None, "last_error": None,
                        "landed": 0},
@@ -347,9 +391,62 @@ class Bridge:
         return ran
 
     # ── in: the log ──
+    @staticmethod
+    def _pull_sql(cursor: int) -> str:
+        if cursor <= 0:
+            # A fresh numbering: there is no prefix to prove yet.
+            # raw-log: LabCore's own table (see the pull)
+            return ("SELECT %s FROM lem_machine_log WHERE rowid > ? ORDER BY "
+                    "rowid LIMIT ?" % li._LOG_SELECT)
+        # ONE statement, two parts: the prefix proof (one row, always there)
+        # and the rows from the cursor on, joined to it. The proof scans
+        # LabCore's covering index only (the read §10.1 prices for the
+        # import's own proof); the rows are a rowid range of the table.
+        # raw-log: LabCore's own table (see the pull)
+        return ("SELECT p.n AS proof_n, p.s AS proof_s, r.* FROM (SELECT "
+                "COUNT(*) AS n, SUM(%s) AS s FROM lem_machine_log INDEXED BY "
+                "idx_lem_log_uid_kind_ts WHERE rowid <= ?) AS p LEFT JOIN "
+                "(SELECT %s FROM lem_machine_log WHERE rowid >= ? ORDER BY "
+                "rowid LIMIT ?) AS r ON 1 ORDER BY r.rid"
+                % (_prefix_term("rowid"), li._LOG_SELECT))
+
+    @staticmethod
+    def _pull_args(cursor: int, chunk: int) -> list:
+        if cursor <= 0:
+            return [0, int(chunk)]
+        return [int(cursor), int(cursor), int(chunk) + 1]
+
+    def _held_proof(self, gen: int, cursor: int) -> Tuple[int, int]:
+        """(rows, checksum) of what the store holds at rowid <= cursor in this
+        numbering — the same sums LabCore is asked for. Kept up to date per
+        pull in `legacy_proof`; recomputed from `legacy_index` whenever the
+        kept one is for another (generation, cursor)."""
+        store = self.store
+        kept = li.get_meta(store, "legacy_proof")
+        try:
+            k = json.loads(kept) if kept else None
+        except ValueError:
+            k = None
+        if isinstance(k, dict) and k.get("gen") == gen and \
+                k.get("cursor") == cursor:
+            return int(k["n"]), int(k["s"])
+        n, s = self._held_sums(gen, 0, cursor)
+        li.set_meta(store, "legacy_proof", json.dumps(
+            {"gen": gen, "cursor": cursor, "n": n, "s": s}))
+        return n, s
+
+    def _held_sums(self, gen: int, lo: int, hi: int) -> Tuple[int, int]:
+        got = li._q(self.store,
+                    "SELECT COUNT(*) AS n, COALESCE(SUM(%s), 0) AS s FROM "
+                    "legacy_index WHERE gen = ? AND src_rowid > ? AND "
+                    "src_rowid <= ?" % _prefix_term("src_rowid"),
+                    [gen, lo, hi])
+        return int(got[0]["n"] or 0), int(got[0]["s"] or 0)
+
     def pull(self) -> dict:
-        """One read of LabCore's log from the cursor. A refusal is retried
-        next cycle; nothing else happens (no fallback)."""
+        """One read of LabCore's log from the cursor, carrying the proof that
+        the rows below the cursor are still the ones held at those rowids. A
+        refusal is retried next cycle; nothing else happens (no fallback)."""
         store = self.store
         try:
             self._ensure()
@@ -358,20 +455,11 @@ class Bridge:
         except (li.ImportFailed, ValueError) as exc:
             self._note("pull", last_error="the store: %s" % exc)
             return {"ok": False, "error": str(exc)}
-        # Both reads are of LabCore's own table, which has no effective
-        # view: the bridge copies every row v3.9 benches wrote.
-        if cursor > 0:
-            # raw-log: LabCore's own table (see above)
-            sql = ("SELECT %s FROM lem_machine_log WHERE rowid >= ? ORDER BY "
-                   "rowid LIMIT ?" % li._LOG_SELECT)
-            args = [cursor, self.chunk + 1]
-        else:
-            # raw-log: LabCore's own table (see above)
-            sql = ("SELECT %s FROM lem_machine_log WHERE rowid > ? ORDER BY "
-                   "rowid LIMIT ?" % li._LOG_SELECT)
-            args = [0, self.chunk]
+        # LabCore's own table, which has no effective view: the bridge
+        # copies every row v3.9 benches wrote.
         try:
-            res = self.labcore.read_sql(sql, args)
+            res = self.labcore.read_sql(self._pull_sql(cursor),
+                                        self._pull_args(cursor, self.chunk))
         except Exception as exc:                        # noqa: BLE001
             res = {"error": "%s: %s" % (type(exc).__name__, exc)}
         why = refusal_of(res)
@@ -381,24 +469,43 @@ class Bridge:
         rows = list(res.get("rows") or [])
         try:
             if cursor > 0:
+                if not rows or "proof_n" not in rows[0]:
+                    # The statement always yields the proof row: none at all
+                    # is an answer that cannot be read, never "no change".
+                    self._note("pull", last_error="LabCore's answer carried "
+                                                  "no prefix proof")
+                    return {"ok": False, "error": "no prefix proof"}
+                theirs = (int(rows[0]["proof_n"] or 0),
+                          int(rows[0]["proof_s"] or 0))
+                rows = [r for r in rows if r.get("rid") is not None]
+                ours = self._held_proof(gen, cursor)
                 anchor = li._q(store, "SELECT h FROM legacy_index WHERE gen = ? "
                                       "AND src_rowid = ?", [gen, cursor])
                 first = rows[0] if rows else None
-                if not anchor or first is None or int(first["rid"]) != cursor \
-                        or li.row_hash(first) != anchor[0]["h"]:
-                    return self._renumbered(gen, cursor)
+                # The prefix proof says whether any row below the cursor left,
+                # arrived or moved; the anchor compares the cursor row's whole
+                # content, columns the index does not carry included.
+                if theirs != ours or not anchor or first is None or \
+                        int(first["rid"]) != cursor or \
+                        li.row_hash(first) != anchor[0]["h"]:
+                    return self._renumbered(gen, cursor, theirs, ours)
                 rows = rows[1:]
             if not rows:
                 self._note("pull", last_ok_at=_now_iso(), last_error=None,
-                           cursor=cursor, gen=gen)
+                           cursor=cursor, gen=gen, proven_through=cursor)
                 return {"ok": True, "added": 0}
             writer = li.LegacyWriter(store, gen, annotate=True,
                                      by="lem-bridge")
             with store.transaction():
                 writer.apply(rows)
-                cursor = int(rows[-1]["rid"])
-                li.set_meta(store, "legacy_cursor", cursor)
+                new = int(rows[-1]["rid"])
+                n0, s0 = self._held_proof(gen, cursor) if cursor > 0 else (0, 0)
+                dn, ds = self._held_sums(gen, cursor, new)
+                li.set_meta(store, "legacy_cursor", new)
                 li.set_meta(store, "legacy_cursor_gen", gen)
+                li.set_meta(store, "legacy_proof", json.dumps(
+                    {"gen": gen, "cursor": new, "n": n0 + dn, "s": s0 + ds}))
+            proven, cursor = cursor, new
         except Exception as exc:                        # noqa: BLE001
             # The store's transaction rolled back: the cursor did not move,
             # so the same rows are read again next cycle.
@@ -407,17 +514,19 @@ class Bridge:
         with self._lock:
             p = self.info["pull"]
             p.update(last_ok_at=_now_iso(), last_error=None, cursor=cursor,
-                     gen=gen)
+                     gen=gen, proven_through=proven)
             p["added"] += writer.added
             p["linked"] += writer.linked
             self.replay_candidates += writer.candidates
         return {"ok": True, "added": writer.added, "linked": writer.linked,
                 "candidates": writer.candidates, "rows": len(rows)}
 
-    def _renumbered(self, gen: int, cursor: int) -> dict:
-        """The row at the cursor is not the row the store holds there:
-        LabCore's rowids moved (a VACUUM after deletes). Walk again from the
-        start in a new generation; rows already held are found by content."""
+    def _renumbered(self, gen: int, cursor: int, theirs=None,
+                    ours=None) -> dict:
+        """The rows at rowid <= cursor are not the rows the store holds
+        there: LabCore deleted some, or its rowids moved (a VACUUM after
+        deletes). Walk again from the start in a new generation; rows already
+        held are found by content, so the walk adds only what is missing."""
         store = self.store
         new = gen + 1
         with store.transaction():
@@ -426,13 +535,14 @@ class Bridge:
             li.set_meta(store, "legacy_cursor_gen", new)
             # The old numbering describes rowids LabCore no longer has.
             li._x(store, "DELETE FROM legacy_index WHERE gen < ?", [new])
-        logger.warning("bridge: LabCore's log rowids moved at %d (generation "
+        logger.warning("bridge: LabCore's log below rowid %d is not the one "
+                       "held (rows, checksum: LabCore %s, held %s; generation "
                        "%d → %d); walking it again — rows already held are "
-                       "recognised by content", cursor, gen, new)
+                       "recognised by content", cursor, theirs, ours, gen, new)
         with self._lock:
             self.info["pull"]["renumbered"] += 1
             self.info["pull"].update(cursor=0, gen=new, last_error=None,
-                                     last_ok_at=_now_iso())
+                                     last_ok_at=_now_iso(), proven_through=0)
         return {"ok": True, "renumbered": True, "gen": new}
 
     # ── in: state ──
