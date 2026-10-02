@@ -190,6 +190,20 @@ def last_result(m: dict, rows: List[dict]) -> Optional[str]:
     return best
 
 
+def last_result_label(m: dict, rows: List[dict], checking_in: bool = False) -> str:
+    """The words before the head's "Last result" time. A bench that is not
+    checking in, beside a result from today, reads like a contradiction
+    (round 6's critic, Multitek S); the result is real, it is a QC run LEM
+    read from LabCore. So when the bench is not checking in and the newest
+    time is not the bench's own parse, the head says where it is."""
+    if checking_in:
+        return "Last result"
+    newest = last_result(m, rows)
+    if newest and newest != m.get("last_activity"):
+        return "Last result in LabCore"
+    return "Last result"
+
+
 def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str]) -> dict:
     """The bar's one sentence, in parts: {lead, std, at, too, next}.
 
@@ -232,7 +246,8 @@ def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str])
         nxt = "Assign a QC standard"
     else:
         n = len([c for c in rows if c["verdict"]["key"] == "in"])
-        lead = ("All %d checks in spec" % n) if n > 1 else "Its check is in spec"
+        lead = ("All %d checks in spec" % n if n > 2 else
+                "Both checks in spec" if n == 2 else "Its check is in spec")
         std, at = _stds(rows), _newest(rows)
     # every other problem, said once, in the same sentence (round 3's critic:
     # an overdue PM behind an overdue calibration was said nowhere)
@@ -375,6 +390,7 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
         "head": {
             "bench": {"word": b["word"], "at": b["at"]},
             "last_result_at": last_result(m, rows),
+            "last_result_label": last_result_label(m, rows, checking_in=b["state"] == "in"),
             "level": levels.get(m.get("level_uid") or "") or None,
             "placed": m.get("pos") is not None,
             "uid": row["uid"],

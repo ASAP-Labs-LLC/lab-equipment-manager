@@ -365,6 +365,35 @@ def foot(*, machines: Optional[List[dict]], registry: Dict[str, dict],
 
 # ── the instrument's Data transfer section ──────────────────────────────────
 
+UNREPORTED_NOTE = "This bench's module version does not report these. They are unknown, not 0."
+
+
+def display_rows(rows: List[dict]) -> List[dict]:
+    """How a page draws the section's rows (static/js/transfer_logic.js
+    displayRows says the same in the same words). Two or more rows that read
+    NOT_REPORTED and carry no action become ONE row, where the first of them
+    was, naming every quantity it covers: seven identical lines make the
+    reader scan seven times to learn one fact. A single unknown, and any row
+    with an action, stays as it is. The API's rows are unchanged."""
+    fold = [r for r in rows if r.get("value") == NOT_REPORTED
+            and not r.get("href") and not r.get("action") and not r.get("note")]
+    if len(fold) < 2:
+        return list(rows)
+    names = [str(r.get("label") or r.get("key")) for r in fold]
+    names = [names[0]] + [n[:1].lower() + n[1:] for n in names[1:]]
+    group = {"key": "unreported", "label": "Not reported",
+             "value": ", ".join(names[:-1]) + " and " + names[-1],
+             "note": UNREPORTED_NOTE, "glyph": "never", "href": None, "action": None,
+             "keys": [r.get("key") for r in fold]}
+    out: List[dict] = []
+    for r in rows:
+        if r is fold[0]:
+            out.append(group)
+        elif not any(r is f for f in fold):
+            out.append(r)
+    return out
+
+
 def section(*, uid: str, title: str, entry: Optional[dict], facts: dict,
             last_filed: Any, now: Optional[float] = None,
             checking_in: Optional[bool] = None,

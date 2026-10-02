@@ -92,6 +92,14 @@
     <div class="body" id="bench-body"></div>
   </section>
 
+  {#- Data transfer (transfer §14, piece T-P12): how this bench's readings
+      reach LEM and LabCore. Drawn by the server, kept live by
+      transfer_section.js; read-only, so it adds no button to the page. -#}
+  {%- if transfer_first_paint is defined %}
+  {%- set t = transfer_first_paint(data.uid) or {"uid": data.uid, "rows": [], "pending": true} %}
+  {% include "_transfer_section.html" %}
+  {%- endif %}
+
   <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions, documents and the full log are still on the floor map's panel for this instrument. <a class="link" href="/floor?machine={{ data.uid|urlencode }}">Open it there</a></p>
 </main>
 
@@ -157,4 +165,8 @@
 <script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
 <script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
 <script src="/static/js/record.js?v={{ v('js/record.js') }}"></script>
+{%- if transfer_first_paint is defined %}
+<script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
+<script src="/static/js/transfer_section.js?v={{ v('js/transfer_section.js') }}"></script>
+{%- endif %}
 {% endblock %}

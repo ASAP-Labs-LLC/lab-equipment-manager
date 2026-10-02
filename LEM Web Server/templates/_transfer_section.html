@@ -9,7 +9,7 @@
     GET every 15 s while the tab is visible and ticks "Last delivered" every
     second. It never POSTs. Every row a bench cannot answer says "Not reported
     by this bench's module version", never 0. -#}
-{%- set rows = (t.rows if t else []) %}
+{%- set rows = (t.rows if t else []) | transfer_display %}
 <section class="sec" id="transfer" data-testid="section-transfer" aria-labelledby="transfer-h"
          data-uid="{{ (t.uid if t else uid) or '' }}" data-mode="{{ t.mode if t else '' }}">
   <div class="about">
@@ -17,8 +17,10 @@
     <p id="transfer-intro">How this bench's readings reach LEM and LabCore. Nothing is dropped: anything waiting is listed here.</p>
   </div>
   <div class="body">
-    <p class="tr-state load-state" id="transfer-state" role="status" data-state="{{ 'error' if (t and t.error) else 'ok' }}"{% if not (t and t.error) %} hidden{% endif %}>
-      <span class="glyph error" aria-hidden="true"></span><span id="transfer-state-text">{% if t and t.error %}Part of this could not be read from LEM's store ({{ t.error }}). Rows that depend on it say so.{% endif %}</span>
+    {#- three first paints: rows, a failed read (said), or "reading" when the
+        page could not read at render time without a LabCore op (t.pending) -#}
+    <p class="tr-state load-state" id="transfer-state" role="status" data-state="{{ 'error' if (t and t.error) else ('loading' if (t and t.pending) else 'ok') }}"{% if not (t and (t.error or t.pending)) %} hidden{% endif %}>
+      <span class="glyph {{ 'working' if (t and t.pending and not t.error) else 'error' }}" aria-hidden="true"></span><span id="transfer-state-text">{% if t and t.error %}Part of this could not be read from LEM's store ({{ t.error }}). Rows that depend on it say so.{% elif t and t.pending %}Reading how this bench's readings travel…{% endif %}</span>
       <button type="button" class="btn btn-sm" id="transfer-retry" hidden>Try again</button>
     </p>
     <div class="kv tr-kv" id="transfer-rows" data-testid="transfer-rows" aria-live="polite">

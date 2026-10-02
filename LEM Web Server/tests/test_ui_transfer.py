@@ -249,6 +249,38 @@ class TestSection:
             assert r["value"] == ui_transfer.NOT_REPORTED, r
             assert r["value"] != "0"
 
+    def test_what_an_older_bench_cannot_say_is_one_row_on_the_page(self):
+        """Seven rows that each read "Not reported by this bench's module
+        version" are a wall of the same sentence: the reader has to scan all
+        seven to learn one fact. On the page they are ONE row that names
+        every quantity it covers and says plainly they are unknown, not 0.
+        The API keeps its seven rows (a bench that starts reporting one of
+        them simply leaves the group); this is how a page draws them."""
+        rows = ui_transfer.section(uid="e", title="Eravap", entry=None,
+                                   facts={"error": None, "conflicts": {}, "stats": {}},
+                                   last_filed="")["rows"]
+        shown = ui_transfer.display_rows(rows)
+        assert [r["key"] for r in shown] == ["road", "unreported"]
+        g = shown[1]
+        assert g["label"] == "Not reported"
+        assert g["value"] == ("Last delivered, waiting at the bench, results, never "
+                              "recorded, ambiguous repeats, module and clock")
+        assert g["note"] == ("This bench's module version does not report these. "
+                             "They are unknown, not 0.")
+        assert g["glyph"] == "never" and g["keys"] == [
+            "delivered", "waiting", "results", "adoption", "ambiguous", "module", "clock"]
+        assert "0" not in g["value"]
+
+    def test_one_unreported_row_and_rows_with_an_action_stay_as_they_are(self):
+        """A single unknown is clearer as its own row, and a row with an
+        action (a conflict to decide) is never folded into a group."""
+        nr = ui_transfer.NOT_REPORTED
+        rows = [{"key": "road", "label": "Road", "value": "Internet", "note": "", "glyph": "final"},
+                {"key": "clock", "label": "Clock", "value": nr, "note": "", "glyph": "never"},
+                {"key": "decide", "label": "Needs a decision", "value": "1 result", "note": "",
+                 "glyph": "error", "href": "/results/conflicts?machine=a", "action": "Decide"}]
+        assert ui_transfer.display_rows(rows) == rows
+
     def test_a_conflict_is_a_row_with_its_action(self, client):
         _bench_with_conflict(client)
         rows = {r["key"]: r for r in client.get("/api/ui/transfer/%s" % UID).get_json()["rows"]}
@@ -266,6 +298,39 @@ class TestSection:
         html = client.get("/instruments/%s" % UID).get_data(as_text=True)
         assert 'id="transfer"' in html and "Data transfer" in html
         assert "How this bench's readings reach LEM and LabCore." in html
+
+    def test_the_ready_record_draws_the_rows_from_the_store(self, app, client, lab):
+        """With the snapshot read, /instruments/<uid> is P05's record, not the
+        stand-in. In the split shape the store is LEM's own, so the first
+        paint carries the rows themselves, and LabCore still sees nothing."""
+        app.config["SNAPSHOTS"].ensure_schema()
+        app.config["SNAPSHOTS"].refresh()
+        before = lab.ops
+        r = client.get("/instruments/%s" % UID)
+        html = r.get_data(as_text=True)
+        assert r.status_code == 200 and 'id="readiness"' in html, html[:400]
+        assert 'id="transfer"' in html and 'data-key="road"' in html
+        # this bench never synced over v2: what it cannot say is one row
+        assert 'data-key="unreported"' in html and html.count("Not reported by this bench") == 0
+        assert "Last delivered, waiting at the bench" in html
+        assert lab.ops == before
+
+    def test_a_store_that_cannot_be_read_is_said_not_a_500(self, app, client, store,
+                                                         monkeypatch):
+        """LabCore is not read yet AND LEM's store fails: the page still
+        answers (the record's own wait page), and the Data transfer section
+        says its read failed. A failed read is never an empty result, and
+        never a crash that hides the rest of the page."""
+        def broken(*a, **k):
+            return {"error": "disk I/O error"}
+        monkeypatch.setattr(store, "read_sql", broken)
+        r = client.get("/instruments/%s" % UID)
+        html = r.get_data(as_text=True)
+        assert r.status_code == 503, r.status_code
+        assert 'id="transfer"' in html
+        assert "disk I/O error" in html and "could not be read" in html
+        # and its script is on the page, so "Try again" and the 15 s re-read work
+        assert "transfer_section.js" in html
 
 
 # ── conflicts: decided here, filed by the bench ──────────────────────────────

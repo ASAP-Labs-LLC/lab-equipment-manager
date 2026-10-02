@@ -24,6 +24,13 @@
   <p class="muted">LEM reads every instrument within a few seconds of starting. This page shows “{{ data.uid }}” by itself once it has.</p>
   <p><a class="link" href="/">Back to Instruments</a></p>
   {%- endif %}
+  {#- While LabCore cannot be asked, LEM's own store still knows how this
+      bench's readings are travelling, and that is the moment a tech most
+      wants to know nothing is lost. Not on "no such instrument". -#}
+  {%- if data.state != 'missing' and transfer_first_paint is defined %}
+  {%- set t = transfer_first_paint(data.uid) %}
+  {%- if t %}{% include "_transfer_section.html" %}{% endif %}
+  {%- endif %}
 </main>
 {%- if data.state != 'missing' %}
 <script type="application/json" id="record-wait">{{ {'uid': data.uid}|json_island }}</script>
@@ -32,5 +39,10 @@
 {% block scripts %}
 {%- if data.state != 'missing' %}
 <script src="/static/js/record_wait.js?v={{ v('js/record_wait.js') }}"></script>
+{#- blocks do not share variables: the script mounts only if the section is there -#}
+{%- if transfer_first_paint is defined %}
+<script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
+<script src="/static/js/transfer_section.js?v={{ v('js/transfer_section.js') }}"></script>
+{%- endif %}
 {%- endif %}
 {% endblock %}

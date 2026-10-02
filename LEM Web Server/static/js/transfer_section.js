@@ -21,7 +21,7 @@
         const retry = $('transfer-retry');
 
         function paintRows() {
-            const rows = ctl.rows();
+            const rows = T.displayRows ? T.displayRows(ctl.rows()) : ctl.rows();
             if (!rows.length) return;
             rowsEl.replaceChildren(...rows.flatMap((r) => [
                 h('div', { className: 'k', 'data-key': r.key, text: r.label }),

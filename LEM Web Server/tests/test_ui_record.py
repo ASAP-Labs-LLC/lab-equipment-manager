@@ -686,6 +686,49 @@ class TestTheRange:
             ui_record.trim_points(self.PTS, "lots", "2026-10-02T12:00:00")
 
 
+class TestRound7Wording:
+    """Round 6's critic, two sentences that made a reader stop."""
+
+    @staticmethod
+    def _in(name, at="2026-10-02T12:02:00"):
+        return {"test": name, "title": name, "at": at, "verdict": {"key": "in"},
+                "sample_id": "STD-1"}
+
+    def test_two_checks_in_spec_read_both_not_all_2(self):
+        """"All 2 checks in spec" is a count dressed as a quantifier; people
+        say "both". Three or more stays "All 3 checks in spec"."""
+        two = ui_record.caption({}, "ok", "", [self._in("Nitrogen"), self._in("Sulfur")], [])
+        assert two["lead"] == "Both checks in spec"
+        three = ui_record.caption({}, "ok", "", [self._in("A"), self._in("B"), self._in("C")], [])
+        assert three["lead"] == "All 3 checks in spec"
+
+    def test_a_result_with_no_bench_says_it_came_from_labcore(self):
+        """Multitek S read "Bench never checked in · Last result today 11:18":
+        two true facts that look like a contradiction, explained only by the
+        chart caption further down. When the bench is not checking in and the
+        newest time is a QC run (which LEM reads from LabCore), the head says
+        where that result is: "Last result in LabCore". When the bench is
+        checking in, or the newest time is the bench's own parse, it is the
+        plain "Last result"."""
+        rows = [self._in("Sulfur", "2026-10-02T11:18:00")]
+        never = {"last_activity": None}
+        assert ui_record.last_result_label(never, rows) == "Last result in LabCore"
+        live = {"last_activity": None, "live": True, "last_poll": "2026-10-02T12:00:00"}
+        assert ui_record.last_result_label(live, rows, checking_in=True) == "Last result"
+        parsed = {"last_activity": "2026-10-02T11:40:00"}
+        assert ui_record.last_result_label(parsed, rows) == "Last result"
+
+    def test_the_head_carries_the_label(self, tmp_path):
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        heads = {}
+        for uid in ("multitek-s", "gc-2"):
+            j = c.get("/api/ui/instruments/%s" % uid).get_json()
+            heads[uid] = (j["head"]["bench"]["word"], j["head"]["last_result_label"])
+        assert heads["multitek-s"] == ("Never checked in", "Last result in LabCore"), heads
+        assert heads["gc-2"] == ("Checking in", "Last result"), heads
+
+
 # ── the routes ──────────────────────────────────────────────────────────────
 
 class TestTheRoutes:
@@ -699,6 +742,28 @@ class TestTheRoutes:
         assert j.status_code == 200 and j.headers["Cache-Control"] == "no-store"
         assert gw.calls == [], gw.calls
         assert j.get_json()["readiness"]["word"] == "Not OK to run"
+
+    def test_the_record_carries_data_transfer_and_still_costs_labcore_nothing(self, tmp_path):
+        """T-P12's Data transfer section belongs on the record (transfer §14),
+        and the record's promise of 0 LabCore ops must survive it. Where LEM's
+        store and LabCore are one gateway (this suite's shape), reading the
+        transfer state at render time WOULD be a LabCore op, so the first
+        paint is the section's frame saying it is reading, and the browser
+        asks /api/ui/transfer for the rows. A blank section would read as
+        "nothing to report", which is not what the page knows."""
+        app, gw = _seeded(tmp_path)
+        c = app.test_client()
+        gw.calls.clear()
+        html = c.get("/instruments/gc-2").get_data(as_text=True)
+        assert gw.calls == [], gw.calls
+        assert 'id="transfer"' in html and "Data transfer" in html
+        assert "Reading how this bench&#39;s readings travel" in html or \
+            "Reading how this bench's readings travel" in html
+        assert "transfer_section.js" in html
+        # it sits after Bench and results and adds no button to compete
+        # with the card's one primary
+        assert html.index('id="bench"') < html.index('id="transfer"')
+        assert html.count("btn-primary") == 1
 
     def test_the_page_carries_its_answer(self, tmp_path):
         app, _ = _seeded(tmp_path)

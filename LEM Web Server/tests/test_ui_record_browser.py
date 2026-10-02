@@ -233,3 +233,24 @@ def test_the_qc_table_fits_its_card(server, drv):
                 assert over <= 0, "%s at %d: the QC table runs %dpx past its card" % (r["title"], w, over)
     finally:
         drv.set_window_size(1440, 900)
+
+
+def test_bench_and_data_transfer_never_say_the_same_thing_twice(server, drv):
+    """Round 7: T-P12's Data transfer section joined the record under Bench
+    and results. Both then said how the readings travel ("Live road" and
+    "Road") and both ended "Instruments are added … in LabStation's LEM
+    module". A fact said twice is a fact the reader has to reconcile; each
+    is said once, in Data transfer, which also explains the older module.
+    And the section is not a wall of identical "Not reported" lines."""
+    uid = _rows(server)[0]["uid"]
+    _open(drv, server, uid)
+    assert _wait(lambda: drv.execute_script(
+        "return document.querySelectorAll('#transfer-rows .k').length") >= 1, 8)
+    bench = drv.find_element("id", "bench-body").get_attribute("textContent")
+    assert "Live road" not in bench, bench
+    assert "LabStation's LEM module" not in bench, bench
+    page = drv.execute_script("return document.getElementById('main').innerText")
+    assert page.count("LabStation's LEM module") == 1, page
+    assert page.count("Not reported by this bench's module version") <= 1, page
+    # still one primary on the page, and the transfer section adds no button
+    assert drv.execute_script("return document.querySelectorAll('.btn-primary').length") == 1

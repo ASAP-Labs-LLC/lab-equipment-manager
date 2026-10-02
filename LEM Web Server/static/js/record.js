@@ -81,7 +81,7 @@
             const w = hd.bench.word;
             add(h('span', { text: 'Bench ' + w.charAt(0).toLowerCase() + w.slice(1) + (hd.bench.at ? ' · ' + R.stamp(hd.bench.at, undefined, true) : '') }));
         }
-        if (hd.last_result_at) add(h('span', { text: 'Last result ' + R.stamp(hd.last_result_at, undefined, true) }));
+        if (hd.last_result_at) add(h('span', { text: (hd.last_result_label || 'Last result') + ' ' + R.stamp(hd.last_result_at, undefined, true) }));
         if (hd.level) add(h('span', { text: hd.level }));
         add(h('span', { className: 'mono', text: hd.uid }));
         $('rec-meta').replaceChildren(...bits);
@@ -389,12 +389,16 @@
     function renderBench() {
         const b = data.bench;
         const kv = (k, ...v) => [h('div', { className: 'k', text: k }), h('div', { className: 'v' }, ...v)];
+        // With the Data transfer section on the page (T-P12), how the
+        // readings travel and where instruments are set up are said there,
+        // once: this section keeps what only it knows.
+        const transfer = !!$('transfer');
         $('bench-body').replaceChildren(h('div', { className: 'kv' },
             ...kv('Reads from', b.reads_from ? h('span', { className: 'mono', text: b.reads_from }) : h('span', { className: 'muted', text: 'Not reported' })),
             ...kv('Bench', glyph(b.glyph === 'final' ? 'final' : 'dashed'), ' ' + b.word + (b.at ? ' · last poll ' + R.stamp(b.at, undefined, true) : '')),
-            ...kv('Live road', b.live_road ? 'Yes: it reports to LEM directly' : 'No: its readings reach LEM via LabCore'),
+            ...(transfer ? [] : kv('Live road', b.live_road ? 'Yes: it reports to LEM directly' : 'No: its readings reach LEM via LabCore')),
             ...kv('Replays not re-sent', h('span', { className: 'muted', text: b.replays_not_resent === null ? 'Not reported by this bench\'s module version' : String(b.replays_not_resent) }))),
-            h('p', { className: 'caption', text: 'Instruments are added and configured in LabStation\'s LEM module.' }));
+            ...(transfer ? [] : [h('p', { className: 'caption', text: 'Instruments are added and configured in LabStation\'s LEM module.' })]));
     }
 
     // ── the sheets ────────────────────────────────────────────────────────
