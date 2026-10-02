@@ -112,7 +112,10 @@ class TestTheSections:
     """ia-final §3.7 names seven sections. Six are always there, in that
     order, and the sub-nav links exactly the ones on the page (no dead ends)."""
 
-    ORDER = ["browser", "levels", "hours", "imports", "exports", "diagnostics"]
+    # "backups": transfer spec §11/§14 — backups, off-host status, drill
+    # results and the bridge switch live in Settings (piece T-P11).
+    ORDER = ["browser", "levels", "hours", "imports", "exports", "backups",
+             "diagnostics"]
 
     def test_every_section_in_the_spec_order(self, tmp_path):
         page = _signed_in(_app(tmp_path=tmp_path)).get("/settings").get_data(as_text=True)

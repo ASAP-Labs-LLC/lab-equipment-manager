@@ -601,7 +601,8 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
             notices: Notices, audit_spool: Optional[int],
             certificates: Optional[List[dict]], mirror: Optional[dict],
             jobs: List[dict], version: str, href: Callable[[str, str], str],
-            now: Optional[datetime] = None, tz: Optional[str] = None) -> dict:
+            now: Optional[datetime] = None, tz: Optional[str] = None,
+            custody: Optional[List[dict]] = None) -> dict:
     """``GET /api/ui/live``'s answer. Pure over what it is handed."""
     now = now or datetime.now()
     ready_snap = bool(snap.get("ready"))
@@ -623,6 +624,9 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
                        live_road=({"checking_in": fleet["checking_in"], "live": fleet["live_road"]}
                                   if fleet else None),
                        certificates=certificates, href=href, now=now)
+    # Backup and custody (transfer §11): already {key, level, message, href,
+    # link}, most urgent first, from the custody service's memory.
+    items = list(items) + [dict(i) for i in custody or []]
     titles = {m["machine_uid"]: m.get("title") or m["machine_uid"] for m in machines or []}
     notices.remember_links({u: href(u, "") for u in titles})
     watched = None

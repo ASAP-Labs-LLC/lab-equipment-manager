@@ -463,7 +463,11 @@ class TestEveryReaderNamesTheEffectiveView:
         # lem_store.py gains one in round 4: an approval may name only rows
         # on its own bench, so `apm_names_a_candidate` reads the named row's
         # bench — hidden or not, as the hide trigger already does.
+        # custody.py: the backup manifest's daily log digest (transfer
+        # §11), an audit over every row — a hidden row is still in the
+        # record, and a backup that skipped it could not prove it unaltered.
         assert files == ["bench_api.py", "bench_api.py", "bench_api.py",
+                         "custody.py",
                          "dedupe.py", "dedupe.py",
                          "lem_store.py", "lem_store.py", "lem_store.py",
                          "lem_store.py",

@@ -611,6 +611,32 @@ def default_store_path() -> str:
     return os.path.join(base, "store", "lem.db")
 
 
+def _stored_schema_version(path: str) -> Optional[int]:
+    """The schema version a store file says it has, read without changing
+    it; None for a new file or one that never recorded a version (LabCore's
+    old shape, which `_migrate` rebuilds and has always rebuilt)."""
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return None
+    # A file that cannot be read is NOT a file with no version: that error
+    # propagates and the open fails, rather than migrating unbacked-up.
+    con = sqlite3.connect("file:{0}?mode=ro".format(
+        os.path.abspath(path).replace("?", "%3f")), uri=True)
+    try:
+        try:
+            row = con.execute("SELECT value FROM store_meta WHERE key = "
+                              "'schema_version'").fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return None
+            raise
+        try:
+            return int(row[0]) if row else None
+        except (TypeError, ValueError):
+            return None
+    finally:
+        con.close()
+
+
 def is_local_store(gateway) -> bool:
     """Is this gateway LEM's own store (as opposed to LabCore)?
 
@@ -689,6 +715,15 @@ class LocalStoreGateway:
         folder = os.path.dirname(os.path.abspath(self.path))
         if folder:
             os.makedirs(folder, exist_ok=True)
+        # §5.1: a migration runs only after an automatic pre-migration
+        # backup. A file stamped with an OLDER schema than this code is about
+        # to be reshaped, and if the reshape is wrong the copy is the only way
+        # back — so a backup that cannot be taken stops the open (raises)
+        # rather than migrating with nothing behind it. Never pruned.
+        found = _stored_schema_version(self.path)
+        if found is not None and found < SCHEMA_VERSION:
+            import custody
+            custody.pre_migration_backup(self.path, found)
         # Unguarded only while `_migrate` reshapes the record; guarded for
         # every statement after it.
         self._writer = self._connect(writer=True, guarded=False)
