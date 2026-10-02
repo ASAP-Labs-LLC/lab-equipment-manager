@@ -35,9 +35,14 @@
     </section>
     <aside class="wall-attn" aria-labelledby="wf-attn-h">
       <h2 class="wa-h" id="wf-attn-h">Needs attention <span class="wa-h-note">· worst first</span></h2>
+      {#- one group per run of one state, worst first; the state word is the
+          group's heading, said once; each row is a name and its whole reason
+          (round 4: the word said on every card, and the worst two cut) -#}
       <ol class="wa-list" id="wf-attn">
-        {%- for a in w.attention or [] %}
-        <li class="wa-item s-{{ a.state }}{% if a.state == 'not_ok' %} stop{% endif %}{% if a.stopped %} stopped{% endif %}"><a href="{{ a.href }}" draggable="false"><span class="wa-names">{{ a.label }}</span><span class="wa-word"><span class="glyph {{ a.glyph }}" aria-hidden="true"></span><span class="wa-wtext">{{ a.word }}</span></span><span class="wa-detail">{{ a.detail }}</span></a></li>
+        {%- for g in (w.attention or [])|groupby_runs('state') %}
+        <li class="wa-group s-{{ g[0].state }}"><span class="wa-word"><span class="glyph {{ g[0].glyph }}" aria-hidden="true"></span><span class="wa-wtext">{{ g[0].word }}</span></span><ul class="wa-rows">
+          {%- for a in g %}<li class="wa-item s-{{ a.state }}{% if a.state == 'not_ok' %} stop{% endif %}{% if a.stopped %} stopped{% endif %}"><a href="{{ a.href }}" draggable="false"><span class="wa-names">{{ a.label }}</span><span class="wa-detail">{{ a.detail }}</span></a></li>{% endfor -%}
+        </ul></li>
         {%- endfor %}
       </ol>
       <p class="wa-more" id="wf-attn-more"{% if not w.attention_more %} hidden{% endif %}>{% if w.attention_more %}and {{ w.attention_more }} more on Instruments{% endif %}</p>

@@ -499,29 +499,98 @@ def test_needs_attention_fills_the_room_the_levels_leave(server, drv, size, them
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_not_ok_reads_as_alarm_in_the_word_not_the_box(server, drv, theme):
-    """Both blind judges read round 2's 3px ink border on Not-OK bays as
-    "selected", not "alarming". The alarm is now the word itself, set as
-    the app's error pill (.pill.error: --bad-soft under --pill-error-fg),
-    which is status colour as glyph + word (§0.1). The bay keeps the spec's
-    ink border and its card background: no red fill, no red border. The
-    border is 2px because a TV runs at device-pixel-ratio 1, where Chrome
-    snaps the spec's 1.5px to a 1px hairline (computed: "1px")."""
+    """The alarm is the word, set as the app's error pill (.pill.error:
+    --bad-soft under --pill-error-fg): status colour as glyph + word (§0.1).
+
+    The box around it stays quiet. Round 2's 3px ink border and round 3's
+    2px one both read as "selected" to the blind judges, and in dark as the
+    loudest, whitest thing on the wall with no status meaning. The bay now
+    has exactly the spec's 1.5px ink border (§3.8; on a TV at
+    device-pixel-ratio 1 Chrome draws it as a 1px ink hairline) and its card
+    background: no red fill, no red border. Needs attention has no ring at
+    all: its Not-OK group is the one raised card, and its heading is the
+    pill."""
     shape(server, "demo")
     _open(drv, server.base, "/floor", (1440, 900), theme)
     r = drv.execute_script(r"""
       const b = document.querySelector('#wf-plan .bay.stop');
       const w = b.querySelector('.b-word'); const bs = getComputedStyle(b), ws = getComputedStyle(w);
       const card = getComputedStyle(document.querySelector('#wf-plan .bay:not(.stop)')).backgroundColor;
-      const a = getComputedStyle(document.querySelector('#wf-attn .wa-item.stop .wa-word'));
-      const ab = getComputedStyle(document.querySelector('#wf-attn .wa-item.stop a'));
-      return { wordBg: ws.backgroundColor, bayBg: bs.backgroundColor, card, border: bs.borderTopWidth,
-               borderColor: bs.borderTopColor, attnWordBg: a.backgroundColor, attnBorder: ab.borderTopWidth };""")
+      const a = getComputedStyle(document.querySelector('#wf-attn .wa-group.s-not_ok .wa-word'));
+      const ab = getComputedStyle(document.querySelector('#wf-attn .wa-group.s-not_ok'));
+      const ink = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
+      const probe = document.createElement('i'); probe.style.color = ink; document.body.append(probe);
+      const inkRgb = getComputedStyle(probe).color; probe.remove();
+      return { wordBg: ws.backgroundColor, bayBg: bs.backgroundColor, card, border: parseFloat(bs.borderTopWidth),
+               borderColor: bs.borderTopColor, inkRgb, attnWordBg: a.backgroundColor,
+               attnBorder: parseFloat(ab.borderTopWidth) || 0 };""")
     clear = ("rgba(0, 0, 0, 0)", "transparent")
     assert r["wordBg"] not in clear and r["attnWordBg"] not in clear, r
     assert r["bayBg"] == r["card"], r
-    assert r["border"] == "2px" and r["attnBorder"] == "2px", r
+    assert 1 <= r["border"] <= 1.5 and r["borderColor"] == r["inkRgb"], r
+    assert r["attnBorder"] == 0, r
     rgb = [int(x) for x in re.findall(r"\d+", r["borderColor"])[:3]]
     assert not (rgb[0] > 150 and rgb[1] < 120 and rgb[2] < 120), r   # never a red border
+
+
+# ── round 4: the worst cards say their whole reason ───────────────────────
+#
+# Round 3's two Not-OK cards in Needs attention ended in an ellipsis at BOTH
+# 1920 and 1440: "2 checks out of spec: Cloud Point and Pour…" and "Flash
+# Point out of spec · calibration overdue…". That hid the overdue date on the
+# two instruments the wall exists to point at, and nobody can hover a TV to
+# read a title. Both blind judges also read the list as crowded: the state
+# word "OK to run, but…" said once per card, every card boxed alike, and the
+# Not-OK cards ringed in a 2px ink (in dark: white) box that "reads as
+# selected" and is "the loudest thing on screen but carries no status".
+#
+# Now the list says each state word ONCE, as the heading of its group, worst
+# group first; under it, one row per instrument (or merged cause): its name
+# and its whole reason. Nothing in the group of the worst state is ever cut.
+
+ATTN = r"""
+const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.closest('[hidden]'); };
+const data = JSON.parse(document.getElementById('wall-data').textContent).wall.attention;
+const rows = [...document.querySelectorAll('#wf-attn .wa-item')];
+const aside = document.querySelector('.wall-attn').getBoundingClientRect();
+return {
+  n: data.length,
+  rows: rows.filter(vis).length,
+  inside: rows.filter(e => e.getBoundingClientRect().bottom <= aside.bottom + 0.5).length,
+  groups: [...document.querySelectorAll('#wf-attn .wa-group')].map(g =>
+      g.querySelector('.wa-wtext').textContent + ' x' + g.querySelectorAll('.wa-item').length),
+  words: [...document.querySelectorAll('#wf-attn .wa-wtext')].filter(vis).length,
+  states: data.map(a => a.state).filter((s, i, a) => i === 0 || a[i - 1] !== s).length,
+  notOk: rows.filter(e => e.classList.contains('s-not_ok')).map(e => {
+      const d = e.querySelector('.wa-detail');
+      return { shown: d.textContent, cut: d.scrollHeight > d.clientHeight + 1 || d.scrollWidth > d.clientWidth + 0.5 }; }),
+  want: data.filter(a => a.state === 'not_ok').map(a => a.detail),
+  ring: [...document.querySelectorAll('#wf-attn .wa-group, #wf-attn .wa-item, #wf-attn .wa-item a')].map(e =>
+      parseFloat(getComputedStyle(e).borderTopWidth) || 0).reduce((a, b) => Math.max(a, b), 0),
+};
+"""
+
+
+@pytest.mark.parametrize("size", list(SIZES))
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_the_worst_cards_say_their_whole_reason(server, drv, size, theme):
+    shape(server, "demo")
+    _open(drv, server.base, "/floor", size, theme)
+    a = drv.execute_script(ATTN)
+    assert a["n"] == 5 and a["rows"] == 5 and a["inside"] == 5, a
+    # the word once per state, as the group's heading
+    assert a["words"] == a["states"] == 2, a
+    assert a["groups"] == ["Not OK to run x2", "OK to run, but… x3"], a
+    # the Not-OK reasons whole, word for word, never cut
+    assert [x["shown"] for x in a["notOk"]] == a["want"], a
+    assert not any(x["cut"] for x in a["notOk"]), a
+    assert all("since" in w for w in a["want"]), a   # the overdue date is there to lose
+    # no ring: status is the glyph and the word (§0.1), not a 2px box
+    assert a["ring"] <= 1, a
+    m = drv.execute_script(MEASURE)
+    name, word = SIZES[size]
+    assert m["aname"] >= name and m["aword"] >= word, m
+    assert m["bad"] == [] and (m["scrollW"], m["scrollH"]) == (m["w"], m["h"]), m
 
 
 # a request the server accepted and never answers: the wall's data fetches

@@ -163,6 +163,18 @@ def attention(rows: List[dict], failed: Optional[Dict[str, List[str]]] = None) -
     return shown, sum(len(i["names"]) for i in rest)
 
 
+def runs(items, key: str) -> List[List[dict]]:
+    """`items` cut into runs of one `key`, in their own order: Needs
+    attention's groups, one state word heading each (the floor wall)."""
+    out: List[List[dict]] = []
+    for it in items or []:
+        if out and out[-1][0].get(key) == it.get(key):
+            out[-1].append(it)
+        else:
+            out.append([it])
+    return out
+
+
 def _too_of(detail: str) -> str:
     """The " · … too" facts behind a verdict, kept as they are."""
     parts = str(detail or "").split(" · ")

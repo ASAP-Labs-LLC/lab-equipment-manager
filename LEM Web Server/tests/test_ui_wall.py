@@ -563,3 +563,24 @@ class TestQcCardWords:
     def test_the_sub_line_says_what_differs_too(self):
         q = ui_wall.qc(prod_machines(), rows=[], href=href, now=NOW)
         assert q["sub"] == "Agilent GC 1 · 10% Recovery and 50% Recovery."
+
+
+class TestAttentionRuns:
+    """Needs attention says each state word once, as the heading of its
+    group (round 4: "OK to run, but…" said on every card made the warning
+    tier compete with the failures, both blind judges). The groups are runs
+    of one state in the list's own worst-first order, never a re-sort: the
+    server already ranked the lines, and the wall must not undo that."""
+
+    def test_consecutive_states_become_one_group_each(self):
+        items = [{"state": "not_ok", "n": 1}, {"state": "not_ok", "n": 2},
+                 {"state": "ok_but", "n": 3}, {"state": "off_line", "n": 4}, {"state": "off_line", "n": 5}]
+        assert [[i["n"] for i in g] for g in ui_wall.runs(items, "state")] == [[1, 2], [3], [4, 5]]
+
+    def test_nothing_is_no_groups_and_a_bad_list_is_not_a_crash(self):
+        assert ui_wall.runs([], "state") == []
+        assert ui_wall.runs(None, "state") == []
+
+    def test_order_is_kept_even_if_a_state_comes_back(self):
+        items = [{"state": "a"}, {"state": "b"}, {"state": "a"}]
+        assert [g[0]["state"] for g in ui_wall.runs(items, "state")] == ["a", "b", "a"]

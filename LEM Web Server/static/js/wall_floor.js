@@ -112,13 +112,23 @@
         function drawAttention() {
             const w = (data && data.wall) || {};
             const items = w.attention || [];
-            $('wf-attn').replaceChildren(...items.map(a => h('li', {
-                className: 'wa-item s-' + a.state + (a.state === 'not_ok' ? ' stop' : '') + (a.stopped ? ' stopped' : '') },
-                h('a', { href: a.href, draggable: 'false' },
-                    h('span', { className: 'wa-names', text: a.label || (a.names || []).join(', ') }),
-                    h('span', { className: 'wa-word' }, h('span', { className: 'glyph ' + a.glyph, 'aria-hidden': 'true' }),
-                      h('span', { className: 'wa-wtext', text: a.word })),
-                    h('span', { className: 'wa-detail', text: a.detail || '' })))));
+            // one group per run of one state, worst first; the state word
+            // heads its group, said once; each row is a name and its whole
+            // reason (round 4: the word said on every card competed with
+            // the failures, and the two worst reasons were cut)
+            const groups = [];
+            for (const a of items) {
+                const g = groups[groups.length - 1];
+                if (g && g[0].state === a.state) g.push(a); else groups.push([a]);
+            }
+            $('wf-attn').replaceChildren(...groups.map(g => h('li', { className: 'wa-group s-' + g[0].state },
+                h('span', { className: 'wa-word' }, h('span', { className: 'glyph ' + g[0].glyph, 'aria-hidden': 'true' }),
+                  h('span', { className: 'wa-wtext', text: g[0].word })),
+                h('ul', { className: 'wa-rows' }, ...g.map(a => h('li', {
+                    className: 'wa-item s-' + a.state + (a.state === 'not_ok' ? ' stop' : '') + (a.stopped ? ' stopped' : '') },
+                    h('a', { href: a.href, draggable: 'false' },
+                        h('span', { className: 'wa-names', text: a.label || (a.names || []).join(', ') }),
+                        h('span', { className: 'wa-detail', text: a.detail || '' }))))))));
             const more = $('wf-attn-more');
             more.hidden = !w.attention_more;
             more.textContent = w.attention_more ? 'and ' + w.attention_more + ' more on Instruments' : '';
@@ -202,7 +212,7 @@
         function attnFits() {
             const aside = attnEl;
             const box = aside.getBoundingClientRect();
-            return [...aside.querySelectorAll('.wa-item, .wa-more, .wa-none')].every(e =>
+            return [...aside.querySelectorAll('.wa-group, .wa-item, .wa-more, .wa-none')].every(e =>
                 e.hidden || e.getBoundingClientRect().bottom <= box.bottom + 0.5);
         }
         function drawWhole(plan, p, words) {

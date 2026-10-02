@@ -1973,6 +1973,12 @@ def create_app(gateway, labcore_gateway=None,
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    @app.template_filter("groupby_runs")
+    def _groupby_runs(items, key: str):
+        """Runs of one `key` in their own order (ui_wall.runs)."""
+        import ui_wall as _uw
+        return _uw.runs(items, key)
+
     @app.template_filter("json_island")
     def _json_island(value) -> str:
         """JSON safe inside <script type="application/json">: no "</" can
