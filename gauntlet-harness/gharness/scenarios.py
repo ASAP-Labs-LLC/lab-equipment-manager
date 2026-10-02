@@ -609,6 +609,16 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
                                                two["labcore_reads_all_polls"]),
                 "u1": one, "u2": two}
 
+    # ── the mixed fleet (P9): a v3.9 bench under a v4 server, a projected
+    # bench meeting v2, a module rolled back. Asked of the target's bridge;
+    # `Unsupported` (a FAIL) on a target without one.
+    from . import mixed_fleet as _mf
+    for sid, fn in (("M2", _mf.m2), ("M6", _mf.m6), ("DG1", _mf.dg1)):
+        reg.add(sid, (lambda f: lambda: (f(rw) if _has_store() else
+                                         _unsupported(sid_of(f), "a LEM store "
+                                                      "and the bridge (P6, P9)")))(fn),
+                "new")
+
     # ── needs a v4 capability with no code yet ─────────────────────────────
     for sid, needs in V4_ONLY.items():
         reg.add(sid, (lambda s, n: lambda: _unsupported(s, n))(sid, needs), "new")
@@ -629,10 +639,11 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
                 return store_fn(rw)
             return fn()
         return run
-    reg.add("W1", web("W1", rw.w1, store_web.w1), "web")
+    from . import mixed_fleet
+    reg.add("W1", web("W1", rw.w1, store_web.w1_with_bridge), "web")
     reg.add("W2", web("W2", rw.w2, store_web.w2), "web")
     reg.add("W3", web("W3", rw.w3, store_web.w3), "web")
-    reg.add("W4", web("W4", rw.w4), "web")
+    reg.add("W4", web("W4", rw.w4, mixed_fleet.w4), "web")
     reg.add("W2b", lambda: (store_web.w2b(rw) if _has_store()
                             else _unsupported("W2b", V4_WEB["W2b"])), "web")
     return reg
@@ -646,12 +657,9 @@ V4_ONLY = {
     "CF1": "the LabCore factor replica, `config_rev:<uid>` in lem_meta (P8, P9)",
     "CF2": "a factor change while both roads are dark: replica + held readings (P8, P9)",
     "M1": "order matrix pairing 1 (§12.2; P13)",
-    "M2": "order matrix pairing 2 (§12.2; P13)",
     "M3": "order matrix pairing 3 (§12.2; P13)",
     "M4": "order matrix pairing 4 (§12.2; P13)",
     "M5": "order matrix pairing 5 (§12.2; P13)",
-    "M6": "order matrix pairing 6 (§12.2; P13)",
-    "DG1": "module downgrade with the bridge on (P9)",
     "DG2": "server rollback after v4 benches synced: projection (P9)",
 }
 V4_WEB = {"W2b": "server INSERTs on the LEM store (P6)"}
@@ -659,6 +667,10 @@ V4_WEB = {"W2b": "server INSERTs on the LEM store (P6)"}
 
 def _unsupported(sid, needs):
     raise Unsupported("%s needs %s — not present on this target" % (sid, needs))
+
+
+def sid_of(fn):
+    return {"m2": "M2", "m6": "M6", "dg1": "DG1"}.get(fn.__name__, fn.__name__)
 
 
 def _has_store():

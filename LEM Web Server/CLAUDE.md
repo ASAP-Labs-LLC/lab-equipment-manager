@@ -175,10 +175,57 @@ is the record" for `lem_*` tables describe the world before this.
   `FakeLabCoreGateway` for a `LocalStoreGateway` on a throwaway file that also
   holds LabCore's three core tables. To claim "costs LabCore nothing", count on
   a separate LabCore: `tests/labcore_counter.CountingLabCore`.
-- **Not yet:** the bench sync API (P7), the bridge that pulls v3.9 benches'
-  rows out of LabCore into the store and projects config back (P9), backups
-  (P11). Until P9, a server on the store does not see what v3.9 benches write
-  to LabCore — this is not deployable on its own.
+- **Since landed:** the bench sync API (P7, `bench_api.py`), backups (P11,
+  `custody.py`), and the import plus the mixed-fleet bridge (P9, below).
+
+## Moving the record out of LabCore, and the mixed fleet (2026-10-02)
+
+Transfer spec §10.1 and §10.4 (piece T-P9). `legacy_import.py` and
+`bridge.py`. **Running either against production LabCore is Ryan's step**:
+the import is started only by `web_server.pyw --import-from-mirror PATH` or
+`python legacy_import.py --yes-this-is-production`, and the bridge does
+nothing until the import is verified.
+
+- **The import** seeds `lem_machine_log` from a COPY of the v3.9 log mirror
+  (0 LabCore reads for 258k rows), proves it with ONE read of counts per
+  (rowid range, machine, kind) over `idx_lem_log_uid_kind_ts` and ONE read
+  of 1,000 sampled rows, re-reads only ranges that disagree (5,000 rows a
+  read), then copies the other 32 tables (one `SELECT *` each, count and
+  SHA-256 read back). Measured on a production-sized LabCore (257,996 rows,
+  mirror 2,000 rows behind and one corrupt range): **37 reads**, plus 1 for
+  the bridge's first pull. `/healthz.store.import.reads` counts them.
+- **A failed read is never "done".** `import_run.verified` stays NULL for a
+  chunk or table that was refused; the next run resumes from `import_run`
+  and the persisted cursors. Until every table verifies, `store_meta.
+  sync_hold` makes v2 sync, `/adoption` and `/checkpoint` answer 503 +
+  Retry-After (a half-imported record would read as "never recorded").
+- **Identity is content:** `legacy_key = 'lc:' + H(7 columns) + ':' + k`
+  (the k-th copy of that exact row). LabCore's rowid is only a cursor;
+  `legacy_index` maps rowids to copies per numbering "generation", so a
+  VACUUM that renumbered LabCore is noticed at the cursor row and re-walked
+  adding 0 rows, and v3.9's N3 double write stays two rows.
+- **`jk` linking** (§7, M6): a projected row's `detail.jk` makes it the bench
+  record's custody row; a later v2 sync of that record adds only the rows
+  not yet pulled, and a pull of a record already held as `bench_record`
+  adds nothing.
+- **Store rows are not overwritten by the import**: a row the server wrote
+  before the import finished (same key, different content, or a key LabCore
+  lacks) is kept, counted in `import_run.verified`, and projected.
+- **The bridge**: the log pull (1 read / 60 s), the state arms (1 read /
+  12 s, legacy-mode uids only; none when every bench is v2), **no per-arm
+  fallback** (one watchdog kill: +0 reads, where v3.9's snapshot paid +426),
+  visible `replay_candidate` on a v3.9 replay burst (≥ 20 twinned rows in a
+  poll; never hidden), projection of the tables a v3.9 module reads plus
+  `lem_machine_config` through `projection_outbox` (store first, upserts
+  before prunes, backoff, never marked landed unless LabCore took it, the
+  bench's cursor keys in its config never overwritten), and the 15-minute
+  single-key `json_set` cursor mirror that bounds a v4 → v3.9 rollback to
+  ≤ 15 min of replayed prints (DG1, measured 14.4).
+- **No replica tables, no LabCore DDL** (Ryan declined D2). Off, or before
+  the import is verified, the bridge makes no LabCore call at all.
+- Tests: `tests/test_legacy_import.py`, `tests/test_bridge.py` (M2 and DG1
+  run the real v3.9.0 module from `git show`); the gate's W1, W4, M2, M6
+  and DG1 are `gauntlet-harness/gharness/mixed_fleet.py`.
 
 ## QC expiry is a rolling window (2026-08-03)
 

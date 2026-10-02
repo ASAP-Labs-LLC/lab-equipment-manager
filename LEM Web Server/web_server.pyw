@@ -181,7 +181,47 @@ def build_parser() -> argparse.ArgumentParser:
                              "scratch port that closes moments later — "
                              "advertising it would point every bench at a dead "
                              "port until the next real boot.")
+    parser.add_argument("--import-from-mirror", default=None, metavar="PATH",
+                        help="move LEM's record out of LabCore on this boot, "
+                             "seeding the log from a COPY of this v3.9 log "
+                             "mirror (data/log-mirror.sqlite3). Reads "
+                             "production LabCore 40-70 times, once: Ryan's "
+                             "step (transfer §10.1).")
     return parser
+
+
+def start_transfer(app, store, *, dev: bool, import_mirror=None,
+                   retry_s: float = 60.0) -> dict:
+    """The import hold, the import itself when asked, and the bridge
+    (transfer §10.1, §10.4). Boot, never `create_app`: the factory stays free
+    of side effects.
+
+    * A live store whose import is not verified holds v2 syncs (503 +
+      Retry-After) — a bench must not add to a record still being moved.
+    * `import_mirror` runs the import on a thread, resuming until verified.
+    * The bridge thread starts on every writable store with a separate
+      LabCore; it does nothing until the import is verified and the switch
+      is on.
+    A read-only store (the updater's candidate boot) does none of it."""
+    out = {"held": False, "importing": False, "bridge": False}
+    if getattr(store, "read_only", False):
+        return out
+    import legacy_import
+    if not dev:
+        out["held"] = legacy_import.hold_until_verified(store)
+        if out["held"] and import_mirror:
+            service = legacy_import.ImportService(
+                legacy_import.Importer(store, app.config["LABCORE_GATEWAY"],
+                                       mirror_path=import_mirror),
+                retry_s=retry_s)
+            app.config["IMPORT_SERVICE"] = service
+            service.start()
+            out["importing"] = True
+    bridge = app.config.get("BRIDGE")
+    if bridge is not None:
+        bridge.start()
+        out["bridge"] = True
+    return out
 
 
 def app_options(args) -> dict:
@@ -242,6 +282,16 @@ def main(argv) -> int:
         print("Backups: hourly into {0}; off-host: {1}".format(
             custody_service.backup_dir,
             custody_service.offsite_dir or "NO TARGET NAMED (LEM_BACKUP_OFFSITE)"))
+    # Moving the record out of LabCore, and the mixed-fleet bridge (§10).
+    transfer = start_transfer(app, store, dev=args.dev,
+                              import_mirror=args.import_from_mirror)
+    if transfer["held"]:
+        print("LEM's record has not been imported from LabCore and verified: "
+              "v2 benches are held (503, nothing lost). %s" % (
+                  "Importing now from a copy of %s." % args.import_from_mirror
+                  if transfer["importing"] else
+                  "Run the import with --import-from-mirror PATH "
+                  "(Ryan's step)."))
     # The local copy of lem_machine_log, refreshed every five minutes. Same
     # rule as the snapshot: the factory builds it, the server owns its thread.
     # The first pull is the whole table (1.00s / 18.9 MB measured on the live
