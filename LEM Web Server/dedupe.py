@@ -51,12 +51,16 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
   — a re-test the instrument printed twice — and they go through the twin
   rule like any other row.
 * `replay_duplicate` — a row with an earlier identical twin in a DIFFERENT
-  poll, in a poll that carried ≥ 20 rows, or in which ≥ 80 % of the rows
-  have such twins (the majority rule; it needs at least 5 rows, because C's
-  2-row/50 % rule was rejected as too eager and a 1-row poll is "100 %").
-* `probable_duplicate` — a twin that is NOT in such a poll: a genuine
-  identical re-test or a QC repeat looks exactly like this. Always visible;
-  listed for review.
+  poll, in a poll in which ≥ 80 % of the rows have such twins (the majority
+  rule; it needs at least 5 rows, because C's 2-row/50 % rule was rejected
+  as too eager and a 1-row poll is "100 %"), or in a poll that carried ≥ 20
+  rows where the twin lies in a replayed STRETCH: consecutive twins
+  spanning two or more samples (`_replayed_stretches`). A restart re-reads
+  a run of its file; a lone twin among new rows is what a genuine repeat in
+  a catch-up poll looks like.
+* `probable_duplicate` — a twin that is NOT in such a poll or stretch: a
+  genuine identical re-test or a QC repeat looks exactly like this. Always
+  visible; listed for review.
 * `import_leftover` — an imported (`labshare-2026-08-27`) row that one of
   the two rules above would hide, and the import's three misread Lab IDs.
 
@@ -396,6 +400,31 @@ def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
     return out
 
 
+def _replayed_stretches(poll: List[LogRow], rest: List[int],
+                        twin_of: Dict[int, int]) -> set:
+    """The twins of a big poll that a re-read put there (positions in
+    `poll`), for a poll that is NOT mostly twins.
+
+    A restart re-reads a RUN of its file, so its copies arrive as a stretch:
+    consecutive rows (in the poll's order, re-sent rows set aside), every
+    one with an earlier twin, spanning two or more SAMPLES. A twin outside
+    such a stretch — one row among new ones, or only QC standards, which a
+    lab measures every day by design — is what a genuine repeat looks like
+    in a catch-up poll, and is left to review (round-2 critic: a QC repeat
+    in a 24-row catch-up; Multitek NS row 216039 on 08-31)."""
+    out: set = set()
+    run: List[int] = []
+    for k in rest + [-1]:                  # -1 closes the last run
+        if k >= 0 and k in twin_of:
+            run.append(k)
+            continue
+        samples = {poll[j].lab_id for j in run if poll[j].kind == "run"}
+        if len(run) >= 2 and len(samples) >= 2:
+            out.update(run)
+        run = []
+    return out
+
+
 def _storm_days(polls: Sequence[PollStat]) -> List[str]:
     """Days on which a bench's LIVE polls burst or replayed at least
     STORM_POLLS_PER_DAY times — O9's 08-07 and 08-18 on the Agilent. A day
@@ -459,9 +488,14 @@ def classify(rows: Iterable[LogRow],
                     twin_of[k] = kept[f][used[f]]
                 used[f] += 1
             m = len(twin_of)
-            replay = m > 0 and (
-                n >= BURST_ROWS or (n >= MAJORITY_MIN_ROWS
-                                    and m >= MAJORITY_SHARE * len(rest)))
+            majority = (m > 0 and n >= MAJORITY_MIN_ROWS
+                        and m >= MAJORITY_SHARE * len(rest))
+            if majority:
+                copied = set(twin_of)
+            elif n >= BURST_ROWS:
+                copied = _replayed_stretches(poll, rest, twin_of)
+            else:
+                copied = set()
             rule = "burst" if n >= BURST_ROWS else "majority"
 
             def put(k, label, why, dup_of):
@@ -478,12 +512,13 @@ def classify(rows: Iterable[LogRow],
                 r = poll[k]
                 f = fingerprint(r)
                 if k in twin_of:
-                    if replay:
+                    if k in copied:
                         put(k, "replay_duplicate", rule, twin_of[k])
                         in_poll.setdefault(f, r.id)
                         continue
-                    put(k, "probable_duplicate", "twin_not_in_burst",
-                        twin_of[k])
+                    put(k, "probable_duplicate",
+                        "lone_twin_in_burst" if n >= BURST_ROWS
+                        else "twin_not_in_burst", twin_of[k])
                 elif f in in_poll:
                     # The same reading again in this poll with nothing to
                     # prove a second INSERT: content as far as anybody can
@@ -516,7 +551,7 @@ def classify(rows: Iterable[LogRow],
                     why["other_values"] += 1
             for r in poll:
                 last_lab[(r.kind, r.lab_id)] = r.is_imported()
-            polls_seen.append(PollStat(poll[0].ts, n, hidden, replay,
+            polls_seen.append(PollStat(poll[0].ts, n, hidden, bool(copied),
                                        dict(why), imported))
         result.polls[uid] = polls_seen
         storms = _storm_days(polls_seen)

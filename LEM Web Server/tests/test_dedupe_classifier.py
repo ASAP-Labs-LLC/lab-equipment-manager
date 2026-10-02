@@ -392,3 +392,94 @@ class TestAResendIsAnInsertThatLandedTwice:
                 for i in ids[2:]] == [
             ("probable_duplicate", "repeat_in_poll", ids[0]),
             ("probable_duplicate", "repeat_in_poll", ids[1])]
+
+
+class TestACatchUpPollIsNotAReplay:
+    """Round-2 critic: "≥ 20 rows" alone treated EVERY twin inside a big
+    poll as a copy. A bench that was offline overnight catches up with one
+    poll of 24 genuinely new rows; if that poll holds the morning QC check
+    reading the same value as yesterday's, the rule proposed that QC repeat
+    for hiding. On the mirror the same shape is Multitek NS's 08-31 13:26
+    poll: 30 brand-new Lab IDs, and one Blank (row 216039) proposed as a
+    replay of a Blank from 08-07.
+
+    What a replay leaves behind is not "a big poll" but a STRETCH: a restart
+    re-reads a run of the file, so its copies arrive as consecutive rows
+    spanning two or more samples, in the order the file holds them. A lone
+    twin among new rows is exactly what a genuine repeat looks like, and a
+    QC standard is measured every day by design, so QC rows alone are never
+    a stretch. Inside a big poll that is not mostly twins (the 80 % rule
+    still covers whole-poll replays), a twin outside a stretch is LISTED as
+    a probable duplicate — visible — and never proposed for hiding."""
+
+    def _yesterday(self, lab, uid):
+        qc = SimLab.qc_line("AF26", "Water", 2.5)
+        lab.poll(uid, [qc], [GENUINE])
+        s1 = SimLab.run_line("S1", {"Water": "12.1"})
+        lab.poll(uid, [s1], [GENUINE])
+        return qc, s1
+
+    def test_the_critics_shape_a_qc_repeat_in_a_catch_up_poll(self):
+        lab = SimLab()
+        qc, _ = self._yesterday(lab, "aq1")
+        new = [SimLab.run_line("S%d" % (100 + k), {"Water": str(10 + k)})
+               for k in range(23)]
+        ids = lab.poll("aq1", [qc] + new, [GENUINE] * 24)
+        got = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        c = got.candidates[ids[0]]
+        assert (c.label, c.rule) == ("probable_duplicate",
+                                     "lone_twin_in_burst")
+        assert all(i not in got.candidates for i in ids[1:])
+        assert not got.polls["aq1"][-1].replay
+
+    def test_two_standards_repeating_together_are_still_qc_not_a_stretch(
+            self):
+        """Two QC standards, adjacent, both reading what they read
+        yesterday: consecutive twins, but no SAMPLE among them. A lab runs
+        its standards every day; that is the point of them."""
+        lab = SimLab()
+        a = SimLab.qc_line("AF26", "Water", 2.5)
+        b = SimLab.qc_line("AO25", "Water", 7.25)
+        lab.poll("aq2", [a, b], [GENUINE, GENUINE])
+        new = [SimLab.run_line("S%d" % (200 + k), {"Water": str(10 + k)})
+               for k in range(22)]
+        ids = lab.poll("aq2", new[:5] + [a, b] + new[5:], [GENUINE] * 24)
+        got = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        assert [got.candidates[i].label for i in ids[5:7]] == [
+            "probable_duplicate"] * 2
+        assert sum(1 for c in got.candidates.values()
+                   if c.label in dedupe.HIDE_CANDIDATE_LABELS) == 0
+
+    def test_a_short_replay_ahead_of_new_rows_is_still_a_replay(self):
+        """The other side of the line: a restart that re-reads the last two
+        samples from a stale offset, then the night's 22 new rows, all in
+        one poll. Two samples in the file's order is a stretch — the copies
+        are proposed, the new rows are not."""
+        lab = SimLab()
+        old = [SimLab.run_line("R%d" % k, {"v": "r%d" % k}) for k in range(5)]
+        for line in old:
+            lab.poll("rs", [line], [GENUINE])
+        new = [SimLab.run_line("N%d" % k, {"v": "n%d" % k})
+               for k in range(22)]
+        ids = lab.poll("rs", old[3:] + new, [DUP] * 2 + [GENUINE] * 22)
+        got = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        assert [(got.candidates[i].label, got.candidates[i].rule)
+                for i in ids[:2]] == [("replay_duplicate", "burst")] * 2
+        assert all(i not in got.candidates for i in ids[2:])
+
+    def test_a_poll_that_is_mostly_twins_keeps_its_lone_twins(self):
+        """The 80 % rule is unchanged: in a poll that is overwhelmingly a
+        re-read, a twin separated from the others by one changed row is
+        still part of the re-read."""
+        lab = SimLab()
+        old = [SimLab.run_line("M%d" % k, {"v": "m%d" % k})
+               for k in range(24)]
+        for line in old:
+            lab.poll("mj", [line], [GENUINE])
+        changed = SimLab.run_line("M12", {"v": "re-integrated"})
+        poll = old[:12] + [changed] + old[12:]
+        ids = lab.poll("mj", poll, [DUP] * 12 + [GENUINE] + [DUP] * 12)
+        got = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        assert {got.candidates[i].label for i in ids[:12] + ids[13:]} == {
+            "replay_duplicate"}
+        assert ids[12] not in got.candidates

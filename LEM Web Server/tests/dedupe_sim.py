@@ -40,6 +40,15 @@ shapes it had not seen — both are here now, beside the copies they resemble:
   ids (the mirror's Agilent 09-11 shape: a copy);
 * a storm day — a dozen replay polls in one day (O9's 08-18 shape), which
   is approved as its own unit.
+
+Added after the round-2 critic hid a QC repeat inside a 24-row catch-up
+poll ("≥ 20 rows" alone made every twin in it a copy):
+
+* a catch-up poll of new work holding a QC standard read again, two
+  standards read again together, and a Blank read again (the mirror's
+  Multitek NS 08-31 shape) — all genuine;
+* a restart that re-reads only the last two samples before the night's new
+  rows — a copy, however short.
 """
 
 from __future__ import annotations
@@ -293,4 +302,24 @@ def build() -> SimLab:
     for k in range(12):                       # a file rewritten in place
         lab.poll(storm, list(tail_lines), [DUP] * 22,
                  ts="2026-08-18T09:%02d:21.000000" % k)
+
+    # ── ROUND 3: catch-up polls, where "≥ 20 rows" alone was wrong ──────
+    # A bench offline overnight catches up in ONE poll of new work. Its
+    # standards read what they read yesterday, and a Blank reads 0 again
+    # (Multitek NS 08-31, row 216039): genuine repeats inside a big poll.
+    cu = "catchup"
+    af = SimLab.qc_line("AF26", "Water", 2.5)
+    ao = SimLab.qc_line("AO25", "Water", 7.25)
+    blank = SimLab.run_line("Blank", {"N": "1.45"})
+    lab.poll(cu, [af, ao], [GENUINE, GENUINE])
+    lab.poll(cu, [blank], [GENUINE])
+    night = [SimLab.run_line("C%03d" % k, {"N": "%d.%d" % (20 + k, k)})
+             for k in range(30)]
+    lab.poll(cu, [af] + night[:10] + [blank] + night[10:20] + [af, ao]
+             + night[20:], [GENUINE] * 34)
+    # ...and the other side of the line: a restart re-reads the last two
+    # samples from a stale offset, then the next night's new rows follow.
+    more = [SimLab.run_line("C%03d" % k, {"N": "%d.%d" % (60 + k, k)})
+            for k in range(22)]
+    lab.poll(cu, night[-2:] + more, [DUP] * 2 + [GENUINE] * 22)
     return lab
