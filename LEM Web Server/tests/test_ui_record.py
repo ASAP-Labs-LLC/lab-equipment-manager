@@ -259,6 +259,23 @@ class TestTiles:
             offers = [x for x in (rec["topbar"]["online"], rec["readiness"]["primary"]) if x]
             assert len(offers) == 1, offers
 
+    def test_no_tile_says_its_title_twice(self):
+        """Round 2's critic: the On line tile read "On line / On line", and the
+        Bench tile's link read "Bench" under a tile titled Bench. A tile's word
+        is an answer to its title, and its link says where it goes."""
+        for ov in ("", "SERVICE"):
+            m = dict(prod("Agilent GC 1"), maintenance=[
+                {"uid": "p", "kind": "pm", "status": "GREEN", "name": "Monthly PM",
+                 "next_due": "2026-10-20", "interval_days": 30, "last_done": "2026-09-20"}])
+            for t in record(m, override=ov)["readiness"]["tiles"]:
+                assert t["word"].lower() != t["title"].lower(), t
+                if t["action"]:
+                    assert t["action"]["label"].lower() != t["title"].lower(), t
+                    assert t["action"]["label"].startswith("See the "), t
+        on = next(t for t in record(prod("PAC Flash 2"))["readiness"]["tiles"] if t["key"] == "online")
+        assert (on["word"], on["detail"]) == ("In service", "Nobody has taken it off line")
+
+
 
 # ── the QC section ──────────────────────────────────────────────────────────
 
@@ -494,3 +511,219 @@ class TestEveryStateIsAShellPage:
         assert 'id="app-version"' in html and 'href="/">Instruments</a>' in html
         # it comes back by itself: the page listens to the live feed
         assert "record_wait.js" in html
+
+
+# ── one rule for the card, the tile and every row ───────────────────────────
+
+def _variants():
+    """Every production instrument, as captured and in the bench states the
+    capture happens not to contain: stopped, never checked in, lab closed,
+    and with each check flipped to "no verdict in the window". Round 2's
+    critic found two of these by hand (Koehler's never-run check on a bench
+    that checks in, Viscocity's old pass on a stopped bench); a rule checked
+    only against the instruments that happen to exist today will break on
+    the next one."""
+    benches = {
+        "running": {"module_running": True, "module_state": "running"},
+        "stopped": {"module_running": False, "live": False, "module_state": "stopped"},
+        "never": {"module_running": False, "live": False, "module_state": "unknown", "last_poll": None},
+        "closed": {"module_running": False, "live": False, "module_state": "closed"},
+    }
+    for m in PROD["machines"]:
+        for bname, b in benches.items():
+            yield "%s/%s" % (m["title"], bname), dict(m, **b)
+            for i, s in enumerate(m.get("effective_specs") or []):
+                for at in (s.get("last_qc_at"), None):
+                    specs = list(m["effective_specs"])
+                    specs[i] = dict(s, last_qc_in_spec=None, last_qc_at=at,
+                                    last_qc_value=None if at is None else s.get("last_qc_value"))
+                    yield ("%s/%s/due%d%s" % (m["title"], bname, i, "" if at else "-never"),
+                           dict(m, effective_specs=specs, **b))
+        # the standard changed: the last result was against the old one
+        if m.get("effective_specs"):
+            specs = [dict(m["effective_specs"][0], last_qc_superseded_by="OLD-STD")] \
+                + list(m["effective_specs"][1:])
+            yield "%s/superseded" % m["title"], dict(m, effective_specs=specs)
+        # assigned, the bench checking in, and no band published yet
+        if not m.get("effective_specs") and not m.get("qc_targets"):
+            yield ("%s/target-only" % m["title"],
+                   dict(m, qc_targets=[{"sample": "STD-9", "test": "ASTM D1 - Thing"}],
+                        module_running=True, module_state="running"))
+
+
+def _qc_tile(rec):
+    return next(t for t in rec["readiness"]["tiles"] if t["key"] == "qc")
+
+
+class TestEveryCheckIsJudgedByTheCardsRule:
+    """The card's verdict, the QC tile and each row of the QC table are one
+    judgement (§0.2, §4.1). If the card says "QC due on X", a row says QC due
+    on X; if the bench is stopped and the card says Can't tell, no row may
+    still say In spec off a result the bench is no longer vouching for."""
+
+    @pytest.mark.parametrize("name,m", list(_variants()), ids=lambda v: v if isinstance(v, str) else "")
+    def test_the_card_the_tile_and_the_rows_agree(self, name, m):
+        rec = record(m)
+        state = rec["readiness"]["state"]
+        rows = rec["qc"]["checks"]
+        keys = [c["verdict"]["key"] for c in rows]
+        cap = rec["readiness"]["caption"]
+        tile = _qc_tile(rec)
+        # no list in the sentence is ever empty ("QC due on .")
+        for part in (cap["lead"], cap["too"]):
+            assert not re.search(r"\bon\s*(\.|;|$| too)", part or ""), (name, cap)
+        if state == "not_ok":
+            assert "out" in keys, name
+        else:
+            assert "out" not in keys, name
+        if state == "ok":
+            assert keys and all(k == "in" for k in keys), (name, keys)
+        if state == "cant_tell":
+            assert all(k == "none" for k in keys), (name, keys)
+        if state == "ok_but" and rec["readiness"]["caption"]["lead"].startswith("QC due"):
+            due = [c["title"] for c in rows if c["verdict"]["key"] == "due"]
+            assert due, name
+            for t in due:
+                assert t in cap["lead"], (name, cap["lead"])
+        if "due" in keys and state != "off_line":
+            assert "QC due on " + rows[keys.index("due")]["title"] in (cap["lead"] + " " + cap["too"]) \
+                or rows[keys.index("due")]["title"] in cap["lead"] + cap["too"], (name, cap)
+        # the tile says the worst row's word, never a different one
+        if rows:
+            worst = next(k for k in ("out", "due", "none", "in") if k in keys)
+            word = next(c["verdict"]["word"] for c in rows if c["verdict"]["key"] == worst)
+            assert tile["word"] == word, (name, tile, word)
+        else:
+            assert tile["word"] == "No QC assigned", name
+
+    def test_koehler_never_run_on_a_bench_that_checks_in_is_qc_due(self):
+        """Dev seed Koehler K23000 read "QC due on . Next: run the QC
+        standard." over a row that said "No verdict yet · never run"."""
+        m = prod("PAC Flash 2")
+        s = dict(m["effective_specs"][0], last_qc_in_spec=None, last_qc_at=None, last_qc_value=None)
+        rec = record(dict(m, effective_specs=[s]))
+        assert rec["readiness"]["word"] == "OK to run, but…"
+        (c,) = rec["qc"]["checks"]
+        assert c["verdict"]["word"] == "QC due" and c["verdict"]["detail"] == "never run"
+        assert rec["readiness"]["caption"]["lead"] == "QC due on Flash Point Closed cup (small scale)"
+        assert rec["readiness"]["caption"]["next"] == "Run AF26"
+        assert _qc_tile(rec)["word"] == "QC due"
+        assert rec["qc"]["selected"] == c["test"]
+
+    def test_viscocity_old_pass_on_a_stopped_bench_is_no_verdict_yet(self):
+        """Production Viscocity: bench stopped, card Can't tell, and a pass
+        from 3 Sep. The pass stays on the row as history (value and date),
+        but the row's word is §4.1's: No verdict yet · bench stopped."""
+        rec = record(prod("Viscocity"))
+        assert rec["readiness"]["word"] == "Can't tell"
+        (c,) = rec["qc"]["checks"]
+        assert c["verdict"]["word"] == "No verdict yet"
+        assert c["verdict"]["detail"] == "bench stopped"
+        assert c["value"] == 2.345 and c["at"].startswith("2026-09-03")
+        tile = _qc_tile(rec)
+        assert tile["word"] == "No verdict yet" and tile["detail"] == "Bench stopped"
+
+    def test_eravap_tile_gives_the_rows_reason(self):
+        """The tile said "Assigned, never run" over a row that said "bench
+        stopped": two reasons on one page for one fact."""
+        rec = record(prod("Eravap"))
+        assert _qc_tile(rec)["detail"] == "Bench stopped"
+        assert rec["qc"]["checks"][0]["verdict"]["detail"] == "bench stopped"
+
+    def test_a_stopped_bench_behind_a_warning_is_said_too(self):
+        """Calibration overdue AND the bench stopped: the card's verdict is
+        the warning, and the stopped bench (which is why the rows have no
+        verdict) is in the same sentence."""
+        m = dict(prod("Viscocity"), maintenance=[
+            {"uid": "t1", "name": "Calibration", "kind": "calibration", "status": "RED",
+             "next_due": "2026-09-01", "last_done": "2025-09-01", "interval_days": 365}])
+        rec = record(m)
+        assert rec["readiness"]["word"] == "OK to run, but…"
+        assert "bench stopped checking in too" in rec["readiness"]["caption"]["too"]
+
+    def test_the_home_row_names_the_same_due_checks(self):
+        """ui_instruments says the home's row from the same rule, so the row
+        and the record name the same checks."""
+        m = dict(prod("Agilent GC 2"), qc_targets=[{"sample": "STD-9", "test": "ASTM D1 - Thing"}])
+        row = ui_instruments.instrument(m, "", LEVELS, href)
+        assert row["readiness"]["word"] == "OK to run, but…"
+        assert "ASTM D1 - Thing" in json.dumps(row)
+        rec = record(m)
+        assert rec["qc"]["checks"][0]["verdict"]["word"] == "QC due"
+        assert "Thing" in rec["readiness"]["caption"]["lead"]
+
+    def test_the_dev_seed_agrees_too(self, tmp_path):
+        """Koehler K23000 is in the dev seed: walk every seeded record."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        rows = c.get("/api/ui/instruments").get_json()["instruments"]
+        assert rows
+        for r in rows:
+            rec = c.get("/api/ui/instruments/%s" % r["uid"]).get_json()
+            cap = rec["readiness"]["caption"]
+            assert not re.search(r"\bon\s*(\.|;|$)", cap["lead"]), (r["title"], cap)
+            keys = [x["verdict"]["key"] for x in rec["qc"]["checks"]]
+            if cap["lead"].startswith("QC due"):
+                assert "due" in keys, (r["title"], keys)
+            if rec["readiness"]["state"] == "cant_tell":
+                assert "in" not in keys, r["title"]
+
+
+class TestTheFloorPanelUsesFmtQC:
+    """§4.2: fmtQC "replaces toFixed(2) at floor.html:2131, 3188, 3193–3194",
+    and a guard fails on toFixed(2) in any spec path. The record's "Show on
+    the floor map" still lands on the floor's panel, and round 2's critic
+    found Anton Paar's density band there as "0.80 – 0.80": a band two
+    decimals cannot tell apart is a band nobody can check a reading against.
+    The one toFixed(2) left is the expanded uncertainty's ± (not a band)."""
+
+    def test_no_spec_number_is_cut_to_two_decimals(self):
+        floor = (T / "floor.html").read_text()
+        bad = [ln.strip() for ln in floor.splitlines() if "toFixed(2)" in ln and "widest" not in ln]
+        assert bad == [], bad
+
+    def test_the_floor_loads_the_one_formatter(self):
+        floor = (T / "floor.html").read_text()
+        assert "/static/js/record_logic.js" in floor
+        assert "window.LEMRecord" in floor and "R.fmtQC(" in floor
+
+    def test_the_panel_says_the_records_verdict_not_only_the_benchs(self):
+        """Round 2's critic followed "Show on the floor map" from Anton Paar's
+        record (OK to run, but… calibration overdue) to a panel headed "GREEN
+        / System nominal". GREEN is what the bench says of itself; the lab's
+        verdict is readiness's. The panel now says the record's verdict first,
+        read from the same /api/ui/instruments/<uid> the record draws, labels
+        the bench's own word as the bench's, and says when it could not read
+        the verdict instead of drawing nothing (a failed read is never empty)."""
+        floor = (T / "floor.html").read_text()
+        assert 'id="panelVerdict"' in floor
+        assert "/api/ui/instruments/" in floor
+        assert "Bench reports" in floor
+        assert "Couldn't read the verdict" in floor
+
+
+class TestSignedOutPrimaryKeepsItsContrast:
+    def test_the_primary_is_not_greyed_signed_out(self):
+        """Signed out, a gated control is drawn in the muted text token with a
+        dashed edge (P03). On the ink-filled primary that put grey words on
+        ink, 3.75:1 in light and 2.15:1 in dark (round 2's critic), under AA's
+        4.5:1, and the page's one next step looked disabled though clicking it
+        opens sign-in. The primary keeps its own ink-fg words and solid edge;
+        it says it needs a sign-in with a lock, a shape, not with grey."""
+        css = (ROOT / "static" / "css" / "lem.css").read_text()
+        m = re.search(r"body\.anon \.btn-primary\[data-gated\][^{]*\{([^}]*)\}", css)
+        assert m, "no signed-out rule for the primary"
+        assert "color: var(--ink-fg)" in m.group(1) and "border-style: solid" in m.group(1)
+        assert re.search(r"body\.anon \.btn-primary\[data-gated\]::before", css)
+
+
+def test_favicon_ico_is_not_a_404(tmp_path):
+    """Round 2's shooter: the one console error on a record was the browser's
+    own /favicon.ico request answered 404. The icon is favicon.svg; the old
+    path is sent there rather than logged as an error on every first load."""
+    app, gw = _seeded(tmp_path)
+    gw.calls.clear()
+    r = app.test_client().get("/favicon.ico")
+    assert r.status_code in (301, 302, 308)
+    assert r.headers["Location"].split("?")[0].endswith("/static/favicon.svg")
+    assert gw.calls == []

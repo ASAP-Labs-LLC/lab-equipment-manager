@@ -106,5 +106,15 @@ check('every point is placed inside the plot', g.points.every(pt => pt.x >= g.pl
 check('the result outside the limits is marked outside', g.points.map(pt => pt.outside), [false, true]);
 check('the limits are inside the y range', g.lines.high > g.plot.y0 && g.lines.low < g.plot.y1, true);
 
+// ── a day that is not this year says its year ──────────────────────────────
+// Round 2's shooter: dev-seed GC-1's annual calibration read "Last done 22 Jul,
+// Due 22 Jul, Scheduled": the due date is a year on, but without the year it
+// reads overdue-yet-"Scheduled".
+const OCT2 = Date.parse('2026-10-02T12:00:00');
+check('this year has no year', R.dayIn('2026-07-22T10:00:00', OCT2), '22 Jul');
+check('next year says so', R.dayIn('2027-07-22', OCT2), '22 Jul 2027');
+check('last year says so', R.dayIn('2025-07-22', OCT2), '22 Jul 2025');
+check('no date is a dash', R.dayIn(null, OCT2), '—');
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

@@ -163,6 +163,16 @@ a.user-chip { text-decoration: none; }
    still answers a click: the click opens "Sign in to <act>". Never
    pointer-events:none; a button that does nothing reads as broken. */
 body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-style: dashed; cursor: pointer; }
+/* …except the page's ONE primary. Muted words on its ink fill were 3.75:1
+   (light) and 2.15:1 (dark), under AA, and the next step looked disabled.
+   It keeps its own words and edge and says "sign in first" with a lock. */
+body.anon .btn-primary[data-gated] { color: var(--ink-fg); border-style: solid; }
+body.anon .btn-primary[data-gated]::before {
+    content: ""; display: inline-block; width: 11px; height: 12px; margin-right: 7px; vertical-align: -1px;
+    background: currentColor;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 11 12'%3E%3Cpath d='M2.5 5V3.5a3 3 0 0 1 6 0V5h.5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1.5 0h3V3.5a1.5 1.5 0 0 0-3 0z'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 11 12'%3E%3Cpath d='M2.5 5V3.5a3 3 0 0 1 6 0V5h.5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1.5 0h3V3.5a1.5 1.5 0 0 0-3 0z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
 
 /* the sheet: the reason under the title is the one sentence that says your
    act is not lost, so it is not smaller than the fields */
@@ -871,15 +881,19 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .ready-card #ready-primary { flex: none; margin-left: auto; }
 .rtiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
 .rtiles[data-n="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* glyph beside the words, not above them: a tile is a line of fact, and a
+   glyph on a row of its own left three tiles mostly empty (round 2) */
 .rtile {
-    display: grid; align-content: start; gap: 3px; min-width: 0; padding: var(--s3) var(--s4);
+    display: grid; grid-template-columns: 22px minmax(0, 1fr); align-content: start; column-gap: var(--s3); row-gap: 2px;
+    min-width: 0; padding: var(--s3) var(--s4);
     border-radius: var(--radius-md); background: var(--bg-sunken); border: 1.5px solid transparent;
 }
-.rtile .tglyph { width: 22px; height: 22px; margin-bottom: 4px; }
+.rtile > :not(.tglyph) { grid-column: 2; }
+.rtile .tglyph { grid-column: 1; grid-row: 1 / span 4; width: 22px; height: 22px; margin-top: 1px; }
 .rtile .t-title { font-size: var(--fs-xs); color: var(--text-muted-sunken); font-weight: 500; }
-.rtile .t-word { font-size: 13px; font-weight: 600; color: var(--text); }
+.rtile .t-word { font-size: 15px; font-weight: 650; color: var(--text); line-height: 1.3; }
 .rtile .t-detail { font-size: var(--fs-xs); color: var(--text-muted-sunken); line-height: 1.4; overflow-wrap: anywhere; }
-.rtile .t-link { justify-self: start; margin-top: 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.rtile .t-link { justify-self: start; margin-top: 2px; font-size: var(--fs-xs); font-weight: 600; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
 .rtile.current { background: var(--bg-card); border-color: var(--ink); }
 .rtile.current .t-word { font-weight: 700; }
 .rtile.current .t-title, .rtile.current .t-detail { color: var(--text-muted); }
@@ -893,7 +907,9 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .tbl.qc th:last-child, .tbl.qc td:last-child { padding-right: var(--s4); }
 .tbl.qc th b { font-weight: 650; color: var(--text); }
 .tbl.qc td { padding: 10px var(--s3); }
-.tbl.qc .c-check { white-space: nowrap; }
+/* a long check name wraps rather than push the Last and When columns out
+   of the card (Viscosity - Kinematic at 40°C did at 1440) */
+.tbl.qc .c-check { white-space: normal; min-width: 14ch; }
 .tbl.qc tbody tr:last-child td { border-bottom: 0; }
 .tbl.qc .qrow { cursor: pointer; }
 .tbl.qc .qrow:hover td { background: var(--bg-hover); }
@@ -923,6 +939,10 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .track .dot.out { border-radius: 0; width: 11px; height: 10px; margin-left: -5.5px; top: 2px; box-shadow: none;
     background: var(--st-error); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
 .track .dot.out.high { margin-left: -11px; }
+/* a result the bench no longer vouches for (No verdict yet): drawn hollow,
+   as history, with its number in the muted text */
+.track .dot.past { background: var(--bg-card); box-shadow: inset 0 0 0 1.5px var(--text-muted), 0 0 0 2px var(--bg-card); }
+.tbl.qc .qrow.is-past .c-last { color: var(--text-muted); font-weight: 500; }
 .track .dot.out.low { margin-left: 0; }
 .track.none::before { background: transparent; }
 .is-sel .track .dot { box-shadow: 0 0 0 2px var(--bg-active); }
@@ -934,6 +954,8 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .chart-title h3 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
 .chart-title .caption { margin: 2px 0 0; }
 .chart-plot { min-height: 176px; }
+.chart-plot.is-empty { min-height: 0; }
+.chart-plot.is-empty .chart-note { min-height: 72px; }
 .qchart { display: block; overflow: visible; }
 .qchart .qband { fill: var(--chart-band); }
 .qchart .qlim { stroke: var(--chart-ref); stroke-width: 1; stroke-dasharray: 4 3; }
@@ -990,6 +1012,7 @@ dialog.sheet .sheet-go:hover { background: var(--ink-hover); border-color: var(-
        sideways, rather than leave two thirds of it empty */
     .rtiles[data-n="4"] .rtile:nth-child(4) { grid-column: 1 / -1; grid-template-columns: 22px auto auto minmax(0, 1fr) auto;
         align-items: center; column-gap: var(--s3); }
+    .rtiles[data-n="4"] .rtile:nth-child(4) > * { grid-column: auto; grid-row: auto; }
     .rtiles[data-n="4"] .rtile:nth-child(4) .tglyph { margin: 0; }
     .rtiles[data-n="4"] .rtile:nth-child(4) .t-link { margin: 0; }
 }
@@ -1009,6 +1032,9 @@ dialog.sheet .sheet-go:hover { background: var(--ink-hover); border-color: var(-
     /* two-line rows (§6): the check and its verdict, then its last
        result, band and track; nothing is clipped and nothing scrolls */
     #show-map { display: none; }
+    /* the schedule on a phone: task, due and its word; how often and when
+       it was last done are one tap away on the classic page */
+    .tbl.mt .m-every, .tbl.mt .m-last { display: none; }
     .tbl.qc .c-when, .tbl.qc .c-last { display: none; }
     .tbl.qc td, .tbl.qc th { padding: 10px var(--s3); }
     .tbl.qc .c-check { white-space: normal; }

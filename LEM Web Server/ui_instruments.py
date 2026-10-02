@@ -205,8 +205,7 @@ def _too(m: dict, keys: List[str]) -> str:
     not among them: the row's Bench column says it."""
     out = []
     if "ok_but-qc" in keys:
-        due = [s for s in _specs(m) if s.get("last_qc_in_spec") is None]
-        out.append("QC due on %s too" % _tests(due))
+        out.append("QC due on %s too" % _tests(ui_live.qc_due(m)))
     for k, w, kind in (("ok_but-cal", "calibration", "calibration"), ("ok_but-pm", "PM", "pm")):
         if k in keys:
             out.append("%s overdue%s too" % (w, _since(m, kind)))
@@ -223,8 +222,7 @@ def _primary(m: dict, ready: dict) -> str:
     if state == OK_BUT and reason.startswith("Calibration"):
         return "Calibration overdue" + _since(m, "calibration")
     if state == OK_BUT and reason.startswith("QC due"):
-        due = [s for s in specs if s.get("last_qc_in_spec") is None]
-        return "QC due on %s" % _tests(due)
+        return "QC due on %s" % _tests(ui_live.qc_due(m))
     if state == OK_BUT:
         return "PM overdue" + _since(m, "pm")
     if state == OFF_LINE:
@@ -263,8 +261,7 @@ def _next(m: dict, ready: dict, href: Href) -> Optional[dict]:
         return {"text": "Put it back on line when the work is done", "label": "Open the record",
                 "href": href(uid, "")}
     if state == OK_BUT and reason.startswith("QC due"):
-        std = _and(sorted({str(s.get("sample_id") or "") for s in specs
-                           if s.get("last_qc_in_spec") is None}))
+        std = _and(sorted({c["sample_id"] for c in ui_live.qc_due(m) if c["sample_id"]}))
         return {"text": "Run %s" % (std or "the QC standard"), "label": "See the checks",
                 "href": href(uid, "qc")}
     if state == OK_BUT:
@@ -284,20 +281,21 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
     "current" one (GC's 1.5px ink border; never red)."""
     uid = m["machine_uid"]
     state = ready["state"]
-    specs = _specs(m)
-    lq = last_qc(m)
-    bad = [s for s in specs if s.get("last_qc_in_spec") is False]
-    due = [s for s in specs if s.get("last_qc_in_spec") is None]
-    if bad:
-        qc = ("Out of spec", "bad", "%d of %d %s" % (len(bad), len(specs),
-                                                    "check" if len(specs) == 1 else "checks"))
-    elif due and lq["at"]:
-        qc = ("QC due", "due", "%s · no verdict in the window" % _tests(due))
-    elif due or lq["word"] == "No verdict yet":
-        qc = ("No verdict yet", "unknown", _tests(due) or "Assigned, never run")
-    elif specs:
-        qc = ("In spec", "ok", "%d of %d %s" % (len(specs), len(specs),
-                                               "check" if len(specs) == 1 else "checks"))
+    # The tile is the worst of the rows, by the rule the rows and the card
+    # are judged with (ui_live.check_verdict): it cannot say In spec over a
+    # Can't tell card, or "never run" where the rows say "bench stopped".
+    checks = ui_live.qc_checks(m)
+    n = len(checks)
+    by = {k: [c for c in checks if c["verdict"]["key"] == k] for k in ("out", "due", "none", "in")}
+    if by["out"]:
+        qc = ("Out of spec", "bad", "%d of %d %s" % (len(by["out"]), n, "check" if n == 1 else "checks"))
+    elif by["due"]:
+        qc = ("QC due", "due", _tests(by["due"]))
+    elif by["none"]:
+        why = by["none"][0]["verdict"]["detail"]
+        qc = ("No verdict yet", "unknown", why[:1].upper() + why[1:])
+    elif checks:
+        qc = ("In spec", "ok", "%d of %d %s" % (n, n, "check" if n == 1 else "checks"))
     else:
         qc = ("No QC assigned", "unknown", "Nothing to judge it by")
     b = bench(m)

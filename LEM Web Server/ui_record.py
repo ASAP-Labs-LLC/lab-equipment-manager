@@ -104,21 +104,6 @@ def _boiling_rank(title: str) -> Tuple[int, str]:
 
 # ── one check ───────────────────────────────────────────────────────────────
 
-def _verdict(spec: Optional[dict], checking_in: bool, never: bool) -> dict:
-    """§4.1, one word per check. `spec` None = assigned, nothing on file."""
-    ok = None if spec is None else spec.get("last_qc_in_spec")
-    if ok is False:
-        return {"key": "out", "word": "Out of spec", "glyph": "error", "detail": ""}
-    if ok is True:
-        return {"key": "in", "word": "In spec", "glyph": "final", "detail": ""}
-    if not checking_in:
-        return {"key": "none", "word": "No verdict yet", "glyph": "never",
-                "detail": "bench never checked in" if never else "bench stopped"}
-    if spec is not None and spec.get("last_qc_at"):
-        return {"key": "due", "word": "QC due", "glyph": "half", "detail": ""}
-    return {"key": "none", "word": "No verdict yet", "glyph": "never", "detail": "never run"}
-
-
 def _num(v) -> Optional[float]:
     if v is None or v == "":
         return None
@@ -130,39 +115,26 @@ def _num(v) -> Optional[float]:
 
 def checks(m: dict) -> List[dict]:
     """The QC table's rows: every check in force, then every assignment the
-    bench has not published a band for (assigned, never judged)."""
-    running = bool(m.get("live") or m.get("module_running"))
-    never = not running and not m.get("last_poll")
+    bench has not published a band for. Each row's verdict is
+    ``ui_live.check_verdict``'s, the rule the card's own verdict is judged
+    by, so the row under a "QC due on X" card says QC due, and the row under
+    a Can't tell card never says In spec (round 2's critic)."""
     out = []
-    seen = set()
-    for s in m.get("effective_specs") or []:
-        if s.get("last_qc_superseded_by"):
-            continue
-        name = str(s.get("test_name") or "")
-        seen.add(name)
-        title, method = short_test(name)
+    for c in ui_live.qc_checks(m):
+        s = c["spec"] or {}
+        title, method = short_test(c["test_name"])
+        units = str(s.get("units") or "")
         out.append({
-            "test": name, "title": title, "method": method,
-            "sample_id": str(s.get("sample_id") or ""),
+            "test": c["test_name"], "title": title, "method": method,
+            "sample_id": c["sample_id"],
             "low": _num(s.get("low")), "expected": _num(s.get("expected")),
             "high": _num(s.get("high")),
-            "units": UNITS.get(str(s.get("units") or ""), str(s.get("units") or "")),
-            "value": _num(s.get("last_qc_value")), "at": s.get("last_qc_at") or None,
+            "units": UNITS.get(units, units),
+            # a superseded result was against the old standard: not this band's
+            "value": None if s.get("last_qc_superseded_by") else _num(s.get("last_qc_value")),
+            "at": c["last_qc_at"] or None,
             "correction": _num(s.get("correction")) or None,
-            "verdict": _verdict(s, running, never),
-        })
-    for t in m.get("qc_targets") or []:
-        name = str(t.get("test") or "")
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        title, method = short_test(name)
-        out.append({
-            "test": name, "title": title, "method": method,
-            "sample_id": str(t.get("sample") or ""),
-            "low": None, "expected": None, "high": None, "units": "",
-            "value": None, "at": None, "correction": None,
-            "verdict": _verdict(None, running, never),
+            "verdict": c["verdict"],
         })
     out.sort(key=lambda c: _boiling_rank(c["title"]))
     return out
@@ -248,6 +220,14 @@ def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str])
         too.append("calibration overdue%s too" % _since(m, "calibration"))
     if "ok_but-pm" in behind:
         too.append("PM overdue%s too" % _since(m, "pm"))
+    if state != CANT_TELL:
+        # the reason the rows read "No verdict yet", when the verdict is
+        # about something else (an overdue calibration on a stopped bench)
+        for k, words in (("cant_tell-stopped", "its bench stopped checking in too"),
+                         ("cant_tell-never", "its bench has never checked in too"),
+                         ("cant_tell-closed", "the lab is closed too")):
+            if k in behind:
+                too.append(words)
     return {"lead": lead, "std": std, "at": at, "too": "; ".join(too), "next": nxt}
 
 
@@ -267,6 +247,10 @@ _OVERRIDE_WORDS = {"Taken off line (SERVICE)": "Taken off line for service",
                    "Taken off line (DEAD-LINE)": "Taken off line as a dead line"}
 
 
+# a tile's link says where it goes, never the tile's own title again
+_LINK = {"qc": "See the checks", "bench": "See the bench", "maintenance": "See the schedule"}
+
+
 def _tiles(row: dict, primary: Optional[dict]) -> List[dict]:
     """The home's tiles, with their links made local to this page. An action
     the topbar or the primary already offers is not offered again."""
@@ -279,6 +263,9 @@ def _tiles(row: dict, primary: Optional[dict]) -> List[dict]:
             if act == "online":
                 t["glyph"] = "off"      # §4.1: off line is the rotated square
                 t["detail"] = _OVERRIDE_WORDS.get(t.get("detail") or "", t.get("detail") or "")
+            else:
+                # "On line / On line" said its title twice (round 2's critic)
+                t["word"], t["detail"] = "In service", "Nobody has taken it off line"
             # The control is the topbar's "Take off line…" while it is on
             # line, and the card's primary "Put back on line…" while it is
             # off: a third copy on the tile would be the "said twice" defect.
@@ -287,7 +274,8 @@ def _tiles(row: dict, primary: Optional[dict]) -> List[dict]:
             t["glyph"] = "due"          # a warning, never the stop triangle
         if t["key"] != "online" and a and a.get("href"):
             section = a["href"].split("#", 1)[1] if "#" in a["href"] else ""
-            a = {"label": a["label"], "href": "#" + section} if section in SECTIONS else None
+            a = {"label": _LINK.get(section, a["label"]), "href": "#" + section} \
+                if section in SECTIONS else None
         t["action"] = a
         out.append(t)
     return out

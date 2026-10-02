@@ -90,6 +90,17 @@
         const d = new Date(t);
         return d.getDate() + ' ' + MONTHS[d.getMonth()];
     }
+    /** A schedule's calendar day: "22 Jul", with its year when that is not
+        this year ("22 Jul 2027"), so a due date a year on does not read as
+        today's. Read off the date's own digits, not through a time zone. */
+    function dayIn(iso, nowMs) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+        if (!m) return '—';
+        const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+        if (!(mo >= 1 && mo <= 12)) return '—';
+        const thisYear = new Date(nowMs === undefined ? Date.now() : nowMs).getFullYear();
+        return d + ' ' + MONTHS[mo - 1] + (y === thisYear ? '' : ' ' + y);
+    }
     const RANGE_EMPTY = { '24': 'No runs on file for this check yet', '90d': 'No runs in the last 90 days', all: 'No runs on file for this check yet' };
 
     /** "24 runs since 4 Aug · 1 outside the limits" */
@@ -176,7 +187,7 @@
         return { plot, points, ticks, lines: { low: lo === null ? null : y(lo), high: hi === null ? null : y(hi), mid: mid === null ? null : y(mid) } };
     }
 
-    const api = { fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day };
+    const api = { fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

@@ -63,15 +63,92 @@ NEEDS_YOU = (NOT_OK, OK_BUT, CANT_TELL)
 
 # ── readiness ───────────────────────────────────────────────────────────────
 
+_BENCH_WORDS = {"stopped": "bench stopped", "closed": "lab closed"}
+
+
+def _bench_word(machine: dict) -> str:
+    """Why a bench that is not checking in vouches for nothing, in the words
+    a QC row says it ("bench stopped"), lower case to follow a verdict."""
+    st = machine.get("module_state") or "unknown"
+    if st in _BENCH_WORDS:
+        return _BENCH_WORDS[st]
+    return "bench stopped" if machine.get("last_poll") else "bench never checked in"
+
+
+def check_verdict(spec: Optional[dict], machine: dict) -> dict:
+    """ONE check's verdict (§4.1), by the rule ``readiness`` judges the whole
+    instrument with, so a QC row, the QC tile and the card cannot disagree.
+
+    `spec` is the check's effective spec, or None for an assignment the bench
+    has not published a band for (Eravap's Pentane / RVP). In order, the
+    same order ``readiness`` takes:
+
+    * a failed result is **Out of spec**, whatever the bench is doing: a
+      stop stands until somebody reruns the standard;
+    * an assigned check with no verdict in the window is **QC due**: that is
+      what makes the card say "OK to run, but… QC due on X". A check whose
+      band is not published yet counts once its bench is checking in, since
+      then a run could judge it and nobody has;
+    * a pass is **In spec** only while its bench is checking in. A stopped
+      bench vouches for nothing new, so its card says Can't tell and the
+      check says **No verdict yet · bench stopped** (round 2's critic:
+      Viscocity's 3 Sep pass read In spec under a Can't tell card). The
+      pass itself stays on the row, as history.
+    """
+    running = _checking_in(machine)
+    moved = spec is not None and spec.get("last_qc_superseded_by")
+    # A superseded result was run against the OLD standard: it judges
+    # nothing about this one, so the check is assigned and not yet run.
+    ok = None if spec is None or moved else spec.get("last_qc_in_spec")
+    if ok is False:
+        return {"key": "out", "word": "Out of spec", "glyph": "error", "detail": ""}
+    if spec is not None and ok is None or spec is None and running:
+        ran = spec is not None and spec.get("last_qc_at") and not moved
+        parts = ["no verdict in the window" if ran else
+                 "not yet run against %s" % spec.get("sample_id") if moved and spec.get("sample_id")
+                 else "never run"]
+        if not running:
+            parts.append(_bench_word(machine))
+        return {"key": "due", "word": "QC due", "glyph": "half", "detail": " · ".join(parts)}
+    if not running:
+        return {"key": "none", "word": "No verdict yet", "glyph": "never",
+                "detail": _bench_word(machine)}
+    return {"key": "in", "word": "In spec", "glyph": "final", "detail": ""}
+
+
+def qc_checks(machine: dict) -> List[dict]:
+    """Every check in force: ``{test_name, sample_id, spec, verdict}``. The
+    effective specs (a superseded one is the new standard's band, not yet
+    run), then each assignment the bench has not published a band for
+    (spec None)."""
+    out, seen = [], set()
+    for s in machine.get("effective_specs") or []:
+        name = str(s.get("test_name") or "")
+        seen.add(name)
+        out.append({"test_name": name, "sample_id": str(s.get("sample_id") or ""),
+                    "last_qc_at": None if s.get("last_qc_superseded_by") else s.get("last_qc_at"),
+                    "spec": s,
+                    "verdict": check_verdict(s, machine)})
+    for t in machine.get("qc_targets") or []:
+        name = str(t.get("test") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({"test_name": name, "sample_id": str(t.get("sample") or ""),
+                    "last_qc_at": None, "spec": None, "verdict": check_verdict(None, machine)})
+    return out
+
+
 def _out_of_spec(machine: dict) -> list:
-    return [s for s in machine.get("effective_specs") or []
-            if s.get("last_qc_in_spec") is False and not s.get("last_qc_superseded_by")]
+    return [c for c in qc_checks(machine) if c["verdict"]["key"] == "out"]
 
 
-def _qc_due(machine: dict) -> list:
-    """Assigned checks with no verdict inside the window."""
-    return [s for s in machine.get("effective_specs") or []
-            if s.get("last_qc_in_spec") is None and not s.get("last_qc_superseded_by")]
+def qc_due(machine: dict) -> list:
+    """Assigned checks with no verdict inside the window (``check_verdict``)."""
+    return [c for c in qc_checks(machine) if c["verdict"]["key"] == "due"]
+
+
+_qc_due = qc_due
 
 
 def _overdue(machine: dict, kind: str) -> list:

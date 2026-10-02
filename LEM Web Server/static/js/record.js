@@ -135,7 +135,8 @@
             h('i', { className: 'band', style: 'left:' + pos.lowPct + '%;width:' + (pos.highPct - pos.lowPct) + '%' }),
             h('i', { className: 'mid', style: 'left:' + pos.midPct + '%' }));
         if (pos.valPct !== null) {
-            el.appendChild(h('i', { className: 'dot' + (pos.outside ? ' out ' + pos.outside : ''), style: 'left:' + pos.valPct + '%' }));
+            const past = c.verdict && c.verdict.key === 'none' ? ' past' : '';
+            el.appendChild(h('i', { className: 'dot' + (pos.outside ? ' out ' + pos.outside : past), style: 'left:' + pos.valPct + '%' }));
         }
         return el;
     }
@@ -162,7 +163,7 @@
             // the standard is named once, in the section's sentence, unless
             // the checks are against more than one
             const sub = [c.method, data.qc.standards.length > 1 ? c.sample_id : ''].filter(Boolean).join(' · ');
-            return h('tr', { className: 'qrow' + (sel ? ' is-sel' : ''), 'data-test': c.test, 'aria-selected': sel ? 'true' : 'false', 'data-testid': 'qc-row' },
+            return h('tr', { className: 'qrow' + (sel ? ' is-sel' : '') + (v.key === 'none' ? ' is-past' : ''), 'data-test': c.test, 'aria-selected': sel ? 'true' : 'false', 'data-testid': 'qc-row' },
                 h('td', { className: 'c-check' },
                     h('button', { type: 'button', className: 'qc-pick', 'aria-pressed': sel ? 'true' : 'false', title: 'Show its chart' }, c.title),
                     sub ? h('span', { className: 'sub', text: sub }) : null,
@@ -264,10 +265,15 @@
         const s = t.series.find(x => x.test_name === c.test && x.sample_id === c.sample_id && !x.superseded) ||
                   t.series.find(x => x.test_name === c.test && !x.superseded) || null;
         if (!s || !(s.points || []).length) {
-            cap.textContent = R.rangeCaption({ points: [] }, range);
-            plot.replaceChildren(note('none', range === '90d' ? 'No runs of this check in the last 90 days.' : 'No runs of this check on file yet.'));
+            // said once, in the plot; the caption line under the title stays
+            // empty rather than repeat it, and the empty plot is not 176px
+            cap.textContent = '';
+            plot.classList.add('is-empty');
+            plot.replaceChildren(note('none', range === '90d' ? 'No runs of this check in the last 90 days.'
+                : 'No runs of this check on file yet. Its first run draws here.'));
             return;
         }
+        plot.classList.remove('is-empty');
         cap.textContent = R.rangeCaption(s, range) + ' · centre is the certificate value';
         plot.replaceChildren(drawChart(s, c));
         const cc = R.controlCaption(s);
@@ -332,7 +338,7 @@
     window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(renderChart, 120); });
 
     // ── Maintenance and Bench (read-only; piece 6 and 7 add their actions) ─
-    function day(iso) { return iso ? R.day(iso) : '—'; }
+    function day(iso) { return R.dayIn(iso); }
     function renderMaintenance() {
         const tasks = data.maintenance;
         const body = $('mt-body');
@@ -341,11 +347,12 @@
             return;
         }
         body.replaceChildren(h('div', { className: 'card table-card' }, h('table', { className: 'tbl mt' },
-            h('thead', {}, h('tr', {}, ...['Task', 'Every', 'Last done', 'Due', ''].map(t => h('th', { scope: 'col', text: t })))),
+            h('thead', {}, h('tr', {}, ...[['Task', ''], ['Every', 'm-every'], ['Last done', 'm-last'], ['Due', ''], ['', '']]
+                .map(([t, cls]) => h('th', { scope: 'col', className: cls, text: t })))),
             h('tbody', {}, ...tasks.map(t => h('tr', {},
                 h('td', {}, h('b', { text: t.name })),
-                h('td', { text: t.every ? t.every + ' days' : '—' }),
-                h('td', { text: day(t.last_done) }),
+                h('td', { className: 'm-every', text: t.every ? t.every + ' days' : '—' }),
+                h('td', { className: 'm-last', text: day(t.last_done) }),
                 h('td', { text: day(t.next_due) }),
                 h('td', {}, h('span', { className: 'verdict ' + (t.glyph === 'error' ? 's-not_ok' : t.glyph === 'half' ? 's-ok_but' : '') }, glyph(t.glyph), h('span', { text: t.word })))))))),
             h('p', { className: 'caption' }, 'To schedule a task or mark one done, use the ', h('a', { className: 'link', href: '/maintenance/classic', text: 'PM and calibration page' }), ' until it moves here.'));

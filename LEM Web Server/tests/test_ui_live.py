@@ -446,8 +446,18 @@ class TestReadiness:
         assert failed["state"] == ui_live.NOT_OK, "QC out of spec still says No"
 
     def test_a_superseded_failure_is_not_a_failure(self):
-        assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False,
-                                         "last_qc_superseded_by": "AF26"}]) == ui_live.OK
+        """A failure against the OLD standard says nothing about the new one,
+        so it is not a stop. Nor is it a pass: the new standard has not been
+        run, which is QC due, the word the record's row says for it (piece 5,
+        round 2: one rule for the card and every row)."""
+        r = ui_live.readiness(dict(self.BASE, effective_specs=[
+            {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
+             "last_qc_superseded_by": "AF26"}]), "")
+        assert r == {"state": ui_live.OK_BUT, "reason": "QC due: IBP"}
+        (c,) = ui_live.qc_checks(dict(self.BASE, effective_specs=[
+            {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
+             "last_qc_superseded_by": "AF26"}]))
+        assert c["verdict"]["detail"] == "not yet run against AF27"
 
     def test_dead_line_from_silence_is_not_off_line(self):
         """A bench says DEAD-LINE when no data arrives. That is not a decision

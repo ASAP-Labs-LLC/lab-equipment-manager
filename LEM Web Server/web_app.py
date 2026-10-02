@@ -1569,6 +1569,13 @@ def create_app(gateway, labcore_gateway=None,
                                has_quality=any(r.rule == "/quality"
                                                for r in app.url_map.iter_rules()))
 
+    @app.route("/favicon.ico")
+    def favicon_ico():
+        """Browsers ask for /favicon.ico on a first load whatever the page's
+        <link rel=icon> says; send it to the one icon there is rather than
+        logging a 404 in every console."""
+        return redirect("/static/favicon.svg", code=301)
+
     @app.route("/floor")
     def floor():
         """The lab floor: every instrument on its bay, hover for a glance,
