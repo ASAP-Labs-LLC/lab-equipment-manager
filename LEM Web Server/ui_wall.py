@@ -57,6 +57,16 @@ def _first(detail: str) -> str:
     return str(detail or "").split(" · ")[0]
 
 
+_DATE = re.compile(r"\b(since )?(\d{1,2}) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b")
+
+
+def _glue(text: str) -> str:
+    """"since 21 Jun" with no-break spaces: a wall line may wrap, but never
+    inside a date (round 4: "since 21 / Jun too")."""
+    return _DATE.sub(lambda m: ("since\u00a0" if m.group(1) else "") + m.group(2) + "\u00a0" + m.group(3),
+                     str(text or ""))
+
+
 def _names(titles: List[str], limit: int = 2) -> str:
     """"A", "A and B", "A, B and 1 more" (a wall line stays one line)."""
     t = [x for x in titles if x]
@@ -162,6 +172,8 @@ def attention(rows: List[dict], failed: Optional[Dict[str, List[str]]] = None) -
     items.sort(key=lambda i: (RANK[i["state"]], order.index(i["key"]) if i["key"] in order else 99,
                               i["detail"] != ui_live.PROBLEM_WORDS.get(i["key"]) and not i["detail"].startswith("QC due"),
                               i["names"][0].lower()))
+    for i in items:
+        i["detail"] = _glue(i["detail"])
     shown, rest = items[:ATTENTION_MAX], items[ATTENTION_MAX:]
     return shown, sum(len(i["names"]) for i in rest)
 
@@ -231,7 +243,7 @@ def bay_details(payload: dict, now: Optional[datetime] = None, short: bool = Fal
         else:
             at = (r.get("last_qc") or {}).get("at")
             line = ("QC " + _short_when(at, now)) if at else ""
-        out[r["uid"]] = SHORT.get(line, line) if short else line
+        out[r["uid"]] = _glue(SHORT.get(line, line) if short else line)
     return out
 
 

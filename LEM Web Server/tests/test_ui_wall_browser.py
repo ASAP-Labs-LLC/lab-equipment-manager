@@ -466,13 +466,18 @@ def test_every_bay_says_its_word_on_one_line_and_keeps_its_reason(server, drv, k
     assert drv.execute_script(NAMES_CUT) == []
     words = set(drv.execute_script(
         "return [...document.querySelectorAll('#wf-plan .b-wtext')].map(e => e.textContent)"))
-    # whole words where they fit on one line; where a bay is too narrow
-    # for that (production's seven columns), every bay says the same short
-    # form, which is the start of the count's word beside it
-    assert words <= {"OK to run", "OK to run, but…", "Not OK to run", "Off line", "No QC assigned"} or \
-        words <= {"OK", "OK, but…", "Not OK", "Off line", "No QC"}, words
-    if kind == "demo":
-        assert "Not OK to run" in words, words
+    # The app's whole words, always, on both shapes. Round 4 fell back to
+    # "OK, but…" / "Not OK" on production's seven columns, beside counts
+    # and a Needs-attention list saying "OK to run, but…" / "Not OK to
+    # run": two vocabularies on one screen (§4.1, round 4's critic). The
+    # bay makes room instead: its glyph sits in its corner, not in front
+    # of the word, and a too-narrow floor tightens the bay's padding.
+    assert words <= {"OK to run", "OK to run, but…", "Not OK to run", "Off line", "No QC assigned",
+                     "Can’t tell", "Can't tell"}, words
+    assert "Not OK to run" in words and "OK to run, but…" in words, words
+    counted = set(drv.execute_script(
+        "return [...document.querySelectorAll('#wf-counts .wc-w, #wf-attn .wa-wtext')].map(e => e.textContent)"))
+    assert words <= counted | {"Off line", "OK to run"}, (words, counted)
 
 
 @pytest.mark.parametrize("size", list(SIZES))

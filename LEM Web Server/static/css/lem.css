@@ -1088,6 +1088,35 @@ a.bay:hover { border-color: var(--border-strong); }
 /* on the wall the name and the verdict never give way; the detail does */
 .plan.wallplan.fullwords .bay .b-name { flex: none; margin-bottom: 4px; }
 .plan.wallplan.fullwords .bay .b-detail { flex: none; }
+/* Round 5. The glyph is the bay's corner mark: floated at the end of the
+   name's first line (the name wraps around it, its second line runs full
+   width), so the word line holds the whole word and nothing else. Status
+   colour is the glyph's; the word is ink, except a stop's, which is the red
+   pill below. Round 4's blind judges: "OK to run, but…" in orange in ten
+   bays drowned the two stops; now the only red word on the floor is a stop. */
+.plan.wallplan.fullwords .bay .b-name {
+    display: block; max-height: 2.4em; overflow: hidden; -webkit-line-clamp: none; line-clamp: none;
+}
+.plan.wallplan.fullwords .bay .b-name > .glyph {
+    float: right; scale: 1.7; margin: calc(0.6em - 5px) 5px 0 8px;
+}
+.plan.wallplan.fullwords .bay .b-name > .glyph.off { margin-right: 8px; }
+/* (scale and the rotation draw past the box, and count as overflow: the
+   right margins keep the drawn shape inside the name, or fit() reads every
+   name as too wide and cuts it to "…") */
+.plan.wallplan.fullwords .bay .b-word { gap: 0; }
+.wall .plan.wallplan .bay:not(.stop) .b-word { color: var(--text); }
+/* a floor too narrow for the whole words at the normal padding (seven
+   columns at 1440): the bays' sides come in to 8px, and Needs attention
+   gives up some width (it has height to spare beside a single level) */
+.plan.wallplan.tightwords .bay { padding-inline: 8px; }
+/* and its word sits on the bar's own line: 20.1px at 1080, 16.1px at 900
+   (the usual 1.86vh is 20.1 / 16.7), never under 16 */
+.plan.wallplan.tightwords .bay .b-word { font-size: max(16px, calc(2.2222vh - 3.9px)); }
+.wall-main.tight-plan { grid-template-columns: minmax(0, 1fr) clamp(256px, 18vw, 460px); }
+.wall-main.tight-plan .wa-names { -webkit-line-clamp: 3; line-clamp: 3; }
+/* the last resort: a word that still does not fit takes two lines, whole */
+.plan.wallplan.wrapwords .bay .b-word, .plan.wallplan.wrapwords .bay .b-wtext { white-space: normal; text-overflow: clip; }
 /* Not OK to run: the alarm is the word, set as the app's error pill
    (.pill.error), so it is status colour as glyph + word (§0.1) and still
    the one red thing in the room. Round 2's 3px and round 3's 2px ink boxes

@@ -305,13 +305,22 @@
                                 style: 'grid-column:' + (b.x + 1) + ';grid-row:' + (b.y + 1),
                                 'aria-current': opts.focus === b.uid ? 'true' : null };
                 const glyph = el('span', { className: 'glyph ' + w.glyph, 'aria-hidden': 'true' });
-                const lines = [
+                // On the wall (fullWords) the glyph is the bay's corner mark,
+                // floated at the end of the name's first line: the word line
+                // is the whole word and nothing else, so "OK to run, but…"
+                // fits a 7-wide floor without a short form (round 4), and
+                // the state reads from across the room by its shape alone.
+                const lines = opts.fullWords ? [
+                    el('span', { className: 'b-name' }, glyph, el('span', { className: 'b-ntext', text: glue(w.name) })),
+                    el('span', { className: 'b-word' }, el('span', { className: 'b-wtext', text: w.word })),
+                ] : [
                     el('span', { className: 'b-name', text: glue(w.name) }),
                     el('span', { className: 'b-word' }, glyph, el('span', { className: 'b-wtext', text: w.word })),
+                ];
+                lines.push(
                     el('span', { className: 'b-detail', 'data-short': (opts.detailsShort && opts.detailsShort[b.uid]) || null,
                         text: opts.saving && opts.saving.has(b.uid) ? 'Saving…'
-                        : ((opts.details && opts.details[b.uid]) || w.detail || (b.row.bench && b.row.bench.word) || '') }),
-                ];
+                        : ((opts.details && opts.details[b.uid]) || w.detail || (b.row.bench && b.row.bench.word) || '') }));
                 let node;
                 if (opts.arranging) {
                     node = el('button', Object.assign(attrs, { type: 'button', 'aria-pressed': opts.picked === b.uid ? 'true' : 'false',
@@ -323,7 +332,12 @@
             }
             host.replaceChildren(...kids);
             host.classList.toggle('fullwords', !!opts.fullWords);
-            host.classList.toggle('shortwords', !!opts.fullWords && opts.words === 'short');
+            // the wall never shortens a word (one vocabulary, §4.1): a floor
+            // too narrow for them is drawn 'tight' (less padding), and as a
+            // last resort 'wrap' lets a word that still does not fit take a
+            // second line, whole
+            host.classList.toggle('tightwords', !!opts.fullWords && (opts.words === 'tight' || opts.words === 'wrap'));
+            host.classList.toggle('wrapwords', !!opts.fullWords && opts.words === 'wrap');
             host.classList.toggle('roomy', (opts.cellH || 0) >= 140 && (opts.cellH || 0) < 200);
             host.classList.toggle('grand', (opts.cellH || 0) >= 200);
             fit(host);
@@ -356,31 +370,27 @@
             if (over(box, tall)) el.textContent = '…';
         }
         function fit(host) {
-            // fullwords (the wall): the verdict is one line, always. The
-            // app's whole word when it fits; when it does not, the bay is
-            // marked (data-word-cut) and says the short form, and the wall
-            // redraws every bay short (words: 'short') so the floor speaks
-            // one vocabulary. A word broken over two lines ("Not OK to /
-            // run") reads as two words from across the room (round 3). When
-            // a bay is too short for all three lines, the detail steps aside
-            // last of all (the bay's title keeps it).
+            // fullwords (the wall): the verdict is the app's whole word, on
+            // one line, never a short form and never cut (round 4: "OK,
+            // but…" in the bays beside "OK to run, but…" in the counts was
+            // two vocabularies on one screen). When it does not fit, the bay
+            // is marked (data-word-cut) and the wall redraws the floor
+            // tighter (wall_floor.js); only in 'wrapwords', the last resort,
+            // may it take two lines. When a bay is too short for all three
+            // lines, the detail steps aside last of all (the title keeps it).
             const full = host.classList.contains('fullwords');
-            const short = host.classList.contains('shortwords');
+            const wrap = host.classList.contains('wrapwords');
             for (const bay of host.querySelectorAll('.bay')) {
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
                 const det = bay.querySelector('.b-detail');
                 const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
-                if (name) fitText(name, name.textContent, '', true);
+                const ntext = name && name.querySelector('.b-ntext');
+                if (ntext) fitText(ntext, ntext.textContent, '', true, name);
+                else if (name) fitText(name, name.textContent, '', true);
                 if (word && full) {
-                    const whole = word.textContent;
                     bay.removeAttribute('data-word-cut');
-                    if (short) fitText(word, shortWord(state) || whole, '', false);
-                    else {
-                        word.textContent = whole;
-                        if (over(word, false)) bay.setAttribute('data-word-cut', '1');
-                        fitText(word, whole, shortWord(state), false);
-                    }
+                    if (!wrap && over(word, false)) bay.setAttribute('data-word-cut', '1');
                 } else if (word) fitText(word, word.textContent, shortWord(state), false, word);
                 if (det) det.hidden = false;
                 if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);

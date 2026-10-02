@@ -152,8 +152,9 @@
                 // the bay keeps all three (round 3: Pensky-Martens 1 lost
                 // "QC out of spec" in a bay too short for it)
                 minH: Math.ceil(2 * pad + 2.4 * name + 4 + 1.3 * word + 1.3 * det + 3 + 2),
-                // the short verdict ("OK, but…") on one line
-                minW: Math.ceil(word * 6 + 2 * hpad),
+                // the longest whole verdict ("OK to run, but…", 7.44em at
+                // 600) on one line, at the tight padding (8px a side)
+                minW: Math.ceil(word * 7.6 + 16),
                 head: Math.ceil(Math.max(16, 1.75 * vh) * 1.9),
                 // the Needs-attention column (CSS: clamp(320px, 23vw, 460px))
                 attnW: Math.min(460, Math.max(320, 23 * vw)),
@@ -233,10 +234,16 @@
             for (const [host, part] of hosts) P.draw(host, part.lay, bayOpts(p.cellH, 12, words));
             return hosts.map(x => x[0]);
         }
-        /** One vocabulary per floor: if any bay could not say the whole
-            word on one line, every bay says the short form. */
+        /** One vocabulary everywhere (§4.1): a bay says the app's whole
+            word, never a short form. If any bay could not say it on one
+            line, the floor is redrawn tight (less padding, the bar's
+            smallest word size); if one still cannot, that word may take a
+            second line, whole. */
         function oneVocabulary(hosts, redraw) {
-            if (hosts.some(x => x.querySelector('.bay[data-word-cut]'))) redraw('short');
+            const cut = () => hosts.some(x => x.querySelector('.bay[data-word-cut]'));
+            if (!cut()) return;
+            hosts = [].concat(redraw('tight') || hosts);
+            if (cut()) redraw('wrap');
         }
         function drawPlan() {
             const plan = $('wf-plan');
@@ -267,6 +274,7 @@
                 return;
             }
             let lost = [];
+            main.classList.remove('tight-plan');
             if (whole) {
                 empty.hidden = true;
                 plan.hidden = false;
@@ -298,14 +306,20 @@
                 } else {
                     empty.hidden = true;
                     plan.hidden = false;
-                    const W = wrap.clientWidth, H = wrap.clientHeight;
-                    const narrow = (W - 24 - 12 * (lay.w - 1)) / lay.w < 120;
-                    const gap = narrow ? 8 : 12;
-                    const cellW = (W - 2 * gap - gap * (lay.w - 1)) / lay.w;
-                    const fill = Math.floor((H - 2 * gap - gap * (lay.h - 1)) / lay.h);
-                    const cellH = Math.max(40, Math.min(fill, Math.floor(cellW * 1.05), 300));
-                    P.draw(plan, lay, bayOpts(cellH, gap, 'full'));
-                    oneVocabulary([plan], (w) => P.draw(plan, lay, bayOpts(cellH, gap, w)));
+                    // measured per draw: a tight floor narrows Needs
+                    // attention (.tight-plan), which widens the plan
+                    const one = (words) => {
+                        main.classList.toggle('tight-plan', words !== 'full');
+                        const W = wrap.clientWidth, H = wrap.clientHeight;
+                        const narrow = (W - 24 - 12 * (lay.w - 1)) / lay.w < 120;
+                        const gap = narrow ? 8 : 12;
+                        const cellW = (W - 2 * gap - gap * (lay.w - 1)) / lay.w;
+                        const fill = Math.floor((H - 2 * gap - gap * (lay.h - 1)) / lay.h);
+                        const cellH = Math.max(40, Math.min(fill, Math.floor(cellW * 1.05), 300));
+                        P.draw(plan, lay, bayOpts(cellH, gap, words));
+                        return [plan];
+                    };
+                    oneVocabulary(one('full'), one);
                 }
             }
             if (lost.length) {

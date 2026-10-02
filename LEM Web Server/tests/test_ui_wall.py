@@ -274,14 +274,14 @@ class TestBayDetails:
     def test_ok_says_when_qc_last_ran(self):
         d = self.details([machine("a", specs=[spec("X", True, at="2026-10-01T13:10:00")]),
                           machine("b", specs=[spec("X", True, at="2026-09-30T08:00:00")])])
-        assert d == {"a": "QC 13:10", "b": "QC 30 Sep"}
+        assert d == {"a": "QC 13:10", "b": "QC 30\u00a0Sep"}
 
     def test_a_stopped_bench_says_since_when(self):
         d = self.details([machine("e", running=False, module_state="stopped", specs=[spec("R", True)],
                                   last_poll="2026-09-23T14:43:00"),
                           machine("v", running=False, module_state="stopped", specs=[spec("R", True)],
                                   last_poll="2026-10-01T08:48:00")])
-        assert d == {"e": "Silent since 23 Sep", "v": "Silent since 08:48"}
+        assert d == {"e": "Silent since\u00a023\u00a0Sep", "v": "Silent since 08:48"}
 
     def test_the_rest(self):
         d = self.details([machine("n", specs=[spec("X", False)]),
@@ -300,7 +300,7 @@ class TestBayDetails:
                       last_poll="2026-09-23T14:43:00"),
               machine("c", specs=[spec("X", True)], maint=[task("calibration")])]
         d = ui_wall.bay_details(payload(ms), now=NOW, short=True)
-        assert d == {"v": "Silent 23 Sep", "c": "Cal. overdue"}
+        assert d == {"v": "Silent 23\u00a0Sep", "c": "Cal. overdue"}
 
     def test_unread_is_empty(self):
         assert ui_wall.bay_details(ui_instruments.unread(None), now=NOW) == {}
@@ -696,3 +696,19 @@ class TestOneWordPerCheckOnBothWalls:
         said += " | " + p["instruments"][0]["readiness"]["detail"].lower()
         for word in ("qc due", "no verdict yet"):
             assert (word in said) == (word in qc_words), (word, said, qc_words)
+
+
+class TestADateIsNeverSplitAcrossLines:
+    """Round 4's blind judge read "calibration overdue since 21 / Jun too"
+    on the wall: a date broken over two lines is two facts from across the
+    room. The wall's lines glue "since 21 Jun" with no-break spaces."""
+
+    def test_attention_and_bay_lines_glue_the_date(self):
+        ms = [machine("p", "Pensky-Martens 1", specs=[spec("Flash Point", False)],
+                      maint=[task("calibration")])]
+        p = payload(ms)
+        a = ui_wall.floor(p, ms)["attention"][0]
+        assert a["detail"] == "Flash Point out of spec · calibration overdue since 1 Sep too"
+        ms = [machine("v", running=False, module_state="stopped", specs=[spec("R", True)],
+                      last_poll="2026-09-23T14:43:00")]
+        assert ui_wall.bay_details(payload(ms), now=NOW)["v"] == "Silent since 23 Sep"
