@@ -2575,9 +2575,18 @@
     "ops_per_refresh_healthy": 0,
     "after_one_watchdog": {
      "extra_ops_vs_healthy": 0
+    },
+    "bridge_on": {
+     "reads_per_12s": 1.0,
+     "pull_reads_per_60s": 1.0,
+     "writes_healthy": 0,
+     "after_one_watchdog": {
+      "extra_ops_vs_healthy": 0
+     },
+     "recovered": true
     }
    },
-   "v4_spec": "0 LabCore reads, bridge off; +0 after a kill"
+   "v4_spec": "0 LabCore reads, bridge off; with the bridge on 1 read per 12 s plus 1 per 60 s, and +0 after a kill"
   },
   "W2": {
    "v3.9_source": "baseline/web.json (phase 1, v3.9.0), verbatim",
