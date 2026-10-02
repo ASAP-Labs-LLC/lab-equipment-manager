@@ -140,6 +140,37 @@ def _checking_in(m: dict) -> bool:
     return bool(m.get("live") or m.get("module_running"))
 
 
+def _waiting(m: dict) -> tuple:
+    """(lapsed, never): the assigned checks with no verdict in the window,
+    split by the word §4.1 gives each. A check that ran before and whose
+    pass has lapsed is "QC due"; one that has never run is "No verdict
+    yet". /qc says the same per card (ui_wall.qc), so the floor, the record
+    and the QC wall cannot call one check two things (round 4's critic:
+    Koehler's Viscosity 40C was "No verdict yet" on /qc, "QC due" on /floor)."""
+    due = [s for s in _specs(m) if s.get("last_qc_in_spec") is None]
+    return ([s for s in due if s.get("last_qc_at")], [s for s in due if not s.get("last_qc_at")])
+
+
+def qc_wait_word(m: dict) -> str:
+    """The cause word for an instrument whose QC is waiting: "QC due" when
+    any of its waiting checks has lapsed, else "No verdict yet"."""
+    lapsed, never = _waiting(m)
+    return "QC due" if lapsed or not never else "No verdict yet"
+
+
+def _waiting_words(m: dict) -> List[str]:
+    """["QC due on Density", "no verdict yet on Viscosity 40C"]: each
+    waiting check under its own word, the lapsed first (they are the ones
+    that were passing)."""
+    lapsed, never = _waiting(m)
+    out = []
+    if lapsed:
+        out.append("QC due on %s" % _tests(lapsed))
+    if never:
+        out.append(("no verdict yet on %s" if out else "No verdict yet on %s") % _tests(never))
+    return out
+
+
 def last_qc(m: dict) -> dict:
     """The Last QC column. Never a verdict word on a run check: the verdict
     is the Can it run? column's, said once. What it does distinguish is the
@@ -178,7 +209,7 @@ def _cause(m: dict, ready: dict) -> tuple:
         return ("not_ok-qc", "QC out of spec", "qc")
     if state == OK_BUT:
         if reason.startswith("QC due"):
-            return ("ok_but-qc", "QC due", "qc")
+            return ("ok_but-qc", qc_wait_word(m), "qc")
         if reason.startswith("Calibration"):
             return ("ok_but-cal", "Calibration overdue", "maintenance")
         return ("ok_but-pm", "PM overdue", "maintenance")
@@ -205,8 +236,7 @@ def _too(m: dict, keys: List[str]) -> str:
     not among them: the row's Bench column says it."""
     out = []
     if "ok_but-qc" in keys:
-        due = [s for s in _specs(m) if s.get("last_qc_in_spec") is None]
-        out.append("QC due on %s too" % _tests(due))
+        out.extend(ui_live._lower_first(w) + " too" for w in _waiting_words(m))
     for k, w, kind in (("ok_but-cal", "calibration", "calibration"), ("ok_but-pm", "PM", "pm")):
         if k in keys:
             out.append("%s overdue%s too" % (w, _since(m, kind)))
@@ -223,8 +253,7 @@ def _primary(m: dict, ready: dict) -> str:
     if state == OK_BUT and reason.startswith("Calibration"):
         return "Calibration overdue" + _since(m, "calibration")
     if state == OK_BUT and reason.startswith("QC due"):
-        due = [s for s in specs if s.get("last_qc_in_spec") is None]
-        return "QC due on %s" % _tests(due)
+        return " · ".join(_waiting_words(m))
     if state == OK_BUT:
         return "PM overdue" + _since(m, "pm")
     if state == OFF_LINE:
@@ -291,7 +320,7 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
     if bad:
         qc = ("Out of spec", "bad", "%d of %d %s" % (len(bad), len(specs),
                                                     "check" if len(specs) == 1 else "checks"))
-    elif due and lq["at"]:
+    elif _waiting(m)[0]:
         qc = ("QC due", "due", "%s · no verdict in the window" % _tests(due))
     elif due or lq["word"] == "No verdict yet":
         qc = ("No verdict yet", "unknown", _tests(due) or "Assigned, never run")
@@ -392,7 +421,8 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
         "cause": {"key": key, "words": cause, "href": href(uid, section)} if key else None,
         # every problem it has, worst first; a tile and its filter are about
         # everyone with the problem, not only those it is the worst for
-        "problems": [{"key": k, "words": ui_live.PROBLEM_WORDS[k]} for k in keys],
+        "problems": [{"key": k, "words": qc_wait_word(m) if k == "ok_but-qc"
+                      else ui_live.PROBLEM_WORDS[k]} for k in keys],
         "last_qc": last_qc(m),
         "bench": bench(m),
         "level_uid": m.get("level_uid") or "",
@@ -443,9 +473,15 @@ def needs_you(rows: List[dict]) -> dict:
     for key, members in groups.items():
         members.sort(key=lambda r: (r["title"].lower(), r["uid"]))
         state = key.split("-", 1)[0]
+        # the tile says what its members have: "QC due", "No verdict yet",
+        # or both when it holds both kinds (one key, one filter)
+        said = sorted({p["words"] for r in members for p in r["problems"] if p["key"] == key},
+                      key=lambda w: (w != ui_live.PROBLEM_WORDS[key], w))
+        cause = (said[0] + "".join(" or " + ui_live._lower_first(w) for w in said[1:])) if said \
+            else ui_live.PROBLEM_WORDS[key]
         tiles.append({
             "key": key, "state": state, "glyph": GLYPH[state],
-            "cause": ui_live.PROBLEM_WORDS[key],
+            "cause": cause,
             "next": {"text": CAUSE_NEXT.get(key, "Open each record")},
             "link": "Show it" if len(members) == 1 else "Show them",
             "href": "/?cause=" + key,

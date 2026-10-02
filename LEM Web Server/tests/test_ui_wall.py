@@ -584,3 +584,115 @@ class TestAttentionRuns:
     def test_order_is_kept_even_if_a_state_comes_back(self):
         items = [{"state": "a"}, {"state": "b"}, {"state": "a"}]
         assert [g[0]["state"] for g in ui_wall.runs(items, "state")] == ["a", "b", "a"]
+
+
+# ── round 5: one check, one word, on both walls ─────────────────────────────
+#
+# The round-4 critic: /qc called Koehler K23000's Viscosity 40C "No verdict
+# yet · Never run" (right: §4.1 says a check that is assigned but has never
+# run has no verdict yet), while /floor called the same check "QC due" in its
+# bay, in Needs attention ("QC due on Viscosity 40C") and in the headline's
+# sub-line. /wall alternates the two, so the room saw one check called two
+# things a minute apart. "QC due" means the check ran before and its pass
+# has lapsed; a check that never ran has nothing to lapse. The floor now
+# says, per check, the word /qc says: these tests hold the floor's QC words
+# to /qc's card words for the same instruments, so the two cannot drift.
+
+KOEHLER = dict(uid="kv", title="Koehler K23000")
+
+
+def never_run(test="Viscosity 40C"):
+    return spec(test, None, at="")
+
+
+def _qc_words_on_floor(w, details, uid, title):
+    """Every QC word the floor says about one instrument: its bay line, its
+    Needs-attention line (or its merged group's), and the headline's sub."""
+    said = [details.get(uid, "")]
+    for a in w["attention"]:
+        if title in a["names"]:
+            said.append(a["detail"])
+    said.append(w["sub"])
+    return " | ".join(said)
+
+
+class TestOneWordPerCheckOnBothWalls:
+    def fleet(self):
+        return [machine("kv", "Koehler K23000", specs=[never_run()]),
+                machine("pf", "PAC Flash 1", specs=[spec("Flash Point", None, at="2026-09-20T10:00:00")]),
+                of_state("ok", "fine")]
+
+    def test_a_check_that_never_ran_is_no_verdict_yet_on_the_floor_too(self):
+        ms = self.fleet()
+        q = ui_wall.qc(ms, rows=[], href=href, now=NOW)
+        card = {c["uid"]: c["verdict"]["word"] for c in q["cards"]}
+        assert card == {"kv": "No verdict yet", "pf": "QC due", "fine": "In spec"}
+        p = payload(ms)
+        w = ui_wall.floor(p)
+        d = ui_wall.bay_details(p, now=NOW)
+        assert d["kv"] == "No verdict yet"
+        assert d["pf"] == "QC due"
+        kv = [a for a in w["attention"] if "Koehler K23000" in a["names"]]
+        assert kv and kv[0]["detail"] == "No verdict yet on Viscosity 40C", kv
+        pf = [a for a in w["attention"] if "PAC Flash 1" in a["names"]]
+        assert pf and pf[0]["detail"] == "QC due on Flash Point", pf
+        # the two are different facts, so they are two lines, not one merged
+        # line under one word
+        assert kv[0] is not pf[0]
+        assert "no verdict yet" in w["sub"] and "QC due" in w["sub"], w["sub"]
+
+    def test_the_instrument_word_is_unchanged(self):
+        """The instrument's own word stays the §4.1 instrument word: an
+        assigned check with no verdict is still "OK to run, but…" (it can
+        run, somebody should run the standard). Only the reason changes."""
+        p = payload([machine("kv", "Koehler K23000", specs=[never_run()])])
+        r = p["instruments"][0]
+        assert r["readiness"]["word"] == "OK to run, but…"
+        assert r["readiness"]["detail"] == "No verdict yet on Viscosity 40C"
+        assert r["cause"]["words"] == "No verdict yet"
+        assert r["readiness"]["next"]["text"] == "Run AF26"
+        qc_tile = [t for t in r["readiness"]["tiles"] if t["key"] == "qc"][0]
+        assert qc_tile["word"] == "No verdict yet"
+
+    def test_one_instrument_with_both_says_both_each_by_its_own_word(self):
+        """Lapsed on Density, never run on Viscosity: the record's line names
+        each check under the word /qc gives that check."""
+        p = payload([machine("kv", "Koehler K23000",
+                             specs=[never_run(), spec("Density", None, at="2026-09-20T10:00:00")],
+                             maint=[task("pm")])])
+        r = p["instruments"][0]
+        assert r["readiness"]["detail"] == \
+            "QC due on Density · no verdict yet on Viscosity 40C · PM overdue since 1 Sep too"
+        assert r["cause"]["words"] == "QC due"
+
+    def test_needs_you_names_the_tile_by_what_its_members_have(self):
+        p = payload([machine("kv", "Koehler K23000", specs=[never_run()])])
+        tiles = {t["key"]: t["cause"] for t in p["needs_you"]["tiles"]}
+        assert tiles["ok_but-qc"] == "No verdict yet"
+        p = payload([machine("kv", "Koehler K23000", specs=[never_run()]),
+                     machine("pf", "PAC Flash 1", specs=[spec("Flash Point", None, at="2026-09-20T10:00:00")])])
+        tiles = {t["key"]: t["cause"] for t in p["needs_you"]["tiles"]}
+        assert tiles["ok_but-qc"] == "QC due or no verdict yet"
+
+    @pytest.mark.parametrize("mix", [
+        ("never",), ("lapsed",), ("never", "lapsed"), ("never", "in"), ("lapsed", "in"),
+        ("never", "out"), ("lapsed", "out"), ("never", "lapsed", "in"),
+    ])
+    def test_every_qc_word_the_floor_says_is_a_word_qc_says(self, mix):
+        """The invariant, over every mix of check states on one instrument:
+        if the floor says "QC due" anywhere about it, /qc has a "QC due"
+        card for it; if it says "no verdict yet", /qc has a "No verdict yet"
+        card. Never one without the other."""
+        make = {"never": lambda i: spec("T%d" % i, None, at=""),
+                "lapsed": lambda i: spec("T%d" % i, None, at="2026-09-20T10:00:00"),
+                "in": lambda i: spec("T%d" % i, True),
+                "out": lambda i: spec("T%d" % i, False)}
+        ms = [machine("kv", "Koehler K23000", specs=[make[k](i) for i, k in enumerate(mix)])]
+        q = ui_wall.qc(ms, rows=[], href=href, now=NOW)
+        qc_words = {c["verdict"]["word"].lower() for c in q["cards"]}
+        p = payload(ms)
+        said = _qc_words_on_floor(ui_wall.floor(p, ms), ui_wall.bay_details(p, now=NOW),
+                                  "kv", "Koehler K23000").lower()
+        said += " | " + p["instruments"][0]["readiness"]["detail"].lower()
+        for word in ("qc due", "no verdict yet"):
+            assert (word in said) == (word in qc_words), (word, said, qc_words)

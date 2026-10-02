@@ -139,12 +139,14 @@ def attention(rows: List[dict], failed: Optional[Dict[str, List[str]]] = None) -
         if r["readiness"]["state"] not in NEEDS_YOU or not r.get("cause"):
             continue
         # a stop is never merged: each is named with its own failed checks
+        # nor are "QC due" and "No verdict yet": one cause key (one filter),
+        # two facts, each said in /qc's word for it
         key = (r["readiness"]["state"], r["cause"]["key"],
-               r["uid"] if r["readiness"]["state"] == NOT_OK else "")
+               r["uid"] if r["readiness"]["state"] == NOT_OK else "", r["cause"]["words"])
         groups.setdefault(key, []).append(r)
     order = list(ui_live.PROBLEM_WORDS)
     items = []
-    for (state, cause, _one), members in groups.items():
+    for (state, cause, _one, _words), members in groups.items():
         members.sort(key=lambda r: (r["title"].lower(), r["uid"]))
         one = len(members) == 1
         items.append({
@@ -158,6 +160,7 @@ def attention(rows: List[dict], failed: Optional[Dict[str, List[str]]] = None) -
             "stopped": all(m["bench"]["state"] in ("stopped", "never") for m in members),
         })
     items.sort(key=lambda i: (RANK[i["state"]], order.index(i["key"]) if i["key"] in order else 99,
+                              i["detail"] != ui_live.PROBLEM_WORDS.get(i["key"]) and not i["detail"].startswith("QC due"),
                               i["names"][0].lower()))
     shown, rest = items[:ATTENTION_MAX], items[ATTENTION_MAX:]
     return shown, sum(len(i["names"]) for i in rest)
@@ -212,8 +215,8 @@ def bay_details(payload: dict, now: Optional[datetime] = None, short: bool = Fal
         if state == NOT_OK:
             line = "QC out of spec"
         elif state == OK_BUT:
-            key = (r.get("cause") or {}).get("key", "")
-            line = ui_live.PROBLEM_WORDS.get(key, r["readiness"].get("reason") or "")
+            cause = r.get("cause") or {}
+            line = cause.get("words") or ui_live.PROBLEM_WORDS.get(cause.get("key", ""), r["readiness"].get("reason") or "")
         elif state == OFF_LINE:
             line = r["readiness"].get("reason") or "Off line"
         elif state == CANT_TELL:
@@ -273,9 +276,12 @@ def floor(payload: dict, machines: Optional[List[dict]] = None) -> dict:
         k = len(by[OK_BUT])
         if k:
             order = list(ui_live.PROBLEM_WORDS)
-            causes = sorted({r["cause"]["key"] for r in by[OK_BUT] if r.get("cause")},
-                            key=lambda c: order.index(c) if c in order else 99)
-            words = _and([_lower_first(ui_live.PROBLEM_WORDS.get(c, c)) for c in causes])
+            # each cause in the word its instruments' rows say ("QC due",
+            # "No verdict yet"), so the sentence and /qc agree
+            causes = sorted({(r["cause"]["key"], r["cause"]["words"]) for r in by[OK_BUT] if r.get("cause")},
+                            key=lambda c: (order.index(c[0]) if c[0] in order else 99,
+                                           c[1] != ui_live.PROBLEM_WORDS.get(c[0]), c[1]))
+            words = _and([_lower_first(w) for _k, w in causes])
             sub = "%d %s attention: %s." % (k, _plural(k, "needs", "need"), words)
         else:
             sub = "Nothing needs attention."
