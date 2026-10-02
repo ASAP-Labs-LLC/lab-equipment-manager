@@ -2284,6 +2284,32 @@
    },
    "v4_spec": "0/0 · 0/0 after the road returns; 0 results filed while dark. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
+  "T2L": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0,
+    "filed_while_dark": 0,
+    "records_resent": {
+     "ge": 100
+    },
+    "v2_syncs": {
+     "ge": 1
+    },
+    "store_replays_tried": {
+     "ge": 240
+    },
+    "store_replays_accepted": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 3 (critic, T-P8 round 2: unique_seq_off survived, and in T2 with lost answers 418 re-sent records were kept out of the record by LEM's de-duplication alone, which no scenario checked). T2's 2 h outage and 240 held prints; when the roads return the first 2 requests on each road are executed by LEM and their answers lost (at the 300 s backoff cap, so ~40 min to settle), so the bench re-sends what LEM holds: records_resent >= 100 proves the resend path ran, and dup 0 / lost 0 / res_lost 0 must hold through it. Then a second writer replays every bench row (all >= 240, uid/epoch/seq as written) into the store through its own write path: store_replays_accepted must be 0 — the store refuses any (uid, epoch, seq) it holds. D2 still holds results while dark (filed_while_dark 0)."
+  },
   "D1": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
    "v3.9": {

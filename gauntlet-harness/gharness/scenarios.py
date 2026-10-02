@@ -490,6 +490,46 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         t["filed_while_dark"] = filed_dark
         return t
 
+    #: Sync answers lost after LEM has executed them, per road, when T2L's
+    #: roads return: enough that the bench re-sends what LEM already holds
+    #: several times over, on both roads, before an answer gets through.
+    T2L_LOST_ANSWERS = 2
+
+    @new("T2L")
+    def t2l():
+        """T2, and the roads come back LOSING answers: LEM executes each sync
+        and the bench never hears (N3's shape), for the first few requests on
+        each road. The bench re-sends from its acked+1, so hundreds of the 240
+        held records reach LEM more than once, and LEM must keep one of each
+        — `records_resent` says the resends happened (dup 0 with none would
+        prove nothing). Then a second writer replays every bench row into
+        the store (`World.replay_bench_rows`): the store itself must refuse
+        each (uid, epoch, seq) it holds. Without this row no scenario could
+        see the server's de-duplication break (critic, T-P8 round 2)."""
+        need_v2("T2L", "lost sync answers after an outage: LEM's dedupe (P8)")
+        c = W()
+        heard = last_heard(c)
+        c.server.set_roads("down")
+        dark = []
+        for _ in range(240):
+            labs = [lab for _i, lab in _labs(c.emit(1))]
+            if unconfirmed(c, heard):
+                dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
+        c.server.set_roads("lose_response", times=T2L_LOST_ANSWERS)
+        # After two hours dark the uploader's backoff is at its 300 s cap:
+        # each lost answer costs a 300 s wait, so this settles for 40 min.
+        c.settle(polls=80)
+        tried, accepted = c.replay_bench_rows()
+        t = c.tally("T2L single_csv", "LEM down 2 h, 240 prints; the first "
+                    "answers after it are lost; then a second writer "
+                    "replays the bench's rows")
+        t["filed_while_dark"] = filed_dark
+        t["store_replays_tried"] = tried
+        t["store_replays_accepted"] = accepted
+        return t
+
     @new("D1")
     def d1():
         c = W(n_samples=5000)                           # 4,803 prints, all fileable

@@ -27,6 +27,9 @@ LEGACY_REPLAYS = ["F1L", "N2L"]
 # restart, and a bench whose v2 state is unknown (roads down / 503) — only a
 # 404 is an old server.
 ROUND_2 = ["CF2r", "N404", "N503"]
+# Round 3: T2 with lost answers, and the store asked directly whether it
+# refuses a (uid, epoch, seq) it holds (unique_seq_off had no row to fail).
+ROUND_3 = ["T2L"]
 
 BASELINE_19 = set("K1 K2 K3 K4 K5 K6 K7 K8 K9 N3 N4 F3 F4 F5 R2 R3 R4 R5 R6".split())
 
@@ -39,7 +42,7 @@ HARNESS_ONLY = ["A1j"]
 
 def test_every_section_9_scenario_has_both_rows():
     assert sorted(EXP) == sorted(SPEC_9 + LEGACY_REPLAYS + ROUND_2
-                                 + HARNESS_ONLY)
+                                 + ROUND_3 + HARNESS_ONLY)
     for sid, row in EXP.items():
         assert "v3.9" in row and "v4" in row and row["v4"], sid
         assert row.get("v4_spec"), sid

@@ -211,6 +211,11 @@ def run(args):
         target.verify_loaded(code_root)
     except Exception as e:
         harness_errors.append(str(e))
+    from gharness import hserver as _hs
+    if _hs.OBSERVE_ERRORS:
+        harness_errors.append("the harness could not read %d sync bodies, so "
+                              "their records were not counted: %s"
+                              % (len(_hs.OBSERVE_ERRORS), _hs.OBSERVE_ERRORS[:3]))
     viol = netguard.violations()
     if viol:
         harness_errors.append("production was called: %s" % (viol[:5],))

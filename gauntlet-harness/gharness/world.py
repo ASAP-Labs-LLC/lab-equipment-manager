@@ -263,6 +263,47 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                     raise RuntimeError("factor write: " + res["error"])
             self.server.app.config["SNAPSHOTS"].refresh()
 
+        def replay_bench_rows(self):
+            """A second writer replays every machine-log row this bench's
+            sync put in the store — a backup's rows merged back by hand, an
+            import re-run, a second ingest process — through the store's own
+            write path, exactly as written (uid, epoch, seq included).
+
+            Returns (rows tried, rows the store ACCEPTED). The store holds
+            the record's uniqueness of (uid, epoch, seq) itself; the sync's
+            ingest checks for a held seq before it writes, so no bench
+            behaviour alone ever asks the store that question, and this
+            does. A failed read of the rows raises: "nothing to replay" from
+            a read that failed would pass the check vacuously."""
+            store = self.lem_store()
+            path = os.environ["LEM_STORE_PATH"]
+            cols = ("machine_uid", "ts", "kind", "lab_id", "test_name",
+                    "value", "detail", "origin", "bench_epoch", "bench_seq",
+                    "content_key")
+            con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+            con.row_factory = sqlite3.Row
+            try:
+                rows = [tuple(r) for r in con.execute(
+                    "SELECT %s FROM lem_machine_log WHERE machine_uid = ? AND "
+                    "bench_seq IS NOT NULL ORDER BY id" % ", ".join(cols),
+                    [self.uid])]
+            finally:
+                con.close()
+            accepted = 0
+            try:
+                for r in rows:
+                    res = store.sql("INSERT INTO lem_machine_log (%s) VALUES "
+                                    "(%s)" % (", ".join(cols),
+                                              ", ".join("?" for _ in cols)),
+                                    list(r))
+                    if not res.get("error"):
+                        accepted += 1
+            finally:
+                close = getattr(store, "close", None)
+                if callable(close):
+                    close()
+            return len(rows), accepted
+
         # ── the journal on disk ──
         def journal_dir(self):
             return os.path.join(os.environ["LEM_JOURNAL_DIR"], self.uid)
