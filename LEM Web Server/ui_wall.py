@@ -26,6 +26,7 @@ are counted in tests/test_wall_pages.py.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -326,12 +327,73 @@ def fmt_qc(v, band: Sequence = ()) -> str:
     return ("%.4f" % f).rstrip("0").rstrip(".") if f != int(f) else "%.1f" % f
 
 
+MINUS = "\u2212"
+
+
+def _signed(text: str) -> str:
+    """A written number with the minus sign, not a hyphen: beside the band's
+    en dashes "-24.7 – -18.3" reads as a row of dashes."""
+    return MINUS + text[1:] if text.startswith("-") else text
+
+
 def _band_text(sp: dict) -> str:
     low, exp, high = _num(sp.get("low")), _num(sp.get("expected")), _num(sp.get("high"))
     if low is None or high is None:
         return ""
     lims = (low, exp, high) if exp is not None else (low, high)
-    return " – ".join(fmt_qc(x, lims) for x in lims)
+    return " – ".join(_signed(fmt_qc(x, lims)) for x in lims)
+
+
+def _band_words(sp: dict) -> tuple:
+    """("185.05 to 190.21", "187.63"): the card's limits, said as words so a
+    negative band ("−24.7 to −11.9") cannot be misread, and the target
+    apart. ("", "") without both limits."""
+    low, exp, high = _num(sp.get("low")), _num(sp.get("expected")), _num(sp.get("high"))
+    if low is None or high is None:
+        return "", ""
+    lims = tuple(x for x in (low, exp, high) if x is not None)
+    return ("%s to %s" % (_signed(fmt_qc(low, lims)), _signed(fmt_qc(high, lims))),
+            _signed(fmt_qc(exp, lims)) if exp is not None else "")
+
+
+def _split_code(name: str) -> tuple:
+    """"ASTM D6304 - Water, by Karl Fischer" -> ("ASTM D6304", "Water, by
+    Karl Fischer"). A name with no standard code in front stays whole."""
+    name = " ".join(str(name or "").split())
+    head, sep, rest = name.partition(" - ")
+    if sep and rest and re.match(r"^(ASTM|IP|ISO|EN|UOP|GPA|DIN|ANSI|API)\b", head):
+        return head, rest
+    return "", name
+
+
+def check_words(names: List[str]) -> Dict[str, tuple]:
+    """name -> (check, method) for one instrument's checks: what tells each
+    check apart, to lead the card, and what they share, for a quieter line.
+    Agilent GC 1's five are "10% Recovery" … "IBP" under "ASTM D2887/D86 ·
+    Distillation in Petroleum Products"; a lone check is its words without
+    its standard code ("Water, by Karl Fischer" under "ASTM D6304")."""
+    out: Dict[str, tuple] = {}
+    uniq = sorted({str(n) for n in names if n})
+    split = {n: _split_code(n) for n in uniq}
+    # checks of one method share a long start; the part after it is the check
+    groups: Dict[str, List[str]] = {}
+    for n in uniq:
+        groups.setdefault(split[n][0], []).append(n)
+    for code, members in groups.items():
+        rests = [split[n][1] for n in members]
+        cut, family = 0, ""
+        if len(rests) > 1:
+            pre = rests[0]
+            for r in rests[1:]:
+                while not r.startswith(pre):
+                    pre = pre[:-1]
+            c = pre.rfind(", ") + 2 if ", " in pre else 0
+            if c >= 8 and all(len(r) > c for r in rests):
+                cut, family = c, pre[:c - 2]
+        for n, r in zip(members, rests):
+            method = " · ".join(x for x in (code, family) if x)
+            out[n] = (r[cut:], method)
+    return out
 
 
 RULE_WORDS = {
@@ -361,6 +423,10 @@ def _control(series) -> Optional[dict]:
             "words": words + (" · provisional" if v.provisional else "")}
 
 
+def _key(test) -> str:
+    return " ".join(str(test or "").split()).lower()
+
+
 def qc(machines: Optional[List[dict]], *, rows: Optional[List[dict]],
        href: Callable[[str, str], str], now: Optional[datetime] = None,
        error: Optional[str] = None) -> dict:
@@ -384,12 +450,27 @@ def qc(machines: Optional[List[dict]], *, rows: Optional[List[dict]],
         uid = m.get("machine_uid")
         title = m.get("title") or uid
         checking_in = bool(m.get("live") or m.get("module_running"))
-        for sp in m.get("effective_specs") or []:
-            if sp.get("last_qc_superseded_by"):
-                continue
+        specs = [sp for sp in m.get("effective_specs") or [] if not sp.get("last_qc_superseded_by")]
+        # §4.1: an assignment with no result yet is a check too ("No verdict
+        # yet"), not an absence. Production's Eravap has only this.
+        have = {_key(sp.get("test_name")) for sp in specs}
+        for t in m.get("qc_targets") or []:
+            test = t.get("test") or t.get("test_name") or ""
+            if _key(test) and _key(test) not in have:
+                have.add(_key(test))
+                specs.append({"test_name": " ".join(str(test).split()),
+                              "sample_id": t.get("sample") or t.get("sample_name") or "",
+                              "_assigned_only": True})
+        words = check_words([sp.get("test_name") for sp in specs])
+        for sp in specs:
             ok = sp.get("last_qc_in_spec")
             key = "out" if ok is False else "in" if ok is True else (
                 "due" if sp.get("last_qc_at") else "never")
+            if key == "in" and not checking_in:
+                # §4.1: a stopped bench's check has no verdict yet. Its last
+                # pass is history (shown, dated), not today's answer; the
+                # floor calls the same instrument "Can't tell".
+                key = "never"
             word, glyph, rank = VERDICTS[key]
             test = str(sp.get("test_name") or "")
             lims = (sp.get("low"), sp.get("expected"), sp.get("high"))
@@ -412,15 +493,18 @@ def qc(machines: Optional[List[dict]], *, rows: Optional[List[dict]],
                 # failed, and a "1 beyond 3s" chip beside it says it again.
                 # The chip is for the card whose verdict looks fine.
                 control = None if key == "out" else _control(series)
+            rng, target = _band_words(sp)
+            check, method = words.get(test, (test, ""))
             cards.append({
-                "uid": uid, "title": title, "test": test, "sample_id": sp.get("sample_id") or "",
+                "uid": uid, "title": title, "test": test, "check": check, "method": method,
+                "sample_id": sp.get("sample_id") or "",
                 "href": href(uid, "qc"), "rank": rank,
                 "verdict": {"key": key, "word": word, "glyph": glyph,
                             "note": "" if checking_in else "bench stopped"},
                 "last": {"value": fmt_qc(sp.get("last_qc_value"), lims)
                          if sp.get("last_qc_at") else None,
                          "at": sp.get("last_qc_at") or None, "band": _band_text(sp),
-                         "units": sp.get("units") or ""},
+                         "range": rng, "target": target, "units": sp.get("units") or ""},
                 "points": points, "history": history, "control": control,
             })
     cards.sort(key=lambda c: (c["rank"], c["title"].lower(), c["test"].lower()))
@@ -455,7 +539,7 @@ def qc(machines: Optional[List[dict]], *, rows: Optional[List[dict]],
         for c in cards:
             if c["verdict"]["key"] == "out":
                 by.setdefault(c["title"], []).append(c["test"])
-        lines = ["%s · %s." % (t, _and(tests)) for t, tests in list(by.items())[:2]]
+        lines = ["%s · %s." % (t, compact_tests(tests)) for t, tests in list(by.items())[:2]]
         if len(by) > 2:
             lines.append("%d more %s." % (len(by) - 2, _plural(len(by) - 2, "instrument", "instruments")))
         sub = " ".join(lines)

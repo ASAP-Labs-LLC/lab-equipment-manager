@@ -265,7 +265,12 @@ class TestTheFirstPaintIsTheAnswer:
 
     def test_qc_verdicts_are_the_snapshots(self, seeded):
         """The wall's verdict for a check is the record's: the snapshot's
-        last_qc_in_spec, the field the record page reads."""
+        last_qc_in_spec, the field the record page reads. Two §4.1 rules
+        sit on top, and both are held here: every ASSIGNED check is a card
+        (an assignment with no result yet is "No verdict yet", round 2's
+        Eravap), and a stopped bench's old pass is "No verdict yet", never
+        "In spec" (the floor calls it Can't tell). A failure is never
+        softened by a stopped bench."""
         app, _s, _l = seeded
         q = app.test_client().get("/api/ui/wall/qc").get_json()
         snap = app.config["SNAPSHOTS"].get(build_if_missing=False)
@@ -274,11 +279,16 @@ class TestTheFirstPaintIsTheAnswer:
             for sp in m.get("effective_specs") or []:
                 if not sp.get("last_qc_superseded_by"):
                     truth[(m["machine_uid"], sp["test_name"])] = sp.get("last_qc_in_spec")
+            for t in m.get("qc_targets") or []:
+                name = " ".join(str(t.get("test") or t.get("test_name") or "").split())
+                if name and not any(k[0] == m["machine_uid"] and k[1].lower() == name.lower() for k in truth):
+                    truth[(m["machine_uid"], name)] = None
         assert len(q["cards"]) == len(truth)
         for c in q["cards"]:
             want = truth[(c["uid"], c["test"])]
+            stopped = c["verdict"]["note"] == "bench stopped"
             if want is True:
-                assert c["verdict"]["word"] == "In spec"
+                assert c["verdict"]["word"] == ("No verdict yet" if stopped else "In spec")
             elif want is False:
                 assert c["verdict"]["word"] == "Out of spec"
             else:

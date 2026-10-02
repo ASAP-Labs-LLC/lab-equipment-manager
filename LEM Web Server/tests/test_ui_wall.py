@@ -427,3 +427,139 @@ class TestQcCards:
         rows = qc_rows("a", "X", [1.5, 1.4, 1.6, 1.5, 1.45, 1.55])
         q = ui_wall.qc([machine("a", "A", specs=[spec("X", True)])], rows=rows, href=href, now=NOW)
         assert q["cards"][0]["control"] is None
+
+
+# ── /qc on production's shape (round 2) ─────────────────────────────────────
+#
+# Round 1's /qc was checked on demo data and on a hand-made Eravap that had
+# been given an `effective_specs` row. Production's Eravap has no such row:
+# its RVP check exists only as an assignment (`qc_targets`), because its
+# bench has never reported a QC result. A wall that reads only
+# effective_specs therefore dropped the check, and its headline
+# ("2 checks out of spec · 17 in spec") counted a fleet one check short. The
+# room would read that as "every assigned check is accounted for", which it
+# was not. The fixture below is production's /api/machines answer of 1 Oct.
+
+import json as _json
+import os as _os
+
+PROD_FIXTURE = _os.path.join(_os.path.dirname(__file__), "fixtures", "machines_live_2026-10-01.json")
+
+
+def prod_machines():
+    with open(PROD_FIXTURE, encoding="utf-8") as fh:
+        return _json.load(fh)["machines"]
+
+
+class TestQcAssignmentsAndStoppedBenches:
+    RVP = "ASTM D6378 - Reid Vapor Pressure (VPx)"
+
+    def test_an_assignment_with_no_result_yet_is_a_card(self):
+        """§4.1: Eravap has an assignment (Pentane / RVP) and its module is
+        stopped, so it reads "No verdict yet · bench stopped", never nothing
+        and never "No QC assigned"."""
+        ev = machine("ev", "Eravap", running=False, module_state="stopped",
+                     targets=[{"sample": "Pentane", "test": self.RVP}])
+        q = ui_wall.qc([ev], rows=[], href=href, now=NOW)
+        assert len(q["cards"]) == 1
+        c = q["cards"][0]
+        assert (c["title"], c["test"], c["verdict"]["word"], c["verdict"]["note"]) == (
+            "Eravap", self.RVP, "No verdict yet", "bench stopped")
+        assert c["sample_id"] == "Pentane"
+        assert c["last"]["value"] is None and c["last"]["band"] == ""
+        assert q["headline"] == "1 check no verdict yet"
+        assert q["counts"]["never"] == 1
+
+    def test_the_snapshots_own_target_shape_is_read_too(self):
+        """snapshot_service writes {sample_name, test_name}; the merged
+        /api/machines answer says {sample, test}. Either is an assignment."""
+        ev = machine("ev", "Eravap", targets=[{"sample_name": "Pentane", "test_name": self.RVP}])
+        q = ui_wall.qc([ev], rows=[], href=href, now=NOW)
+        assert [(c["test"], c["verdict"]["word"], c["verdict"]["note"]) for c in q["cards"]] == [
+            (self.RVP, "No verdict yet", "")]
+
+    def test_an_assignment_that_has_a_spec_is_one_card_not_two(self):
+        gc = machine("gc", "Agilent GC 1", specs=[spec("D10", True)],
+                     targets=[{"sample": "AF26", "test": "D10"}, {"sample": "AF26", "test": " d10 "}])
+        q = ui_wall.qc([gc], rows=[], href=href, now=NOW)
+        assert [c["test"] for c in q["cards"]] == ["D10"]
+
+    def test_a_stopped_benchs_old_pass_is_no_verdict_yet(self):
+        """§4.1: "No verdict yet" is also a check whose bench is stopped. A
+        pass from before the bench stopped says nothing about today, and the
+        floor already calls that instrument "Can't tell"; /qc saying
+        "In spec" beside it would be two answers to one question. The last
+        result is still shown, with its date, so nothing is hidden."""
+        vi = machine("vi", "Viscocity", running=False, module_state="stopped",
+                     specs=[spec("Visc 40", True, value=2.34, low=2.2989, high=2.3817, expected=2.3403)])
+        q = ui_wall.qc([vi], rows=[], href=href, now=NOW)
+        c = q["cards"][0]
+        assert (c["verdict"]["word"], c["verdict"]["note"]) == ("No verdict yet", "bench stopped")
+        assert c["last"]["value"] == "2.3400" and c["last"]["at"]
+
+    def test_a_stopped_benchs_failure_still_says_out_of_spec(self):
+        """Out of spec is what makes the floor say Not OK to run; stopping
+        the bench does not make a failed check go away (ui_live.readiness
+        puts QC before the bench). Same for QC due."""
+        ms = [machine("a", "A", running=False, module_state="stopped", specs=[spec("X", False)]),
+              machine("b", "B", running=False, module_state="stopped",
+                      specs=[spec("Y", None, at="2026-09-20T10:00:00")])]
+        q = ui_wall.qc(ms, rows=[], href=href, now=NOW)
+        assert [(c["verdict"]["word"], c["verdict"]["note"]) for c in q["cards"]] == [
+            ("Out of spec", "bench stopped"), ("QC due", "bench stopped")]
+
+    def test_production_every_assigned_check_is_on_the_wall(self):
+        q = ui_wall.qc(prod_machines(), rows=[], href=href, now=NOW)
+        assigned = sum(max(len(m.get("effective_specs") or []), len(m.get("qc_targets") or []))
+                       for m in prod_machines())
+        assert len(q["cards"]) == assigned == 20
+        by = {(c["title"], c["verdict"]["word"], c["verdict"]["note"]) for c in q["cards"]}
+        assert ("Eravap", "No verdict yet", "bench stopped") in by
+        assert ("Viscocity", "No verdict yet", "bench stopped") in by
+        assert q["headline"] == "2 checks out of spec · 2 no verdict yet · 16 in spec"
+        assert sum(q["counts"].values()) == 20
+
+
+class TestQcCardWords:
+    """A card on a TV has room for about 40 characters a line. Production's
+    Agilent GC 1 has five checks whose names share their first 51 characters
+    ("ASTM D2887/D86 - Distillation in Petroleum Products, ") and differ only
+    after it, so cut to fit, all five read the same: two Out of spec cards
+    that could not be told from three In spec ones. The card leads with what
+    tells the check apart and puts the shared method on a quieter line that
+    may be cut."""
+
+    def card(self, q, title, part):
+        return next(c for c in q["cards"] if c["title"] == title and part in c["test"])
+
+    def test_gc1s_five_checks_are_told_apart_by_what_differs(self):
+        q = ui_wall.qc(prod_machines(), rows=[], href=href, now=NOW)
+        gc = [c for c in q["cards"] if c["title"] == "Agilent GC 1"]
+        assert sorted(c["check"] for c in gc) == ["10% Recovery", "50% Recovery", "90% Recovery", "FBP", "IBP"]
+        assert {c["method"] for c in gc} == {"ASTM D2887/D86 · Distillation in Petroleum Products"}
+        assert [c["check"] for c in gc if c["verdict"]["key"] == "out"] == ["10% Recovery", "50% Recovery"]
+
+    def test_a_single_check_drops_its_standard_code_to_the_method_line(self):
+        q = ui_wall.qc(prod_machines(), rows=[], href=href, now=NOW)
+        aq = self.card(q, "Aquamax 1", "Water")
+        assert (aq["check"], aq["method"]) == ("Water, by Karl Fischer", "ASTM D6304")
+        vi = self.card(q, "Viscocity", "Viscosity")
+        assert (vi["check"], vi["method"]) == ("Viscosity - Kinematic at 40°C (cSt)", "ASTM D445 40C")
+
+    def test_a_name_with_no_code_is_kept_whole(self):
+        q = ui_wall.qc([machine("a", "A", specs=[spec("Flash Point", True)])], rows=[], href=href, now=NOW)
+        assert (q["cards"][0]["check"], q["cards"][0]["method"]) == ("Flash Point", "")
+
+    def test_the_limits_are_said_so_a_minus_cannot_be_read_as_a_dash(self):
+        """"-24.7 – -18.3 – -11.9" reads as a range of dashes. The card says
+        "−24.7 to −11.9" with the target apart, using the minus sign."""
+        q = ui_wall.qc(prod_machines(), rows=[], href=href, now=NOW)
+        pp = self.card(q, "OptiMPP 1", "Pour Point")
+        assert (pp["last"]["range"], pp["last"]["target"]) == ("−24.7 to −11.9", "−18.3")
+        assert pp["last"]["band"] == "−24.7 – −18.3 – −11.9"
+        d10 = self.card(q, "Agilent GC 1", "10% Recovery")
+        assert (d10["last"]["range"], d10["last"]["target"]) == ("185.05 to 190.21", "187.63")
+
+    def test_the_sub_line_says_what_differs_too(self):
+        q = ui_wall.qc(prod_machines(), rows=[], href=href, now=NOW)
+        assert q["sub"] == "Agilent GC 1 · 10% Recovery and 50% Recovery."
