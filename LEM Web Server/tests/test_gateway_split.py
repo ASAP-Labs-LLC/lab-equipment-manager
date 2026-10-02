@@ -462,19 +462,22 @@ class TestEveryReaderNamesTheEffectiveView:
         # annotation hides is still in the record and still holds its key.
         # The fourth bench_api.py read counts the rows a projected record
         # already has when its v2 sync arrives (§10.3, M6).
+        # lem_store.py gains one in round 4: an approval may name only rows
+        # on its own bench, so `apm_names_a_candidate` reads the named row's
+        # bench — hidden or not, as the hide trigger already does.
         # custody.py: the backup manifest's daily log digest (transfer
         # §11), an audit over every row — a hidden row is still in the
         # record, and a backup that skipped it could not prove it unaltered.
-        # bridge.py (2) and legacy_import.py (5 of 12): reads of LABCORE's
+        # bridge.py (2) and legacy_import.py: reads of LABCORE's
         # `lem_machine_log`, which has no effective view — the import and
         # the pull copy every row a v3.9 bench wrote (§10.1, §10.4).
-        # legacy_import.py (the other 7): identity and custody checks on the
+        # legacy_import.py (the rest): identity and custody checks on the
         # store (a legacy key or a bench key is unique over every row, hidden
         # or not) and the import's own count and sample of what it copied.
         assert files == ["bench_api.py"] * 4 + ["bridge.py"] * 2 + [
-            "custody.py"] + ["legacy_import.py"] * 12 + [
-            "lem_store.py", "lem_store.py", "log_mirror.py",
-            "log_mirror.py", "web_app.py", "web_app.py"], allowed
+            "custody.py", "dedupe.py", "dedupe.py"] + [
+            "legacy_import.py"] * 12 + ["lem_store.py"] * 4 + [
+            "log_mirror.py", "log_mirror.py", "web_app.py", "web_app.py"], allowed
 
     def test_the_check_would_catch_a_split_literal(self, tmp_path):
         bad = tmp_path / "bad.py"

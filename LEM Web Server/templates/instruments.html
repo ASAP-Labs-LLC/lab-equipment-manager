@@ -15,8 +15,8 @@
 {% block topbar %}
   <h1 class="bar-title">Instruments</h1>
   <nav class="seg seg-lg view-seg" aria-label="Instruments view" data-testid="view-seg">
-    <a href="/" aria-current="page">List</a>
-    <a href="/floor" data-testid="view-map">Floor map</a>
+    <a href="/"{% if view != 'map' %} aria-current="page"{% endif %} data-testid="view-list">List</a>
+    <a href="/?view=map"{% if view == 'map' %} aria-current="page"{% endif %} data-testid="view-map">Floor map</a>
   </nav>
   <span class="spacer"></span>
   <div class="find" id="find" data-testid="find">
@@ -38,7 +38,7 @@
   </div>
 {% endblock %}
 {% block content %}
-<main class="content inst-home" id="main" tabindex="-1" data-testid="instruments-page"
+<main class="content inst-home{% if view == 'map' %} inst-map{% endif %}" id="main" tabindex="-1" data-testid="instruments-page" data-view="{{ view }}"
       data-bell-folds="instruments"
       data-has-quality="{{ 'true' if has_quality else 'false' }}">
   <header class="page-head" aria-label="The fleet">
@@ -68,6 +68,44 @@
     {%- endif %}
   </div>
 
+  {%- if view == 'map' %}
+  {#- The floor map (ia-final §3.2, piece 12): the plan, sized to the bays
+      somebody placed, and the Needs-you list in a 300px column. Nothing on
+      it moves until Arrange… is entered (signed in, on purpose) and left
+      with Done. static/js/plan.js draws the plan; floor_map.js runs it. -#}
+  <div class="map-layout" id="floor-map" data-testid="floor-map"{% if data.state != 'ready' %} hidden{% endif %}>
+    <section class="card plan-card" id="plan-card" aria-labelledby="plan-title" data-testid="plan-card">
+      <div class="plan-bar">
+        <h2 id="plan-title" class="plan-title">Floor plan</h2>
+        <nav class="seg seg-links level-seg" id="level-seg" aria-label="Level" data-testid="level-seg" hidden></nav>
+        <span class="spacer"></span>
+        <span class="caption plan-caption" id="plan-caption" role="status"></span>
+        <button type="button" class="btn btn-ghost btn-sm arrange-btn" id="arrange" data-gated="arrange the floor"
+                aria-pressed="false" aria-controls="arrange-bar" data-testid="arrange"><span class="ico ico-lock lockmark" aria-hidden="true"></span>Arrange…</button>
+      </div>
+      <div class="arrange-bar" id="arrange-bar" data-testid="arrange-bar" role="region" aria-label="Arranging the floor" hidden>
+        <div class="ab-words">
+          <b id="arrange-head">Arranging</b>
+          <span id="arrange-text" class="caption">Drag an instrument to an empty bay, or pick it and then a bay. Each move is saved at once.</span>
+          <span id="arrange-error" class="ab-error" role="alert" hidden></span>
+        </div>
+        <button type="button" class="btn btn-sm" id="arrange-retry" hidden></button>
+        <button type="button" class="btn btn-primary btn-sm" id="arrange-done" data-testid="arrange-done">Done</button>
+      </div>
+      <div class="plan" id="plan" data-testid="plan"></div>
+      <p class="plan-empty" id="plan-empty" data-testid="plan-empty" hidden></p>
+      <div class="plan-foot" id="plan-unplaced" data-testid="unplaced" hidden></div>
+    </section>
+    <section class="card needs needs-col" id="needs" aria-labelledby="needs-title" data-testid="needs-you">
+      <div class="bar">
+        <h2 id="needs-title">Needs you</h2>
+        <span class="caption" id="needs-caption" role="status"></span>
+      </div>
+      <div class="ntiles" id="needs-tiles"></div>
+      <p class="needs-empty" id="needs-empty" hidden><span class="glyph final" aria-hidden="true"></span>Nothing needs you. Problems show here as they happen.</p>
+    </section>
+  </div>
+  {%- else %}
   <section class="card checklist needs" id="needs" aria-labelledby="needs-title" data-testid="needs-you"{% if data.state != 'ready' %} hidden{% endif %}>
     <div class="bar">
       <h2 id="needs-title">Needs you</h2>
@@ -101,10 +139,15 @@
     <p class="table-empty" id="inst-none" hidden></p>
     <p class="table-foot caption" data-testid="inst-foot">New instruments are added in LabStation › LEM module › New machine…</p>
   </section>
+  {%- endif %}
 </main>
 <script type="application/json" id="instruments-data">{{ data|json_island }}</script>
 {% endblock %}
 {% block scripts %}
 <script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+{%- if view == 'map' %}
+<script src="/static/js/plan.js?v={{ v('js/plan.js') }}"></script>
+<script src="/static/js/floor_map.js?v={{ v('js/floor_map.js') }}"></script>
+{%- endif %}
 <script src="/static/js/instruments.js?v={{ v('js/instruments.js') }}"></script>
 {% endblock %}

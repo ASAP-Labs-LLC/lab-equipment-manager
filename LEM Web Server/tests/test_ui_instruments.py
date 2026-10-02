@@ -674,8 +674,9 @@ class TestTheMaintenanceViewSaysWhatComesNext:
 class TestWhereAndMore:
     def test_where_says_not_on_the_map(self):
         p = build([machine("a", pos=None), machine("b")])
-        assert row(p, "a")["where"] == {"level": "Ground Floor", "placed": False}
-        assert row(p, "b")["where"] == {"level": "Ground Floor", "placed": True}
+        # `pos` rides along for the map view (piece 12): the saved bay, or None
+        assert row(p, "a")["where"] == {"level": "Ground Floor", "placed": False, "pos": None}
+        assert row(p, "b")["where"] == {"level": "Ground Floor", "placed": True, "pos": [1.0, 1.0]}
 
 
 class TestTheSourceCaption:
@@ -855,10 +856,12 @@ class TestThePages:
         titles = [r["title"] for r in json.loads(m.group(1))["instruments"]]
         assert "GC </script><script>alert(1)</script>" in titles
 
-    def test_the_map_view_is_the_floor_until_it_moves_in(self, tmp_path):
+    def test_the_map_view_has_moved_in(self, tmp_path):
+        """It used to 302 to /floor until piece 12 landed; it is a view of
+        this page now (tests/test_floor_map_view.py holds the rest)."""
         app, _ = _seeded(tmp_path)
         r = app.test_client().get("/?view=map")
-        assert r.status_code == 302 and r.headers["Location"].endswith("/floor")
+        assert r.status_code == 200
 
     def test_the_home_page_folds_instrument_lines_out_of_its_bell(self, tmp_path):
         """The bell is on every page; on this one, the rows already say each

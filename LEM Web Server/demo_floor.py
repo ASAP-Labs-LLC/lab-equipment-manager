@@ -250,7 +250,8 @@ def _seed_fleet(write, rng, now, ladder) -> int:
     """Every instrument: status, pills, band, bay, heartbeat and history."""
     from levels import LevelStore
 
-    bays = {i: _bay_grid(rng) for i in range(len(ladder))}
+    bays = {i: _bay_grid(rng, sum(1 for b in FLEET if b.level == i))
+            for i in range(len(ladder))}
     placed = 0
 
     for bench in FLEET:
@@ -353,18 +354,35 @@ def _seed_fleet(write, rng, now, ladder) -> int:
     return placed
 
 
-def _bay_grid(rng) -> List[tuple]:
-    """Distinct bays, shuffled.
+BAY_PITCH = 2.05      # static/js/plan.js PITCH: the one production saves at
+
+
+def _bay_grid(rng, count: int = 24) -> List[tuple]:
+    """Distinct bays for `count` instruments, shuffled, three to a row.
+
+    Benches stand together, as production's do (16 instruments in a 7 by 5
+    box): the old 6 by 4 deck with four or five instruments scattered over it
+    demoed a plan that was mostly empty floor, which is not the lab.
 
     Popped from, never sampled: two instruments saved on the SAME bay is a real
-    production bug (OptiMPP 2 and PAC Flash 2, both 4.1,0) whose spill fix lives
-    in the severed world module, so a collision here would demo the bug rather
-    than the floor.
+    production bug (OptiMPP 2 and PAC Flash 2, both 4.1,0). The map spills the
+    second to the nearest free bay (static/js/plan.js), so a collision here
+    would demo the spill rather than the floor.
     """
-    grid = [(float(col), float(row))
-            for row in range(4) for col in range(6)]
-    rng.shuffle(grid)
-    return grid
+    # At the pitch production saves at (4.1, 6.15, …) and the map reads a
+    # bay by (round(v / 2.05)): the demo used 0, 1, 2, … which put two
+    # neighbours on the SAME bay of the map, so one was moved somewhere
+    # nobody put it.
+    # The SAME draws as ever (one shuffle of the old 6 by 4 deck), kept so
+    # every later value the seed makes (statuses, readings, schedules) is
+    # unchanged; the compact bays are the deck's first 3 columns and as
+    # many rows as the count needs, in the shuffled order.
+    cols = 3
+    rows = max(1, -(-count // cols))
+    deck = [(col, row) for row in range(4) for col in range(6)]
+    rng.shuffle(deck)
+    return [(round(col * BAY_PITCH, 2), round(row * BAY_PITCH, 2))
+            for col, row in deck if col < cols and row < rows]
 
 
 def _reason(status, specs, bench) -> str:
