@@ -229,5 +229,28 @@ check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
     ['Today 07:30', 'Tue 15:04']);
 }
 
+// Round 6: an overdue calibration or PM gets the card's button, "Mark the
+// calibration done…". The sheet records work done at the instrument, so its
+// two rules are the ones an auditor reads the record by: a note is required
+// (who did what; a bare "done" is what the old floor let through), and the
+// day cannot be in the future (marking tomorrow's calibration done today
+// moves the schedule past work nobody has done). The day defaults to today
+// in the LAB's calendar, not UTC: at 21:00 in Houston UTC is already
+// tomorrow, and toISOString() would have proposed a future date.
+{
+  const at21 = new Date(2026, 9, 2, 21, 0).getTime();
+  check('today is the local calendar day', R.localDay(at21), '2026-10-02');
+  check('a note is required', R.doneProblem('  ', '2026-10-02', at21),
+    'Say what was done. A note is kept with every completion.');
+  check('a day is required', R.doneProblem('Recalibrated with STD-1', '', at21), 'Say which day it was done.');
+  check('not in the future', R.doneProblem('Recalibrated', '2026-10-03', at21),
+    'It cannot be marked done on a day that has not come yet.');
+  check('today is fine', R.doneProblem('Recalibrated', '2026-10-02', at21), '');
+  check('an earlier day is fine', R.doneProblem('Recalibrated', '2026-09-30', at21), '');
+  check('a non-date is refused, not sent', R.doneProblem('Recalibrated', '2026-13-40', at21), 'Say which day it was done.');
+  check('the toast names the task, who and when',
+    R.doneToast({ name: 'Annual calibration' }, 'ryan', '13:42'), 'Annual calibration marked done · ryan · 13:42');
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

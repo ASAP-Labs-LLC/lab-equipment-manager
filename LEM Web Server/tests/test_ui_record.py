@@ -12,7 +12,8 @@ and then shows the QC that answer rests on. Why each part is a test:
   run, but…", and the lab would stop trusting both.
 * **One emphasis.** At most one primary button on the page, and it is the
   next step: "Open a corrective action…" when QC stopped it, "Put back on
-  line…" when somebody took it off line, nothing when there is nothing to do.
+  line…" when somebody took it off line, "Mark the calibration done…" when
+  an overdue task is the warning, nothing when the step is not LEM's.
   A control is said once: when the primary already puts it back on line, the
   topbar and the On line tile do not offer the same thing again.
 * **"No verdict yet" is not "No QC assigned"** (§4.1, judge J3's Eravap
@@ -159,14 +160,15 @@ class TestTheCardSaysTheHomesVerdict:
         r = record(m)["readiness"]
         assert r["state"] == "ok_but" and r["word"] == "OK to run, but…"
         assert r["caption"]["lead"] == "Calibration overdue since 11 Jul"
-        assert r["primary"] is None
+        # a warning, so no stop; but its next step is a button (round 6)
+        assert r["primary"]["act"] == "done"
 
     def test_pm_overdue_is_a_warning_too(self):
         m = dict(prod("PAC Flash 2"), maintenance=[
             {"uid": "p", "kind": "pm", "status": "RED", "name": "Monthly PM",
              "next_due": "2026-09-20", "interval_days": 30, "last_done": "2026-08-21"}])
         r = record(m)["readiness"]
-        assert r["state"] == "ok_but" and r["primary"] is None
+        assert r["state"] == "ok_but" and r["primary"]["label"] == "Mark the PM done…"
 
     def test_a_qc_stop_names_its_overdue_calibration_in_the_same_sentence(self):
         m = dict(prod("Agilent GC 1"), maintenance=[
@@ -229,6 +231,109 @@ class TestOnePrimaryAndItIsTheNextStep:
             html = c.get("/instruments/" + r["uid"]).get_data(as_text=True)
             assert len(re.findall(r"\bbtn-primary\b", html)) == 1, r["uid"]
             assert re.search(r'class="btn btn-primary" id="ready-primary"', html)
+
+
+class TestAWarningsNextStepIsTheButton:
+    """Round 6's critic: on "OK to run, but…" (GC-2 and six others in the
+    dev seed) the card said "Next: calibrate it, then mark the calibration
+    done" and offered no button for it. The only way to act was the small
+    "See the schedule" link on the Maintenance tile, which led to a table
+    that sent you to another page. The sentence named a step LEM can take
+    and the page would not take it.
+
+    The physical work (calibrating) happens at the instrument, but marking
+    it done is LEM's: one POST to /api/maintenance/<task>/complete, with a
+    note. So an overdue calibration or PM gets the card's one primary,
+    "Mark the calibration done…" / "Mark the PM done…", opening a sheet
+    against the task the sentence is about (the most overdue of that kind).
+    It is still a warning: the verdict, glyph and word do not change.
+
+    QC due keeps no button. Its next step is "Run CP and PP" on the
+    instrument; the bench reads the result in and nobody types QC here
+    (the QC section's own sentence). A button that pretended otherwise
+    would be the dead end the critic was complaining about."""
+
+    CAL = {"uid": "cal-1", "kind": "calibration", "status": "RED", "name": "Annual calibration",
+           "next_due": "2026-07-11", "interval_days": 365, "last_done": "2025-07-11"}
+    PM = {"uid": "pm-1", "kind": "pm", "status": "RED", "name": "Monthly PM",
+          "next_due": "2026-09-20", "interval_days": 30, "last_done": "2026-08-21"}
+
+    def test_calibration_overdue_offers_mark_the_calibration_done(self):
+        r = record(dict(prod("PAC Flash 2"), maintenance=[self.CAL]))["readiness"]
+        assert r["state"] == "ok_but"
+        assert r["primary"] == {
+            "label": "Mark the calibration done…", "act": "done", "kind": "calibration",
+            "task": "cal-1",
+            "tasks": [{"uid": "cal-1", "name": "Annual calibration", "next_due": "2026-07-11"}]}
+        # the sentence and the button say the same step
+        assert r["caption"]["next"] == "Calibrate it, then mark the calibration done"
+
+    def test_pm_overdue_offers_mark_the_pm_done(self):
+        r = record(dict(prod("PAC Flash 2"), maintenance=[self.PM]))["readiness"]
+        assert (r["primary"]["label"], r["primary"]["task"]) == ("Mark the PM done…", "pm-1")
+
+    def test_the_button_is_about_the_lead_reason_not_the_other_task(self):
+        """Calibration outranks PM in the sentence ("Calibration overdue
+        since 11 Jul; PM overdue since 20 Sep too"), so the button is the
+        calibration's. One button, the sentence's own step."""
+        r = record(dict(prod("PAC Flash 2"), maintenance=[self.PM, self.CAL]))["readiness"]
+        assert r["caption"]["lead"].startswith("Calibration overdue")
+        assert r["primary"]["kind"] == "calibration"
+        assert [t["uid"] for t in r["primary"]["tasks"]] == ["cal-1"]
+
+    def test_the_most_overdue_task_is_the_one_marked(self):
+        older = dict(self.CAL, uid="cal-0", name="Detector calibration", next_due="2026-03-02")
+        r = record(dict(prod("PAC Flash 2"), maintenance=[self.CAL, older]))["readiness"]
+        assert r["primary"]["task"] == "cal-0"
+        assert [t["uid"] for t in r["primary"]["tasks"]] == ["cal-0", "cal-1"]
+
+    def test_qc_due_has_no_button_because_the_bench_files_qc(self):
+        r = record(prod("OptiMPP 1"))["readiness"]
+        assert r["state"] == "ok_but" and r["primary"] is None
+
+    def test_a_qc_stop_keeps_its_corrective_action(self):
+        """Not OK outranks the warning: one button, and it is the stop's."""
+        r = record(dict(prod("Agilent GC 1"), maintenance=[self.CAL]))["readiness"]
+        assert r["primary"]["act"] == "action"
+
+    def test_cant_tell_keeps_no_button_even_with_a_task_overdue(self):
+        m = dict(prod("Viscocity"), maintenance=[self.CAL])
+        assert record(m)["readiness"]["primary"] is None
+
+    def test_off_line_keeps_put_back_on_line(self):
+        rec = record(dict(prod("PAC Flash 2"), maintenance=[self.CAL]), override="SERVICE")
+        assert rec["readiness"]["primary"]["act"] == "online"
+
+    def test_every_ok_but_record_in_the_dev_seed_but_qc_due_has_its_button(self, tmp_path):
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        seen = 0
+        for row in c.get("/api/ui/instruments").get_json()["instruments"]:
+            if row["readiness"]["state"] != "ok_but":
+                continue
+            rec = c.get("/api/ui/instruments/" + row["uid"]).get_json()
+            p = rec["readiness"]["primary"]
+            if rec["readiness"]["caption"]["lead"].startswith("QC due"):
+                assert p is None, row["uid"]
+                continue
+            seen += 1
+            assert p and p["act"] == "done" and p["task"], row["uid"]
+            # the task it marks is one the record's own Maintenance section lists
+            assert p["task"] in [t["uid"] for t in rec["maintenance"]], row["uid"]
+        # GC-2, Anton Paar 1, Cetane calc, GC-1, OptiMPP 2, PAC Flash 1
+        assert seen == 6
+
+    def test_the_sheet_requires_a_note_and_posts_the_complete_route(self):
+        html = (T / "instrument.html").read_text()
+        sheet = re.search(r'<dialog[^>]*id="done-sheet".*?</dialog>', html, re.S).group(0)
+        assert re.search(r'<textarea id="done-note"[^>]*required', sheet)
+        assert 'id="done-when"' in sheet and 'type="date"' in sheet
+        # the sheet's go button is a sheet's, never a second .btn-primary
+        assert "btn-primary" not in sheet and "sheet-go" in sheet
+        js = (JS / "record.js").read_text()
+        assert "'/api/maintenance/' + encodeURIComponent(" in js
+        # a completion that moved the schedule but missed the history is said
+        assert "logged === false" in js
 
 
 class TestTiles:

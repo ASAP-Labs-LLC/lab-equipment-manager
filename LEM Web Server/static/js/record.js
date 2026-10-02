@@ -13,7 +13,7 @@
                      provisional, never a second verdict; one U line
    Every failed read has its own sentence, distinct from "none yet". Every
    server string goes in through textContent. GETs on the live feed only;
-   the two sheets POST when a person presses their button. */
+   the three sheets POST when a person presses their button. */
 (function () {
     'use strict';
     const R = window.LEMRecord;
@@ -99,7 +99,8 @@
         if (r.primary) {
             p.textContent = r.primary.label;
             p.dataset.act = r.primary.act;
-            p.dataset.gated = r.primary.act === 'action' ? 'open a corrective action' : 'put it back on line';
+            p.dataset.gated = { action: 'open a corrective action', online: 'put it back on line',
+                done: 'mark the ' + (r.primary.kind === 'calibration' ? 'calibration' : 'PM') + ' done' }[r.primary.act] || '';
             p.hidden = false;
         } else {
             p.hidden = true;
@@ -182,7 +183,7 @@
                 h('td', { className: 'c-track' }, track(c)),
                 h('td', { className: 'c-last num', text: R.fmtQC(c.value, c) }),
                 h('td', { className: 'c-verdict' }, h('span', { className: 'verdict ' + (VERDICT_CLASS[v.key] || '') }, glyph(v.glyph),
-                    h('span', { text: v.word })), v.detail ? h('span', { className: 'sub', text: v.detail }) : null),
+                    h('span', { text: v.word })), v.detail ? h('span', { className: 'sub' + (v.detail.length <= 26 ? ' one-line' : ''), text: v.detail }) : null),
                 h('td', { className: 'c-when', text: c.at ? R.stamp(c.at) : '' }));
         }));
     }
@@ -381,7 +382,9 @@
                 h('td', { className: 'm-last', text: day(t.last_done) }),
                 h('td', { text: day(t.next_due) }),
                 h('td', {}, h('span', { className: 'verdict ' + (t.glyph === 'error' ? 's-not_ok' : t.glyph === 'half' ? 's-ok_but' : '') }, glyph(t.glyph), h('span', { text: t.word })))))))),
-            h('p', { className: 'caption' }, 'To schedule a task or mark one done, use the ', h('a', { className: 'link', href: '/maintenance/classic', text: 'PM and calibration page' }), ' until it moves here.'));
+            h('p', { className: 'caption' }, ((data.readiness.primary || {}).act === 'done'
+                ? 'The card above marks the overdue one done. To schedule a task or mark another done, use the '
+                : 'To schedule a task or mark one done, use the '), h('a', { className: 'link', href: '/maintenance/classic', text: 'PM and calibration page' }), ' until it moves here.'));
     }
     function renderBench() {
         const b = data.bench;
@@ -394,7 +397,7 @@
             h('p', { className: 'caption', text: 'Instruments are added and configured in LabStation\'s LEM module.' }));
     }
 
-    // ── the two sheets ────────────────────────────────────────────────────
+    // ── the sheets ────────────────────────────────────────────────────────
     function openSheet(id) { const d = $(id); if (!d.open) d.showModal(); }
     for (const d of document.querySelectorAll('dialog.rec-sheet')) {
         d.addEventListener('click', (ev) => { if (ev.target.closest('[data-close]')) d.close(); });
@@ -427,11 +430,34 @@
         openSheet('action-sheet');
         $('action-what').focus();
     }
+    // a warning's next step (round 6): mark the overdue calibration or PM
+    // done. The task is the one the card's sentence is about; when more than
+    // one of that kind is overdue the sheet lets you pick, most overdue first.
+    function sheetDone() {
+        const p = data.readiness.primary || {};
+        const tasks = p.tasks || [];
+        const cal = p.kind === 'calibration';
+        // name the task when there is one ("Mark the annual calibration on
+        // GC-2 done"): the sheet says what it will move, not just its kind
+        const what = tasks.length === 1 ? tasks[0].name.charAt(0).toLowerCase() + tasks[0].name.slice(1) : (cal ? 'calibration' : 'PM');
+        $('done-title').textContent = 'Mark the ' + what + ' on ' + data.title + ' done';
+        $('done-why').textContent = 'Its schedule moves on from the day you give, and the completion goes in the instrument\'s history with your name and the time.';
+        const sel = $('done-task');
+        sel.replaceChildren(...tasks.map(t => h('option', { value: t.uid, text: t.name + (t.next_due ? ' · due ' + R.dayIn(t.next_due) : '') })));
+        sel.value = p.task || (tasks[0] && tasks[0].uid) || '';
+        $('done-task-field').hidden = tasks.length < 2;
+        $('done-when').max = R.localDay();
+        $('done-when').value = R.localDay();
+        $('done-note').value = '';
+        $('done-err').hidden = true;
+        openSheet('done-sheet');
+        $('done-note').focus();
+    }
     document.addEventListener('click', (ev) => {
         const b = ev.target.closest('[data-act]');
         if (!b || !page.parentNode.contains(b) || b.closest('dialog')) return;
         const act = b.dataset.act;
-        const go = () => (act === 'action' ? sheetAction() : sheetOnline(act));
+        const go = () => (act === 'action' ? sheetAction() : act === 'done' ? sheetDone() : sheetOnline(act));
         if (window.LEMSignIn) window.LEMSignIn.need(b.dataset.gated || '', go); else go();
     });
     function post(url, body) {
@@ -450,7 +476,7 @@
             go.disabled = true;
             err.hidden = true;
             post(send.url(), send.body())
-                .then(() => { form.closest('dialog').close(); done(); refetch(); })
+                .then((b) => { form.closest('dialog').close(); done(b); refetch(); })
                 .catch(e => { err.textContent = (e && e.message) || 'It was not saved.'; err.hidden = false; })
                 .finally(() => { go.disabled = false; });
         });
@@ -469,6 +495,19 @@
         url: () => '/api/equipment/' + encodeURIComponent(uid) + '/actions',
         body: () => ({ what_happened: $('action-what').value.trim(), trigger_kind: 'qc_fail', test_name: $('action-test').value }),
     }, () => S.toast('Corrective action opened · ' + (window.LEMSignIn ? window.LEMSignIn.user() : '') + ' · ' + hm()));
+
+    submit($('done-form'), $('done-err'), $('done-go'), {
+        check: () => R.doneProblem($('done-note').value, $('done-when').value),
+        url: () => '/api/maintenance/' + encodeURIComponent($('done-task').value) + '/complete',
+        body: () => ({ when: $('done-when').value, note: $('done-note').value.trim() }),
+    }, (b) => {
+        // the schedule moved but the history row did not land: a 200 that
+        // must be said, never a quiet "done" (web_app's complete route)
+        // (neutral toast: the page spends no red on fills, §0.1)
+        if (b && b.logged === false) { S.toast(b.warning || 'Marked done, but not written to its history.'); return; }
+        const t = ((data.readiness.primary || {}).tasks || []).find(x => x.uid === $('done-task').value);
+        S.toast(R.doneToast(t, window.LEMSignIn ? window.LEMSignIn.user() : '', hm()));
+    });
 
     // ── live: refetch when this instrument or the snapshot changed ─────────
     // A refresh that fails is SAID (a failed read is never an answer): the

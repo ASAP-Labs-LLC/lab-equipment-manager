@@ -939,7 +939,14 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .tbl.qc .c-when { color: var(--text-muted); white-space: nowrap; }
 .tbl.qc .c-verdict { white-space: nowrap; }
 .tbl.qc .verdict, .tbl.mt .verdict { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
-.tbl.qc .c-verdict .sub { padding-left: 18px; white-space: normal; max-width: 22ch; }
+.tbl.qc .c-verdict .sub { padding-left: 18px; white-space: normal; max-width: calc(24ch + 18px); }
+/* a short reason ("bench never checked in") is one line wherever the table
+   has the room: the Check column gives up the 20px, never the reason its
+   last word. On a phone the two-line row wraps it, at a word, instead. */
+@media (min-width: 700px) { .tbl.qc .c-verdict .sub.one-line { white-space: nowrap; max-width: none; } }
+/* 96px, not the shared 104: the eight pixels the verdict's one-line reason
+   needs, so the table never runs past its card at 1440 */
+.tbl.qc .c-track .track { width: 96px; }
 .tbl.qc .fold-band { display: none; }
 .tbl.qc .fold-last { display: none; }
 .qc-none { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s4); font-size: var(--fs-sm); color: var(--text-muted); }
@@ -1037,7 +1044,10 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
     .ready-cap { flex-basis: 100%; order: 3; }
     .tbl.qc .c-band, .tbl.qc .c-track { display: none; }
     .tbl.qc .fold-band { display: flex; align-items: center; gap: var(--s3); margin-top: 6px; font-size: var(--fs-xs); color: var(--text-muted); }
-    .tbl.qc .fold-band .track { width: 110px; }
+    /* a band and its unit are one reading: "0.0019 %m/m" never splits, the
+       track gives up width first (min 56px) */
+    .tbl.qc .fold-band .bandtxt { white-space: nowrap; }
+    .tbl.qc .fold-band .track { width: auto; flex: 1 1 56px; min-width: 56px; max-width: 110px; }
     .record .sec { gap: var(--s3); }
 }
 @media (max-width: 699px) {

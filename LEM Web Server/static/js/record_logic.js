@@ -300,7 +300,27 @@
         return 'Couldn\'t refresh this instrument (' + why + '). Shown as of ' + at + '; it may be out of date.';
     }
 
-    const api = { withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    // ── the "mark it done" sheet (round 6) ─────────────────────────────────
+    /** Today in the lab's own calendar, as the date input wants it. Not
+        toISOString(): at 21:00 in Houston that is already tomorrow. */
+    function localDay(nowMs) {
+        const d = new Date(nowMs === undefined ? Date.now() : nowMs);
+        return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+    }
+    /** Why the sheet cannot be sent yet, or '' when it can. */
+    function doneProblem(note, when, nowMs) {
+        if (!String(note || '').trim()) return 'Say what was done. A note is kept with every completion.';
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(when || ''));
+        const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+        if (!d || d.getMonth() !== Number(m[2]) - 1 || d.getDate() !== Number(m[3])) return 'Say which day it was done.';
+        if (when > localDay(nowMs)) return 'It cannot be marked done on a day that has not come yet.';
+        return '';
+    }
+    function doneToast(task, who, at) {
+        return ((task && task.name) || 'Task') + ' marked done' + (who ? ' · ' + who : '') + (at ? ' · ' + at : '');
+    }
+
+    const api = { localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

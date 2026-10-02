@@ -16,8 +16,9 @@ What this module adds is what only the record shows:
 * the card's one sentence, in parts the page joins with local times
   (``caption``: what, against which standard, when, what else, next);
 * the ONE primary button (§0.1): "Open a corrective action…" when QC stopped
-  it, "Put back on line…" when somebody took it off line, and nothing when
-  there is nothing to do here. A control is offered once: when the primary
+  it, "Put back on line…" when somebody took it off line, "Mark the
+  calibration done…" / "Mark the PM done…" when that warning is the card's
+  sentence (round 6), and nothing when the next step is not LEM's to take. A control is offered once: when the primary
   puts it back on line, the topbar and the On line tile do not;
 * the QC table, one row per check, short names in boiling order for a
   distillation, each with its own verdict word (§4.1). An assigned check that
@@ -254,9 +255,31 @@ def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str])
     return {"lead": lead, "std": std, "at": at, "too": "; ".join(too), "next": nxt}
 
 
-def _primary(state: str, rows: List[dict]) -> Optional[dict]:
-    """The page's one .btn-primary (§0.1). Can't tell, No QC assigned, OK
-    and a warning have none: their next step is not a button on this page."""
+def _primary(state: str, rows: List[dict], m: Optional[dict] = None,
+             reason: str = "") -> Optional[dict]:
+    """The page's one .btn-primary (§0.1): the step the card's sentence ends on,
+    when that step is LEM's to take.
+
+    An overdue calibration or PM (a warning, Ryan 2026-10-01) ends "Next:
+    calibrate it, then mark the calibration done". The calibrating is at the
+    instrument; marking it done is LEM's, so it is the button (round 6's
+    critic: the sentence named a step and the page would not take it). It
+    marks the most overdue task of the kind the sentence leads with.
+
+    QC due, Can't tell, No QC assigned and OK have none: QC is filed by the
+    bench, a silent bench is restarted at its own computer, assigning is the
+    QC section's job, and OK has nothing to do."""
+    if state == OK_BUT and m is not None and not reason.startswith("QC due"):
+        kind = "calibration" if reason.startswith("Calibration") else "pm"
+        tasks = sorted(ui_live._overdue(m, kind),
+                       key=lambda t: (str(t.get("next_due") or "9999"), str(t.get("name") or "")))
+        if tasks:
+            return {"label": "Mark the %s done…" % ("calibration" if kind == "calibration" else "PM"),
+                    "act": "done", "kind": kind, "task": str(tasks[0].get("uid") or ""),
+                    "tasks": [{"uid": str(t.get("uid") or ""),
+                               "name": str(t.get("name") or t.get("kind") or "Task"),
+                               "next_due": t.get("next_due") or None} for t in tasks]}
+        return None
     if state == NOT_OK:
         first = next((c for c in rows if c["verdict"]["key"] == "out"), None)
         return {"label": "Open a corrective action…", "act": "action",
@@ -342,7 +365,7 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
     reason = str(row["readiness"].get("reason") or "")
     rows = checks(m)
     keys = ui_live.problems(m, override)
-    primary = _primary(state, rows)
+    primary = _primary(state, rows, m, reason)
     off = state == OFF_LINE
     b = ui_instruments.bench(m)
     return {

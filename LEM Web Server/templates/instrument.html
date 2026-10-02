@@ -95,7 +95,7 @@
   <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions, documents and the full log are still on the floor map's panel for this instrument. <a class="link" href="/floor?machine={{ data.uid|urlencode }}">Open it there</a></p>
 </main>
 
-{#- the two sheets the card and the topbar open (pieces 6 adds the rest). A
+{#- the sheets the card and the topbar open (piece 6 adds the rest). A
     refused write keeps the sheet open with the server's sentence. -#}
 <dialog class="sheet rec-sheet" id="online-sheet" aria-labelledby="online-title" data-testid="online-sheet">
   <form class="form" id="online-form" method="dialog" novalidate>
@@ -127,6 +127,27 @@
     <div class="actions">
       <button type="button" class="btn" data-close>Cancel</button>
       <button type="submit" class="btn sheet-go" id="action-go">Open it</button>
+    </div>
+  </form>
+</dialog>
+{#- a warning's next step (round 6): marking an overdue calibration or PM
+    done. The work happened at the instrument; this records it, with a note,
+    and moves the schedule. Same rules as the other sheets: a refusal keeps
+    it open with the server's sentence. -#}
+<dialog class="sheet rec-sheet" id="done-sheet" aria-labelledby="done-title" data-testid="done-sheet">
+  <form class="form" id="done-form" method="dialog" novalidate>
+    <h2 id="done-title">Mark the calibration done</h2>
+    <p id="done-why"></p>
+    <label class="field" id="done-task-field"><span>Task</span>
+      <select id="done-task"></select></label>
+    <label class="field"><span>Done on</span>
+      <input type="date" id="done-when" required></label>
+    <label class="field"><span>Note (required)</span>
+      <textarea id="done-note" rows="3" required placeholder="What was done, and by whom if not you"></textarea></label>
+    <p class="errline" id="done-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="done-go">Mark it done</button>
     </div>
   </form>
 </dialog>
