@@ -59,7 +59,7 @@ import secrets
 import threading
 import time
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from live_presence import ELLIPSIS, FLOOR_FIELD_BYTES, clip_text
@@ -137,17 +137,68 @@ def chain(previous_hex: str, raw: bytes) -> str:
     return hashlib.sha256(bytes.fromhex(previous_hex) + raw).hexdigest()
 
 
+def adoption_value(value) -> str:
+    """One measurement as the adoption key spells it — byte-identical to
+    `lem_station_module.adoption_value`: a number in one canonical form
+    (format(float, '.12g')), anything else stripped text. The file says
+    "0.8000" and a corrected row's `detail.raw` holds the float 0.8; they are
+    one reading."""
+    if isinstance(value, bool):
+        return str(value)
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, ".12g")
+
+
 def adoption_hash(lab_id: str, raw_values: dict) -> str:
     """§10.2's H(lab_id, raw): what a bench hashes for each line after its
-    adoption boundary, and what the server hashes for each recorded row."""
-    return hashlib.sha256(canonical([str(lab_id or ""), raw_values or {}])
-                          ).hexdigest()[:32]
+    adoption boundary, and what the server hashes for each recorded row.
+    Identical to `lem_station_module.adoption_key`."""
+    canon = {str(k): adoption_value(v) for k, v in (raw_values or {}).items()}
+    body = json.dumps([str(lab_id or "").strip(), canon], sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
 
 
-ADOPTION_RECIPE = ("sha256(canonical([lab_id, raw]))[:32]; raw = detail.raw "
-                   "when a correction applied, else detail.values, for a run "
-                   "row; {test_name: str(detail.raw or value)} for a qc row; "
+def adoption_raw_values(kind: str, test_name: str, value, detail: dict):
+    """The raw reading a recorded row was made from (as the module's
+    `legacy_row_raw_values`), or None when the row cannot say. run: `values`
+    with `raw` laid over them (raw holds only the corrected tests); qc: the
+    one test at `raw_value` (spec-corrected), `raw`, or the value judged."""
+    if kind == "run":
+        values = detail.get("values")
+        if not isinstance(values, dict):
+            return None
+        out = dict(values)
+        raw = detail.get("raw")
+        if isinstance(raw, dict):
+            out.update(raw)
+        return out
+    if kind == "qc":
+        if not test_name:
+            return None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test_name)
+            if raw not in (None, ""):
+                return {test_name: raw}
+        return {test_name: value}
+    return None
+
+
+ADOPTION_RECIPE = ("sha256(canonical([lab_id, {test: v}]))[:32]; v a number "
+                   "-> format(float, '.12g'), else stripped text; run row: "
+                   "detail.values with detail.raw laid over them; qc row: "
+                   "{test_name: detail.raw_value or detail.raw or value}; "
                    "canonical = JSON, sorted keys, ',' ':' separators, UTF-8")
+#: §10.2 step 5: the bench seeds its results ledger from matched rows this recent.
+ADOPTION_LEDGER_DAYS = 30
 
 
 def token_hash(token: str) -> str:
@@ -1154,29 +1205,42 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
         try:
             _bench_auth(uid)
             res = store.read_sql(
-                "SELECT kind, lab_id, test_name, value, detail FROM "
+                "SELECT ts, kind, lab_id, test_name, value, detail FROM "
                 "lem_machine_log_effective WHERE machine_uid = ? AND kind IN "
                 "('run', 'qc')", [uid])
             if not isinstance(res, dict) or res.get("error") or "rows" not in res:
                 raise StoreFailed(res)
             counts: Dict[str, int] = {}
+            recent: List[dict] = []
+            first: Optional[str] = None
+            since = (datetime.now() - timedelta(days=ADOPTION_LEDGER_DAYS)
+                     ).strftime("%Y-%m-%d %H:%M:%S")
             for r in res["rows"]:
+                ts = str(r.get("ts") or "")
+                # v3.9 wrote "YYYY-MM-DD HH:MM:SS", v4 ISO: compared as one.
+                if ts and (first is None or ts.replace("T", " ")[:19]
+                           < first.replace("T", " ")[:19]):
+                    first = ts
                 detail = _json_or(r.get("detail"), {})
-                if r.get("kind") == "run":
-                    raw = detail.get("raw") if detail.get("raw") else \
-                        detail.get("values") or {}
-                else:
-                    raw_value = detail.get("raw")
-                    raw = {str(r.get("test_name") or ""):
-                           str(raw_value if raw_value not in (None, "")
-                               else r.get("value") or "")}
+                if not isinstance(detail, dict):
+                    continue          # unreadable: evidence of nothing
+                kind = str(r.get("kind") or "")
+                raw = adoption_raw_values(kind, str(r.get("test_name") or ""),
+                                          r.get("value"), detail)
+                if raw is None:
+                    continue
                 h = adoption_hash(r.get("lab_id"), raw)
                 counts[h] = counts.get(h, 0) + 1
+                if kind == "run" and ts.replace("T", " ")[:19] >= since \
+                        and isinstance(detail.get("values"), dict):
+                    recent.append({"h": h, "lab_id": r.get("lab_id"),
+                                   "values": detail["values"], "ts": ts})
             return _gz(jsonify({"machine_uid": uid,
                                 "src": request.args.get("src", ""),
                                 "boundary": request.args.get("boundary", ""),
                                 "recipe": ADOPTION_RECIPE,
-                                "rows": len(res["rows"]), "counts": counts}))
+                                "rows": len(res["rows"]), "counts": counts,
+                                "first_ts": first, "recent": recent}))
         except BenchRefusal as exc:
             return _refused(exc)
         except StoreFailed as exc:

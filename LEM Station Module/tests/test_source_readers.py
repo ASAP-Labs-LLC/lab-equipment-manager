@@ -10,7 +10,9 @@ real rows:
     the journal's fsync on every poll that consumed anything. Until v4 the
     only saved offset was `last_position` in LabCore, written when somebody
     pressed OK in Settings; every clean restart re-read the file from that
-    stale point (K6: 30 duplicate rows for one restart). It is no longer read.
+    stale point (K6: 30 duplicate rows for one restart). It no longer says
+    where the bench is: only adoption reads it, once, at the first v4 start
+    (`test_adoption_module.py`).
   * WHOLE LINES. A line the instrument has half written waits; a last line
     with no newline is taken once it has been quiet for two polls and 10 s
     (R5: v3.9 logged "100126-10" as a Lab ID and lost the reading).
@@ -141,7 +143,9 @@ def test_last_position_is_no_longer_read(qapp, tmp_path, monkeypatch):
     saved (the stored ones are from 09-23 and 09-24). A value pointing into
     the middle of a line used to start the read there and log the tail of a
     line as a reading. A bench with no cursor starts at the top of its file —
-    and from then on the cursor, not the config, says where it is."""
+    and from then on the cursor, not the config, says where it is. (A mid-line
+    offset is no adoption boundary either, and this bench has no record to
+    adopt, so its first start reads from the top.)"""
     b = Bench(tmp_path, monkeypatch)
     b.emit(3)
     b.m.machine().last_position = 9            # mid-line, and stale

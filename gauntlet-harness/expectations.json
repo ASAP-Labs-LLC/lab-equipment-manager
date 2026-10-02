@@ -1850,9 +1850,11 @@
    },
    "v4": {
     "analyst_overwritten": 0,
-    "conflicts": 5
+    "conflicts": 0,
+    "lost": 0,
+    "dup": 0
    },
-   "v4_spec": "0 overwritten with the journal lost (today 5): the guard read alone (harness row; A1w adds 0 re-sent, P8)"
+   "v4_spec": "0 overwritten with the journal lost (today 5). Since P4 the new journal adopts what LabCore already holds, so the re-read never reaches the results road: 0 dup (was 5 before adoption) and nothing to conflict over. The guard alone stays pinned by A3, K4 and N4 (guard_off). Harness row; A1w adds 0 re-sent (P8)"
   },
   "A3": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2456,6 +2458,10 @@
    "v4": {
     "new_rows": 0,
     "cell_sends": 0,
+    "recovered_rows": 1,
+    "lost": 0,
+    "dup": 0,
+    "auto_filed": 0,
     "labcore_reads": {
      "le": 15
     }

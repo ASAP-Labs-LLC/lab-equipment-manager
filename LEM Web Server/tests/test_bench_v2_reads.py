@@ -12,6 +12,7 @@ file (the T4 flood) — so it answers 503 and the bench waits.
 """
 import base64
 import gzip
+from datetime import datetime, timedelta
 import hashlib
 import json
 
@@ -245,23 +246,68 @@ class TestAdoptionDigest:
             assert "error" not in res
         row("L-1", {"values": {"Flash": "41.0"}})
         row("L-1", {"values": {"Flash": "41.0"}})            # a genuine repeat
-        row("L-2", {"values": {"Flash": "42.5"}, "raw": {"Flash": "42.0"},
-                    "corrections": {"Flash": 0.5}})
+        row("L-2", {"values": {"Flash": "42.5", "Pour": "-3"},
+                    "raw": {"Flash": 42.0}, "corrections": {"Flash": 0.5}})
         r = _get(client, "/api/v2/bench/%s/adoption" % UID, token,
                  query_string={"src": "f.csv", "boundary": "0"})
         assert r.status_code == 200, r.get_json()
         body = r.get_json()
-        h1 = hashlib.sha256(json.dumps(["L-1", {"Flash": "41.0"}],
+        # Numbers in one canonical form ("41.0" and 41 are one reading: the
+        # file says "41.0", a corrected row's raw is the float 41.0), and a
+        # corrected row keyed on its raw laid over the values it did not
+        # correct — so the line "L-2,42.0,-3" matches it whatever the factor
+        # is now.
+        h1 = hashlib.sha256(json.dumps(["L-1", {"Flash": "41"}],
                                        sort_keys=True, separators=(",", ":"),
                                        ensure_ascii=False).encode()
                             ).hexdigest()[:32]
-        h2 = hashlib.sha256(json.dumps(["L-2", {"Flash": "42.0"}],
+        h2 = hashlib.sha256(json.dumps(["L-2", {"Flash": "42", "Pour": "-3"}],
                                        sort_keys=True, separators=(",", ":"),
                                        ensure_ascii=False).encode()
                             ).hexdigest()[:32]
         assert body["counts"] == {h1: 2, h2: 1}
         assert body["rows"] == 3 and body["recipe"].startswith("sha256")
+        assert body["first_ts"] == "2026-09-30T10:00:00"
         assert lab.ops == 0
+
+    def test_it_says_when_this_bench_was_first_recorded_and_nothing_is_empty(
+            self, client, token, store):
+        """The bench needs "has LEM EVER recorded me, and since when" (§10.2:
+        pre-LEM lines are those older than the first ingest). A bench with no
+        rows says rows 0 and first_ts null — a statement, not a failure."""
+        r = _get(client, "/api/v2/bench/%s/adoption" % UID, token)
+        assert r.status_code == 200
+        body = r.get_json()
+        assert (body["rows"], body["counts"], body["first_ts"]) == (0, {}, None)
+        assert body["recent"] == []
+
+    def test_recent_run_rows_carry_the_values_that_were_filed(self, client,
+                                                              token, store):
+        """§10.2 step 5 seeds the results guard's ledger from the matched
+        legacy rows of the last 30 days: for those the bench needs the
+        CORRECTED values v3.9 filed, keyed by the same hash. Older rows and
+        qc rows are not part of it."""
+        now = datetime.now()
+
+        def row(lab_id, ts, detail, kind="run"):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, ?, ?, ?, '', '', ?)",
+                [UID, ts, kind, lab_id, json.dumps(detail)])
+            assert "error" not in res
+        recent = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (now - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
+        row("L-1", recent, {"values": {"Flash": "41.5"}, "raw": {"Flash": 41.0}})
+        row("L-2", old, {"values": {"Flash": "40.0"}})
+        body = _get(client, "/api/v2/bench/%s/adoption" % UID, token).get_json()
+        assert len(body["recent"]) == 1
+        (r,) = body["recent"]
+        assert (r["lab_id"], r["values"], r["ts"]) == ("L-1", {"Flash": "41.5"},
+                                                       recent)
+        h = hashlib.sha256(json.dumps(["L-1", {"Flash": "41"}], sort_keys=True,
+                                      separators=(",", ":")).encode()
+                           ).hexdigest()[:32]
+        assert r["h"] == h and body["counts"][h] == 1
 
     def test_a_large_answer_is_gzipped_when_the_bench_accepts_it(
             self, client, token, store):

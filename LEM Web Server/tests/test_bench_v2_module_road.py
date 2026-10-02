@@ -272,3 +272,103 @@ class TestAFilingPollInV2:
             if k % 10 == 0:
                 world.bench._send_pulse(T0 + timedelta(seconds=30 * k))
         assert world.lab.since(mark) == []
+
+
+# ── Adoption at the first v4 start, through LEM's digest (§10.2) ─────────────
+
+def _legacy(world, lines, corrections=None):
+    """What v3.9 left in LEM's store (imported from LabCore, §10.1) and in
+    LabCore's cells: one row per line, written by the module's own
+    `run_log_events`, which is the shape v3.9 wrote."""
+    m = world.m
+    machine = world.bench.machine()
+    saved = machine.corrections
+    machine.corrections = dict(corrections or {})
+    try:
+        for k, text in enumerate(lines):
+            at = T0 - timedelta(days=1) + timedelta(minutes=k)
+            rows = m.apply_row_corrections(
+                [m.parse_print(machine, text).to_row(at)], machine.corrections)
+            for row, kind, lab, test, value, detail in m.run_log_events(
+                    machine, rows, "analyst", None):
+                res = world.store.sql(
+                    "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                    "test_name, value, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [UID, at.strftime("%Y-%m-%d %H:%M:%S"), kind, lab, test,
+                     value, json.dumps(detail)])
+                assert "error" not in res, res
+                world.lab.fake.sql("INSERT OR REPLACE INTO sample_tests "
+                                   "(lab_id, test_name, result) VALUES (?, "
+                                   "'Density', ?)", [lab, str(row["Density"])])
+    finally:
+        machine.corrections = saved
+
+
+def _line(world, i, value=None):
+    return "%s,%s" % (world.labs[i], value or "0.%04d" % (8000 + i))
+
+
+class TestAdoptionThroughLEM:
+    def test_U1_U2_one_recovered_row_no_replay_and_no_labcore_read(self, world):
+        """30 lines LEM's record already holds (imported from v3.9) and one
+        printed while LabStation was down for the upgrade. Through LEM's
+        digest: the 30 cost nothing — no new row, no cell — the one is
+        recorded once as `recovered` and not filed, and LabCore is never
+        asked about the bench's history (0 LabCore reads of lem_machine_log;
+        U5's 15-read budget is the legacy road's, not this one's)."""
+        lines = [_line(world, i) for i in range(30)]
+        _legacy(world, lines)
+        with open(world.path, "a") as f:
+            f.write("\n".join(lines + [_line(world, 30)]) + "\n")
+        mark = world.lab.mark()
+        for k in range(4):
+            world.poll(k, prints=0)
+        rows = world.store.read_sql(
+            "SELECT lab_id, origin FROM lem_machine_log WHERE machine_uid = ? "
+            "AND kind = 'run' ORDER BY id", [UID])["rows"]
+        assert len(rows) == 31
+        assert rows[-1] == {"lab_id": world.labs[30], "origin": "recovered"}
+        ops = world.lab.since(mark)
+        assert not [op for op in ops if "LEM_MACHINE_LOG" in op[1].upper()], ops
+        assert not [op for op in ops if op[0] == "write"], ops
+        assert world.lab.cell(world.labs[30], "Density") is None
+        assert any(p.endswith("/adoption") for _m, p in world.roads.requests)
+        # §10.2 step 5 through the digest's `recent`: the ledger knows what
+        # v3.9 filed, so a re-run of one of these is LEM's own value to
+        # supersede, not a conflict.
+        journal = world.m.BenchJournal(world.m.journal_dir(UID), UID)
+        assert journal.ledger_value(world.labs[5], "Density") == "0.8005"
+
+    def test_U3_a_factor_changed_since_logging_recovers_nothing(self, world):
+        lines = [_line(world, i) for i in range(30)]
+        _legacy(world, lines, corrections={"Density": 0.01})
+        world.bench.machine().corrections = {"Density": 0.02}
+        with open(world.path, "a") as f:
+            f.write("\n".join(lines) + "\n")
+        for k in range(4):
+            world.poll(k, prints=0)
+        assert len(_bench_log_rows(world.store)) == 30
+
+
+def test_the_module_and_the_server_hash_every_row_alike():
+    """The bench hashes its lines and LEM hashes its rows; one function on
+    two sides of a wire. Every shape of recorded row, through both."""
+    import bench_api
+    m, _qt = _module()
+    rows = [
+        {"kind": "run", "lab_id": "L-1", "test_name": "", "value": "",
+         "detail": {"values": {"Density": "0.8000"}}},
+        {"kind": "run", "lab_id": " L-2 ", "test_name": "", "value": "",
+         "detail": {"values": {"Density": "0.8100", "Sulfur": "12"},
+                    "raw": {"Density": 0.8}, "corrections": {"Density": 0.01}}},
+        {"kind": "qc", "lab_id": "QC-1", "test_name": "Density", "value": "0.81",
+         "detail": {"raw_value": 0.8, "correction": 0.01}},
+        {"kind": "qc", "lab_id": "QC-1", "test_name": "Flash", "value": "41",
+         "detail": {"in_spec": True}},
+        {"kind": "run", "lab_id": "L-3", "test_name": "", "value": "",
+         "detail": {"values": {"Note": " ok ", "Flash": "1e2"}}},
+    ]
+    for r in rows:
+        server = bench_api.adoption_hash(r["lab_id"], bench_api.adoption_raw_values(
+            r["kind"], r["test_name"], r["value"], r["detail"]))
+        assert server == m.legacy_row_adoption_key(r), r

@@ -273,7 +273,14 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         LEM's ledger of what it filed) gone, the cell holding a value LEM
         cannot vouch for must be a conflict, never overwritten. A1 alone can
         not show this: there the journal suppresses the re-read before the
-        guard is ever asked, so `guard_off` leaves A1 green."""
+        guard is ever asked, so `guard_off` leaves A1 green.
+
+        Since P4 the wiped bench's new journal ADOPTS before it reads (§10.2):
+        all 5 lines are in LabCore's record, so they join the seen-set and
+        the re-read never reaches the results road at all — 0 overwritten
+        and 0 duplicated rows (5 before adoption), and no cell to conflict
+        over. The guard's own coverage is A3, K4 and N4, where `guard_off`
+        still goes red."""
         import shutil
         c = W()
         c.emit(5); c.poll()
@@ -448,6 +455,160 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         t["polls_to_drain"] = drained
         return t
 
+    # ── adoption at the first v4 start (§10.2; P4) ──────────────────────────
+    #
+    # The world before each U scenario is what the floor holds on the day the
+    # v4 module is installed: an instrument file v3.9 has been reading, the
+    # `run` rows v3.9 logged from it (written with the target's own
+    # `run_log_events` + `build_log_insert`, which is v3.9's shape) and the
+    # cells it filed — and a bench journal that has never existed. "v4 server"
+    # (U1–U4) is the v2 world of E0–E2 plus LEM's store holding those rows as
+    # the §10.1 import copies them; U5 is the same world with no v2 (today's
+    # v3.9 server), where the bench must ask LabCore itself.
+
+    def adoption_world(logged, unlogged=0, pre=0, factor_then=None,
+                       factor_now=None, v2=True):
+        if not hasattr(mod, "plan_adoption"):
+            raise Unsupported("U1–U5 need adoption at the first v4 start "
+                              "(P4) — not present on this target")
+        c = W()
+        machine = c.m.machine()
+        at0 = c.now - timedelta(days=2)
+        for i in range(pre):                 # older than LEM on this bench
+            with open(c.path, "a") as f:
+                f.write(print_line(900 + i, "0.7%03d" % i))
+        texts = []
+        for i in range(logged + unlogged):
+            lab, val = print_line(i).strip().split(",")
+            texts.append(c.emit_line(lab, val))
+        saved = machine.corrections
+        machine.corrections = dict(factor_then or {})
+        try:
+            for k, text in enumerate(texts[:logged]):
+                at = at0 + timedelta(minutes=k)
+                rows = mod.apply_row_corrections(
+                    [mod.parse_print(machine, text.strip()).to_row(at)],
+                    machine.corrections)
+                for row, kind, lab, test, value, detail in mod.run_log_events(
+                        machine, rows, "analyst", None):
+                    sql, args = mod.build_log_insert(c.uid, kind, at, lab_id=lab,
+                                                     test_name=test, value=value,
+                                                     detail=detail)
+                    res = c.gw.fake.sql(sql, args)
+                    if res.get("error"):
+                        raise RuntimeError("U world: v3.9 row: " + res["error"])
+                    res = c.gw.fake.write("update_cell", {
+                        "lab_id": lab, "test_name": "Density",
+                        "value": str(row["Density"])})
+                    if res.get("error"):
+                        raise RuntimeError("U world: v3.9 cell: " + res["error"])
+        finally:
+            machine.corrections = saved
+        if factor_now:
+            for test, corr in factor_now.items():
+                res = c.gw.fake.sql(
+                    "INSERT OR REPLACE INTO lem_correction_factors (machine_uid, "
+                    "test_name, correction) VALUES (?, ?, ?)", [c.uid, test, corr])
+                if res.get("error"):
+                    raise RuntimeError("U world: factor: " + res["error"])
+        c.seeded_rows = len(c.stored_rows())     # LabCore's, before any v2 copy
+        c.saved_token = os.environ.get("LEM_LIVE_TOKEN")
+        if v2:
+            _v2_adoption_world(c, server_factory)
+        reads = c.adoption_reads = []
+        inner = c.gw.read_sql
+
+        def read_sql(sql, args=None, **kw):
+            if "MIN(ts)" in sql or "lab_id IN" in sql:
+                reads.append(sql)
+            return inner(sql, args, **kw)
+        c.gw.read_sql = read_sql
+        mod.__dict__["labcore_read_sql"] = read_sql
+        c.restart()                    # the v4 module starts (and reads lem_meta)
+        mod.__dict__["labcore_read_sql"] = read_sql
+        c.reads_before = _labcore_reads(c)
+        for _ in range(4):
+            c.poll()
+        c.reads_after = _labcore_reads(c)
+        return c
+
+    def adoption_measure(c):
+        try:
+            return _measure(c)
+        finally:
+            # The v2 world's server token must not outlive this world.
+            if c.saved_token is None:
+                os.environ.pop("LEM_LIVE_TOKEN", None)
+            else:
+                os.environ["LEM_LIVE_TOKEN"] = c.saved_token
+
+    def _measure(c):
+        rows = c.stored_rows()
+        recs = c.journal_records() or []
+        adoptions = [r for r in recs if r.get("kind") == "adoption"]
+        recovered = _recovered_rows(c)
+        led = _ledger_tally(c.ledger.truth(), rows)
+        recovered_labs = {lab for lab, _v in recovered}
+        status = c.m.evaluation().status if c.m.evaluation() else None
+        return {"new_rows": len(rows) - c.seeded_rows,
+                "cell_sends": sum(c.gw.cell_sends.values()),
+                "recovered_rows": len(recovered),
+                "lost": led["lost"], "dup": led["dup"],
+                "auto_filed": sum(n for (lab, _t, _v), n in c.gw.cell_sends.items()
+                                  if lab in recovered_labs),
+                "adoption_summaries": len(adoptions),
+                "alarms": len(recovered) + (c.counters()["conflicts"] or 0)
+                + (1 if status == mod.STATUS_RED else 0),
+                "labcore_reads": len(c.adoption_reads),
+                # Every LabCore read of the four polls, adoption's and the
+                # bench's own (config, override, QC library — v3.9's road).
+                "labcore_reads_all_polls": c.reads_after - c.reads_before,
+                "adoption": {k: adoptions[-1].get(k) for k in (
+                    "path_kind", "matched", "presumed", "recovered",
+                    "pre_history_lines", "unchecked", "road", "labcore_reads")}
+                if adoptions else None,
+                "store": c.store_kind()}
+
+    @new("U1")
+    def u1():
+        """30 lines v3.9 fully logged; A's prototype logged 30 and sent 30."""
+        return adoption_measure(adoption_world(30))
+
+    @new("U2")
+    def u2():
+        """30 logged and 1 printed while LabStation was down for the upgrade."""
+        return adoption_measure(adoption_world(30, unlogged=1))
+
+    @new("U3")
+    def u3():
+        """Logged with +0.0100; the factor is +0.0200 at the v4 start. Every
+        line was recorded, so every recovered row would be a false one."""
+        m = adoption_measure(adoption_world(30, factor_then={"Density": 0.01},
+                                            factor_now={"Density": 0.02}))
+        m["false_recovered"] = m["recovered_rows"]
+        return m
+
+    @new("U4")
+    def u4():
+        """12 lines from before the bench was on LEM, then 15 LEM recorded."""
+        return adoption_measure(adoption_world(15, pre=12))
+
+    @new("U5")
+    def u5():
+        """U1 and U2 again on today's v3.9 server: no v2, the bench asks
+        LabCore through indexed reads. Gated: U1's 0/0, U2's 1/0/0/0, and the
+        reads adoption made in the worse of the two."""
+        one = adoption_measure(adoption_world(30, v2=False))
+        two = adoption_measure(adoption_world(30, unlogged=1, v2=False))
+        return {"new_rows": one["new_rows"],
+                "cell_sends": one["cell_sends"] + two["cell_sends"],
+                "recovered_rows": two["recovered_rows"], "lost": two["lost"],
+                "dup": two["dup"], "auto_filed": two["auto_filed"],
+                "labcore_reads": max(one["labcore_reads"], two["labcore_reads"]),
+                "labcore_reads_all_polls": max(one["labcore_reads_all_polls"],
+                                               two["labcore_reads_all_polls"]),
+                "u1": one, "u2": two}
+
     # ── needs a v4 capability with no code yet ─────────────────────────────
     for sid, needs in V4_ONLY.items():
         reg.add(sid, (lambda s, n: lambda: _unsupported(s, n))(sid, needs), "new")
@@ -484,11 +645,6 @@ V4_ONLY = {
     "T4b": "journal deleted with both roads down: blind mode (P1, P8)",
     "CF1": "the LabCore factor replica, `config_rev:<uid>` in lem_meta (P8, P9)",
     "CF2": "a factor change while both roads are dark: replica + held readings (P8, P9)",
-    "U1": "adoption at the first v4 start (P4)",
-    "U2": "adoption: `recovered` rows (P4)",
-    "U3": "adoption: raw-value matching across a factor change (P4)",
-    "U4": "adoption: the pre-history summary record (P4)",
-    "U5": "adoption under a v3.9 server, through indexed LabCore reads (P4, P5)",
     "M1": "order matrix pairing 1 (§12.2; P13)",
     "M2": "order matrix pairing 2 (§12.2; P13)",
     "M3": "order matrix pairing 3 (§12.2; P13)",
@@ -508,6 +664,111 @@ def _unsupported(sid, needs):
 def _has_store():
     from .servers import find_store_gateway
     return find_store_gateway() is not None
+
+
+def _labcore_reads(c):
+    return sum(n for k, n in c.gw.counts.items() if k.startswith("read:"))
+
+
+def _recovered_rows(c):
+    """(lab_id, value) of the run rows the record holds as `recovered`: the
+    LEM store's `origin` column, or `detail.origin` in LabCore's log."""
+    import json as _json
+    if c.store_kind() == "lem":
+        import sqlite3
+        con = sqlite3.connect("file:%s?mode=ro" % os.environ["LEM_STORE_PATH"],
+                              uri=True)
+        try:
+            return [(r[0], r[1]) for r in con.execute(
+                "SELECT lab_id, detail FROM lem_machine_log WHERE machine_uid = ? "
+                "AND kind = 'run' AND origin = 'recovered'", [c.uid])]
+        finally:
+            con.close()
+    res = c.gw.fake.read_sql("SELECT lab_id, detail FROM lem_machine_log WHERE "
+                             "machine_uid = ? AND kind = 'run'", [c.uid])
+    if res.get("error"):
+        raise RuntimeError("recovered-row read failed: " + res["error"])
+    out = []
+    for r in res["rows"]:
+        try:
+            d = _json.loads(r["detail"] or "{}")
+        except ValueError:
+            continue
+        if d.get("origin") == "recovered":
+            out.append((r["lab_id"], r["detail"]))
+    return out
+
+
+def _ledger_tally(truth, rows):
+    from .ledger import tally
+    return tally(truth, rows)
+
+
+def _v2_adoption_world(c, server_factory):
+    """The v2 world of `_economy_run` for a World: LabCore's lem_meta holds
+    the shared token, the server runs with it, and when it is first called
+    its store gets the bench's config row (as the import tool copies it) and
+    the bench's legacy machine-log rows, copied from LabCore as §10.1's import
+    copies them (`origin='legacy_labcore'`, `legacy_key`), plus LabCore's
+    correction factors."""
+    token = "gate-shared-live-token"
+    for stmt, args in (("CREATE TABLE IF NOT EXISTS lem_meta (key TEXT PRIMARY "
+                        "KEY, value TEXT)", None),
+                       ("INSERT OR REPLACE INTO lem_meta (key, value) VALUES "
+                        "('live_token', ?)", [token])):
+        res = c.gw.fake.sql(stmt, args)
+        if res.get("error"):
+            raise RuntimeError("v2 world: lem_meta: " + res["error"])
+    os.environ["LEM_LIVE_TOKEN"] = token
+
+    def factory():
+        app = server_factory(c)
+        _seed_store_from_labcore(app, c.gw)
+        _seed_store_log_from_labcore(app, c.gw, c.uid)
+        return app
+    c.server._factory = factory
+
+
+def _seed_store_log_from_labcore(app, gw, uid):
+    from .servers import find_store_gateway
+    store_path = app.config.get("LEM_STORE")
+    Store = find_store_gateway()
+    if not store_path or Store is None:
+        return
+    rows = gw.fake.read_sql("SELECT rowid AS r, machine_uid, ts, kind, lab_id, "
+                            "test_name, value, detail FROM lem_machine_log WHERE "
+                            "machine_uid = ? ORDER BY rowid", [uid])
+    if rows.get("error"):
+        raise RuntimeError("v2 world: LabCore log read: " + rows["error"])
+    factors = gw.fake.read_sql("SELECT machine_uid, test_name, correction FROM "
+                               "lem_correction_factors")
+    if factors.get("error"):
+        raise RuntimeError("v2 world: LabCore factor read: " + factors["error"])
+    store = Store(store_path)
+    try:
+        for r in rows["rows"]:
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail, origin, legacy_key, legacy_rowid) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'legacy_labcore', ?, ?)",
+                [r["machine_uid"], r["ts"], r["kind"], r["lab_id"],
+                 r["test_name"], r["value"], r["detail"],
+                 "gate:%s" % r["r"], r["r"]])
+            if res.get("error"):
+                raise RuntimeError("v2 world: store log: " + res["error"])
+        for f in factors["rows"]:
+            res = store.sql("INSERT OR REPLACE INTO lem_correction_factors "
+                            "(machine_uid, test_name, correction) VALUES (?, ?, ?)",
+                            [f["machine_uid"], f["test_name"], f["correction"]])
+            if res.get("error"):
+                raise RuntimeError("v2 world: store factor: " + res["error"])
+    finally:
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
+    snaps = app.config.get("SNAPSHOTS")
+    if snaps is not None:
+        snaps.refresh()
 
 
 def _drained(c):

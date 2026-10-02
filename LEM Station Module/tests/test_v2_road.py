@@ -132,6 +132,11 @@ class FakeLem:
                          "qc_samples": [], "qc_targets": [], "qc_specs": [],
                          "maintenance": [], "override": "",
                          "config_rev": self.rev, "last_qc": []}
+        if path.endswith("/adoption"):
+            # §10.2's digest: this fake LEM has recorded nothing before the
+            # bench's first v4 start, so there is no history to adopt.
+            return 200, {"machine_uid": UID, "counts": {}, "rows": 0,
+                         "first_ts": None, "recent": []}
         if path.endswith("/sync"):
             doc = json.loads(data.decode("utf-8"))
             epoch = doc["epoch"]

@@ -109,6 +109,30 @@ MUTATIONS = {
         "pattern": r'out\[idx\] = str\(entry\["error"\]\) if entry\.get\("error"\) else None',
         "replace": "out[idx] = None",
         "what": "per-index batch results ignored (B1 must fail)"},
+    # ── adoption at the first v4 start (owner P4; beyond §15.7's list) ──
+    # Adoption never runs: the first v4 start reads its file from the top,
+    # which is A's prototype (U1: 30 rows and 30 cells again).
+    "adoption_off": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"if self\._adoption_due\(machine, source\):",
+        "replace": "if False:",
+        "what": "no adoption: the first v4 start re-reads the whole file (U1 must fail)"},
+    # B's match: the line keyed on the value the factor makes of it TODAY,
+    # not the raw reading — a factor changed since logging unmatches every
+    # line (U3 must fail).
+    "adoption_on_corrected": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"return AdoptionLine\(offset, part, pk, lab, adoption_key\(lab, values\),",
+        "replace": "return AdoptionLine(offset, part, pk, lab, adoption_key(lab, "
+                   "{k: v for k, v in corrected.items() if k not in RESERVED_ROW_KEYS}),",
+        "what": "adoption matches corrected values, not raw (U3 must fail)"},
+    # A recovered reading stays on the results road like any other: filed
+    # automatically, without the person §10.2 says must decide (U2).
+    "recovered_filed": {
+        "kind": "source", "owner": "P4",
+        "pattern": r'rows = \[r for r in rows if r\.get\(ORIGIN_KEY\) != "recovered"\]',
+        "replace": "rows = list(rows)",
+        "what": "recovered readings auto-filed (U2 must fail)"},
     "blind_mode_off": {
         "kind": "source", "owner": "P8", "pattern": None, "replace": None,
         "what": "blind mode off: a wiped journal re-sends (T4 floods)"},
