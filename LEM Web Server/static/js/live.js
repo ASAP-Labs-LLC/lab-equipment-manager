@@ -49,7 +49,8 @@
     const STALE_MS = 3 * HIDDEN_MS;
     // the fields that are the lab's state; a change in any is an update
     const FIELDS = ['needs_you', 'fleet', 'round', 'qc_out', 'snapshot_at', 'snapshot_stale',
-                    'labcore_online', 'mirror', 'notifications_unread', 'jobs', 'lab_tz', 'nav_meta'];
+                    'labcore_online', 'mirror', 'notifications_unread', 'jobs', 'lab_tz', 'nav_meta',
+                    'transfer'];
 
     function nextDelay(visible, failures) {
         const base = visible ? VISIBLE_MS : HIDDEN_MS;

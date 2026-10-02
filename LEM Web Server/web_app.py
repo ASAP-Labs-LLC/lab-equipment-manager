@@ -1825,7 +1825,8 @@ def create_app(gateway, labcore_gateway=None,
         user = session.get("user") or ""
         out = dict(status, nav=ui_shell.nav_items(has_quality),
                    fleet_text=ui_shell.fleet_text(status["fleet"]),
-                   record_state=state, record_text=words, user=user)
+                   record_state=state, record_text=words, user=user,
+                   data_line=live.get("transfer"))
         g._lem_shell = out
         return out
 
@@ -1852,7 +1853,11 @@ def create_app(gateway, labcore_gateway=None,
         old floor is the record, rather than a link to a 404. Looked up once:
         routes do not change while the server runs."""
         if "v" not in _has_record:
+            # transfer_routes' stand-in page holds only the Data transfer
+            # section: it is not the record, so it does not take the
+            # record's links away from the floor
             _has_record["v"] = any(r.rule == "/instruments/<machine_uid>"
+                                   and r.endpoint != "instrument_transfer_page"
                                    for r in app.url_map.iter_rules())
         if _has_record["v"]:
             return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
@@ -1893,7 +1898,33 @@ def create_app(gateway, labcore_gateway=None,
                      + (app.config["BRIDGE"].status_items()
                         if app.config.get("BRIDGE") is not None else [])
                      if (app.config.get("CUSTODY") is not None
-                         or app.config.get("BRIDGE") is not None) else None))
+                         or app.config.get("BRIDGE") is not None) else None),
+            transfer=_transfer_foot(merged))
+
+    def _transfer_foot(merged):
+        """The foot's Data line and its items (transfer §14): the bench
+        registry (memory) and TransferWatch (LEM's store, cached). Never
+        LabCore. None until the instrument record has been read."""
+        watch = app.config.get("TRANSFER_WATCH")
+        if watch is None or merged is None:
+            return None
+        import ui_transfer
+        reg = app.config["BENCH_REGISTRY"]
+        entries = {m["machine_uid"]: reg.get(m["machine_uid"]) for m in merged}
+        bridge = app.config.get("BRIDGE")
+        # a v3.9 bench's readings reach LEM through the bridge's pull when
+        # there is one; without a bridge LabCore and the store are one
+        legacy_ok = True
+        if bridge is not None:
+            st = bridge.status()
+            legacy_ok = bool(st.get("on")) and not (st.get("pull") or {}).get("last_error")
+        import legacy_import as _li
+        return ui_transfer.foot(
+            machines=merged, registry={u: e for u, e in entries.items() if e},
+            hydrated=reg.hydrated, facts=watch.facts(),
+            import_status=_li.cached_status(gateway) if is_local_store(gateway) else None,
+            legacy_ok=legacy_ok,
+            href=lambda uid, sec: "/instruments/%s%s" % (uid, ("#" + sec) if sec else ""))
 
     # ── the Instruments home's answer (ia-final §3.2, §5) ───────────────
     # Built once per snapshot cycle: the memo key is the snapshot's build
@@ -8140,4 +8171,24 @@ def create_app(gateway, labcore_gateway=None,
 
     dedupe_routes.register(app, gateway,
                            verify_password=_dedupe_password_ok)
+
+    # ── what people see of the transfer (transfer §14, T-P12) ───────────
+    # The instrument's Data transfer section, /results/conflicts, Settings ›
+    # Transfer. On the store; LabCore is not handed in.
+    import transfer_routes
+
+    def _merged_now():
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        return merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                              STATUS_COLORS)
+
+    transfer_routes.register(
+        app, gateway, registry=bench_registry, machines=_merged_now,
+        href=lambda uid, sec: "/instruments/%s%s" % (uid, ("#" + sec) if sec else ""),
+        authed=lambda: bool(session.get("user")),
+        current_user=lambda: session.get("user", ""),
+        split=labcore_split)
     return app

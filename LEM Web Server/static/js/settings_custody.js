@@ -6,8 +6,8 @@
 // * "Run the restore drill" starts it (it boots a second server and takes
 //   seconds), then re-reads /api/custody every 2 s until it has finished —
 //   only while a drill this page started is running; no timer otherwise.
-// * The bridge switch asks twice before turning the bridge OFF, and the
-//   server decides: a 409 lists its refusals here, in its own words.
+// The bridge switch lives in Settings › Transfer now (settings_transfer.js),
+// beside the per-bench table that justifies it: one control, one place.
 (function () {
     'use strict';
     const S = window.LEMShell;
@@ -48,7 +48,7 @@
 
     function paint(view) {
         if (!view || !Array.isArray(view.rows)) return;
-        $('cust-rows').replaceChildren(...view.rows.flatMap(r => [
+        $('cust-rows').replaceChildren(...view.rows.filter(r => r.key !== 'bridge').flatMap(r => [
             h('div', { className: 'k', text: r.label }),
             h('div', { className: 'v', 'data-key': r.key },
                 h('span', { className: 'line' },
@@ -56,10 +56,6 @@
                     h('span', { className: 'val', text: r.value })),
                 r.note ? h('span', { className: 'caption', text: r.note }) : null)]));
         $('cust-drill').disabled = !!view.drill_running;
-        const b = $('cust-bridge');
-        b.dataset.on = view.bridge_on ? 'true' : 'false';
-        b.textContent = view.bridge_on ? 'Turn the bridge off…' : 'Turn the bridge back on';
-        disarm();
     }
 
     function busy(btn, label) {
@@ -108,42 +104,9 @@
         }
     }
 
-    let armed = null;
-    function disarm() {
-        if (armed) { clearTimeout(armed); armed = null; }
-        const b = $('cust-bridge');
-        b.classList.remove('btn-danger');
-        if (b.dataset.on === 'true') b.textContent = 'Turn the bridge off…';
-    }
-
-    async function bridge() {
-        const b = $('cust-bridge');
-        const on = b.dataset.on === 'true';
-        if (on && !armed) {
-            // asked twice: this freezes LabCore's copy of LEM's tables
-            b.textContent = 'Press again to turn the bridge off';
-            armed = setTimeout(disarm, 6000);
-            say('Turning the bridge off stops copying LEM\'s record into LabCore. LEM checks first that the store has a recent off-host copy.');
-            return;
-        }
-        disarm();
-        const done = busy(b, on ? 'Turning off…' : 'Turning on…');
-        const res = await call('POST', '/api/transfer/bridge', { on: !on });
-        done();
-        if (res.status === 409 && res.body && res.body.refusals) {
-            say('The bridge stays on:', 'err', res.body.refusals);
-            return;
-        }
-        if (!res.ok) { say(why(res, 'the bridge was not changed'), 'err'); return; }
-        const st = await call('GET', '/api/custody');
-        if (st.ok && st.body) paint(st.body.view);
-        say(on ? 'The bridge is off.' : 'The bridge is on again.', 'ok');
-    }
-
     document.addEventListener('DOMContentLoaded', () => {
         if (!$('backups')) return;
         $('cust-backup').addEventListener('click', backup);
         $('cust-drill').addEventListener('click', drill);
-        $('cust-bridge').addEventListener('click', bridge);
     });
 })();
