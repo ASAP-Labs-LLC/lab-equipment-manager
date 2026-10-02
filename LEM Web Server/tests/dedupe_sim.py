@@ -422,9 +422,45 @@ def build() -> SimLab:
     return lab
 
 
-def file_bench(seed: int) -> SimLab:
+def _is_sample_line(line: tuple) -> bool:
+    import dedupe
+    return line[0] == "run" and dedupe.is_sample_id(line[1])
+
+
+def _sample_block(rnd, file: List[tuple], k: int) -> List[tuple]:
+    """A consecutive block of `file` holding at most `k` samples (and any
+    standards between them): half the time the file's last lines, half
+    the time from a random place."""
+    if rnd.random() < 0.5:
+        e = j = len(file)
+        n = 0
+        while j > 0 and n + _is_sample_line(file[j - 1]) <= k:
+            n += _is_sample_line(file[j - 1])
+            j -= 1
+        if rnd.random() < 0.5:
+            while j < e and not _is_sample_line(file[j]):
+                j += 1
+        return file[j:e]
+    j = e = rnd.randint(0, max(0, len(file) - 1))
+    n = 0
+    while e < len(file) and n + _is_sample_line(file[e]) <= k:
+        n += _is_sample_line(file[e])
+        e += 1
+    return file[j:e]
+
+
+def file_bench(seed: int, retest: str = "lines") -> SimLab:
     """One random single_csv bench, the round-5 critic's harness
-    (`bigfuzz.py`), kept here so the suite runs what the critic ran.
+    (`bigfuzz.py`, and the round-6 critic's `fuzz2.py`, which is the same
+    generator), kept here so the suite runs what the critics ran.
+
+    `retest="samples"` is the harsher lab the round-7 builder ran against
+    its own rule: a re-test is a consecutive block of the file holding up
+    to four SAMPLES, whatever standards and blanks sit between them, and
+    half of those blocks are the file's last lines -- exactly what a
+    short restart re-read copies. A rule that counts standards as
+    evidence hides those re-tests; a rule that does not, must list the
+    re-reads that look the same.
 
     The bench keeps a FILE: each day appends 5-40 lines — new samples
     (values at a resolution of 3, 10 or 1000 steps, so identical numbers
@@ -461,7 +497,9 @@ def file_bench(seed: int) -> SimLab:
                 today.append(rnd.choice(stds))
             elif r < 0.2 and file:
                 k = rnd.randint(1, 4)
-                if rnd.random() < 0.5:
+                if retest == "samples" and rnd.random() < 0.5:
+                    today.extend(_sample_block(rnd, file, k))
+                elif rnd.random() < 0.5:
                     j = rnd.randint(0, max(0, len(file) - k))
                     today.extend(file[j:j + k])
                 else:

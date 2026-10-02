@@ -571,3 +571,74 @@ class TestTheGapToG1IsShownPollByPoll:
                 "reading") in text
         assert "09-18 10:11 25 of 25 (first ingest: 25 rows of new Lab IDs)" in text
         assert "09-18 10:52 20 of 20 (20 re-processed)" in text
+
+
+class TestTheReviewListSaysWhereToLookFirst:
+    """Round-6 critic: 72,505 genuine rows (24 %) of its 3,000 random
+    benches land in the review list beside 4,105 replays. §10.5 wants them
+    there -- an identical re-test or a QC repeat is exactly what a
+    `probable_duplicate` is, and it stays visible -- but a list where one
+    row in eighteen is a copy is a list nobody reads to the end.
+
+    The rules already know two different things about a listed row:
+
+    * `look_first` -- it is part of a RUN of copies sitting where a re-read
+      would sit, too short to prove itself (`short_stretch`,
+      `fewer_than_five_samples`, `fewer_than_two_samples`,
+      `mid_poll_stretch`). Every replay the rules could not prove is here.
+    * `single_repeat` -- a lone identical reading among new rows, or the
+      same reading twice in one poll: what a QC check or a one-off re-test
+      looks like.
+
+    The report counts both per bench, and draws its review examples from
+    `look_first` before `single_repeat`. Nothing changes label and nothing
+    is hidden; the order of reading changes."""
+
+    def _lab(self):
+        lab = SimLab()
+        s = [SimLab.run_line("40%03d" % k, {"S": "%d" % (k % 3)})
+             for k in range(10)]
+        for line in s:
+            lab.poll("t", [line], [GENUINE])
+        qc = SimLab.qc_line("AF26", "S", 2.0)
+        lab.poll("t", [qc], [GENUINE])
+        new = [SimLab.run_line("41%03d" % k, {"S": "n%d" % k})
+               for k in range(22)]
+        # a short re-read (two samples at the head, to the record's end),
+        # then new work with the QC check read again among it
+        lab.poll("t", s[8:] + new[:3] + [qc] + new[3:],
+                 [DUP] * 2 + [GENUINE] * 23)
+        # the QC check again, alone
+        lab.poll("t", [qc], [GENUINE])
+        return lab
+
+    def test_each_listed_row_is_counted_in_one_tier(self):
+        rep = _report(self._lab())
+        bench = rep["benches"][0]
+        assert bench["review"] == {"look_first": 2, "single_repeat": 2}
+        assert sum(bench["review"].values()) == bench["candidates"][
+            "probable_duplicate"]
+        assert rep["review"] == bench["review"]
+
+    def test_examples_show_the_runs_first(self):
+        rep = _report(self._lab())
+        ex = [e for e in rep["benches"][0]["examples"]
+              if e["label"] == "probable_duplicate"]
+        assert [e["review"] for e in ex] == [
+            "look_first", "look_first", "single_repeat", "single_repeat"]
+
+    def test_every_replay_left_visible_is_in_look_first(self):
+        """On the critics' random lab (500 benches), a copy the rules
+        could not prove is never filed as a single repeat."""
+        for seed in range(500):
+            lab = dedupe_sim.file_bench(seed)
+            got = dedupe.classify(
+                dedupe.LogRow.from_dict(r) for r in lab.rows).candidates
+            for rid, c in got.items():
+                if lab.truth[rid] == DUP and c.label == "probable_duplicate":
+                    assert dedupe.review_tier(c) == "look_first", (seed, rid)
+
+    def test_the_terminal_report_says_it(self):
+        lines = dedupe.summary_lines(_report(self._lab()))
+        assert any("review list: look first 2, single repeats 2" in l
+                   for l in lines)

@@ -57,11 +57,14 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
 * `replay_duplicate` — a row with an earlier identical twin in a DIFFERENT
   poll, in a poll in which ≥ 80 % of the rows have such twins (the majority
   rule; it needs at least 5 rows, because C's 2-row/50 % rule was rejected
-  as too eager and a 1-row poll is "100 %"), or in a poll that carried ≥ 20
-  rows where the twin lies in a replayed STRETCH: consecutive rows the
-  record already holds (`_replayed_stretches`). A restart re-reads a run
-  of its file; a lone twin among new rows is what a genuine repeat in a
-  catch-up poll looks like. On BOTH paths the twins must include
+  as too eager and a 1-row poll is "100 %"), or -- in a poll of any size
+  (§10.5 says ≥ 20 rows; round 7 measured why the size is not the
+  evidence) -- where the twin lies in a replayed STRETCH: consecutive rows
+  the record already holds (`_replayed_stretches`). A restart re-reads a
+  run of its file and then sends the day's new lines in the same poll; on
+  a short day that poll has under twenty rows and is no less a re-read
+  (rule `stretch`). A lone twin among new rows is what a genuine repeat in
+  a catch-up poll looks like. On BOTH paths the twins must include
   MIN_COPY_SAMPLES (5) SAMPLE readings over two or more samples
   (`is_sample_id`: a Lab ID numbered the way LabCore numbers a sample). A
   lab reads its standards, blanks and solvents every day by design, and a
@@ -70,8 +73,11 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
   write exactly the rows a short re-read writes. The record cannot tell
   those apart, so below five samples a repeat is LISTED, never proposed.
   A run of twins counts only if ONE stretch of the record carries it, row
-  by row (`_reread_runs`), and five samples prove it only where a restart
-  puts its re-read: at the head of the poll, running to the record's end
+  by row (`_reread_runs`) -- stepping over rows of the record that are
+  themselves copies of earlier rows, which an earlier restart wrote and
+  the file never held (`_bridge`) -- and five samples prove it only where
+  a restart puts its re-read: at the head of the poll, running to the
+  record's end
   (or carrying on, a few rows later, from a re-read the poll already
   proved). Anywhere else — in the middle of new work, or at the head but
   stopping short — it takes MID_POLL_SAMPLES (9): two re-tests of four
@@ -191,6 +197,14 @@ _NAMED_REFERENCE = re.compile(r"(?i)std|standard|blank|solvent|check|\bcal\b")
 HIDE_CANDIDATE_LABELS = ("replay_duplicate", "resend", "import_leftover")
 #: Listed for review; never hidden.
 REVIEW_LABELS = ("probable_duplicate",)
+#: The listed rows that sit in a RUN of copies where a re-read would sit,
+#: too short to prove itself: every replay the rules could not prove is
+#: one of these. The rest of the list is single repeats -- a lone
+#: identical reading among new rows, or one reading twice in a poll --
+#: which is what a QC check or a one-off re-test looks like.
+LOOK_FIRST_RULES = frozenset(("short_stretch", "fewer_than_five_samples",
+                              "fewer_than_two_samples", "mid_poll_stretch"))
+REVIEW_TIERS = ("look_first", "single_repeat")
 
 #: The annotation label each candidate label is written as. `resend` hides as
 #: a `replay_duplicate` (the store's two hiding labels are the spec's), and
@@ -509,18 +523,29 @@ class _Order:
     file held it so many times running (a result printed twice, a block
     re-sent), and a re-read of that place may copy any number of them.
     Every classified row of every poll joins it, copies included: a file
-    re-read twice is copied in the same order both times."""
+    re-read twice is copied in the same order both times. `copy` marks the
+    rows that are twins of earlier rows (copies the record holds, proposed
+    or listed), so a later re-read may step over them (`_bridge`)."""
 
-    __slots__ = ("at", "rows", "samples")
+    __slots__ = ("at", "rows", "samples", "copy", "key")
 
     def __init__(self) -> None:
         self.at: Dict[int, List[List[Optional[int]]]] = (
             collections.defaultdict(list))
         self.rows = 0
         self.samples = 0
+        #: per record row: True when the row is itself a twin of an earlier
+        #: row (a copy the record holds, visible because nothing proved it)
+        self.copy: List[bool] = []
+        #: per record row: its reading
+        self.key: List[int] = []
 
-    def remember(self, poll: List[LogRow], keys: List[int]) -> None:
+    def remember(self, poll: List[LogRow], keys: List[int],
+                 twins: Iterable[int] = ()) -> None:
+        twins = set(twins)
         for k, key in enumerate(keys):
+            self.copy.append(k in twins)
+            self.key.append(key)
             sp = None
             if _is_sample(poll[k]):
                 sp = self.samples
@@ -655,9 +680,9 @@ def _replayed_stretches(poll: List[LogRow], rest: List[int],
                         twin_of: Dict[int, int], seen: set,
                         keys: List[int], order: _Order,
                         unanchored: set) -> Tuple[set, set]:
-    """The twins of a big poll that a re-read put there (positions in
-    `poll`), for a poll that is NOT mostly twins; and, apart, the twins
-    that sit in a run too short to prove it.
+    """The twins of a poll that a re-read put there (positions in
+    `poll`), for a poll that is NOT mostly twins, of any size; and, apart,
+    the twins that sit in a run too short to prove it.
 
     A restart re-reads a RUN of its file, so its copies arrive as a stretch:
     consecutive rows (in the poll's order, re-sent rows set aside), every
@@ -710,6 +735,54 @@ def _touches_end(order: _Order, start: set, end: set) -> bool:
             and any(a[5] < 0 for a in end))
 
 
+#: How many record rows a bridge (`_bridge`) may step over.
+BRIDGE_ROWS = 200
+
+
+def _bridged(end: set, start: set, order: _Order, read: set) -> bool:
+    """True when the run that starts at `start` picks up where the run
+    before it ended (`end`), the same way round, with nothing between them
+    in the record but an EARLIER RE-READ OF THE SAME LINES: rows that are
+    themselves copies of earlier rows, every one a reading the run before
+    has just copied too (`read`). A restart re-reads the file's tail; the
+    record holds that tail, then the copies an earlier restart made of
+    part of it, then the lines that came next. The file never held those
+    copies, so a re-read of it passes straight over them. Anything else
+    in the gap -- a new line, a re-test, a copy of some OTHER part of the
+    file -- is a break: two re-tests do not join through it (round-7
+    harsher fuzz, seeds 10548 and 13475, joined that way before `read`)."""
+    copy, key = order.copy, order.key
+
+    def gap(a: int, b: int) -> bool:
+        return 0 < b - a <= BRIDGE_ROWS and all(
+            copy[i] and key[i] in read for i in range(a, b))
+    for _p, r0, r1, _q0, _q1, way in end:
+        for _s, s0, s1, _p0, _p1, _w in start:
+            if way >= 0 and s0 > r1 + 1 and gap(r1 + 1, s0):
+                return True
+            if way <= 0 and r0 > s1 + 1 and gap(s1 + 1, r0):
+                return True
+    return False
+
+
+def _bridge(parts: List[List[int]], bounds: list, order: _Order,
+            keys: List[int]) -> Tuple[List[List[int]], list]:
+    """Join consecutive runs that `_bridged` says are one re-read."""
+    if len(parts) < 2:
+        return parts, bounds
+    out_p: List[List[int]] = [list(parts[0])]
+    out_b: list = [bounds[0]]
+    for part, (start, end) in zip(parts[1:], bounds[1:]):
+        read = {keys[j] for j in out_p[-1]}
+        if _bridged(out_b[-1][1], start, order, read):
+            out_p[-1].extend(part)
+            out_b[-1] = (out_b[-1][0], end)
+        else:
+            out_p.append(list(part))
+            out_b.append((start, end))
+    return out_p, out_b
+
+
 def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
                 order: _Order, head: bool, ended: Optional[set],
                 unanchored: set) -> Tuple[set, Optional[set], List[List[int]]]:
@@ -726,6 +799,7 @@ def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
     go into `unanchored`, so the listing can say why."""
     bounds: list = []
     parts = _reread_runs(poll, twins, keys, order, bounds)
+    parts, bounds = _bridge(parts, bounds, order, keys)
     out: set = set()
     for n, (part, (start, end)) in enumerate(zip(parts, bounds)):
         at_head = head and n == 0 and _touches_end(order, start, end)
@@ -825,10 +899,11 @@ def classify(rows: Iterable[LogRow],
             if majority:
                 copied = _prove_runs(poll, [k for k in rest if k in twin_of],
                                      keys, order, True, None, unanchored)[0]
-            elif n >= BURST_ROWS:
+            else:
                 copied, short = _replayed_stretches(poll, rest, twin_of, seen,
                                                     keys, order, unanchored)
-            rule = "burst" if n >= BURST_ROWS else "majority"
+            rule = ("burst" if n >= BURST_ROWS else "majority" if majority
+                    else "stretch")
 
             def put(k, label, why, dup_of):
                 r = poll[k]
@@ -866,7 +941,7 @@ def classify(rows: Iterable[LogRow],
                 in_poll.setdefault(f, r.id)
                 kept[f].append(r.id)
             # only now does this poll's order join the record's
-            order.remember(poll, keys)
+            order.remember(poll, keys, set(twin_of) | set(resent))
             for k in range(n):
                 r = poll[k]
                 if (r.lab_id in MISREAD_LAB_IDS and r.is_imported()
@@ -982,6 +1057,22 @@ def qc_impact(result: Classification, machine_uid: Optional[str] = None,
 
 # ── the dry-run report ───────────────────────────────────────────────────────
 
+def review_tier(c: "Candidate") -> Optional[str]:
+    """Where a listed row sits in the review list (None if not listed)."""
+    if c.label not in REVIEW_LABELS:
+        return None
+    return "look_first" if c.rule in LOOK_FIRST_RULES else "single_repeat"
+
+
+def _review_counts(cands: Iterable["Candidate"]) -> Dict[str, int]:
+    out = {t: 0 for t in REVIEW_TIERS}
+    for c in cands:
+        t = review_tier(c)
+        if t:
+            out[t] += 1
+    return out
+
+
 def _examples(result: Classification, uid: str,
               only: Optional[Sequence[str]] = None,
               unit: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -993,7 +1084,9 @@ def _examples(result: Classification, uid: str,
         if c.machine_uid == uid and (unit is None or c.unit == unit):
             by_label[c.label].append(c)
     for v in by_label.values():
-        v.sort(key=lambda c: (c.ts, c.log_id))
+        # runs of unproven copies before single repeats (`review_tier`)
+        v.sort(key=lambda c: (review_tier(c) == "single_repeat", c.ts,
+                              c.log_id))
     labels = [l for l in HIDE_CANDIDATE_LABELS + REVIEW_LABELS
               if by_label.get(l) and (only is None or l in only)]
     picked: List[Candidate] = []
@@ -1008,11 +1101,24 @@ def _examples(result: Classification, uid: str,
     for l in labels:
         pool, q = by_label[l], quota[l]
         step = len(pool) / float(q)
+        firsts = [c for c in pool if review_tier(c) == "look_first"]
+        if l in REVIEW_LABELS and 0 < len(firsts) < len(pool):
+            # spread over each tier in turn, look-first rows first
+            nf = min(len(firsts), max(1, (q * len(firsts) + len(pool) - 1)
+                                      // len(pool)))
+            rest = pool[len(firsts):]
+            sf = len(firsts) / float(nf)
+            picked.extend(firsts[int(i * sf)] for i in range(nf))
+            if q > nf:
+                sr = len(rest) / float(q - nf)
+                picked.extend(rest[int(i * sr)] for i in range(q - nf))
+            continue
         picked.extend(pool[int(i * step)] for i in range(q))
     out = []
     for c in picked:
         row = result.rows[c.log_id].brief()
         row.update({"label": c.label, "rule": c.rule, "dup_of": c.dup_of,
+                    "review": review_tier(c),
                     "poll_rows": c.poll_rows, "unit": c.unit,
                     "original": (result.rows[c.dup_of].brief()
                                  if c.dup_of in result.rows else None)})
@@ -1351,6 +1457,7 @@ def report(result: Classification, *, since: Optional[str] = None,
             "rows": sum(1 for r in result.rows.values()
                         if r.machine_uid == uid),
             "candidates": dict(counts),
+            "review": _review_counts(cands),
             "by_kind": {k: dict(v) for k, v in by_kind.items()},
             "run_ids": {u: result.run_id(uid, u)
                         for u in result.units(uid)},
@@ -1376,6 +1483,8 @@ def report(result: Classification, *, since: Optional[str] = None,
         "totals": dict(totals),
         "hide_candidates": sum(totals.get(l, 0)
                                for l in HIDE_CANDIDATE_LABELS),
+        "review": {t: sum(b["review"][t] for b in benches)
+                   for t in REVIEW_TIERS},
         "benches": benches,
         "qc_impact": [s for b in benches for s in b["qc_impact"]],
         "prediction": (prediction_check(result, prediction)
@@ -1717,6 +1826,11 @@ def summary_lines(rep: Dict[str, Any], names: Optional[Dict[str, str]] = None
                                ", ".join("{0} {1:,}".format(k, v)
                                          for k, v in sorted(
                                              rep["totals"].items())))]
+    rv = rep.get("review") or {}
+    out.append("review list: look first {0:,}, single repeats {1:,} (runs "
+               "of copies too short to prove come first; every unproven "
+               "replay is among them)".format(rv.get("look_first", 0),
+                                              rv.get("single_repeat", 0)))
     for b in sorted(rep["benches"], key=lambda b: -sum(
             b["candidates"].get(l, 0) for l in HIDE_CANDIDATE_LABELS)):
         line = "  {0:<22} rows {1:>7,}  ".format(
