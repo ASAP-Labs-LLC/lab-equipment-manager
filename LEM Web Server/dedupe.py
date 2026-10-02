@@ -88,7 +88,12 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
   before anything hides.
 * `probable_duplicate` — a twin that is NOT in such a poll or stretch: a
   genuine identical re-test or a QC repeat looks exactly like this. Always
-  visible; listed for review.
+  visible; listed for review, in three tiers (`review_tier`). First the
+  runs too short to prove that sit exactly where a restart re-reads -- at
+  the head of the poll, running to the record's end (rule
+  `short_reread`): every replay the rules leave visible is one of these,
+  and so is a re-test of the record's last few samples. Then every other
+  short run of copies; then single repeats.
 * `import_leftover` — an imported (`labshare-2026-08-27`) row that one of
   the two rules above would hide, and the import's three misread Lab IDs.
 
@@ -197,14 +202,24 @@ _NAMED_REFERENCE = re.compile(r"(?i)std|standard|blank|solvent|check|\bcal\b")
 HIDE_CANDIDATE_LABELS = ("replay_duplicate", "resend", "import_leftover")
 #: Listed for review; never hidden.
 REVIEW_LABELS = ("probable_duplicate",)
-#: The listed rows that sit in a RUN of copies where a re-read would sit,
-#: too short to prove itself: every replay the rules could not prove is
-#: one of these. The rest of the list is single repeats -- a lone
-#: identical reading among new rows, or one reading twice in a poll --
-#: which is what a QC check or a one-off re-test looks like.
-LOOK_FIRST_RULES = frozenset(("short_stretch", "fewer_than_five_samples",
-                              "fewer_than_two_samples", "mid_poll_stretch"))
-REVIEW_TIERS = ("look_first", "single_repeat")
+#: How the review list is read, most likely copies first:
+#:
+#: * `look_first` -- a run of copies sitting exactly where a restart puts
+#:   its re-read (the head of the poll, running to the record's end) that
+#:   is too short to prove itself (`short_reread`). Every replay the rules
+#:   could not prove is here; so is a re-test of the record's last few
+#:   samples, which writes the same rows.
+#: * `short_run` -- a run of copies anywhere else (`short_stretch`,
+#:   `mid_poll_stretch`, `fewer_than_five_samples`,
+#:   `fewer_than_two_samples`): what a re-test of a few old samples, or the
+#:   day's standards read again together, looks like.
+#: * `single_repeat` -- a lone identical reading among new rows, or one
+#:   reading twice in a poll: what a QC check or a one-off re-test looks
+#:   like.
+LOOK_FIRST_RULES = frozenset(("short_reread",))
+SHORT_RUN_RULES = frozenset(("short_stretch", "fewer_than_five_samples",
+                             "fewer_than_two_samples", "mid_poll_stretch"))
+REVIEW_TIERS = ("look_first", "short_run", "single_repeat")
 
 #: The annotation label each candidate label is written as. `resend` hides as
 #: a `replay_duplicate` (the store's two hiding labels are the spec's), and
@@ -679,7 +694,8 @@ def _proven(poll: List[LogRow], run: List[int],
 def _replayed_stretches(poll: List[LogRow], rest: List[int],
                         twin_of: Dict[int, int], seen: set,
                         keys: List[int], order: _Order,
-                        unanchored: set) -> Tuple[set, set]:
+                        unanchored: set, placed: Optional[set] = None
+                        ) -> Tuple[set, set]:
     """The twins of a poll that a re-read put there (positions in
     `poll`), for a poll that is NOT mostly twins, of any size; and, apart,
     the twins that sit in a run too short to prove it.
@@ -712,7 +728,7 @@ def _replayed_stretches(poll: List[LogRow], rest: List[int],
             continue
         twins = [j for j in run if j in twin_of]
         proven, ended, parts = _prove_runs(poll, twins, keys, order, head,
-                                           ended, unanchored)
+                                           ended, unanchored, placed)
         out.update(proven)
         if len(run) >= 2:
             for part in parts:
@@ -785,7 +801,8 @@ def _bridge(parts: List[List[int]], bounds: list, order: _Order,
 
 def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
                 order: _Order, head: bool, ended: Optional[set],
-                unanchored: set) -> Tuple[set, Optional[set], List[List[int]]]:
+                unanchored: set, placed: Optional[set] = None
+                ) -> Tuple[set, Optional[set], List[List[int]]]:
     """The runs of `twins` that prove a re-read (positions in `poll`); where
     the last proven one ended; and every run. A run proves itself with
     MIN_COPY_SAMPLES sample twins where a restart puts its re-read — at the
@@ -810,6 +827,8 @@ def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
             ended = end
         elif _proven(poll, part):
             unanchored.update(part)
+        elif anchored and placed is not None:
+            placed.update(part)
     return out, ended, parts
 
 
@@ -896,12 +915,15 @@ def classify(rows: Iterable[LogRow],
             short: set = set()
             copied: set = set()
             unanchored: set = set()
+            placed: set = set()
             if majority:
                 copied = _prove_runs(poll, [k for k in rest if k in twin_of],
-                                     keys, order, True, None, unanchored)[0]
+                                     keys, order, True, None, unanchored,
+                                     placed)[0]
             else:
                 copied, short = _replayed_stretches(poll, rest, twin_of, seen,
-                                                    keys, order, unanchored)
+                                                    keys, order, unanchored,
+                                                    placed)
             rule = ("burst" if n >= BURST_ROWS else "majority" if majority
                     else "stretch")
 
@@ -927,6 +949,7 @@ def classify(rows: Iterable[LogRow],
                         "mid_poll_stretch" if k in unanchored
                         else "fewer_than_two_samples"
                         if majority and standards_only
+                        else "short_reread" if k in placed
                         else "fewer_than_five_samples" if majority
                         else "short_stretch" if k in short
                         else "lone_twin_in_burst" if n >= BURST_ROWS
@@ -1061,7 +1084,12 @@ def review_tier(c: "Candidate") -> Optional[str]:
     """Where a listed row sits in the review list (None if not listed)."""
     if c.label not in REVIEW_LABELS:
         return None
-    return "look_first" if c.rule in LOOK_FIRST_RULES else "single_repeat"
+    if c.rule in LOOK_FIRST_RULES:
+        return "look_first"
+    return "short_run" if c.rule in SHORT_RUN_RULES else "single_repeat"
+
+
+_TIER_RANK = {t: n for n, t in enumerate(REVIEW_TIERS)}
 
 
 def _review_counts(cands: Iterable["Candidate"]) -> Dict[str, int]:
@@ -1084,8 +1112,8 @@ def _examples(result: Classification, uid: str,
         if c.machine_uid == uid and (unit is None or c.unit == unit):
             by_label[c.label].append(c)
     for v in by_label.values():
-        # runs of unproven copies before single repeats (`review_tier`)
-        v.sort(key=lambda c: (review_tier(c) == "single_repeat", c.ts,
+        # short re-reads, then other short runs, then single repeats
+        v.sort(key=lambda c: (_TIER_RANK.get(review_tier(c), 0), c.ts,
                               c.log_id))
     labels = [l for l in HIDE_CANDIDATE_LABELS + REVIEW_LABELS
               if by_label.get(l) and (only is None or l in only)]
@@ -1827,10 +1855,12 @@ def summary_lines(rep: Dict[str, Any], names: Optional[Dict[str, str]] = None
                                          for k, v in sorted(
                                              rep["totals"].items())))]
     rv = rep.get("review") or {}
-    out.append("review list: look first {0:,}, single repeats {1:,} (runs "
-               "of copies too short to prove come first; every unproven "
-               "replay is among them)".format(rv.get("look_first", 0),
-                                              rv.get("single_repeat", 0)))
+    out.append("review list: look first {0:,}, short runs {1:,}, single "
+               "repeats {2:,} (look first = re-reads too short to prove, "
+               "at the head of a poll and running to the record's end: "
+               "every unproven replay is among them)".format(
+                   rv.get("look_first", 0), rv.get("short_run", 0),
+                   rv.get("single_repeat", 0)))
     for b in sorted(rep["benches"], key=lambda b: -sum(
             b["candidates"].get(l, 0) for l in HIDE_CANDIDATE_LABELS)):
         line = "  {0:<22} rows {1:>7,}  ".format(

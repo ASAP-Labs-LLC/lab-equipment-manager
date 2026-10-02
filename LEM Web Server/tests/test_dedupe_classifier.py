@@ -966,7 +966,9 @@ class TestARetestOfAFewSamplesIsNotACopy:
         shape = {uid: [(got[i].label, got[i].rule) if i in got else None
                        for i in ids] for uid, ids in out.items()}
         assert shape["A"] == shape["B"]
-        assert shape["A"][:2] == [("probable_duplicate", "short_stretch")] * 2
+        # at the head, to the record's end: where a restart re-reads, so
+        # both are listed FIRST (round 8), and both stay visible
+        assert shape["A"][:2] == [("probable_duplicate", "short_reread")] * 2
         assert all(x is None for x in shape["A"][2:])
 
 
@@ -1194,7 +1196,7 @@ class TestTheCriticsFuzz:
     sample, seeds 4,000-19,999: 228,969 replayed, 217,611 proposed,
     0 unmarked; 1,605,128 genuine, 0 proposed."""
 
-    LISTED_BECAUSE = {"twin_not_in_burst", "short_stretch",
+    LISTED_BECAUSE = {"twin_not_in_burst", "short_stretch", "short_reread",
                       "fewer_than_five_samples", "mid_poll_stretch"}
 
     @pytest.mark.parametrize("block", range(8))
@@ -1428,5 +1430,7 @@ class TestTheRoundSixCriticsFuzz:
                         why.add(c.rule)
         assert hidden_genuine == []
         assert unmarked == []
-        assert why <= {"short_stretch", "fewer_than_five_samples"}
+        # round 8: every one of them is a short re-read where a restart
+        # puts it (head of the poll, to the record's end): `look_first`
+        assert why <= {"short_reread"}, why
         assert proposed >= 0.935 * dup, (proposed, dup)

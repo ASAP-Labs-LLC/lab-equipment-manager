@@ -604,8 +604,10 @@ class TestTheReviewListSaysWhereToLookFirst:
         lab.poll("t", [qc], [GENUINE])
         new = [SimLab.run_line("41%03d" % k, {"S": "n%d" % k})
                for k in range(22)]
-        # a short re-read (two samples at the head, to the record's end),
-        # then new work with the QC check read again among it
+        # two copies at the head of the poll (NOT to the record's end: the
+        # AF26 check came after them, so since round 8 this is a
+        # `short_run`, see TestLookFirstIsWhereARestartReReads), then new
+        # work with the QC check read again among it
         lab.poll("t", s[8:] + new[:3] + [qc] + new[3:],
                  [DUP] * 2 + [GENUINE] * 23)
         # the QC check again, alone
@@ -615,7 +617,8 @@ class TestTheReviewListSaysWhereToLookFirst:
     def test_each_listed_row_is_counted_in_one_tier(self):
         rep = _report(self._lab())
         bench = rep["benches"][0]
-        assert bench["review"] == {"look_first": 2, "single_repeat": 2}
+        assert bench["review"] == {"look_first": 0, "short_run": 2,
+                                   "single_repeat": 2}
         assert sum(bench["review"].values()) == bench["candidates"][
             "probable_duplicate"]
         assert rep["review"] == bench["review"]
@@ -625,7 +628,7 @@ class TestTheReviewListSaysWhereToLookFirst:
         ex = [e for e in rep["benches"][0]["examples"]
               if e["label"] == "probable_duplicate"]
         assert [e["review"] for e in ex] == [
-            "look_first", "look_first", "single_repeat", "single_repeat"]
+            "short_run", "short_run", "single_repeat", "single_repeat"]
 
     def test_every_replay_left_visible_is_in_look_first(self):
         """On the critics' random lab (500 benches), a copy the rules
@@ -640,5 +643,93 @@ class TestTheReviewListSaysWhereToLookFirst:
 
     def test_the_terminal_report_says_it(self):
         lines = dedupe.summary_lines(_report(self._lab()))
-        assert any("review list: look first 2, single repeats 2" in l
-                   for l in lines)
+        assert any("review list: look first 0, short runs 2, single "
+                   "repeats 2" in l for l in lines)
+
+
+class TestLookFirstIsWhereARestartReReads:
+    """Round-7 critic, again: 24 % of genuine rows sit in the review list.
+    The round-7 tiers put every run of copies too short to prove into
+    `look_first`; on fuzz2's 3,000 benches that tier held 2,408 replays and
+    28,115 genuine rows -- one row in 12.7 a copy. Most of those genuine
+    rows are re-tests of two to four old samples in the middle of new work
+    or at the head of a poll but nowhere near the record's end.
+
+    A restart puts its re-read in one place: at the head of the poll,
+    running to the record's last row (a stale offset re-reads to the end
+    of the file). `_prove_runs` already asks that question to choose the
+    five-sample floor over the nine-sample one. A run that IS in that
+    place and still falls short of five samples now says so: rule
+    `short_reread`, tier `look_first`. Every other short run is
+    `short_run`; a lone repeat stays `single_repeat`.
+
+    Nothing changes label and nothing is hidden: a short re-read is still
+    exactly what a re-test of the record's last few samples writes
+    (`test_a_two_line_re_read_and_a_pair_retest_are_the_same_record`),
+    so it is listed, visible, for a person. What changes is that the
+    person's first list is the rows most likely to be copies.
+
+    Measured on fuzz2 (`file_bench(seed)`, seeds 0-2,999): look_first is
+    2,408 replays and 692 genuine rows (78 % copies; was 2,408 and
+    28,115, 8 %); short_run 28,101 genuine and 0 replays; single_repeat
+    43,712 genuine and 0 replays."""
+
+    def _lab(self):
+        lab = SimLab()
+        s = [SimLab.run_line("42%03d" % k, {"S": "%d" % (k % 3)})
+             for k in range(10)]
+        for line in s:
+            lab.poll("r", [line], [GENUINE])
+        new = [SimLab.run_line("43%03d" % k, {"S": "n%d" % k})
+               for k in range(22)]
+        # a re-read of the last two samples, at the head, to the end ...
+        a = lab.poll("r", s[8:] + new[:11], [DUP] * 2 + [GENUINE] * 11)
+        # ... and a re-test of two OLD samples in the middle of new work
+        b = lab.poll("r", new[11:16] + s[2:4] + new[16:],
+                     [GENUINE] * 13)
+        return lab, a[:2], b[5:7]
+
+    def _got(self, lab):
+        return dedupe.classify(
+            dedupe.LogRow.from_dict(r) for r in lab.rows).candidates
+
+    def test_a_short_re_read_at_the_restarts_place_is_looked_at_first(self):
+        lab, reread, _ = self._lab()
+        got = self._got(lab)
+        assert [(got[i].label, got[i].rule, dedupe.review_tier(got[i]))
+                for i in reread] == [
+            ("probable_duplicate", "short_reread", "look_first")] * 2
+
+    def test_a_short_run_anywhere_else_is_a_short_run(self):
+        lab, _, retest = self._lab()
+        got = self._got(lab)
+        assert [(got[i].label, got[i].rule, dedupe.review_tier(got[i]))
+                for i in retest] == [
+            ("probable_duplicate", "short_stretch", "short_run")] * 2
+
+    def test_the_report_counts_three_tiers(self):
+        rep = _report(self._lab()[0])
+        assert rep["benches"][0]["review"] == {
+            "look_first": 2, "short_run": 2, "single_repeat": 0}
+
+    @pytest.mark.parametrize("retest", ["lines", "samples"])
+    def test_on_the_critics_lab_look_first_is_mostly_copies(self, retest):
+        """500 random benches each way. Every replay left visible is in
+        look_first, and most of look_first is replays; nothing genuine is
+        proposed. (Seeds 0-499; the 3,000-seed numbers are above.)"""
+        tier = {(t, w): 0 for t in dedupe.REVIEW_TIERS
+                for w in (DUP, GENUINE)}
+        hidden_genuine = 0
+        for seed in range(500):
+            lab = dedupe_sim.file_bench(seed, retest)
+            got = self._got(lab)
+            for rid, c in got.items():
+                if c.label in dedupe.HIDE_CANDIDATE_LABELS:
+                    hidden_genuine += lab.truth[rid] == GENUINE
+                elif c.label == "probable_duplicate":
+                    tier[(dedupe.review_tier(c), lab.truth[rid])] += 1
+        assert hidden_genuine == 0
+        assert tier[("short_run", DUP)] == 0
+        assert tier[("single_repeat", DUP)] == 0
+        first = tier[("look_first", DUP)] + tier[("look_first", GENUINE)]
+        assert tier[("look_first", DUP)] >= 0.6 * first, tier
