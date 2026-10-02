@@ -23,8 +23,8 @@ import vm from 'vm';
 const html = fs.readFileSync(
   new URL('../../templates/floor.html', import.meta.url), 'utf8');
 
-/* The page has one classic script; the module that boots the world has its own
- * scope and its own imports, so it is not run here. */
+/* The page has one classic script (the module that booted the 3D world is
+ * deleted with it; see the end of this file). */
 const scripts = [...html.matchAll(/<script(?![^>]*\btype=)[^>]*>([\s\S]*?)<\/script>/g)]
   .map(m => m[1]).filter(s => s.length > 400);
 if (!scripts.length) {
@@ -351,16 +351,15 @@ try {
          + 'after this point would be dead', err);
 }
 
-/* The bridge the world module talks to has to survive the load, or the map
- * silently never attaches. */
+/* The bridge the plan's clicks and hovers go through has to survive the
+ * load, or a click on an instrument silently does nothing. */
 if (!failed) {
   const bridge = sandbox.window.__floorBridge;
-  const REQUIRED = ['attach', 'onSelect', 'onContext', 'onHover', 'onMove',
-                    'canDrag'];
+  const REQUIRED = ['onSelect', 'onContext', 'onHover', 'onMove', 'canDrag'];
   if (!bridge) {
     failed = true;
-    console.log('FAIL: window.__floorBridge was never defined — the 3D world '
-                + 'has nothing to attach to');
+    console.log('FAIL: window.__floorBridge was never defined — the plan '
+                + 'has nothing to call');
   } else {
     for (const name of REQUIRED) {
       if (typeof bridge[name] !== 'function') {
@@ -370,7 +369,7 @@ if (!failed) {
     }
     if (!failed) {
       console.log(`  ok   __floorBridge exposes all ${REQUIRED.length} hooks `
-                  + 'the world needs');
+                  + 'the plan calls');
     }
   }
 }
@@ -533,17 +532,15 @@ if (!failed) {
   }
 }
 
-/* ---- the 3D site is severed; the SVG plan is the floor -----------------
+/* ---- the 3D site is deleted; the SVG plan is the floor ------------------
  *
  * Ryan, 2026-08-24: "just dont have it render trains in 3d okay? We are going
- * to focus on the SVG rendering."
+ * to focus on the SVG rendering." Then, 2026-10-01: "3D Site view: DELETE".
  *
- * The switch is `SITE_VIEW` at the top of the page. What makes this worth a
- * test rather than a comment is the boot order: the remembered view is applied
- * inside `__floorBridge.attach(world)`, and with the world severed NOTHING EVER
- * CALLS ATTACH. Miss that and the page is exactly as broken as a black canvas —
- * `VIEW` stays 'site', the plan keeps the `hidden` it was served with, and the
- * floor is a blank stage with no error anywhere to say why.
+ * What makes this worth a test rather than a comment is the boot order: the
+ * view used to be applied when the world attached, and with no world NOTHING
+ * ATTACHES. Miss that and the page is a blank stage: the plan keeps the
+ * `hidden` it was served with, with no error anywhere to say why.
  *
  * So this asks the settled page what it is showing, rather than reading the
  * source and believing it. */
@@ -555,21 +552,19 @@ if (!failed) {
     console.log(`FAIL: ${what}`);
   };
 
-  claim('the site view is severed (__floorBridge.siteView is false)',
-        bridge && bridge.siteView === false);
+  claim('no site view to switch to (__floorBridge has no siteView)',
+        bridge && !('siteView' in bridge));
   claim('the plan is showing — #floorSimple lost its hidden attribute',
         !('hidden' in el('#floorSimple').attrs));
-  claim('the 3D canvas is hidden', el('#world').hidden === true);
+  claim('no 3D canvas, View toggle or Quality button in the markup',
+        !/id="world"|id="btnView"|id="btnQuality"/.test(html));
+  claim('no import map: nothing that could fetch three.js',
+        !/type="importmap"|type="module"/.test(html));
 
-  /* Controls with nothing behind them. Every one of these reaches for `WORLD`,
-   * which never arrives: View toggles between two views when there is only
-   * one, Quality tunes a renderer that is not running, and Arrange's whole-floor
-   * buttons return early on `!WORLD` — a button that silently does nothing is
-   * worse than one that is not there. */
-  for (const sel of ['#btnView', '#btnQuality', '#btnArrange']) {
-    claim(`${sel} is hidden while the world is severed`,
-          el(sel).hidden === true);
-  }
+  /* Arrange's whole-floor buttons needed the world: a button that silently
+   * does nothing is worse than one that is not there (the shell's map view
+   * has the Arrange mode now). */
+  claim('#btnArrange is hidden', el('#btnArrange').hidden === true);
 }
 
 /* ---- levels: the ladder, the picker, and one level at a time -----------

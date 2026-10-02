@@ -234,10 +234,11 @@ class TestSingleUi:
         return app.test_client()
 
     def test_root_serves_the_mode_selector(self, live):
-        """The floor moved to /floor; the root chooses Map or Checklists."""
+        """The floor moved off the root; the root is Instruments, whose seg
+        opens the floor map in the shell (piece 12)."""
         body = live.get("/").get_data(as_text=True)
         assert "LAB FLOOR" not in body.upper()
-        assert 'href="/floor"' in body
+        assert 'href="/?view=map"' in body
 
     def test_floor_path_still_works(self, live):
         assert live.get("/floor").status_code == 200

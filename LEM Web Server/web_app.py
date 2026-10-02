@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -1273,31 +1274,6 @@ def create_app(gateway, labcore_gateway=None,
     def _app_version() -> str:
         return APP_VERSION
 
-    # The 3D floor loads as ES modules, and a static `import` cannot carry a
-    # version of its own — so the import map is the only place a fingerprint can
-    # go. Without it a screen holding last week's terrain.js runs it against
-    # this week's renderer, which is precisely the stale-static failure
-    # `static_version` exists to prevent. Bare specifiers throughout:
-    # `import {Rail} from "world/rail.js"`.
-    @app.template_global("worldmap")
-    def _world_importmap() -> str:
-        import json as _json
-
-        root = app.static_folder or "static"
-        imports = {"three": "/static/vendor/three.module.min.js?v="
-                            + static_version(os.path.join(
-                                root, "vendor", "three.module.min.js"))}
-        try:
-            names = sorted(os.listdir(os.path.join(root, "world")))
-        except OSError:
-            names = []                      # never fatal: see static_version
-        for name in names:
-            if name.endswith(".js"):
-                imports["world/" + name] = (
-                    "/static/world/" + name + "?v="
-                    + static_version(os.path.join(root, "world", name)))
-        return _json.dumps({"imports": imports}, indent=1)
-
     app.secret_key = secret or os.environ.get("LABMGR_SECRET", "lem-v5-dev-secret")
 
     # Login is the suite-wide LabCore one (same accounts + NFC cards as
@@ -1554,11 +1530,11 @@ def create_app(gateway, labcore_gateway=None,
         """The Instruments home. The first paint carries the same answer
         `/api/ui/instruments` serves, so the verdicts are on screen without a
         second request (T1 at 0 clicks); instruments.js keeps it live."""
-        if (request.args.get("view") or "") == "map":
-            # The floor map in the shell is its own piece; until it lands the
-            # floor page IS the map, rather than a List view that ignores ?view.
-            return redirect(url_for("floor"))
-        return render_template("instruments.html", nav="instruments",
+        # ?view=map is the same page drawn as the floor plan (piece 12): the
+        # same answer, the same Needs-you card, so the two views cannot
+        # disagree. Anything else in ?view is the list.
+        view = "map" if (request.args.get("view") or "") == "map" else "list"
+        return render_template("instruments.html", nav="instruments", view=view,
                                data=_instruments_payload(),
                                has_quality=any(r.rule == "/quality"
                                                for r in app.url_map.iter_rules()))
@@ -1945,7 +1921,7 @@ def create_app(gateway, labcore_gateway=None,
         if _inst_memo["key"] != key:
             _inst_memo["value"] = ui_instruments.build(
                 machines=merged, overrides=overrides, levels=snap.get("levels") or [],
-                href=_record_href)
+                href=_record_href, default_level=snap.get("default_level") or "")
             _inst_memo["key"] = key
         return dict(_inst_memo["value"], **meta)
 
@@ -8110,4 +8086,28 @@ def create_app(gateway, labcore_gateway=None,
     app.config["DEV_TOOLS"] = dev_tools_allowed(labcore_raw, dev_tools)
     if app.config["DEV_TOOLS"]:
         _register_dev_tools(app, gateway, snapshots)
+    # §10.5: dedupe dry run, per-bench approval, apply, reinstate. On the
+    # store only — `dedupe` refuses any gateway that is not LEM's store.
+    import dedupe_routes
+
+    def _dedupe_password_ok(user: str, password: str) -> bool:
+        """The approver's password, checked again at the moment of approving
+        (D7). The admin password is the --dev escape hatch, as at sign-in;
+        otherwise LabCore's login answers, and the session it opens is
+        closed straight away — this is a check, not a second sign-in."""
+        if admin_pw and hmac.compare_digest(str(password), str(admin_pw)):
+            return True
+        try:
+            got, token, _err = auth_backend.login(user, password)
+        except Exception:                              # noqa: BLE001
+            return False
+        if token:
+            try:
+                auth_backend.logout(token)
+            except Exception:                          # noqa: BLE001
+                pass
+        return bool(got) and str(got).strip().lower() == user.strip().lower()
+
+    dedupe_routes.register(app, gateway,
+                           verify_password=_dedupe_password_ok)
     return app

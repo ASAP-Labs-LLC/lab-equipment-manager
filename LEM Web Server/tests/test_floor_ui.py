@@ -51,20 +51,11 @@ def floor(client):
 
 
 @pytest.fixture()
-def world_index():
-    """The world's integration seam — picking, dragging, and the plan."""
-    return (Path(__file__).parent.parent / "static" / "world"
-            / "index.js").read_text(encoding="utf-8")
-
-
-@pytest.fixture()
-def world_labels():
-    """Where the instrument's state is actually painted onto the site."""
-    path = (Path(__file__).parent.parent / "static" / "world" / "labels.js")
-    if not path.exists():
-        pytest.fail("static/world/labels.js is missing — the floor would "
-                    "render a site with no statuses on it")
-    return path.read_text(encoding="utf-8")
+def floor_map():
+    """The floor map's controller (the shell's ?view=map, piece 12): the one
+    place an instrument is dragged now that the 3D site is deleted."""
+    return (Path(__file__).parent.parent / "static" / "js"
+            / "floor_map.js").read_text(encoding="utf-8")
 
 
 def style_block(html):
@@ -227,56 +218,45 @@ class TestStatusColours:
         unk = re.search(r"UNKNOWN:'(#[0-9a-fA-F]{6})'", floor).group(1)
         assert svc.lower() != unk.lower()
 
-    def test_dead_line_still_reads_as_a_barrier(self, world_labels):
-        """A dead-lined instrument is a barrier, not one more coloured lamp.
-        The SVG floor said that with a hazard-stripe pattern; the world says it
-        with hazard striping on the building's signage. The statement has to
-        survive the change of medium."""
-        assert "hazard" in world_labels.lower()
-        assert "#e2483d" in world_labels.lower()
-
-    def test_the_palette_survived_the_move_to_3d(self, world_labels):
-        """The six status colours are not open for reinterpretation just
-        because the floor is rendered now."""
-        for colour in ("#21c071", "#f5c542", "#f85b5b", "#a855f7",
-                       "#e2483d", "#6b7280"):
-            assert colour in world_labels.lower(), f"{colour} missing"
+    def test_dead_line_still_reads_as_a_barrier(self, floor):
+        """A dead-lined instrument is a barrier, not one more coloured lamp:
+        the plan paints it with hazard stripes. (The 3D site said the same
+        on its signage; that site is deleted, the plan is the floor.)"""
+        assert "DEAD-LINE' ? 'url(#planHazard)'" in floor
 
 
-# ── 7. dragging must not rebuild the world ──────────────────────────────────
+# ── 7. dragging must not rebuild the floor ──────────────────────────────────
 # The old floor's failure was `drawFloor()` per snap step: it cleared the SVG
 # and re-created every tile, pipe and beacon, which is what made dragging
-# stutter. The 3D world has the same shape of danger and a bigger price —
-# `_replan()` regenerates terrain pads, track and forest — so the rule is
-# unchanged: move it locally while the pointer is down, commit once on drop.
+# stutter. The rule outlived the 3D site that carried it last, and holds in
+# the shell's floor map (static/js/floor_map.js): move it locally while the
+# pointer is down, commit once on drop, and never redraw under a hand.
 
 class TestDragIsLocalUntilPlaced:
     def test_the_page_no_longer_drags_anything_itself(self, floor):
-        """The world raycasts the pointer onto the ground; a second drag
-        implementation in the page would fight it."""
+        """/floor's plan is a drawing; moving an instrument is the shell map's
+        Arrange mode. A second drag implementation here would fight it."""
         assert "setAttribute('transform'" not in floor
         assert "$('#stage').addEventListener('pointermove'" not in floor
 
-    def test_the_move_is_only_committed_on_release(self, world_index):
-        """`onMove` is what writes to the server. Called per pointermove it
+    def test_the_move_is_only_committed_on_release(self, floor_map):
+        """`move()` is what writes to the server. Called per pointermove it
         would be one HTTP POST per pixel."""
-        move = re.search(r"pointermove'[,\s]*\s*e\s*=>\s*\{(.*?)\n    \}\);",
-                         world_index, re.S)
-        assert move, "the world has no pointermove handler"
-        assert "onMove" not in move.group(1)
-        up = re.search(r"'pointerup'[,\s]*\s*e\s*=>\s*\{(.*?)\n    \}\);",
-                       world_index, re.S)
-        assert up and "onMove" in up.group(1)
+        mv = re.search(r"addEventListener\('pointermove', \(ev\) => \{(.*?)\n    \}\);",
+                       floor_map, re.S)
+        assert mv, "the map has no pointermove handler"
+        assert "move(" not in mv.group(1).replace("pointermove", "")
+        end = re.search(r"function endDrag\(ev, cancelled\) \{(.*?)\n    \}", floor_map, re.S)
+        assert end and "move(d.uid" in end.group(1)
 
-    def test_the_drag_reports_itself_while_it_is_moving(self, world_index):
-        """So the page can hide the tooltip and hold off its 2s refresh —
-        a reload mid-drag would snap the instrument back."""
-        assert "emit('dragging'" in world_index
+    def test_a_refresh_never_redraws_under_a_hand(self, floor_map):
+        """A repaint mid-drag would snap the instrument back."""
+        assert "if (drag) return;" in floor_map
 
-    def test_the_drop_snaps_to_a_whole_bay(self, world_index):
-        """Instruments land on whole grid squares, so the floor can never
-        drift into a crooked mess."""
-        assert re.search(r"Math\.round\(p\.x / METRES_PER_BAY / BAY\)", world_index)
+    def test_the_drop_snaps_to_a_whole_bay(self, floor_map):
+        """Instruments land on whole bays (round(v / 2.05) and back), so the
+        floor can never drift into a crooked mess; plan.mjs holds the sums."""
+        assert "P.toSaved(x, y, lay.origin)" in floor_map
 
     def test_the_drop_is_what_saves_the_position(self, floor):
         m = re.search(r"async onMove\(uid, gx, gy\) \{(.*?)\n  \},", floor, re.S)
@@ -307,12 +287,13 @@ class TestDeselect:
         assert "if (!uid)" in m.group(1), "null must be the only deselect path"
         assert "select(m)" in m.group(1)
 
-    def test_finishing_a_drag_does_not_deselect(self, world_index):
-        """A pointerup that ends a drag must not also be read as a click on
-        bare ground."""
-        up = re.search(r"'pointerup'[,\s]*\s*e\s*=>\s*\{(.*?)\n    \}\);",
-                       world_index, re.S)
-        assert up and re.search(r"!moved", up.group(1))
+    def test_finishing_a_drag_does_not_deselect(self, floor_map):
+        """A pointerup that ends a drag must not also be read as a click
+        (on the map, a click picks a bay up): the click after a drag is
+        swallowed."""
+        end = re.search(r"function endDrag\(ev, cancelled\) \{(.*?)\n    \}", floor_map, re.S)
+        assert end and "suppressClick = true" in end.group(1)
+        assert "if (suppressClick) return;" in floor_map
 
     def test_deselect_restores_the_global_view(self, floor):
         m = re.search(r"function deselect\(\)\s*\{(.*?)\n\}", floor, re.S)
