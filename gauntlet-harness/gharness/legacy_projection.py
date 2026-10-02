@@ -33,9 +33,16 @@ Each needs the target's bridge and import tool (P9) for the v4 server's
 side; `Unsupported` otherwise.
 """
 import json
+import os
+import subprocess
+import sys
+import tempfile
 from collections import Counter
+from datetime import datetime
 
 from .world import Unsupported
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 #: v3.9.0's DDL, whitespace-normalised: the 11 CREATE/ALTER constants
 #: `git show v3.9.0:"LEM Station Module/lem_station_module.py"` declares.
@@ -145,6 +152,91 @@ def labcore_audit(c):
             "labcore_kinds": dict(sorted(kinds.items()))}
 
 
+# ── the rolled-back floor reads what the rollback wrote ─────────────────────
+#
+# Counting LabCore's rows (once each, no bookkeeping) cannot see a row the
+# v3.9 floor is unable to READ. Critic, T-P5 round 3: the status_change rows
+# DG2 copied back carried the journal's UTC offset, and v3.9's status gutter
+# answered 500 on them ("can't subtract offset-naive and offset-aware
+# datetimes"). So every rollback scenario now renders the machine's activity
+# panel with the tagged v3.9.0 web server over exactly the rows LabCore holds.
+
+_V39_WEB = {}
+
+
+def v39_web_tree(base=None):
+    """The tagged v3.9.0 tree (both code folders), extracted once per
+    process under the gate's temp root."""
+    from . import env, target
+    base = base or env.root() or tempfile.gettempdir()
+    root = os.path.join(base, "v39-floor")
+    if root not in _V39_WEB:
+        if not os.path.isdir(os.path.join(root, "LEM Web Server")):
+            os.makedirs(root, exist_ok=True)
+            target.extract_tag("v3.9.0", root)
+        _V39_WEB[root] = root
+    return root
+
+
+def render_v39_floor(rows, uid, tree, work):
+    """v3.9.0's /api/machines/<uid>/status-timeline over `rows`:
+    {"status", "events", "error"}. A run that produced no answer is a
+    RuntimeError (a harness error), never a status."""
+    plan = {"web_dir": os.path.join(tree, "LEM Web Server"), "uid": uid,
+            "rows": [{k: r.get(k) for k in ("machine_uid", "ts", "kind",
+                                            "lab_id", "test_name", "value",
+                                            "detail")} for r in rows]}
+    os.makedirs(work, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix="v39floor-", suffix=".json", dir=work)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(plan, f)
+    data = os.path.join(work, "v39-floor-data")
+    env = dict(os.environ, LABCORE_URL="http://127.0.0.1:9",
+               LEM_DATA_DIR=data, PYTHONDONTWRITEBYTECODE="1")
+    try:
+        out = subprocess.run([sys.executable,
+                              os.path.join(HERE, "v39_floor.py"), path],
+                             capture_output=True, text=True, env=env,
+                             cwd=work, timeout=300)
+    finally:
+        os.remove(path)
+    lines = (out.stdout or "").strip().splitlines()
+    if out.returncode != 0 or not lines:
+        raise RuntimeError("the v3.9 floor run failed (exit %d): %s"
+                           % (out.returncode, (out.stderr or out.stdout)[-600:]))
+    try:
+        return json.loads(lines[-1])
+    except ValueError:
+        raise RuntimeError("the v3.9 floor run gave no answer: %r"
+                           % lines[-1][:300])
+
+
+def offset_ts_rows(rows):
+    """Rows whose `ts` carries a UTC offset — a shape v3.9 never wrote."""
+    n = 0
+    for r in rows:
+        try:
+            n += datetime.fromisoformat(
+                str(r.get("ts")).replace("Z", "+00:00")).tzinfo is not None
+        except ValueError:
+            pass
+    return n
+
+
+def v39_floor(c):
+    """What the rolled-back floor shows for this bench, read from LabCore
+    with v3.9.0's own code."""
+    from . import env
+    rows = _labcore_all(c)
+    got = render_v39_floor(rows, c.uid, v39_web_tree(),
+                           os.path.join(env.root() or tempfile.gettempdir(),
+                                        "v39-floor-work"))
+    return {"v39_floor_status_timeline": got["status"],
+            "v39_floor_events": got["events"],
+            "v39_floor_error": got["error"],
+            "labcore_offset_ts_rows": offset_ts_rows(rows)}
+
+
 def _jk(row):
     try:
         return json.loads(row.get("detail") or "{}").get("jk")
@@ -191,8 +283,9 @@ def m3(W, rf, mod, lab_id):
     c.poll()
     c.emit(1); c.poll()
     c.settle()
+    floor = v39_floor(c)                # today's floor reads the projection
     t = c.tally("M3 single_csv", "v3.9 server, v4 bench: N3, L2, A1, K6, K2")
-    return {"lost": t["lost"], "effective_dup": t["dup"],
+    return {**floor, "lost": t["lost"], "effective_dup": t["dup"],
             "analyst_overwritten": t["analyst_overwritten"],
             "ddl_beyond_v39": len(ddl.beyond_v39()),
             "ddl_sent": len(set(ddl.sent)),
@@ -219,6 +312,7 @@ def m6r(W, rf, mod):
     c.poll()
     went_legacy = c.m._transfer.mode == "legacy"
     projected = len([r for r in _labcore_rows(c, "run") if _jk(r)])
+    floor = v39_floor(c)                # today's floor reads the projection
     store = _verified_store(c)                                   # server v4
     _pull_all(store, c)                  # the bridge first: rows, then sync
     c.server.set_roads("up")
@@ -228,7 +322,7 @@ def m6r(W, rf, mod):
     _pull_all(store, c)
     c.poll()
     t = c.tally("M6r single_csv", "v3.9 server to v4, real bench in projection")
-    return {"lost": t["lost"], "effective_dup": t["dup"],
+    return {"lost": t["lost"], "effective_dup": t["dup"], **floor,
             "went_legacy": went_legacy,
             "back_on_v2": c.m._transfer.mode == "v2",
             "labcore_rows_projected": projected, "store": c.store_kind(),
@@ -257,6 +351,7 @@ def m5(W, rf, mod, restart=False):
     went_legacy = c.m._transfer.mode == "legacy"
     projected = len([r for r in _labcore_rows(c, "run") if _jk(r)])
     audit = labcore_audit(c)
+    audit.update(v39_floor(c))          # the rolled-back floor reads them
     c.server.set_roads("up")                                     # re-upgrade
     for _ in range(REPROBE_POLLS):
         c.poll()
@@ -296,6 +391,7 @@ def dg2(W, rf, mod, restart=False):
     c.poll()
     c.poll()
     audit = labcore_audit(c)
+    audit.update(v39_floor(c))          # the rolled-back floor reads them
     qc_back = [r for r in _labcore_rows(c, "qc") if _jk(r)]
     state_back = [r for r in _labcore_rows(c, "status_change") if _jk(r)]
     runs_back = [r for r in _labcore_rows(c, "run") if _jk(r)]

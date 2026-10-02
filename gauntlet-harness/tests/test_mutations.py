@@ -293,7 +293,8 @@ def test_each_p4_pattern_matches_exactly_once_here_and_never_in_v390(name):
 
 
 T_P5_SOURCE = ["projection_key_off", "projection_jk_off", "dg2_off",
-               "queue_once_off", "bookkeeping_projected"]
+               "queue_once_off", "bookkeeping_projected",
+               "projection_ts_aware"]
 
 
 @pytest.mark.parametrize("name", T_P5_SOURCE)

@@ -738,3 +738,61 @@ def test_the_fall_back_projects_events_not_the_journals_bookkeeping(
     assert [json.loads(r["detail"])["note"] for r in b.lab.rows("comment")] \
         == ["kept"]
     assert _exact_dups(b.lab.rows()) == 0
+
+
+# ── the time a projected row carries: v3.9's, naive local ────────────────────
+#
+# Critic, round 3. The journal stamps a record with the bench's local time AND
+# its UTC offset (§3.2: a record read on another machine is not an hour out).
+# v3.9 never wrote an offset into lem_machine_log: every `ts` there is naive
+# local wall time, and the v3.9 floor does arithmetic on it against naive
+# `datetime.now()` — `qc_is_stale`, reached from the status gutter, raised
+#     TypeError: can't subtract offset-naive and offset-aware datetimes
+# on the status_change rows a rollback copied back, so the rolled-back floor's
+# activity panel answered 500 for the whole 24 h DG2 exists to cover. A row
+# projected from a journal record must carry the same wall time as the record,
+# without the offset — the shape every other row on that floor has.
+
+def _naive(ts):
+    at = datetime.fromisoformat(ts)
+    return at.tzinfo is None
+
+
+def test_a_log_row_built_from_an_aware_time_is_naive_local_wall_time():
+    """The single choke point every machine-log row passes through. An aware
+    time is the same instant as local wall time; the offset is dropped, not
+    the hours (09:00:30-07:00 on a bench at -07:00 stays 09:00:30)."""
+    at = datetime(2026, 10, 1, 9, 0, 30).astimezone()
+    args = mod.build_log_insert(UID, "status_change", at, detail={})[1]
+    assert args[1] == "2026-10-01T09:00:30"
+    naive = mod.build_log_insert(UID, "run", datetime(2026, 10, 1, 9, 0, 30))[1]
+    assert naive[1] == "2026-10-01T09:00:30", "a naive time is unchanged"
+
+
+def test_rows_a_rollback_copies_back_carry_v39s_naive_time(
+        qapp, tmp_path, monkeypatch):
+    """DG2 (acked QC and status from the last 24 h) and M5 (records LEM never
+    acked: a status change, an operator's note) all go into LabCore with
+    naive local time equal to the record's wall time, and the v3.9 floor's
+    own arithmetic — now minus the row's time — works on every one."""
+    later = [_state(timedelta(minutes=3), "YELLOW"),
+             {"kind": "comment", "lab_id": "", "test_name": "", "value": "",
+              "detail": {"note": "column swapped"},
+              "ts": _aware(NOW - timedelta(minutes=2))}]
+    b, j = _rolled_back_bench(tmp_path, monkeypatch, unacked=later)
+    monkeypatch.setattr(mod, "bench_now", lambda: NOW)
+    before = len(b.lab.rows())
+    b.m._v2_fell_back(b.m.machine(), j, [])
+    b.poll()
+    new = b.lab.rows()[before:]
+    states = {json.loads(r["detail"])["to"]: r["ts"]
+              for r in new if r["kind"] == "status_change"
+              and json.loads(r["detail"]).get("jk")}
+    assert states.get("GREEN") == (NOW - timedelta(hours=2)).isoformat()
+    assert states.get("YELLOW") == (NOW - timedelta(minutes=3)).isoformat()
+    notes = [r["ts"] for r in new if r["kind"] == "comment"]
+    assert notes == [(NOW - timedelta(minutes=2)).isoformat()]
+    aware = [(r["kind"], r["ts"]) for r in b.lab.rows() if not _naive(r["ts"])]
+    assert aware == [], "rows v3.9's floor cannot subtract from now()"
+    for r in b.lab.rows():
+        datetime.now() - datetime.fromisoformat(r["ts"])   # v3.9's sum

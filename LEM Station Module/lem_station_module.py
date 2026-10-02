@@ -1720,8 +1720,42 @@ class _LogEntry(tuple):
     ref = None
 
 
+def _log_wall_time(ts: datetime) -> datetime:
+    """A machine-log row's time as v3.9 writes it: naive LOCAL wall time.
+
+    The journal stamps records with their UTC offset (§3.2), and a projected
+    row is built from that stamp. v3.9 never put an offset in
+    lem_machine_log.ts, and its floor subtracts every row's time from a naive
+    `datetime.now()` (`qc_is_stale`, under the status gutter): one aware row in
+    the window and /status-timeline answers 500 with "can't subtract
+    offset-naive and offset-aware datetimes" (critic, T-P5 round 3: the
+    status_change rows DG2 copies back after a rollback). The same instant, in
+    the bench's local time, without the offset — deterministic on a bench, so
+    a row re-sent through the exact key carries the same `ts` both times."""
+    if ts.tzinfo is None:
+        return ts
+    try:
+        return ts.astimezone().replace(tzinfo=None)
+    except (ValueError, OSError, OverflowError):
+        return ts.replace(tzinfo=None)
+
+
+def _log_row_ts(args: list) -> list:
+    """`args` with its `ts` (index 1) in v3.9's shape — for rows stored in a
+    journal record's `log`, which every road re-sends as written."""
+    try:
+        at = datetime.fromisoformat(str(args[1]))
+    except (TypeError, ValueError, IndexError):
+        return args
+    if at.tzinfo is None:
+        return args
+    out = list(args)
+    out[1] = _log_wall_time(at).isoformat()
+    return out
+
+
 def _log_entry(args: list, ref: Optional[str]) -> "_LogEntry":
-    entry = _LogEntry((LOG_INSERT_SQL, list(args)))
+    entry = _LogEntry((LOG_INSERT_SQL, _log_row_ts(list(args))))
     entry.ref = ref
     return entry
 
@@ -1748,7 +1782,7 @@ def build_log_insert(machine_uid: str, kind: str, ts: datetime,
     name = str(test_name or "")
     if not name.strip():
         name = ""
-    args = [machine_uid, ts.isoformat(), kind, lab_id, name,
+    args = [machine_uid, _log_wall_time(ts).isoformat(), kind, lab_id, name,
             str(value), json.dumps(detail or {})]
     return sql, args
 

@@ -246,6 +246,15 @@ MUTATIONS = {
                    r'"adoption"\}\)',
         "replace": "})",
         "what": "a fall-back writes filed/settled/... into lem_machine_log"},
+    # A projected row keeps the journal's UTC offset in its `ts` (critic,
+    # T-P5 round 3): v3.9's floor cannot subtract it from now(), and its
+    # status gutter answers 500 (M5, M5R, DG2, DG2C must go red on
+    # v39_floor_status_timeline and labcore_offset_ts_rows).
+    "projection_ts_aware": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"return ts\.astimezone\(\)\.replace\(tzinfo=None\)",
+        "replace": "return ts",
+        "what": "a projected log row keeps the journal's UTC offset"},
 }
 
 CODE_DIRS = ("LEM Station Module", "LEM Web Server")
