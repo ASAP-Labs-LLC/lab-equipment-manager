@@ -94,6 +94,7 @@ STORE_TABLES = (
     "bench_cursor", "bench_token", "bench_source", "result_ledger",
     "result_conflict", "projection_outbox", "import_run", "log_digest",
     "store_meta", "unknown_records", "request_ledger", "lem_machine_config",
+    "bench_record",
 )
 
 #: The seven columns LabCore's `lem_machine_log` has, in its order. Every
@@ -118,7 +119,8 @@ HIDING_LABELS = ("replay_duplicate", "import_leftover")
 GUARD_TRIGGERS = ("lem_log_no_update", "lem_log_no_delete",
                   "lem_log_no_overwrite", "ann_no_update", "ann_no_delete",
                   "ann_no_overwrite", "cfg_no_future_retire_insert",
-                  "cfg_no_future_retire_update")
+                  "cfg_no_future_retire_update", "bench_record_no_update",
+                  "bench_record_no_delete", "bench_record_no_overwrite")
 
 #: Every schema object the guarantee rests on and that a statement could
 #: replace with a look-alike: the guard triggers and the effective view. Each
@@ -134,7 +136,7 @@ GUARD_OBJECTS = GUARD_TRIGGERS + ("lem_machine_log_effective",)
 #: installed, reshapes these.
 PROTECTED = frozenset(("lem_machine_log", "log_annotation",
                        "annotation_approval", "lem_machine_config",
-                       "lem_machine_log_effective"))
+                       "lem_machine_log_effective", "bench_record"))
 
 #: What may not be DROPPED or ALTERed: the above, plus every table §5.2 adds.
 #: `request_ledger` is W2's memory of what was already done — dropped, the
@@ -321,13 +323,16 @@ _DDL = (
     " durable_seq INTEGER NOT NULL DEFAULT 0, digest TEXT, records_total INTEGER,"
     " first_seen TEXT, last_seen TEXT, road TEXT, module_version TEXT,"
     " clock_skew_s REAL, labcore_failures_5min INTEGER, mode TEXT,"
+    " stats TEXT, digest_mismatch TEXT,"
     " PRIMARY KEY (machine_uid, bench_epoch))",
     "CREATE TABLE IF NOT EXISTS bench_token ("
     " machine_uid TEXT PRIMARY KEY, token_sha256 TEXT, issued_at TEXT,"
-    " issued_by TEXT, revoked_at TEXT, pending_reenrol_at TEXT)",
+    " issued_by TEXT, revoked_at TEXT, pending_reenrol_at TEXT,"
+    " enroll_key_sha256 TEXT)",
     "CREATE TABLE IF NOT EXISTS bench_source ("
     " machine_uid TEXT, src TEXT, lineage TEXT, cursor TEXT, snapshot BLOB,"
-    " updated_at TEXT, PRIMARY KEY (machine_uid, src))",
+    " updated_at TEXT, snapshot_sha TEXT, announced_sha TEXT,"
+    " PRIMARY KEY (machine_uid, src))",
     "CREATE TABLE IF NOT EXISTS result_ledger ("
     " machine_uid TEXT, lab_id TEXT, test_name TEXT, value TEXT, filed_at TEXT,"
     " bench_seq_ref TEXT, PRIMARY KEY (lab_id, test_name, machine_uid))",
@@ -347,6 +352,35 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS unknown_records ("
     " id INTEGER PRIMARY KEY, machine_uid, bench_epoch, bench_seq, body,"
     " received_at)",
+    # A record of a kind this server does not know is parked once, however
+    # often it is resent (bench_api).
+    "CREATE UNIQUE INDEX IF NOT EXISTS ux_unknown_bench ON unknown_records"
+    "(machine_uid, bench_epoch, bench_seq)",
+    # Custody of every record a v2 bench sends, whatever its kind, exactly as
+    # it was sent: the canonical body the bench's CRC and running digest were
+    # computed over (`bench_api`). The machine log holds what a person reads;
+    # this holds what the bench said, so the per-epoch digest can be
+    # recomputed from the store alone (T-P11 reconciliation) and a restore
+    # can be compared record for record. Append-only like the record: a held
+    # (uid, epoch, seq) is never rewritten, and a resend is answered from it.
+    "CREATE TABLE IF NOT EXISTS bench_record ("
+    " machine_uid TEXT NOT NULL, bench_epoch TEXT NOT NULL,"
+    " bench_seq INTEGER NOT NULL, kind TEXT, ts TEXT, body TEXT NOT NULL,"
+    " received_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),"
+    " PRIMARY KEY (machine_uid, bench_epoch, bench_seq))",
+    "CREATE TRIGGER IF NOT EXISTS bench_record_no_update BEFORE UPDATE ON "
+    "bench_record BEGIN SELECT RAISE(ABORT, 'bench_record is append-only: "
+    "what a bench sent is never rewritten'); END",
+    "CREATE TRIGGER IF NOT EXISTS bench_record_no_delete BEFORE DELETE ON "
+    "bench_record BEGIN SELECT RAISE(ABORT, 'bench_record is append-only: "
+    "what a bench sent is never rewritten'); END",
+    # As `lem_log_no_overwrite`: REPLACE's conflict deletion skips DELETE
+    # triggers in a shell without recursive_triggers.
+    "CREATE TRIGGER IF NOT EXISTS bench_record_no_overwrite BEFORE INSERT ON "
+    "bench_record WHEN EXISTS (SELECT 1 FROM bench_record WHERE "
+    "machine_uid = NEW.machine_uid AND bench_epoch = NEW.bench_epoch AND "
+    "bench_seq = NEW.bench_seq) BEGIN SELECT RAISE(ABORT, 'bench_record is "
+    "append-only: that record is already held and cannot be replaced'); END",
     # W2: a browser retry carrying the same X-Request-Id is answered from here
     # instead of being done twice. Written in the SAME transaction as the
     # change, so "recorded as done" and "done" cannot disagree.
@@ -611,6 +645,16 @@ class LocalStoreGateway:
                     if led and col not in led:
                         con.execute("ALTER TABLE request_ledger ADD COLUMN "
                                     "{0} TEXT".format(col))
+                for table, added in (
+                        ("bench_cursor", ("stats", "digest_mismatch")),
+                        ("bench_token", ("enroll_key_sha256",)),
+                        ("bench_source", ("snapshot_sha", "announced_sha"))):
+                    have = [r[1] for r in con.execute(
+                        "PRAGMA table_info('{0}')".format(table)).fetchall()]
+                    for col in added:
+                        if have and col not in have:
+                            con.execute("ALTER TABLE {0} ADD COLUMN {1} "
+                                        "TEXT".format(table, col))
                 cfg = [r[1] for r in con.execute(
                     "PRAGMA table_info('lem_machine_config')").fetchall()]
                 if cfg and "retired_at" not in cfg:

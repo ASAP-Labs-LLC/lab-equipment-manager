@@ -29,11 +29,14 @@ data without saying how old it is, is how a stopped module passes for a live one
 from __future__ import annotations
 
 import json
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Dict, List, Optional
+
+from live_presence import ELLIPSIS, FLOOR_FIELD_BYTES, clip_text
 
 # One rule for "what did LabCore actually tell me?", not a
 # ninth re-derivation of it. `refusal_of` returns None for an
@@ -1230,10 +1233,24 @@ def build_machines(tables: Dict[str, List[dict]], now: datetime,
             {"sample": str(_f(r, "c2")), "test": str(_f(r, "c3"))})
 
     def _num(raw):
+        # Finite or None: SQLite holds a 4,000-digit "number" as Infinity,
+        # and Infinity is not JSON — one such spec would make the whole
+        # payload unreadable to a strict parser.
         try:
-            return float(raw)
-        except (TypeError, ValueError):
+            out = float(raw)
+        except (TypeError, ValueError, OverflowError):
             return None
+        return out if math.isfinite(out) else None
+
+    # WHAT THE FLOOR ECHOES OF A BENCH'S TEXT IS BOUNDED ON THE WAY OUT.
+    # `/api/machines` is read by GC hub under a 1 MB cap that fails its whole
+    # floor when crossed. The v2 bench API bounds what a record puts here as
+    # it enters; this is the same table (live_presence.FLOOR_FIELD_BYTES)
+    # applied to what any writer left — a v3.9 bench writing through LabCore,
+    # a row from before the bound, a lab_id out of the log. Real values are
+    # far inside every bound, so nothing real changes.
+    def _echo(value, field, mark=""):
+        return clip_text(value, FLOOR_FIELD_BYTES[field], mark)
 
     # WHICH STANDARD EACH REMEMBERED VERDICT WAS ACTUALLY MADE AGAINST.
     #
@@ -1353,25 +1370,30 @@ def build_machines(tables: Dict[str, List[dict]], now: datetime,
             # verdict, which is the tri-state this tree uses everywhere.
             in_spec = None if recorded is None else bool(recorded)
         effective.setdefault(uid, []).append({
-            "test_name": test_name,
+            "test_name": _echo(test_name, "test_name", ELLIPSIS),
             "low": _num(_f(r, "c3")), "high": _num(_f(r, "c4")),
-            "expected": _num(_f(r, "c5")), "units": str(_f(r, "c6")),
-            "sample_id": sample_id,
+            "expected": _num(_f(r, "c5")),
+            "units": _echo(str(_f(r, "c6")), "units"),
+            "sample_id": _echo(sample_id, "sample_id", ELLIPSIS),
             "last_qc_value": value,
             "correction": _num(str(_f(r, "c8")).partition("~")[2]) or 0.0,
-            "last_qc_at": shown_at,
+            "last_qc_at": _echo(shown_at, "ts"),
             "last_qc_in_spec": in_spec,
             # So the panel can say WHY there is no reading, rather than
             # implying this instrument has simply never been checked.
-            "last_qc_superseded_by": against if stale else "",
+            "last_qc_superseded_by": _echo(against, "lab_id", ELLIPSIS)
+            if stale else "",
         })
 
-    subs = {str(_f(r, "c1")): {"qc": str(_f(r, "c2")) or "UNKNOWN",
-                               "pm": str(_f(r, "c3")) or "UNKNOWN",
-                               "calibration": str(_f(r, "c4")) or "UNKNOWN"}
+    subs = {str(_f(r, "c1")): {
+        "qc": _echo(str(_f(r, "c2")) or "UNKNOWN", "sub"),
+        "pm": _echo(str(_f(r, "c3")) or "UNKNOWN", "sub"),
+        "calibration": _echo(str(_f(r, "c4")) or "UNKNOWN", "sub")}
             for r in tables.get("sub") or []}
-    beats = {str(_f(r, "c1")): {"last_poll": str(_f(r, "c2")) or None,
-                                "watching": str(_f(r, "c3"))}
+    beats = {str(_f(r, "c1")): {"last_poll": _echo(str(_f(r, "c2")), "ts")
+                                or None,
+                                "watching": _echo(str(_f(r, "c3")),
+                                                  "watching", ELLIPSIS)}
              for r in tables.get("beat") or []}
     activity = {str(_f(r, "c1")): str(_f(r, "c2"))
                 for r in tables.get("activity") or [] if _f(r, "c2")}
@@ -1382,18 +1404,19 @@ def build_machines(tables: Dict[str, List[dict]], now: datetime,
     machines = []
     for r in tables.get("status") or []:
         uid = str(_f(r, "c1"))
-        status = str(_f(r, "c3")) or "UNKNOWN"
+        status = _echo(str(_f(r, "c3")) or "UNKNOWN", "status")
         beat = beats.get(uid) or {}
         entry = {
             "machine_uid": uid,
             "title": str(_f(r, "c2")) or uid,
             "status": status,
             "status_color": status_colors.get(status, status_colors["UNKNOWN"]),
-            "reason": str(_f(r, "c4")),
-            "updated_at": str(_f(r, "c5")),
+            "reason": _echo(str(_f(r, "c4")), "reason", ELLIPSIS),
+            "updated_at": _echo(str(_f(r, "c5")), "ts"),
             "qc_specs": [s.to_dict() for s in specs.get(uid, [])],
             "sub_statuses": subs.get(uid, dict(blank)),
-            "last_activity": activity.get(uid) or str(_f(r, "c5")),
+            "last_activity": _echo(activity.get(uid) or str(_f(r, "c5")),
+                                   "ts"),
             "last_poll": beat.get("last_poll"),
             "watching": beat.get("watching", ""),
             "qc_targets": targets.get(uid, []),
