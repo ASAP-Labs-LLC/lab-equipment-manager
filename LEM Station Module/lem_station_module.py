@@ -2733,6 +2733,15 @@ CURSOR_TAIL_BYTES = 256
 # this far apart on the bench's clock. Also the wait before an unterminated
 # last line is taken as complete.
 QUIET_SECONDS = 10.0
+# A file that never goes quiet (an instrument that saves on every poll) would
+# hold its change forever. After this long waiting, the bench reads the part
+# of the file that has held still — byte-identical to what a poll at least
+# QUIET_SECONDS earlier saw — and says on the status line that it is waiting
+# for the rest. A whole-file rewrite takes seconds, not a minute, so inside
+# this cap a poll mid-rewrite (Q1) is still never taken for a trim.
+QUIET_MAX_WAIT = timedelta(seconds=60)
+# How many earlier looks at a still-changing file are kept to compare against.
+HELD_LOOKS = 4
 # Every 15 minutes a bench on the append path hashes the whole file against
 # the snapshot (files up to 32 MB): a same-size edit outside both windows is
 # invisible to the cursor's hashes and would otherwise never be seen (R6deep).
@@ -2893,22 +2902,35 @@ def _ordered_opcodes(a, b, budget):
     return out
 
 
-def _head_tail_overlap(O, N, deadline):
+def _head_tail_overlap(O, N, deadline=None):
     """The largest k < len(O) with N[:k] == O[-k:] (0 if none): how many of
-    the old file's last lines the new file starts with."""
-    if not O or not N:
+    the old file's last lines the new file starts with.
+
+    One KMP pass (N's opening lines as the pattern, O's tail as the text), so
+    it is linear however often N's first line recurs in O. The first version
+    sliced O at every copy of N[0] and compared; with a QC line every third
+    line of 80,000 that took 6.7 s. `deadline` is accepted and not needed."""
+    L = min(len(N), len(O) - 1)
+    if L <= 0:
         return 0
-    first = N[0]
-    nO = len(O)
-    for p in range(1, nO):
-        if (p & 255) == 0 and time.monotonic() > deadline:
-            break
-        if O[p] != first:
-            continue
-        k = nO - p
-        if k <= len(N) and O[p:] == N[:k]:
-            return k
-    return 0
+    P = N[:L]
+    fail = [0] * L
+    q = 0
+    for i in range(1, L):
+        while q and P[i] != P[q]:
+            q = fail[q - 1]
+        if P[i] == P[q]:
+            q += 1
+        fail[i] = q
+    q = 0
+    for x in O[len(O) - L:]:
+        while q and x != P[q]:
+            q = fail[q - 1]
+        if x == P[q]:
+            q += 1
+            if q == L:
+                break           # only at the very end: len(text) == L
+    return q
 
 
 def _tail_anchored(Oc, Nc, why):
@@ -2942,7 +2964,8 @@ def _tail_anchored(Oc, Nc, why):
 
 
 def resolve_rewrite(O, N, rotated: bool = False, newest_first: bool = False,
-                    budget: float = REWRITE_DIFF_BUDGET) -> Resolution:
+                    budget: float = REWRITE_DIFF_BUDGET,
+                    predecessor: bool = False) -> Resolution:
     """Which lines of N (the file now) are new, given O (the lines consumed),
     both in file order. `rotated`: the file under the name is a different file
     from the one O was read from. `newest_first`: this source keeps its newest
@@ -2950,20 +2973,43 @@ def resolve_rewrite(O, N, rotated: bool = False, newest_first: bool = False,
 
       continuation  O's newest line is still matched (whole-file rewrite, head
                     trim, an edit somewhere): the inserted and replacing lines
-                    of the diff are new.
-      correction    O's newest lines were replaced in place (R6): the
-                    replacing lines are new; the originals stay in the record.
-      rotation      O's newest line is gone and the diff ends by deleting O's
-                    tail: a new file, or the old one truncated and started
-                    again. All of N is new — on the same file, the lines that
-                    match O's head are labelled, because a tail cut back looks
-                    the same.
+                    of the diff are new. Or N opens with O's last k lines
+                    (a head trim the diff aligned elsewhere): N after them.
+      correction    O's head kept and O's newest lines replaced by as many or
+                    more (R6, or a correction plus a print): the replacing
+                    lines are new; the originals stay in the record.
+      rotation      anything else that lost O's newest line: a new file, or
+                    the old one cut back and started again. All of N is new,
+                    the lines that match O labelled.
+      (shift)       where a head-trim reading and the diff's reading of the
+                    same bytes disagree, both are recorded and the lines only
+                    one calls new are labelled (§4.2 "periodic": the diff
+                    could shift) — at most ROTATION_OVERLAP_MAX of them; a
+                    plain append (N = all of O + more) is never widened.
       rotation_overlap  a different file that starts with up to 20 of O's
                     last lines in order (X3): a rotation repeating them, or a
                     trim done as write-temp-then-rename. All of N recorded,
                     the overlap labelled.
       newest_first  N is O with lines added at the TOP (R2): marked, and from
                     then on both are reversed before the diff.
+
+    A ROTATED file (`rotated`: a different file identity under the name) is
+    not read by the diff's end at all unless more than ROTATION_OVERLAP_MAX of
+    O's lines reappear in it in order. A different file holding a handful of
+    O's lines is a new file whose instrument printed them again — the same QC
+    triplet every morning — or, by the very same bytes, a short file saved
+    through a temp file. Either way all of N is recorded and the lines that
+    match O are labelled. Read by the diff's end instead (round 1), a new
+    day's "QC triplet, then a sample" ended in a `replace`, was taken for a
+    correction, and the triplet was lost without a trace. More than twenty
+    lines in order is a rewrite of the same content (temp-then-rename of a
+    large export), and the shapes above apply.
+
+    `predecessor`: the bench found the old file still in the folder under
+    another name. A temp-file rewrite leaves no old file behind, so this
+    settles the one shape the bytes cannot: a new file that starts with ALL
+    of a short old file is then a rotation (labelled overlap), not a copy
+    plus more; and it is never taken for a newest-first prepend.
     """
     nO, nN = len(O), len(N)
     deadline = time.monotonic() + max(budget, 0.0)
@@ -2984,16 +3030,30 @@ def resolve_rewrite(O, N, rotated: bool = False, newest_first: bool = False,
 
     if not nO:
         return out("fresh", range(nN))
-    if rotated and Nc[:nO] != list(Oc):
-        k = _head_tail_overlap(Oc, Nc, deadline)
+    copy = Nc[:nO] == list(Oc)
+    if rotated:
+        if copy:
+            # N starts with ALL of O: a temp-file copy plus more, unless the
+            # old file is still in the folder (then a rotation that repeats it)
+            k = nO if predecessor else 0
+        else:
+            k = _head_tail_overlap(Oc, Nc, deadline)
         if 1 <= k <= ROTATION_OVERLAP_MAX:
             return out("rotation_overlap", range(nN), range(k),
                        {"kind": "rotation_overlap", "lines": k,
                         "chosen": "recorded"})
-    if not newest_first and nN > nO and N[nN - nO:] == list(O) \
-            and N[:nO] != list(O):
+    if not newest_first and not (rotated and predecessor) and nN > nO \
+            and N[nN - nO:] == list(O) and N[:nO] != list(O):
         j = nN - nO
         return Resolution("newest_first", range(j - 1, -1, -1), (), None, True)
+    if not copy:
+        k = _head_tail_overlap(Oc, Nc)
+        if k > ROTATION_OVERLAP_MAX:
+            # N opens with more than twenty of O's last lines in order: a head
+            # trim (R3), and only what follows is new. Said before the diff,
+            # because difflib's longest match over a long file full of repeated
+            # QC lines can take seconds in a single uninterruptible call.
+            return out("continuation", range(k, nN))
     try:
         ops = _ordered_opcodes(list(Oc), list(Nc), budget)
     except _Fallback as why:
@@ -3001,21 +3061,75 @@ def resolve_rewrite(O, N, rotated: bool = False, newest_first: bool = False,
         return out("fallback", new, amb, ambiguity)
     added = [j for tag, _i1, _i2, j1, j2 in ops if tag in ("insert", "replace")
              for j in range(j1, j2)]
-    end = next(op for op in ops if op[1] <= nO - 1 < op[2])
-    if end[0] == "equal":
-        return out("continuation", added)
-    if end[0] == "delete" and ops[-1] is end:
+    if rotated and not copy:
         matched = [j for tag, _i1, _i2, j1, j2 in ops if tag == "equal"
                    for j in range(j1, j2)]
-        amb = [] if rotated else matched
-        return out("rotation", range(nN), amb,
-                   {"kind": "rotation_overlap", "lines": len(amb),
-                    "file": "same", "chosen": "recorded"} if amb else None)
-    return out("correction", added)
+        if len(matched) <= ROTATION_OVERLAP_MAX:
+            # A different file with a few of O's lines in it: all of it new.
+            return out("rotation", range(nN), matched,
+                       {"kind": "rotation_overlap", "lines": len(matched),
+                        "where": "within", "file": "new",
+                        "chosen": "recorded"} if matched else None)
+    trim = []
+
+    def shifted(kind, new):
+        """The diff's answer, widened by the head-trim reading when N opens
+        with O's last lines and that reading has new lines the diff does not
+        (§4.2's "the diff could shift" case): [QC3, QC3] trimmed to [QC3]
+        plus S, QC2, QC3 is, by the same bytes, two lines inserted between
+        the old QC3s. Both readings are recorded; the lines only the trim
+        calls new are labelled — unless there are more of them than any
+        plausible print burst (then the trim reading is not taken)."""
+        if copy:
+            # N is all of O plus more: a plain append by its bytes, the one
+            # reading R7p's gate row fixes.
+            return out(kind, new)
+        if not trim:
+            trim.append(_head_tail_overlap(Oc, Nc, deadline))
+        k = trim[0]
+        have = set(new)
+        extra = [j for j in range(k, nN) if j not in have] if k else []
+        if not extra or len(extra) > ROTATION_OVERLAP_MAX:
+            return out(kind, new)
+        return out(kind, sorted(have | set(range(k, nN))), extra,
+                   {"kind": "periodic", "why": "shift", "lines": len(extra),
+                    "candidates": 2, "chosen": "recorded"})
+
+    end = next(op for op in ops if op[1] <= nO - 1 < op[2])
+    if end[0] == "equal":
+        return shifted("continuation", added)
+    # O's newest line is not where it was. A CORRECTION (R6) keeps O's head
+    # and replaces its last lines with as many or more (a corrected line, or
+    # one plus a new print). Anything else that lost O's newest line removed
+    # more of O than it put back, and difflib's longest-match alignment is no
+    # guide to it: it pairs a repeated QC line with any older copy it likes,
+    # and reading that as a correction drops the new copy.
+    head_kept = ops[0][0] == "equal" and ops[0][1] == 0 and ops[0][3] == 0
+    removed = sum(i2 - i1 for tag, i1, i2, _j1, _j2 in ops if tag != "equal")
+    if head_kept and end[0] == "replace" and removed <= len(added):
+        return shifted("correction", added)
+    matched = [j for tag, _i1, _i2, j1, j2 in ops if tag == "equal"
+               for j in range(j1, j2)]
+    k = _head_tail_overlap(Oc, Nc, deadline)
+    if k:
+        # N opens with O's last k lines: a head trim (R3, X1) — everything
+        # after the overlap is new. Lines after it that the diff found in O
+        # are where the two readings disagree: recorded, and labelled.
+        amb = [j for j in matched if j >= k]
+        return out("continuation", range(k, nN), amb,
+                   {"kind": "periodic", "why": "shift", "lines": len(amb),
+                    "candidates": 2, "chosen": "recorded"} if amb else None)
+    # Cut back and started again (or, rotated, a new file): every line of N
+    # is recorded, and the ones that match O are labelled.
+    return out("rotation", range(nN), matched,
+               {"kind": "rotation_overlap", "lines": len(matched),
+                "file": "new" if rotated else "same",
+                "chosen": "recorded"} if matched else None)
 
 
 def resolve_by_count(O, N, rotated: bool = False, newest_first: bool = False,
-                     budget: float = REWRITE_DIFF_BUDGET) -> Resolution:
+                     budget: float = REWRITE_DIFF_BUDGET,
+                     predecessor: bool = False) -> Resolution:
     """The rule the ordered diff replaced, kept as a reference: a line of N is
     new when N holds more copies of it than O did. Right for distinct lines;
     wrong whenever the instrument prints a line that repeats one still in the
@@ -3234,6 +3348,28 @@ class SingleCsvSource:
         self.obs: Optional[tuple] = None
         self.notices: List[str] = []
         self.loaded = False
+        # A change waiting for the file to go quiet: since when, and earlier
+        # looks at the file (time, size, sha256) to find the part that held
+        # still. `waiting` is the standing status-line sentence.
+        self.pending_since: Optional[datetime] = None
+        self.looks: list = []
+        self.waiting = ""
+
+    def status_note(self) -> str:
+        """A sentence that stays on the status line while this source holds
+        a change it has not finished reading, or ""."""
+        return self.waiting
+
+    def _wait_note(self, text: str) -> None:
+        """Set the standing sentence; the first time in a stretch of waiting
+        it is also said once, as a notice."""
+        if not self.waiting:
+            self.notices.append(text)
+        self.waiting = text
+
+    def _settled(self) -> None:
+        self.pending_since = None
+        self.looks = []
 
     # ── state ────────────────────────────────────────────────────────────────
 
@@ -3297,14 +3433,19 @@ class SingleCsvSource:
                                      "newest_first": False}, fresh=True)
             offset = int(cur["offset"])
             if cur.get("file_id") == fid and st.st_size >= offset \
+                    and not cur.get("unsettled") \
                     and self._windows_match(f, cur, offset):
                 if self.O is None:
                     self.O = self._hashes(f, offset)
                 if self._rescan_due(now) and st.st_size <= RESCAN_MAX_BYTES:
                     if self._hashes(f, offset) == self.O:
                         self.full_checked = now
+                        self._settled()
+                        self.waiting = ""
                         return self._append(f, st.st_size, quiet, now, cur)
                     return self._rewrite(f, st, fid, quiet, now, rescanned=True)
+                self._settled()
+                self.waiting = ""
                 return self._append(f, st.st_size, quiet, now, cur)
             return self._rewrite(f, st, fid, quiet, now)
 
@@ -3332,11 +3473,16 @@ class SingleCsvSource:
         return [line_digest(body) for _s, _e, body in chunks]
 
     def _cursor_at(self, f, offset: int, fid: str, lineage: str,
-                   newest_first: bool) -> dict:
+                   newest_first: bool, unsettled: bool = False) -> dict:
         head, tail = self._window_hashes(f, offset)
-        return {"offset": offset, "head_hash": head, "tail_hash": tail,
-                "file_id": fid, "lineage": lineage,
-                "newest_first": bool(newest_first)}
+        cur = {"offset": offset, "head_hash": head, "tail_hash": tail,
+               "file_id": fid, "lineage": lineage,
+               "newest_first": bool(newest_first)}
+        if unsettled:
+            # Only the bottom of a newest-first file was read: its top is
+            # still unread, so the next poll diffs again instead of tailing.
+            cur["unsettled"] = True
+        return cur
 
     def _append(self, f, size: int, quiet: bool, now: datetime, cur: dict,
                 fresh: bool = False) -> _SourceRead:
@@ -3365,22 +3511,34 @@ class SingleCsvSource:
 
     def _rewrite(self, f, st, fid: str, quiet: bool, now: datetime,
                  rescanned: bool = False) -> _SourceRead:
-        """The rewrite path (§4.1 2): only once the file is quiet; then the
-        renamed predecessor is drained if the file was rotated, and the
-        resolver decides what of the file is new."""
-        if not quiet:
-            return _SourceRead([])
+        """The rewrite path (§4.1 2): once the file is quiet — or, when it has
+        not gone quiet within QUIET_MAX_WAIT, on the part of it that has held
+        still — the renamed predecessor is drained if the file was rotated,
+        and the resolver decides what of the file is new."""
         cur = self.cursor
+        f.seek(0)
+        whole = f.read(st.st_size)
+        base, region = 0, None
+        if quiet:
+            data = whole
+        else:
+            region = self._held_region(whole, now, bool(cur.get("newest_first")))
+            if region is None:
+                return _SourceRead([])
+            base, size = region
+            data = whole[base:base + size]
+        # Not quiet: only lines the writer has ended are whole.
+        chunks, _ = _split_chunks(data, final_complete=quiet)
+        if region is not None and not chunks:
+            return _SourceRead([])     # nothing whole has held still yet
         rotated = cur.get("file_id") != fid
         prints: list = []
         O = None if self.O is None else list(self.O)
         records = []
+        found = False
         if rotated:
-            drained, O = self._drain_sibling(cur, O)
+            drained, O, found = self._drain_sibling(cur, O)
             prints += drained
-        f.seek(0)
-        data = f.read(st.st_size)
-        chunks, _ = _split_chunks(data, final_complete=True)
         N = [line_digest(body) for _s, _e, body in chunks]
         if O is None:
             # The snapshot is gone and the file is not the one the cursor
@@ -3391,12 +3549,14 @@ class SingleCsvSource:
                               "chosen": "recorded"}, cur.get("newest_first"))
         else:
             resolution = resolve_rewrite(O, N, rotated=rotated,
-                                         newest_first=bool(cur.get("newest_first")))
+                                         newest_first=bool(cur.get("newest_first")),
+                                         predecessor=found)
             res = resolution
-        lineage = next_lineage(cur["lineage"], data)
+        used = data[:chunks[-1][1]] if chunks else b""
+        lineage = next_lineage(cur["lineage"], used)
         new = [chunks[i] for i in res.new]
         amb = {k for k, i in enumerate(res.new) if i in res.ambiguous}
-        fresh = _prints_from(data, new, 0, lineage, "file:" + self.key,
+        fresh = _prints_from(data, new, base, lineage, "file:" + self.key,
                              origin_of=lambda k: "ambiguous" if k in amb else "live")
         prints += fresh
         if res.ambiguity:
@@ -3407,7 +3567,25 @@ class SingleCsvSource:
                    "detail": res.ambiguity, "resolution": res.kind,
                    "pks": [p.pk for p in fresh if p.origin == "ambiguous"]}
             records.append(rec)
-        cursor = self._cursor_at(f, len(data), fid, lineage, res.newest_first)
+        if region is not None and base:
+            # The bottom of a newest-first file: everything is "read" as far
+            # as the offset goes, but the top is not — next poll diffs again.
+            end = len(whole)
+            cursor = self._cursor_at(f, end, fid, lineage, res.newest_first,
+                                     unsettled=True)
+        else:
+            end = len(used)
+            cursor = self._cursor_at(f, end, fid, lineage, res.newest_first)
+        if region is not None:
+            waited = int((now - self.pending_since).total_seconds()) \
+                if self.pending_since else 0
+            self._wait_note(
+                f"The instrument's file {os.path.basename(self.path)} has not "
+                f"stopped changing for {waited} s; the bench read the "
+                f"{len(chunks)} lines that have held still and will read the "
+                "rest as it settles. Nothing is lost by waiting.")
+        else:
+            self.waiting = ""
         if rescanned:
             self.notices.append(
                 "The instrument's file changed somewhere the bench had already "
@@ -3416,9 +3594,51 @@ class SingleCsvSource:
 
         def commit():
             self.full_checked = now
+            self._settled()
             return self._save(cursor, N)
         return _SourceRead(prints, records=records, commit=commit,
-                           offset=len(data))
+                           offset=end)
+
+    def _held_region(self, data: bytes, now: datetime,
+                     newest_first: bool) -> Optional[tuple]:
+        """(start, size) of the part of a still-changing file that has held
+        still, once the change has waited QUIET_MAX_WAIT; None to keep
+        waiting. "Held still" is the quiet rule applied to a region: the
+        bytes are identical to an earlier look at the whole file taken at
+        least QUIET_SECONDS ago — at the top of the file, or for a newest-
+        first file (which grows at the top) at the bottom."""
+        if self.pending_since is None:
+            self.pending_since = now
+        n = len(data)
+        valid = []
+        if n <= RESCAN_MAX_BYTES:
+            for t, size, sha in self.looks:
+                if size > n:
+                    continue
+                if _sha(data[:size]) == sha:
+                    valid.append((t, 0, size, sha))
+                elif newest_first and _sha(data[n - size:]) == sha:
+                    valid.append((t, n - size, size, sha))
+            here = _sha(data)
+            if not valid or valid[-1][3] != here or valid[-1][2] != n:
+                valid.append((now, 0, n, here))
+            self.looks = [(t, size, sha) for t, _b, size, sha in valid][-HELD_LOOKS:]
+        waited = now - self.pending_since
+        if waited < QUIET_MAX_WAIT:
+            return None
+        cands = [(size, start) for t, start, size, _sha_ in valid
+                 if size and (now - t).total_seconds() >= QUIET_SECONDS]
+        if not cands:
+            self._wait_note(
+                f"The instrument's file {os.path.basename(self.path)} has not "
+                f"stopped changing for {int(waited.total_seconds())} s and "
+                + ("no part of it has held still" if n <= RESCAN_MAX_BYTES else
+                   "it is too large to compare while it changes")
+                + "; the bench reads it as soon as it settles. Nothing is "
+                "lost by waiting.")
+            return None
+        size, start = max(cands)
+        return start, size
 
     def _drain_sibling(self, cur: dict, O: Optional[list]) -> tuple:
         """X4: lines appended to the old file after the last poll and before it
@@ -3433,7 +3653,7 @@ class SingleCsvSource:
         except OSError as exc:
             self.notices.append(f"Could not look for the renamed old file in "
                                 f"{folder} ({exc}).")
-            return [], O
+            return [], O, False
         for entry in entries:
             try:
                 if os.path.normcase(os.path.abspath(entry.path)) == me \
@@ -3449,7 +3669,7 @@ class SingleCsvSource:
                             f"The instrument's old file ({entry.name}) was "
                             "changed as well as renamed; only the new file "
                             "was read.")
-                        return [], O
+                        return [], O, True
                     if O is None:
                         O = self._hashes(g, offset)
                     g.seek(offset)
@@ -3459,8 +3679,9 @@ class SingleCsvSource:
             chunks, _ = _split_chunks(data, final_complete=True)
             prints = _prints_from(data, chunks, offset, cur["lineage"],
                                   "file:" + self.key)
-            return prints, (O or []) + [line_digest(b) for _s, _e, b in chunks]
-        return [], O
+            return (prints, (O or []) + [line_digest(b) for _s, _e, b in chunks],
+                    True)
+        return [], O, False
 
 
 # ── Status evaluation (ported from LEM V5.0 data_source.evaluate_box) ────────
@@ -6983,11 +7204,15 @@ class LEMStationModule:
     def _source_notes(self, machine) -> str:
         """What the file reader has to say (an unreadable cursor set aside, a
         renamed file that was also changed, a change found by the 15-minute
-        check), said once on the status line."""
+        check), said once on the status line — and, for as long as it lasts,
+        that a file which will not stop changing is being waited for."""
         parts = []
         for source in (getattr(self, "_sources", None) or {}).values():
             while source.notices:
                 parts.append(source.notices.pop(0))
+            note = getattr(source, "status_note", None)
+            if callable(note) and note() and note() not in parts:
+                parts.append(note())
         return " ".join(parts)
 
     def _journal_status(self, machine) -> str:

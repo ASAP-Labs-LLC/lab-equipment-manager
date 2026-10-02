@@ -483,9 +483,10 @@ def test_a_diff_over_budget_falls_back_to_the_tail_anchor():
     """The 2 s budget, forced to zero: the fallback anchors O's newest lines
     in N. Distinct content anchors in one place, so the answer is exact and
     nothing is labelled; the ambiguity record still says the diff did not
-    run."""
+    run. (A trim keeping 15 lines: one keeping more than 20 is answered
+    before the diff and never needs it.)"""
     O = ["L%d" % i for i in range(100)]
-    N = O[20:] + ["L100", "L101"]
+    N = O[85:] + ["L100", "L101"]
     res = resolve_rewrite(O, N, budget=0.0)
     assert new_lines(res, N) == ["L100", "L101"]
     assert not res.ambiguous
@@ -503,6 +504,37 @@ def test_eighty_thousand_lines_resolve_well_inside_the_budget():
         "mid_edit": (O[:40000] + [b"edit"] + O[40001:], False),
         "rotation": ([b"r1", b"r2"], True),
         "prepend": (list(reversed([b"n1", b"n2"])) + O, False),
+    }
+    times = {}
+    for name, (N, rotated) in shapes.items():
+        t0 = time.perf_counter()
+        res = resolve_rewrite(O, N, rotated=rotated)
+        times[name] = round(time.perf_counter() - t0, 4)
+        assert res.new, name
+    assert max(times.values()) < 1.0, times
+
+
+def test_eighty_thousand_qc_heavy_lines_resolve_well_inside_the_budget():
+    """The same, on the content this round's rules care about: a QC line
+    (one of three) every third line. Every shape now asks where N's opening
+    lines sit at O's end; asked by slicing O at each copy of N's first line,
+    that alone took 6.7 s for a head trim here (and quietly ran the 2 s
+    budget out for a rotated mid-file edit). It is one linear KMP pass now.
+    Held at < 1 s per shape, times in the failure message."""
+    O, s = [], 0
+    for i in range(80000):
+        if i % 3 == 0:
+            O.append("QC%d" % (i // 3 % 3))
+        else:
+            s += 1
+            O.append("S%07d" % s)
+    shapes = {
+        "trim": (O[20000:] + ["QC1", "new"], False),
+        "trim_to_qc": (O[-1:] + ["new", "QC1", "QC2"], False),
+        "mid_edit": (O[:40000] + ["edit"] + O[40001:], False),
+        "mid_edit_via_temp": (O[:40000] + ["edit"] + O[40001:], True),
+        "correction": (O[:-1] + ["fix"], False),
+        "rotation": (["QC0", "QC1", "QC2", "new"], True),
     }
     times = {}
     for name, (N, rotated) in shapes.items():
