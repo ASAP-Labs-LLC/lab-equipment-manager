@@ -42,6 +42,21 @@ LIVE_FIELD_BYTES = {"status": 32, "reason": 512, "at": 40,
                     "last_parse_at": 40, "lab_id": 64}
 ELLIPSIS = "\u2026"
 
+#: The same rule for what `/api/machines` echoes out of the RECORD rather
+#: than the live road: a `state` record's sub-statuses are status words like
+#: `status`; a spec's test name and sample are keys QC matches on (a SimDist
+#: cut name is ~70 characters in production; 256 B is room for three of them),
+#: its units a short label; `watching` is a source path (production's longest
+#: is ~90 characters). One table, read by the bench API where a record enters
+#: and by the floor builder where the payload leaves, so the two cannot drift.
+FLOOR_FIELD_BYTES = {"status": LIVE_FIELD_BYTES["status"],
+                     "reason": LIVE_FIELD_BYTES["reason"],
+                     "sub": LIVE_FIELD_BYTES["status"],
+                     "ts": LIVE_FIELD_BYTES["at"],
+                     "lab_id": LIVE_FIELD_BYTES["lab_id"],
+                     "watching": 512,
+                     "test_name": 256, "sample_id": 64, "units": 32}
+
 
 def clip_text(value, max_bytes: int, mark: str = "") -> str:
     """`value` as text whose ASCII-JSON encoding (quotes excluded) is at most

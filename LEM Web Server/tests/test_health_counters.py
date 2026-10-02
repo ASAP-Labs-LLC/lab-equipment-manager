@@ -127,6 +127,43 @@ class TestHealthzShape:
         assert lab.ops == 0
 
 
+class TestBenchesBeforeTheStoreIsRead:
+    """After a restart the registry has not read `bench_cursor` yet. Round 2
+    answered `v2: 0, unacked_total: 0` then — "not read yet" shown as "none",
+    which is the rule this repo keeps above all: a failed (or not-yet-made)
+    read is never an empty result. Now each count is null until the store
+    has been read, and the first sync reads it (the store, never LabCore)."""
+
+    def _restarted(self, store):
+        b_client = kit.make_app(store).test_client()
+        b = Bench(b_client, kit.enroll(b_client))
+        b.journal(2).sync(stats={"unacked": 5, "road": "lan",
+                                 "digest": kit.DIGEST_ZERO})
+        lab = CountingLabCore()
+        return kit.make_app(store, labcore=lab).test_client(), lab, b
+
+    def test_counts_are_null_not_zero_until_the_store_is_read(self, store):
+        client, lab, _b = self._restarted(store)
+        benches = client.get("/healthz").get_json()["benches"]
+        assert benches["hydrated"] is False
+        for key in ("v2", "reporting", "lagging", "unacked_total",
+                    "digest_mismatch", "labcore_failed_5min",
+                    "labcore_watchdog_5min"):
+            assert benches[key] is None, (key, benches[key])
+        assert lab.ops == 0
+
+    def test_the_first_sync_reads_the_store_so_the_counts_are_whole(
+            self, store):
+        client, lab, b = self._restarted(store)
+        b.client = client
+        b.journal(1).sync(stats={"unacked": 0, "road": "lan",
+                                 "digest": b.digest_through(2)})
+        benches = client.get("/healthz").get_json()["benches"]
+        assert benches["hydrated"] is True
+        assert benches["v2"] == 1 and benches["reporting"] == 1
+        assert lab.ops == 0
+
+
 class TestBaselineItem2IsMeasured:
     def test_a_watchdog_answer_is_counted_as_a_watchdog_kill(self, client, lab):
         """The injected answer is LabCore's own text, the one

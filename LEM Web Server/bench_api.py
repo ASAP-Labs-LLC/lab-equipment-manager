@@ -53,6 +53,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import re
 import secrets
 import threading
@@ -60,6 +61,8 @@ import time
 import zlib
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+
+from live_presence import ELLIPSIS, FLOOR_FIELD_BYTES, clip_text
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +101,18 @@ ENVELOPE = frozenset(("seq", "epoch", "uid", "kind", "ts", "module", "crc"))
 SPEC_COLUMNS = ("test_name", "sample_id", "expected", "std_dev", "k", "units",
                 "low", "high", "last_qc_at", "last_qc_value", "last_qc_in_spec",
                 "correction")
+#: A spec's numeric columns: a finite number or "not said" (NULL).
+SPEC_NUMBERS = ("expected", "std_dev", "k", "low", "high", "last_qc_value",
+                "correction")
+#: The most specs one `specs` record may set. Production's busiest bench
+#: publishes 18 (snapshot_service's note on the espec arm); a SimDist cut list
+#: is ~21. A bench claiming more than this is not describing an instrument,
+#: and 48 specs at their bounds still leave the real fleet inside GC hub's
+#: 1 MB cap (test_bench_state_bounds pins the arithmetic).
+MAX_SPECS = 48
+#: Encoded-size bounds for a spec's text, shared with the floor builder.
+SPEC_TEXT_BYTES = {k: FLOOR_FIELD_BYTES[k]
+                   for k in ("test_name", "sample_id", "units")}
 
 _HEX64 = re.compile(r"\A[0-9a-f]{64}\Z")
 _CURRENT_STATE_TABLES = ("lem_machine_status", "lem_machine_heartbeat",
@@ -152,14 +167,22 @@ def wall_ts(value, fallback: str = "") -> str:
     bench's LOCAL wall time, without its offset — exactly what v3.9 wrote
     (`now.isoformat()` on the bench), and what every reader of those tables
     parses and compares with naive local times. The offset is not lost: the
-    record's own body, offset included, is kept in `bench_record`."""
-    text = str(value or "").strip()
-    if not text:
+    record's own body, offset included, is kept in `bench_record`.
+
+    A `ts` that is not a date is not a time, and is never echoed: it is the
+    `fallback` (the server's own clock, where the callers pass one). Before,
+    the raw text came back, so a 4 MB "ts" became `updated_at` and from there
+    every reader's `last_activity` — and `/api/machines`, which GC hub reads
+    under a 1 MB cap."""
+    if not isinstance(value, str):
+        return fallback
+    text = value.strip()
+    if not text or len(text) > 64:
         return fallback
     try:
         dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return text
+        return fallback
     return dt.replace(tzinfo=None).isoformat(
         timespec="microseconds" if dt.microsecond else "seconds")
 
@@ -319,6 +342,15 @@ class BenchRegistry:
         reporting = [e for e in entries if e.get("seen") is not None
                      and now - float(e["seen"]) <= REPORTING_SECONDS]
         lc = [e.get("labcore") or {} for e in reporting]
+        if not self.hydrated:
+            # `bench_cursor` has not been read since this process started
+            # (or the read failed). What is in memory is the benches that
+            # synced since, not the fleet: every count is unknown (null),
+            # never a 0 that reads as "no benches, nothing waiting".
+            return {"v2": None, "reporting": None, "lagging": None,
+                    "unacked_total": None, "digest_mismatch": None,
+                    "labcore_failed_5min": None,
+                    "labcore_watchdog_5min": None, "hydrated": False}
         return {
             "v2": len(entries),
             "reporting": len(reporting),
@@ -521,7 +553,14 @@ def log_rows_for(body: dict) -> Optional[List[tuple]]:
                     or str(entry[0]) != str(body.get("uid")):
                 return None
             _uid, r_ts, r_kind, r_lab, r_test, r_value, r_detail = entry
-            rows.append((str(r_ts or ts), str(r_kind or kind), str(r_lab or ""),
+            # The row's own ts exactly as the bench wrote it (v3.9's
+            # "YYYY-MM-DD HH:MM:SS" included: matches on it are textual) —
+            # when it IS a date. Otherwise the record's: `last_activity` is
+            # MAX(ts) of the log, and a 200 KB string of nines sorts last.
+            r_ts = r_ts.strip() if isinstance(r_ts, str) else ""
+            if wall_ts(r_ts, None) is None:
+                r_ts = ts
+            rows.append((r_ts, str(r_kind or kind), str(r_lab or ""),
                          str(r_test or ""), "" if r_value is None else str(r_value),
                          r_detail if r_detail is not None else "{}"))
         return rows
@@ -571,6 +610,80 @@ def log_rows_for(body: dict) -> Optional[List[tuple]]:
              "" if value is None else str(value), detail)]
 
 
+def _text(value) -> str:
+    """A record's text field as text; nothing said is ""."""
+    if value is None:
+        return ""
+    return value if isinstance(value, str) else json.dumps(value, default=str)
+
+
+def _finite(value) -> Optional[float]:
+    """A spec number: finite, or None ("not said"). A bool is not a number;
+    neither is Infinity, NaN, or a 4,000-digit string SQLite would store as
+    Infinity — which is not JSON, and `/api/machines` must stay JSON."""
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _moment_text(value) -> Optional[str]:
+    """A date as the bench wrote it when it is a naive local time (the floor
+    matches it TEXTUALLY against log rows), as `wall_ts` makes it when it
+    carries an offset, and None when it is not a date at all."""
+    held = wall_ts(value, None)
+    if held is None:
+        return None
+    text = value.strip()
+    try:
+        naive = datetime.fromisoformat(text).tzinfo is None
+    except ValueError:                       # "Z": Python < 3.11 spelling
+        naive = False
+    return text if naive else held
+
+
+def spec_set(specs: list) -> Tuple[List[dict], Optional[str]]:
+    """A `specs` record's set, checked: (the rows to store, None), or
+    ([], why it cannot be applied). Keys are refused, never clipped; units
+    (a display label) are clipped; numbers are finite or None."""
+    usable = [s for s in specs if isinstance(s, dict) and s.get("test_name")]
+    if len(usable) > MAX_SPECS:
+        return [], "%d specs, more than the %d one bench may set" % (
+            len(usable), MAX_SPECS)
+    out = []
+    for spec in usable:
+        for key in ("test_name", "sample_id"):
+            value = spec.get(key)
+            if value is None and key == "sample_id":
+                continue
+            if not isinstance(value, str):
+                return [], "a spec's %s is not text" % key
+            if clip_text(value, SPEC_TEXT_BYTES[key]) != value:
+                return [], "a spec's %s is longer than %d bytes" % (
+                    key, SPEC_TEXT_BYTES[key])
+        row = {}
+        for c in SPEC_COLUMNS:
+            if c not in spec:
+                continue
+            v = spec[c]
+            if c in SPEC_NUMBERS:
+                row[c] = _finite(v)
+            elif c == "last_qc_in_spec":
+                row[c] = (int(v) if isinstance(v, bool) or v in (0, 1)
+                          else None)
+            elif c == "last_qc_at":
+                row[c] = _moment_text(v)
+            elif c == "units":
+                row[c] = clip_text(_text(v), SPEC_TEXT_BYTES["units"])
+            else:
+                row[c] = v
+        out.append(row)
+    return out, None
+
+
 def _cell(cell, names) -> dict:
     if isinstance(cell, dict):
         out = {n: cell.get(n, cell.get("test") if n == "test_name" else None)
@@ -609,6 +722,7 @@ class Ingest:
     def record(self, seq: int, body: dict, raw: bytes) -> bool:
         """Store one record. False if it was already held (nothing written)."""
         uid, epoch = self.uid, self.epoch
+        self._raw = raw
         kind = body["kind"]
         res = self.x(
             "INSERT INTO bench_record (machine_uid, bench_epoch, bench_seq, "
@@ -703,8 +817,15 @@ class Ingest:
                           "content_key seen under an earlier epoch")
 
     # ── current state, same transaction ──
+    # What a record puts in current state is echoed by `/api/machines`, which
+    # GC hub reads under a 1 MB cap that fails its WHOLE floor when crossed.
+    # So each value has the bound the live block gives the same fact
+    # (live_presence.FLOOR_FIELD_BYTES), applied here so the store holds the
+    # bounded value and a restart reopens nothing. The record is not cut:
+    # `bench_record` holds the body as sent, and the log row keeps the whole
+    # reason for a person to read.
     def _state_state(self, seq: int, body: dict) -> None:
-        status = str(body.get("status") or "")
+        status = _text(body.get("status"))
         if not status:
             return
         ts = wall_ts(body.get("ts"), _now_wall())
@@ -713,33 +834,44 @@ class Ingest:
                "lem_machine_config WHERE machine_uid = ?), ?, ?, ?) "
                "ON CONFLICT(machine_uid) DO UPDATE SET status = excluded.status, "
                "reason = excluded.reason, updated_at = excluded.updated_at",
-               [self.uid, self.uid, status, str(body.get("reason") or ""), ts])
+               [self.uid, self.uid,
+                clip_text(status, FLOOR_FIELD_BYTES["status"]),
+                clip_text(_text(body.get("reason")),
+                          FLOOR_FIELD_BYTES["reason"], ELLIPSIS), ts])
         sub = body.get("sub")
         if isinstance(sub, dict):
+            def word(key):
+                return clip_text(_text(sub.get(key)), FLOOR_FIELD_BYTES["sub"])
             self.x("INSERT INTO lem_machine_substatus (machine_uid, qc, pm, "
                    "calibration, updated_at) VALUES (?, ?, ?, ?, ?) "
                    "ON CONFLICT(machine_uid) DO UPDATE SET qc = excluded.qc, "
                    "pm = excluded.pm, calibration = excluded.calibration, "
                    "updated_at = excluded.updated_at",
-                   [self.uid, str(sub.get("qc") or ""), str(sub.get("pm") or ""),
-                    str(sub.get("calibration") or ""), ts])
+                   [self.uid, word("qc"), word("pm"), word("calibration"), ts])
 
     def _state_specs(self, seq: int, body: dict) -> None:
         specs = body.get("specs")
         if not isinstance(specs, list):
             return
+        checked, why = spec_set(specs)
+        if why:
+            # Test name and sample are the keys QC matches on: a clipped key
+            # is a band for a test nobody runs, and a partial set is a band
+            # missing. So the set is neither cut nor applied — the bench's
+            # previous set stays in force — and that is written down where a
+            # person looks (unknown_records) and said in the answer's notes.
+            self.park(seq, self._raw, "its spec set was not applied: %s; "
+                                      "the previous set stays in force" % why)
+            return
         # Whole-set replace in one transaction: no "no band" window (§7).
         self.x("DELETE FROM lem_machine_specs WHERE machine_uid = ?", [self.uid])
-        for spec in specs:
-            if not isinstance(spec, dict) or not spec.get("test_name"):
-                continue
-            cols = [c for c in SPEC_COLUMNS if c in spec]
+        updated = wall_ts(body.get("ts"), _now_wall())
+        for spec in checked:
+            cols = list(spec)
             self.x("INSERT OR REPLACE INTO lem_machine_specs (machine_uid, "
                    "updated_at, {0}) VALUES (?, ?, {1})".format(
                        ", ".join(cols), ", ".join("?" for _ in cols)),
-                   [self.uid, wall_ts(body.get("ts"), _now_wall())]
-                   + [spec[c] if not isinstance(spec[c], (dict, list))
-                      else json.dumps(spec[c]) for c in cols])
+                   [self.uid, updated] + [spec[c] for c in cols])
 
     def _state_conflict(self, seq: int, body: dict) -> None:
         for i, cell in enumerate(body.get("cells") or []):
@@ -1364,6 +1496,11 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
 
         if doc.get("live") and doc["live"].get("status"):
             live.record(uid, doc["live"])
+        # The other benches, from the store, before this one is noted: once
+        # per process (a failed read retries in a minute). Without it,
+        # /healthz after a restart knew only the benches that had synced
+        # since — a partial count that read as the whole.
+        registry.hydrate(store)
         if conflict is not None:
             registry.note(uid, seen=time.time())
             return _answer(409, {"error": "cursor", "acked": conflict,
