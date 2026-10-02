@@ -289,7 +289,7 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS annotation_approval ("
     " id INTEGER PRIMARY KEY, machine_uid TEXT, rule TEXT, run_id TEXT,"
     " candidates INTEGER, examples TEXT, qc_impact TEXT, approved_by TEXT,"
-    " approved_at TEXT, decision TEXT)",
+    " approved_at TEXT, decision TEXT, signature TEXT)",
     # D7: an approval is the record of Ryan's decision, and the evidence for
     # every row it hid. Edited or deleted afterwards, a hidden row would have
     # no say-so behind it (or a different one), so it is append-only like
@@ -667,6 +667,14 @@ class LocalStoreGateway:
                     if led and col not in led:
                         con.execute("ALTER TABLE request_ledger ADD COLUMN "
                                     "{0} TEXT".format(col))
+                # `signature`: the dedupe flow's HMAC over the decision it
+                # recorded (dedupe.approve); a store from before it gains the
+                # column, and its older approvals read as unsigned.
+                apr = [r[1] for r in con.execute(
+                    "PRAGMA table_info('annotation_approval')").fetchall()]
+                if apr and "signature" not in apr:
+                    con.execute("ALTER TABLE annotation_approval "
+                                "ADD COLUMN signature TEXT")
                 cfg = [r[1] for r in con.execute(
                     "PRAGMA table_info('lem_machine_config')").fetchall()]
                 if cfg and "retired_at" not in cfg:

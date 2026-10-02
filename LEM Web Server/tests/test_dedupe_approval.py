@@ -485,6 +485,112 @@ class TestTheFlowOnTheSyntheticLab:
         assert sent == []
 
 
+class TestAnApprovalIsSignedByTheFlowThatShowedTheReport:
+    """The store's triggers make an approval append-only and need a person
+    and a time — but any statement that reaches the file could still INSERT
+    one. `approve` signs what it records (HMAC over the decision, with a key
+    kept beside the store, not in it), `apply` acts only on an approval that
+    verifies, and the dry run names any approval that does not and the rows
+    it hides, so a forged one is visible rather than silent."""
+
+    def test_approve_signs_and_apply_verifies(self, sim_store):
+        store, _lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="era")
+        aid = _approve_all(store, report)[0]
+        row = store.read_sql("SELECT signature FROM annotation_approval "
+                             "WHERE id = ?", [aid])["rows"][0]
+        assert len(row["signature"] or "") == 64
+        assert dedupe.apply(store, aid, by="ryan")["annotated"] > 0
+
+    def test_an_approval_written_outside_the_flow_is_not_applied(
+            self, sim_store):
+        store, lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="era")
+        run_id = report["benches"][0]["run_ids"]["replay_duplicate"]
+        res = store.sql(
+            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+            "candidates, approved_by, approved_at, decision) VALUES "
+            "('era', 'replay_duplicate', ?, 1, 'ryan', 't', 'approved')",
+            [run_id])
+        assert "error" not in res
+        forged = store.read_sql("SELECT MAX(id) i FROM annotation_approval"
+                                )["rows"][0]["i"]
+        with pytest.raises(dedupe.DedupeRefused, match="signature"):
+            dedupe.apply(store, forged, by="ryan")
+        assert _effective(store) == {r["id"] for r in lab.rows}
+
+    def test_a_signature_copied_onto_another_decision_does_not_verify(
+            self, sim_store):
+        store, _lab = sim_store
+        report = dedupe.dry_run(store)
+        era = next(b for b in report["benches"] if b["machine_uid"] == "era")
+        gc = next(b for b in report["benches"] if b["machine_uid"] == "gc")
+        aid = dedupe.approve(store, "era", "replay_duplicate",
+                             era["run_ids"]["replay_duplicate"],
+                             approved_by="ryan")["approval_id"]
+        sig = store.read_sql("SELECT signature FROM annotation_approval "
+                             "WHERE id = ?", [aid])["rows"][0]["signature"]
+        store.sql(
+            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+            "candidates, approved_by, approved_at, decision, signature) "
+            "VALUES ('gc', 'replay_duplicate', ?, 1, 'ryan', 't', "
+            "'approved', ?)", [gc["run_ids"]["replay_duplicate"], sig])
+        forged = store.read_sql("SELECT MAX(id) i FROM annotation_approval"
+                                )["rows"][0]["i"]
+        with pytest.raises(dedupe.DedupeRefused, match="signature"):
+            dedupe.apply(store, forged, by="ryan")
+
+    def test_a_whole_signed_row_moved_to_another_bench_does_not_verify(
+            self, sim_store):
+        """Every field the decision rests on is signed — the bench too. A
+        copy of Ryan's signed GC approval naming another bench is refused
+        for its signature, before anything else is looked at."""
+        store, _lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="gc")
+        aid = _approve_all(store, report)[0]
+        store.sql(
+            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+            "candidates, examples, qc_impact, approved_by, approved_at, "
+            "decision, signature) SELECT 'era', rule, run_id, candidates, "
+            "examples, qc_impact, approved_by, approved_at, decision, "
+            "signature FROM annotation_approval WHERE id = ?", [aid])
+        moved = store.read_sql("SELECT MAX(id) i FROM annotation_approval"
+                               )["rows"][0]["i"]
+        with pytest.raises(dedupe.DedupeRefused, match="signature"):
+            dedupe.apply(store, moved, by="ryan")
+
+    def test_the_dry_run_names_an_unsigned_approval_that_hides_rows(
+            self, sim_store):
+        store, lab = sim_store
+        rid = sorted(lab.ids(DUP))[0]
+        uid = next(r["machine_uid"] for r in lab.rows if r["id"] == rid)
+        forged = _approval(store, uid=uid)
+        assert "error" not in _hide(store, rid, approval_id=forged)
+        report = dedupe.dry_run(store)
+        assert report["unsigned_approvals"] == [{
+            "approval_id": forged, "machine_uid": uid,
+            "rule": "replay_duplicate", "approved_by": "ryan",
+            "approved_at": "2026-10-01T09:00:00", "hides": 1}]
+
+    def test_a_store_from_before_signatures_gains_the_column(self, tmp_path):
+        path = str(tmp_path / "old.db")
+        con = sqlite3.connect(path)
+        con.execute(
+            "CREATE TABLE annotation_approval (id INTEGER PRIMARY KEY, "
+            "machine_uid TEXT, rule TEXT, run_id TEXT, candidates INTEGER, "
+            "examples TEXT, qc_impact TEXT, approved_by TEXT, "
+            "approved_at TEXT, decision TEXT)")
+        con.commit()
+        con.close()
+        s = LocalStoreGateway(path)
+        try:
+            cols = {r["name"] for r in s.read_sql(
+                "PRAGMA table_info('annotation_approval')")["rows"]}
+            assert "signature" in cols
+        finally:
+            s.close()
+
+
 class TestAFailedReadIsNeverAnEmptyResult:
     def test_a_failed_read_raises_rather_than_reporting_no_duplicates(
             self, store):

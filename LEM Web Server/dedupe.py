@@ -74,8 +74,11 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import hmac
 import json
+import os
 import re
+import secrets
 import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -935,7 +938,9 @@ def dry_run(gateway, machine_uid: Optional[str] = None, *,
             now: Optional[str] = None) -> Dict[str, Any]:
     """Classify the store's record and report. Reads; writes nothing."""
     rows, upto = read_store(gateway, machine_uid)
-    return report(classify(rows, upto), since=since, now=now, source="store")
+    rep = report(classify(rows, upto), since=since, now=now, source="store")
+    rep["unsigned_approvals"] = unsigned_approvals(gateway)
+    return rep
 
 
 # ── approval, apply, reinstate ───────────────────────────────────────────────
@@ -947,6 +952,91 @@ def _now() -> str:
 def _one_bench(gateway, machine_uid: str, upto: int) -> Classification:
     rows, upto = read_store(gateway, machine_uid, upto_id=upto)
     return classify(rows, upto)
+
+
+# ── the approval's signature ────────────────────────────────────────────────
+
+_SIGNED_FIELDS = ("machine_uid", "rule", "run_id", "candidates",
+                  "approved_by", "approved_at", "decision")
+
+
+def approval_key(gateway) -> bytes:
+    """The key approvals are signed with: a file BESIDE the store, never in
+    it (`<store>.approval-key`, created 0600 on first use), so a statement
+    that can write the store cannot sign. A store with no file on disk (the
+    in-memory test stores) keeps one per process."""
+    path = getattr(gateway, "path", None)
+    if isinstance(path, str) and path and os.path.isfile(path):
+        kpath = path + ".approval-key"
+        try:
+            with open(kpath, "rb") as fh:
+                key = fh.read().strip()
+            if key:
+                return key
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise DedupeRefused("the approval key {0} cannot be read: {1}"
+                                .format(kpath, exc))
+        try:
+            fd = os.open(kpath, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            return approval_key(gateway)       # another writer made it first
+        except OSError as exc:
+            raise DedupeRefused("the approval key {0} cannot be created: {1}"
+                                .format(kpath, exc))
+        key = secrets.token_hex(32).encode("ascii")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(key)
+        return key
+    key = getattr(gateway, "_lem_approval_key", None)
+    if not key:
+        key = secrets.token_hex(32).encode("ascii")
+        try:
+            setattr(gateway, "_lem_approval_key", key)
+        except AttributeError:
+            pass
+    return key
+
+
+def _sign(key: bytes, row: Dict[str, Any]) -> str:
+    msg = json.dumps([None if row.get(f) is None else str(row.get(f))
+                      for f in _SIGNED_FIELDS], separators=(",", ":"))
+    return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def signature_ok(gateway, row: Dict[str, Any]) -> bool:
+    sig = str(row.get("signature") or "")
+    return bool(sig) and hmac.compare_digest(
+        sig, _sign(approval_key(gateway), row))
+
+
+def unsigned_approvals(gateway) -> List[Dict[str, Any]]:
+    """Approvals that do not verify AND hide at least one row now (their
+    hide is the newest deciding annotation on it). Named in every dry run:
+    the store cannot stop an INSERT that reaches the file, but it is not
+    silent about one."""
+    out = []
+    for appr in _read(gateway, "SELECT * FROM annotation_approval "
+                      "WHERE decision = 'approved' ORDER BY id", [],
+                      "the approvals"):
+        if signature_ok(gateway, appr):
+            continue
+        hides = _read(
+            gateway,
+            "SELECT COUNT(*) AS n FROM log_annotation a WHERE "
+            "a.approval_id = ? AND a.label IN ('replay_duplicate', "
+            "'import_leftover') AND a.id = (SELECT MAX(b.id) FROM "
+            "log_annotation b WHERE b.log_id = a.log_id AND b.label IN "
+            "('replay_duplicate', 'import_leftover', 'reinstated'))",
+            [appr["id"]], "the rows an approval hides")[0]["n"]
+        if hides:
+            out.append({"approval_id": appr["id"],
+                        "machine_uid": appr["machine_uid"],
+                        "rule": appr["rule"],
+                        "approved_by": appr["approved_by"],
+                        "approved_at": appr["approved_at"], "hides": hides})
+    return out
 
 
 def approve(gateway, machine_uid: str, label: str, run_id: str, *,
@@ -981,15 +1071,19 @@ def approve(gateway, machine_uid: str, label: str, run_id: str, *,
         raise DedupeRefused("there is nothing to approve for {0} / {1}"
                             .format(machine_uid, unit))
     examples = _examples(result, machine_uid, unit=unit)
+    signed = {"machine_uid": machine_uid, "rule": unit, "run_id": run_id,
+              "candidates": len(ids), "approved_by": approved_by.strip(),
+              "approved_at": now or _now(), "decision": decision}
+    signature = _sign(approval_key(gateway), signed)
     with gateway.transaction():
         res = gateway.sql(
             "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
             "candidates, examples, qc_impact, approved_by, approved_at, "
-            "decision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "decision, signature) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [machine_uid, unit, run_id, len(ids), json.dumps(examples),
              json.dumps(qc_impact(result, machine_uid, now, (label,), ids)),
-             approved_by.strip(),
-             now or _now(), decision])
+             signed["approved_by"], signed["approved_at"], decision,
+             signature])
         if res.get("error"):
             raise DedupeRefused("the approval was not recorded: {0}"
                                 .format(res["error"]))
@@ -1035,6 +1129,11 @@ def apply(gateway, approval_id: int, *, by: str) -> Dict[str, Any]:
     if appr["decision"] != "approved":
         raise DedupeRefused("approval {0} was {1}: nothing to apply"
                             .format(approval_id, appr["decision"]))
+    if not signature_ok(gateway, appr):
+        raise DedupeRefused(
+            "approval {0} carries no valid signature: it was not recorded by "
+            "the approval flow that showed the report (D7), so nothing is "
+            "applied under it".format(approval_id))
     uid, unit = appr["machine_uid"], appr["rule"]
     label, _scope = parse_unit(unit)
     upto, _sha = parse_run_id(appr["run_id"])

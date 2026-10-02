@@ -22,6 +22,9 @@ Env:
     LABCORE_URL                   — LabCore base URL (default https://labvision.asaplabs.net)
     LABMGR_ADMIN_PASSWORD         — admin password (default Admin1)
     LABMGR_SECRET                 — Flask session secret
+    LEM_DEDUPE_APPROVERS          — sign-in names allowed to approve and apply
+                                    dedupe hiding (D7: Ryan's); none set =
+                                    nobody can (transfer spec §10.5)
 """
 
 from __future__ import annotations
