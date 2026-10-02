@@ -298,3 +298,116 @@ class TestThePredictionIsChecked:
         assert chk["total"]["proposed_hide"] == len(hide) + sum(
             1 for c in result.candidates.values()
             if c.rule == "misread_lab_id")
+
+
+class TestO9IsClosedByArithmeticNotByExplanation:
+    """Round-2 critic: the dry run proposes ~64k against a 110k–140k
+    prediction and GC 2 sits 40 % under G1, so O9 was "not met". The open
+    item itself (gaps.md O9) asks for "the exact count of re-emitted rows"
+    because "G1 gives only a burst-based bound". Closing it means three
+    things the report must COMPUTE, not argue:
+
+    1. what the prediction measured — the burst proxy, row for row — and
+       where every one of those rows goes: proposed copy, listed for
+       review, or the first copy of its reading;
+    2. what reaching the predicted floor would cost: hiding more rows than
+       have an earlier identical copy removes at least (hidden − ceiling)
+       readings from what anybody sees, because visible rows can then no
+       longer cover every distinct reading;
+    3. whether the claim the prediction was scaled from (ASK-CLAUDE.md,
+       3 Sep: ~99,000 of 220,841) was ever reachable in the record as it
+       stood THEN — measured on the rows up to that id, not assumed."""
+
+    def _lab(self):
+        return TestThePredictionIsChecked()._lab()
+
+    def _check(self, lab, **pred):
+        base = {"since": "2026-09-01", "total": [40, 60], "band": 0.10,
+                "benches": {"b": {"name": "Bench B", "burst_rows": 75}}}
+        base.update(pred)
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        return dedupe.prediction_check(result, base)
+
+    def test_every_burst_row_is_accounted_for(self):
+        chk = self._check(self._lab())
+        [b] = chk["benches"]
+        acc = b["burst_rows_accounted"]
+        assert acc == {"hide_candidates": 25, "listed_for_review": 0,
+                       "first_copy_of_its_reading": 50}
+        assert sum(acc.values()) == b["burst_rows_measured"] == 75
+        tot = chk["total"]["burst_rows_accounted"]
+        assert sum(tot.values()) == chk["total"]["rows_in_polls_of_20_or_more"]
+
+    def test_reaching_the_floor_would_erase_readings(self):
+        chk = self._check(self._lab())
+        [b] = chk["benches"]
+        # band floor 67.5 -> at least 68 hidden; only 25 rows have an
+        # earlier copy, so 43 readings would vanish from every view.
+        assert b["hide_needed_for_band"] == 68
+        assert b["readings_erased_at_band_floor"] == 43
+        t = chk["total"]
+        assert t["readings_erased_at_floor"] == 40 - 25
+
+    def test_a_reachable_band_erases_nothing(self):
+        chk = self._check(self._lab(), total=[10, 30], benches={
+            "b": {"name": "Bench B", "burst_rows": 25}})
+        [b] = chk["benches"]
+        assert b["readings_erased_at_band_floor"] == 0
+        assert chk["total"]["readings_erased_at_floor"] == 0
+
+    def test_the_prediction_is_tested_against_the_proxy_it_came_from(self):
+        chk = self._check(self._lab(), total=[70, 80])
+        assert chk["total"]["rows_in_polls_of_20_or_more"] == 75
+        assert chk["total"]["proxy_within_predicted"] is True
+        assert self._check(self._lab())["total"][
+            "proxy_within_predicted"] is False
+
+    def test_an_earlier_claim_is_measured_on_the_record_as_it_stood(self):
+        lab = self._lab()
+        first_poll_last_id = 25        # ids 1..25: the first archive only
+        chk = self._check(lab, earlier_claim={
+            "source": "a note", "upto_id": 50, "claimed": 40,
+            "benches": {"b": 40}})
+        e = chk["earlier_claim"]
+        # up to id 50 the record held the first archive and one replay of
+        # it: 25 rows with an earlier identical copy, never 40
+        assert e["run_qc_rows_then"] == 50
+        assert e["ceiling_then"] == 25
+        assert e["benches"] == [{"machine_uid": "b", "name": "Bench B",
+                                 "claimed": 40, "ceiling_then": 25,
+                                 "reachable": False}]
+        assert e["reachable"] is False
+        chk = self._check(lab, earlier_claim={
+            "upto_id": first_poll_last_id, "claimed": 0, "benches": {}})
+        assert chk["earlier_claim"]["ceiling_then"] == 0
+
+    def test_the_cost_is_counted_from_the_ceiling_not_the_proposal(self):
+        """A twin listed for review is still a row a looser rule COULD hide
+        without erasing its reading: the cost of the floor is measured from
+        the ceiling (every row with an earlier copy), not from what the
+        rules propose."""
+        lab = self._lab()
+        again = SimLab.run_line("G3", {"v": "g3"})       # a lone re-test
+        [rid] = lab.poll("b", [again], [GENUINE], ts="2026-09-05T09:00:00")
+        chk = self._check(lab)
+        [b] = chk["benches"]
+        assert b["proposed"] == 25 and b["ceiling"] == 26
+        assert b["readings_erased_at_band_floor"] == 68 - 26
+        assert chk["total"]["readings_erased_at_floor"] == 40 - 26
+
+    def test_a_twin_the_rules_left_unlabelled_is_never_called_an_original(
+            self):
+        """The accounting is a check on the rules, not a restatement of
+        them: a row with an earlier identical copy that carries no label at
+        all is counted on its own line, never folded into "first copy"."""
+        result = dedupe.classify(
+            dedupe.LogRow.from_dict(r) for r in self._lab().rows)
+        dropped = min(i for i, c in result.candidates.items()
+                      if c.label == "replay_duplicate")
+        del result.candidates[dropped]
+        chk = dedupe.prediction_check(result, {
+            "since": "2026-09-01", "total": [40, 60], "band": 0.10,
+            "benches": {"b": {"name": "Bench B", "burst_rows": 75}}})
+        assert chk["benches"][0]["burst_rows_accounted"] == {
+            "hide_candidates": 24, "listed_for_review": 0,
+            "first_copy_of_its_reading": 50, "unlabelled_twin": 1}

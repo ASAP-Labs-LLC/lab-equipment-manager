@@ -80,6 +80,7 @@ import collections
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import secrets
@@ -750,6 +751,17 @@ SPEC_PREDICTION: Dict[str, Any] = {
         "ae05c9c117d7": {"name": "Eraspec", "burst_rows": 3482},
         "5345176988c2": {"name": "Eraspec NIR", "burst_rows": 24888},
     },
+    # What the 110k-140k was scaled from: ASK-CLAUDE.md (3 Sep) "about
+    # 99,000 of 220,841 rows ... exist because a sample was written again on
+    # a later day". Ids are contiguous from 1 with nothing deleted, so the
+    # record of 220,841 rows is exactly the rows with id <= 220,841.
+    "earlier_claim": {
+        "source": "ASK-CLAUDE.md, 3 Sep 2026",
+        "upto_id": 220841,
+        "claimed": 99000,
+        "benches": {"bf8e64b59f12": 49800, "5345176988c2": 26000,
+                    "ae05c9c117d7": 22700},
+    },
 }
 
 
@@ -772,19 +784,32 @@ def prediction_check(result: Classification,
     band = float(prediction["band"])
     hide = {i for i, c in result.candidates.items()
             if c.label in HIDE_CANDIDATE_LABELS}
+    review = {i for i, c in result.candidates.items()
+              if c.label in REVIEW_LABELS}
     everywhere: Dict[Tuple[str, ...], int] = collections.Counter(
         fingerprint(r) for r in result.rows.values())
-    has_earlier: set = set()
+    has_earlier = _has_earlier(result.rows.values())
     by_machine: Dict[str, List[LogRow]] = collections.defaultdict(list)
     for r in result.rows.values():
         by_machine[r.machine_uid].append(r)
-    for rows in by_machine.values():
-        seen: set = set()
-        for r in sorted(rows, key=lambda r: (r.ts, r.id)):
-            f = fingerprint(r)
-            if f in seen:
-                has_earlier.add(r.id)
-            seen.add(f)
+
+    def accounted(rows: Iterable[LogRow]) -> Dict[str, int]:
+        """Where each row goes: a proposed copy, a row listed for review,
+        or the first copy of its reading on its bench. A twin the rules
+        neither proposed nor listed would be a fourth bucket, and a bug:
+        it is counted, never folded into the others."""
+        out = {"hide_candidates": 0, "listed_for_review": 0,
+               "first_copy_of_its_reading": 0}
+        for r in rows:
+            if r.id in hide:
+                out["hide_candidates"] += 1
+            elif r.id in review:
+                out["listed_for_review"] += 1
+            elif r.id in has_earlier:
+                out["unlabelled_twin"] = out.get("unlabelled_twin", 0) + 1
+            else:
+                out["first_copy_of_its_reading"] += 1
+        return out
 
     benches = []
     for uid, want in sorted(prediction.get("benches", {}).items()):
@@ -800,10 +825,17 @@ def prediction_check(result: Classification,
         only = sorted((r for r in burst if everywhere[fingerprint(r)] == 1),
                       key=lambda r: (r.ts, r.id))
         step = max(1, len(only) // EXAMPLES_PER_BENCH)
+        need = int(math.ceil(lo - 1e-9))
         benches.append({
             "machine_uid": uid, "name": want.get("name", uid),
             "since": since, "predicted": predicted, "band": [lo, hi],
             "burst_rows_measured": len(burst),
+            "burst_rows_accounted": accounted(burst),
+            "hide_needed_for_band": need,
+            # visible rows must cover every distinct reading of the window
+            # (rows - ceiling of them first appear there); hiding `need`
+            # leaves rows - need, so at least need - ceiling vanish.
+            "readings_erased_at_band_floor": max(0, need - ceiling),
             "proposed": proposed,
             "proposed_vs_predicted_pct": round(
                 100.0 * (proposed - predicted) / predicted, 1),
@@ -821,9 +853,12 @@ def prediction_check(result: Classification,
     replay = sum(1 for c in result.candidates.values()
                  if c.label == "replay_duplicate")
     ceiling = len(has_earlier)
-    burst_rows = sum(p.rows for ps in result.polls.values() for p in ps
-                     if p.rows >= BURST_ROWS)
-    return {
+    poll_n = collections.Counter((r.machine_uid, r.ts)
+                                 for r in result.rows.values())
+    in_bursts = [r for r in result.rows.values()
+                 if poll_n[(r.machine_uid, r.ts)] >= BURST_ROWS]
+    burst_rows = len(in_bursts)
+    out = {
         "source": "transfer-final.md §10.5 Predicted; G1 (baseline gaps.md)",
         "total": {
             "predicted": [t_lo, t_hi],
@@ -831,11 +866,54 @@ def prediction_check(result: Classification,
             "proposed_hide": len(hide),
             "ceiling": ceiling,
             "rows_in_polls_of_20_or_more": burst_rows,
+            "proxy_within_predicted": t_lo <= burst_rows <= t_hi,
+            "burst_rows_accounted": accounted(in_bursts),
             "within_band": t_lo <= replay <= t_hi,
             "reachable": ceiling >= t_lo,
+            "readings_erased_at_floor": max(0, int(t_lo) - ceiling),
         },
         "benches": benches,
     }
+    claim = prediction.get("earlier_claim")
+    if claim:
+        upto = int(claim["upto_id"])
+        then = [r for r in result.rows.values() if r.id <= upto]
+        earlier_then = _has_earlier(then)
+        per = collections.Counter(result.rows[i].machine_uid
+                                  for i in earlier_then)
+        names = {u: w.get("name", u)
+                 for u, w in prediction.get("benches", {}).items()}
+        out["earlier_claim"] = {
+            "source": claim.get("source", ""),
+            "upto_id": upto,
+            "run_qc_rows_then": len(then),
+            "claimed": int(claim["claimed"]),
+            "ceiling_then": len(earlier_then),
+            "reachable": len(earlier_then) >= int(claim["claimed"]),
+            "benches": [{"machine_uid": u, "name": names.get(u, u),
+                         "claimed": int(n), "ceiling_then": per[u],
+                         "reachable": per[u] >= int(n)}
+                        for u, n in sorted(claim.get("benches", {}).items())],
+        }
+    return out
+
+
+def _has_earlier(rows: Iterable[LogRow]) -> set:
+    """Ids of the rows with an identical EARLIER row (by `(ts, id)`) on the
+    same bench: the most any rule faithful to §10.5 can call a copy. Their
+    number is rows − distinct readings, bench by bench."""
+    by_machine: Dict[str, List[LogRow]] = collections.defaultdict(list)
+    for r in rows:
+        by_machine[r.machine_uid].append(r)
+    out: set = set()
+    for rs in by_machine.values():
+        seen: set = set()
+        for r in sorted(rs, key=lambda r: (r.ts, r.id)):
+            f = fingerprint(r)
+            if f in seen:
+                out.add(r.id)
+            seen.add(f)
+    return out
 
 
 def report(result: Classification, *, since: Optional[str] = None,
@@ -1303,29 +1381,7 @@ def summary_lines(rep: Dict[str, Any], names: Optional[Dict[str, str]] = None
                        if k.startswith("kept: "))))
     pred = rep.get("prediction")
     if pred:
-        t = pred["total"]
-        out.append(
-            "O9 prediction {0:,}-{1:,} replay_duplicate: proposed {2:,} "
-            "(all hide {3:,}); CEILING {4:,} = every run/qc row with an "
-            "identical earlier row on its bench, the most any §10.5 rule can "
-            "propose -> {5}".format(
-                t["predicted"][0], t["predicted"][1],
-                t["proposed_replay_duplicate"], t["proposed_hide"],
-                t["ceiling"], "reachable" if t["reachable"] else
-                "UNREACHABLE by any rule that keeps the definition"))
-        for b in pred["benches"]:
-            out.append(
-                "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "
-                "proposed {5:>6,} ({6:+.1f} %) {7}  ceiling {8:>6,} "
-                "({9:+.1f} %) {10}  burst rows that are ORIGINALS (no earlier "
-                "twin) {11:,}, of them the record's only copy {12:,}".format(
-                    b["since"], b["name"], b["predicted"], b["band"][0],
-                    b["band"][1], b["proposed"],
-                    b["proposed_vs_predicted_pct"],
-                    "in band" if b["within_band"] else "OUT",
-                    b["ceiling"], b["ceiling_vs_predicted_pct"],
-                    "reachable" if b["reachable"] else "UNREACHABLE",
-                    b["no_earlier_twin"], b["only_copy_rows"]))
+        out.extend(o9_lines(pred))
     moved = [s for s in rep["qc_impact"] if s["last_moves"]]
     spread = [s for s in rep["qc_impact"] if s["spread_changes"]]
     out.append("QC impact: {0} series change; last verdict moves earlier on "
@@ -1342,6 +1398,61 @@ def summary_lines(rep: Dict[str, Any], names: Optional[Dict[str, str]] = None
                        "%.4g" % s["s_before"],
                        "-" if s["s_after"] is None else
                        "%.4g" % s["s_after"]))
+    return out
+
+
+def _acc(a: Dict[str, int]) -> str:
+    return ", ".join("{0} {1:,}".format(k.replace("_", " "), v)
+                     for k, v in a.items())
+
+
+def o9_lines(pred: Dict[str, Any]) -> List[str]:
+    """O9, closed as arithmetic: what the prediction measured, where every
+    one of those rows goes, and what reaching it would erase."""
+    t = pred["total"]
+    lo, hi = t["predicted"]
+    out = [
+        "O9 — predicted replay_duplicate {0:,}-{1:,}.".format(lo, hi),
+        "  WHAT IT MEASURED: rows in polls of >= 20 (G1's proxy) = {0:,} "
+        "-> {1} the predicted range. The prediction is the proxy.".format(
+            t["rows_in_polls_of_20_or_more"],
+            "INSIDE" if t["proxy_within_predicted"] else "outside"),
+        "  WHERE THOSE ROWS GO: " + _acc(t["burst_rows_accounted"]),
+        "  EXACT COUNT: replay_duplicate {0:,}; every hide candidate {1:,}; "
+        "CEILING {2:,} (rows with an identical earlier row on their bench = "
+        "rows - distinct readings; no rule that keeps one copy of every "
+        "reading can propose more).".format(
+            t["proposed_replay_duplicate"], t["proposed_hide"], t["ceiling"]),
+        "  COST OF THE FLOOR: hiding {0:,} would erase at least {1:,} "
+        "readings from every view -> {2}.".format(
+            lo, t["readings_erased_at_floor"],
+            "in band" if t["within_band"] else
+            "the band needs Ryan's revision (D7), not a looser rule"),
+    ]
+    e = pred.get("earlier_claim")
+    if e:
+        out.append(
+            "  THE CLAIM IT WAS SCALED FROM ({0}): {1:,} of the record up to "
+            "id {2:,}; the record THEN allowed at most {3:,} ({4:,} run/qc "
+            "rows) -> {5}".format(
+                e["source"], e["claimed"], e["upto_id"], e["ceiling_then"],
+                e["run_qc_rows_then"],
+                "reachable" if e["reachable"] else "never reachable"))
+        for b in e["benches"]:
+            out.append("    {0:<13} claimed {1:>6,}  ceiling then {2:>6,}"
+                       .format(b["name"], b["claimed"], b["ceiling_then"]))
+    for b in pred["benches"]:
+        out.append(
+            "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "
+            "proposed {5:>6,} ({6:+.1f} %) {7}  ceiling {8:>6,} ({9:+.1f} %)"
+            "  burst rows: {10}; to reach the band erases {11:,} readings"
+            .format(b["since"], b["name"], b["predicted"], b["band"][0],
+                    b["band"][1], b["proposed"],
+                    b["proposed_vs_predicted_pct"],
+                    "in band" if b["within_band"] else "OUT",
+                    b["ceiling"], b["ceiling_vs_predicted_pct"],
+                    _acc(b["burst_rows_accounted"]),
+                    b["readings_erased_at_band_floor"]))
     return out
 
 
