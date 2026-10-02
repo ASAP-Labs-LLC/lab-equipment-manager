@@ -227,13 +227,14 @@ def sim_store(store):
 
 
 def _approve_all(store, report, by="ryan"):
+    """Every approval unit of every bench: each label's ordinary
+    candidates, and each storm day on its own."""
     ids = []
     for bench in report["benches"]:
-        for label, n in bench["candidates"].items():
-            if label in dedupe.HIDE_CANDIDATE_LABELS and n:
-                ids.append(dedupe.approve(
-                    store, bench["machine_uid"], label,
-                    bench["run_ids"][label], approved_by=by)["approval_id"])
+        for unit, run_id in bench["run_ids"].items():
+            ids.append(dedupe.approve(
+                store, bench["machine_uid"], unit, run_id,
+                approved_by=by)["approval_id"])
     return ids
 
 
@@ -281,6 +282,35 @@ class TestTheFlowOnTheSyntheticLab:
         gone = {r["id"] for r in lab.rows} - _effective(store)
         era_ids = {r["id"] for r in lab.bench_rows("era")}
         assert gone and gone <= era_ids
+
+    def test_a_storm_day_is_approved_on_its_own(self, sim_store):
+        """§10.5: the storms "go to review rather than being auto-trusted".
+        Approving a bench's replays leaves its storm day visible; the storm
+        needs its own approval, which names the day."""
+        store, lab = sim_store
+        report = dedupe.dry_run(store, machine_uid="storm")
+        [bench] = report["benches"]
+        assert set(bench["run_ids"]) == {"replay_duplicate@storm:2026-08-18"}
+        storm_rows = {r["id"] for r in lab.bench_rows("storm")
+                      if r["ts"].startswith("2026-08-18")}
+        # the storm's report id does not approve the bench-wide unit: the
+        # digest names the storm's set, and the bench-wide one differs
+        with pytest.raises(dedupe.DedupeRefused, match="changed"):
+            dedupe.approve(store, "storm", "replay_duplicate",
+                           bench["run_ids"][
+                               "replay_duplicate@storm:2026-08-18"],
+                           approved_by="ryan")
+        assert storm_rows <= _effective(store)
+        aid = dedupe.approve(store, "storm",
+                             "replay_duplicate@storm:2026-08-18",
+                             bench["run_ids"][
+                                 "replay_duplicate@storm:2026-08-18"],
+                             approved_by="ryan")["approval_id"]
+        row = store.read_sql("SELECT rule FROM annotation_approval "
+                             "WHERE id = ?", [aid])["rows"][0]
+        assert row["rule"] == "replay_duplicate@storm:2026-08-18"
+        dedupe.apply(store, aid, by="ryan")
+        assert storm_rows & _effective(store) == set()
 
     def test_a_rejection_is_recorded_and_hides_nothing(self, sim_store):
         store, lab = sim_store

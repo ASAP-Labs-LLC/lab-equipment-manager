@@ -77,7 +77,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -92,6 +92,10 @@ MAJORITY_MIN_ROWS = 5
 #: sends at most 100 rows per INSERT; the import's re-inserted batches were
 #: 100 rows. Generous, and bounded so a 12,000-row first ingest stays linear.
 RESEND_LOOKBACK = 1000
+#: The module's log drain sends at most this many rows per INSERT
+#: (`LOG_BATCH_ROWS` in lem_station_module.py, since the 08-19 import of the
+#: module into git). A re-sent batch starts on a multiple of it.
+LOG_BATCH_ROWS = 100
 
 IMPORT_TAG = "labshare-2026-08-27"
 #: The import read a numeric column as the Lab ID on these (ASK-CLAUDE.md).
@@ -204,6 +208,29 @@ class Candidate:
     rule: str
     dup_of: Optional[int]
     poll_rows: int
+    #: "" or "storm:YYYY-MM-DD": the approval unit the candidate belongs to.
+    scope: str = ""
+
+    @property
+    def unit(self) -> str:
+        return unit_name(self.label, self.scope)
+
+
+def unit_name(label: str, scope: str = "") -> str:
+    """The name of one approval unit: a label, and a storm day if any."""
+    return label + ("@" + scope if scope else "")
+
+
+_UNIT = re.compile(r"^([a-z_]+)(?:@(storm:\d{4}-\d{2}-\d{2}))?$")
+
+
+def parse_unit(unit: str) -> Tuple[str, str]:
+    """(label, scope) of an approval unit, refused if it is not one."""
+    m = _UNIT.match(str(unit or ""))
+    if not m or m.group(1) not in HIDE_CANDIDATE_LABELS:
+        raise DedupeRefused("{0!r} is not a set of candidates that hides "
+                            "anything".format(unit))
+    return m.group(1), m.group(2) or ""
 
 
 @dataclass
@@ -226,6 +253,9 @@ class PollStat:
     hidden: int
     replay: bool
     kept: Dict[str, int]
+    #: every row of the poll is the 08-27 import's (its history days hold
+    #: many "polls" by construction; they are never a storm)
+    imported: bool = False
 
 
 @dataclass
@@ -234,21 +264,34 @@ class Classification:
     rows: Dict[int, LogRow] = field(default_factory=dict)
     polls: Dict[str, List[PollStat]] = field(default_factory=dict)
     upto_id: int = 0
+    #: per bench, the days its live polls stormed (see `_storm_days`)
+    storm_days: Dict[str, List[str]] = field(default_factory=dict)
 
     def machines(self) -> List[str]:
         return sorted({r.machine_uid for r in self.rows.values()})
 
-    def ids(self, machine_uid: str, label: str) -> List[int]:
+    def ids(self, machine_uid: str, unit: str) -> List[int]:
+        """The candidates of one approval unit: a label alone means the
+        bench's ordinary candidates; `label@storm:DAY` one storm day's."""
+        label, _, scope = str(unit).partition("@")
         return sorted(c.log_id for c in self.candidates.values()
-                      if c.machine_uid == machine_uid and c.label == label)
+                      if c.machine_uid == machine_uid and c.label == label
+                      and c.scope == scope)
 
-    def run_id(self, machine_uid: str, label: str) -> str:
+    def units(self, machine_uid: str) -> List[str]:
+        """Every approval unit the bench has, ordinary before storms."""
+        got = {c.unit for c in self.candidates.values()
+               if c.machine_uid == machine_uid
+               and c.label in HIDE_CANDIDATE_LABELS}
+        return sorted(got, key=lambda u: ("@" in u, u))
+
+    def run_id(self, machine_uid: str, unit: str) -> str:
         """Names exactly one candidate set: the record it was read from (all
         rows with `id <= upto`) and a digest of the set itself."""
         h = hashlib.sha256()
-        for rid in self.ids(machine_uid, label):
+        for rid in self.ids(machine_uid, unit):
             c = self.candidates[rid]
-            h.update(("%d:%s:%s:%s\n" % (rid, c.dup_of, c.rule, label)
+            h.update(("%d:%s:%s:%s\n" % (rid, c.dup_of, c.rule, unit)
                       ).encode("utf-8"))
         return "upto=%d;sha=%s" % (self.upto_id, h.hexdigest())
 
@@ -263,11 +306,15 @@ def parse_run_id(run_id: str) -> Tuple[int, str]:
     return int(m.group(1)), m.group(2)
 
 
-def _resends(poll: List[LogRow]) -> Dict[int, int]:
-    """Positions in `poll` that repeat the block right before them, mapped to
-    the position they repeat. Exact rows only (N3 re-sends the same bytes)."""
+def _import_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
+    """The 08-27 import's re-inserted batches, inside one of its polls.
+
+    The import is not the module: it wrote 100-row batches across its own
+    stream, so its copies are found as before — a block of exact rows
+    repeated whole, back to back, with the one-row exception for adjacent
+    ids (two identical lines of one parsed run, one INSERT)."""
     exact = [_exact(r) for r in poll]
-    out: Dict[int, int] = {}
+    out: Dict[int, Tuple[int, str]] = {}
     n, i = len(poll), 1
     while i < n:
         hit = 0
@@ -282,11 +329,81 @@ def _resends(poll: List[LogRow]) -> Dict[int, int]:
                 break
         if hit:
             for k in range(i, i + hit):
-                out[k] = k - hit
+                out[poll[k].id] = (poll[k - hit].id, "tandem")
             i += hit
         else:
             i += 1
     return out
+
+
+def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
+    """Copies inside one poll of a bench, from its FULL id order (every
+    kind: a status row is part of what the drain sent). Maps a copy's id to
+    (the id it copies, why).
+
+    The module drains a poll's rows in INSERTs of up to LOG_BATCH_ROWS, in
+    order; a lost response puts the whole batch back and sends it again. A
+    block [p, p+L) repeated back to back at [p+L, p+2L) — and again, for a
+    batch sent more than twice — is a copy when there is evidence for it:
+
+    * ``batch`` (N3): the block starts on a batch boundary (p is a multiple
+      of LOG_BATCH_ROWS), is at most one batch long, and the copy is a
+      SEPARATE INSERT: another bench's row landed between the two (an id
+      gap), or the block carries a status change (a bench cannot make the
+      same transition twice running), or it is a full batch of 100.
+    * ``stretch``: the block spans two or more samples in identical order.
+      A person re-tests a sample; a stretch of samples, every number the
+      same, in the same order, is the file or the transfer repeating itself.
+
+    Anything else — one sample's lines printed twice (adjacent ids, one
+    INSERT), a QC repeat — is the file's content and is left to the twin
+    rule, wherever in the poll it sits.
+    """
+    exact = [_exact(r) for r in poll]
+    out: Dict[int, Tuple[int, str]] = {}
+    n, p = len(poll), 0
+    while p < n - 1:
+        advanced = False
+        for length in range(1, min(LOG_BATCH_ROWS, (n - p) // 2) + 1):
+            q = p + length
+            if exact[p] != exact[q] or exact[p:q] != exact[q:q + length]:
+                continue
+            block = poll[p:q]
+            samples = len({r.lab_id for r in block if r.lab_id}) >= 2
+            status = any(r.kind not in CLASSIFIED_KINDS for r in block)
+            on_boundary = p % LOG_BATCH_ROWS == 0
+            copies = 0
+            while q + length <= n and exact[q:q + length] == exact[p:p + length]:
+                gap = poll[q].id - poll[q - 1].id != 1
+                batch = on_boundary and (gap or status
+                                         or length == LOG_BATCH_ROWS)
+                if not (batch or samples):
+                    break
+                why = "batch" if batch else "stretch"
+                for k in range(length):
+                    if poll[q + k].kind in CLASSIFIED_KINDS:
+                        out[poll[q + k].id] = (poll[p + k].id, why)
+                q += length
+                copies += 1
+            if copies:
+                p, advanced = q, True
+                break
+        if not advanced:
+            p += 1
+    return out
+
+
+def _storm_days(polls: Sequence[PollStat]) -> List[str]:
+    """Days on which a bench's LIVE polls burst or replayed at least
+    STORM_POLLS_PER_DAY times — O9's 08-07 and 08-18 on the Agilent. A day
+    like that is an event with a cause (a file rewritten in place, a module
+    looping), and §10.5 sends it to review on its own rather than letting it
+    ride inside a bench-wide approval."""
+    per_day: Dict[str, int] = collections.Counter()
+    for p in polls:
+        if not p.imported and (p.replay or p.rows >= BURST_ROWS):
+            per_day[p.ts[:10]] += 1
+    return sorted(d for d, n in per_day.items() if n >= STORM_POLLS_PER_DAY)
 
 
 def classify(rows: Iterable[LogRow],
@@ -297,8 +414,12 @@ def classify(rows: Iterable[LogRow],
     default the newest id among them."""
     result = Classification(upto_id=int(upto_id or 0))
     by_machine: Dict[str, List[LogRow]] = collections.defaultdict(list)
+    # Every row of every kind, per poll: a resend is a repeat of what the
+    # drain SENT, and it sent status changes between the readings.
+    sent: Dict[Tuple[str, str], List[LogRow]] = collections.defaultdict(list)
     for r in rows:
         result.upto_id = max(result.upto_id, r.id)
+        sent[(r.machine_uid, r.ts)].append(r)
         if r.kind not in CLASSIFIED_KINDS:
             continue
         result.rows[r.id] = r
@@ -320,7 +441,12 @@ def classify(rows: Iterable[LogRow],
             start = end
             n = len(poll)
 
-            resent = _resends(poll)
+            in_order = sorted(sent[(uid, poll[0].ts)], key=lambda r: r.id)
+            copies = _import_resends([r for r in poll if r.is_imported()])
+            copies.update(_live_resends(
+                [r for r in in_order if not r.is_imported()]))
+            pos = {r.id: k for k, r in enumerate(poll)}
+            resent = {pos[i]: v for i, v in copies.items()}
             rest = [k for k in range(n) if k not in resent]
             used: Dict[Tuple[str, ...], int] = collections.Counter()
             twin_of: Dict[int, int] = {}
@@ -342,8 +468,8 @@ def classify(rows: Iterable[LogRow],
                 result.candidates[r.id] = Candidate(
                     r.id, uid, r.ts, r.kind, label, why, dup_of, n)
 
-            for k, j in resent.items():
-                put(k, "resend", "tandem", poll[j].id)
+            for k, (orig, why) in resent.items():
+                put(k, "resend", why, orig)
             for k in rest:
                 r = poll[k]
                 if k in twin_of:
@@ -360,6 +486,7 @@ def classify(rows: Iterable[LogRow],
                     result.candidates[r.id] = Candidate(
                         r.id, uid, r.ts, r.kind, "import_leftover",
                         "misread_lab_id", None, n)
+            imported = all(r.is_imported() for r in poll)
             hidden, why = 0, collections.Counter()
             for r in poll:
                 c = result.candidates.get(r.id)
@@ -376,8 +503,18 @@ def classify(rows: Iterable[LogRow],
             for r in poll:
                 last_lab[(r.kind, r.lab_id)] = r.is_imported()
             polls_seen.append(PollStat(poll[0].ts, n, hidden, replay,
-                                       dict(why)))
+                                       dict(why), imported))
         result.polls[uid] = polls_seen
+        storms = _storm_days(polls_seen)
+        result.storm_days[uid] = storms
+        if storms:
+            stormy = set(storms)
+            for rid, c in list(result.candidates.items()):
+                if (c.machine_uid == uid and c.label in HIDE_CANDIDATE_LABELS
+                        and c.ts[:10] in stormy
+                        and not result.rows[rid].is_imported()):
+                    result.candidates[rid] = replace(
+                        c, scope="storm:" + c.ts[:10])
     return result
 
 
@@ -400,7 +537,8 @@ def _hours(later: str, earlier: str) -> Optional[float]:
 
 def qc_impact(result: Classification, machine_uid: Optional[str] = None,
               now: Optional[str] = None,
-              labels: Sequence[str] = HIDE_CANDIDATE_LABELS
+              labels: Sequence[str] = HIDE_CANDIDATE_LABELS,
+              only_ids: Optional[Iterable[int]] = None
               ) -> List[Dict[str, Any]]:
     """Every QC series the hiding candidates change, and how.
 
@@ -410,6 +548,8 @@ def qc_impact(result: Classification, machine_uid: Optional[str] = None,
     "after": they stay in the record.
     """
     hide = {i for i, c in result.candidates.items() if c.label in labels}
+    if only_ids is not None:
+        hide &= set(only_ids)
     rows = [r for r in result.rows.values()
             if machine_uid is None or r.machine_uid == machine_uid]
     rows.sort(key=lambda r: (r.ts, r.id))
@@ -455,12 +595,14 @@ def qc_impact(result: Classification, machine_uid: Optional[str] = None,
 # ── the dry-run report ───────────────────────────────────────────────────────
 
 def _examples(result: Classification, uid: str,
-              only: Optional[Sequence[str]] = None) -> List[Dict[str, Any]]:
-    """Twenty, spread over every label the bench has (or the `only` ones)
-    and over time, each beside the row it duplicates."""
+              only: Optional[Sequence[str]] = None,
+              unit: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Twenty, spread over every label the bench has (or the `only` ones,
+    or one approval `unit`) and over time, each beside the row it
+    duplicates."""
     by_label: Dict[str, List[Candidate]] = collections.defaultdict(list)
     for c in result.candidates.values():
-        if c.machine_uid == uid:
+        if c.machine_uid == uid and (unit is None or c.unit == unit):
             by_label[c.label].append(c)
     for v in by_label.values():
         v.sort(key=lambda c: (c.ts, c.log_id))
@@ -483,7 +625,7 @@ def _examples(result: Classification, uid: str,
     for c in picked:
         row = result.rows[c.log_id].brief()
         row.update({"label": c.label, "rule": c.rule, "dup_of": c.dup_of,
-                    "poll_rows": c.poll_rows,
+                    "poll_rows": c.poll_rows, "unit": c.unit,
                     "original": (result.rows[c.dup_of].brief()
                                  if c.dup_of in result.rows else None)})
         out.append(row)
@@ -495,8 +637,10 @@ def _storms(result: Classification, uid: str) -> List[Dict[str, Any]]:
     replay polls — O9's 08-07 and 08-18 — each with what its rows are, so a
     storm is reviewed as an event and never approved as part of a total."""
     per_day: Dict[str, Dict[str, Any]] = {}
+    stormy = set(result.storm_days.get(uid, ()))
     for p in result.polls.get(uid, ()):
-        if not (p.replay or p.rows >= BURST_ROWS):
+        if p.imported or p.ts[:10] not in stormy or not (
+                p.replay or p.rows >= BURST_ROWS):
             continue
         d = per_day.setdefault(p.ts[:10], {
             "day": p.ts[:10], "polls": 0, "replay_polls": 0, "rows": 0,
@@ -509,9 +653,9 @@ def _storms(result: Classification, uid: str) -> List[Dict[str, Any]]:
     out = []
     for day in sorted(per_day):
         d = per_day[day]
-        if d["polls"] >= STORM_POLLS_PER_DAY:
-            d["not_hidden"] = dict(d["not_hidden"])
-            out.append(d)
+        d["not_hidden"] = dict(d["not_hidden"])
+        d["unit_suffix"] = "@storm:" + day
+        out.append(d)
     return out
 
 
@@ -544,8 +688,110 @@ def _since(result: Classification, uid: str, since: str) -> Dict[str, Any]:
             "run_hide_candidates": hide}
 
 
+#: The prediction §10.5 makes for this lab's record (transfer-final.md
+#: §10.5 "Predicted"), with G1's burst rows per bench since 09-01
+#: (baseline gaps.md G1). The uids are the benches G1 measured.
+SPEC_PREDICTION: Dict[str, Any] = {
+    "since": "2026-09-01",
+    "total": [110000, 140000],
+    "band": 0.10,
+    "benches": {
+        "bf8e64b59f12": {"name": "Agilent GC 1", "burst_rows": 3235},
+        "3afa991a66e9": {"name": "Agilent GC 2", "burst_rows": 654},
+        "ae05c9c117d7": {"name": "Eraspec", "burst_rows": 3482},
+        "5345176988c2": {"name": "Eraspec NIR", "burst_rows": 24888},
+    },
+}
+
+
+def prediction_check(result: Classification,
+                     prediction: Dict[str, Any]) -> Dict[str, Any]:
+    """The O9 prediction against what the record's CONTENT allows.
+
+    The prediction was made from G1's proxy (rows in polls of >= 20) before
+    anybody compared rows. §10.5 calls a row a duplicate only if an
+    identical EARLIER row exists on its bench, so the rows that have one are
+    the most any rule faithful to §10.5 could propose: the ceiling. Where
+    the ceiling is below the predicted floor, no rule reaches the prediction
+    without hiding readings that have no earlier copy — and `only_copy_rows`
+    counts the burst rows that are the ONLY copy of their reading anywhere
+    in the record (hiding those deletes the reading from what anybody sees).
+
+    Every number here is computed from the rows; nothing is estimated.
+    """
+    since = prediction["since"]
+    band = float(prediction["band"])
+    hide = {i for i, c in result.candidates.items()
+            if c.label in HIDE_CANDIDATE_LABELS}
+    everywhere: Dict[Tuple[str, ...], int] = collections.Counter(
+        fingerprint(r) for r in result.rows.values())
+    has_earlier: set = set()
+    by_machine: Dict[str, List[LogRow]] = collections.defaultdict(list)
+    for r in result.rows.values():
+        by_machine[r.machine_uid].append(r)
+    for rows in by_machine.values():
+        seen: set = set()
+        for r in sorted(rows, key=lambda r: (r.ts, r.id)):
+            f = fingerprint(r)
+            if f in seen:
+                has_earlier.add(r.id)
+            seen.add(f)
+
+    benches = []
+    for uid, want in sorted(prediction.get("benches", {}).items()):
+        runs = [r for r in by_machine.get(uid, ())
+                if r.kind == "run" and r.ts >= since]
+        per_poll = collections.Counter(r.ts for r in runs)
+        burst = [r for r in runs if per_poll[r.ts] >= BURST_ROWS]
+        predicted = int(want["burst_rows"])
+        lo, hi = predicted * (1 - band), predicted * (1 + band)
+        proposed = sum(1 for r in runs if r.id in hide)
+        ceiling = sum(1 for r in runs if r.id in has_earlier)
+        no_twin = [r for r in burst if r.id not in has_earlier]
+        only = sorted((r for r in burst if everywhere[fingerprint(r)] == 1),
+                      key=lambda r: (r.ts, r.id))
+        step = max(1, len(only) // EXAMPLES_PER_BENCH)
+        benches.append({
+            "machine_uid": uid, "name": want.get("name", uid),
+            "since": since, "predicted": predicted, "band": [lo, hi],
+            "burst_rows_measured": len(burst),
+            "proposed": proposed,
+            "proposed_vs_predicted_pct": round(
+                100.0 * (proposed - predicted) / predicted, 1),
+            "ceiling": ceiling,
+            "ceiling_vs_predicted_pct": round(
+                100.0 * (ceiling - predicted) / predicted, 1),
+            "no_earlier_twin": len(no_twin),
+            "only_copy_rows": len(only),
+            "only_copy_examples": [r.brief() for r in
+                                   only[::step][:EXAMPLES_PER_BENCH]],
+            "within_band": lo <= proposed <= hi,
+            "reachable": ceiling >= lo,
+        })
+    t_lo, t_hi = prediction["total"]
+    replay = sum(1 for c in result.candidates.values()
+                 if c.label == "replay_duplicate")
+    ceiling = len(has_earlier)
+    burst_rows = sum(p.rows for ps in result.polls.values() for p in ps
+                     if p.rows >= BURST_ROWS)
+    return {
+        "source": "transfer-final.md §10.5 Predicted; G1 (baseline gaps.md)",
+        "total": {
+            "predicted": [t_lo, t_hi],
+            "proposed_replay_duplicate": replay,
+            "proposed_hide": len(hide),
+            "ceiling": ceiling,
+            "rows_in_polls_of_20_or_more": burst_rows,
+            "within_band": t_lo <= replay <= t_hi,
+            "reachable": ceiling >= t_lo,
+        },
+        "benches": benches,
+    }
+
+
 def report(result: Classification, *, since: Optional[str] = None,
-           now: Optional[str] = None, source: str = "") -> Dict[str, Any]:
+           now: Optional[str] = None, source: str = "",
+           prediction: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The dry run (§10.5 step 1) with its QC impact (step 2). Plain JSON."""
     benches = []
     totals: Dict[str, int] = collections.Counter()
@@ -566,8 +812,13 @@ def report(result: Classification, *, since: Optional[str] = None,
                         if r.machine_uid == uid),
             "candidates": dict(counts),
             "by_kind": {k: dict(v) for k, v in by_kind.items()},
-            "run_ids": {l: result.run_id(uid, l)
-                        for l in HIDE_CANDIDATE_LABELS if counts.get(l)},
+            "run_ids": {u: result.run_id(uid, u)
+                        for u in result.units(uid)},
+            "units": [{"rule": u, "label": parse_unit(u)[0],
+                       "storm": "@" in u,
+                       "candidates": len(result.ids(uid, u)),
+                       "run_id": result.run_id(uid, u)}
+                      for u in result.units(uid)],
             "examples": _examples(result, uid),
             "storms": storms,
             "bursts": _bursts(result, uid),
@@ -587,6 +838,8 @@ def report(result: Classification, *, since: Optional[str] = None,
                                for l in HIDE_CANDIDATE_LABELS),
         "benches": benches,
         "qc_impact": [s for b in benches for s in b["qc_impact"]],
+        "prediction": (prediction_check(result, prediction)
+                       if prediction else None),
     }
 
 
@@ -610,8 +863,8 @@ def _read(gateway, sql: str, args: Sequence[Any], what: str) -> List[dict]:
 
 def read_store(gateway, machine_uid: Optional[str] = None,
                upto_id: Optional[int] = None) -> Tuple[List[LogRow], int]:
-    """The `run` and `qc` rows (of one bench, or all), and the id the read
-    stops at. With `upto_id`, exactly the rows a report was taken over."""
+    """Every row (of one bench, or all), and the id the read stops at. With
+    `upto_id`, exactly the rows a report was taken over."""
     _require_store(gateway)
     if upto_id is None:
         # Read the newest id FIRST and classify only up to it: a row that
@@ -623,7 +876,10 @@ def read_store(gateway, machine_uid: Optional[str] = None,
                     "SELECT MAX(id) AS i FROM lem_machine_log", [],
                     "the record's newest id")
         upto_id = top[0]["i"] if top and top[0]["i"] is not None else 0
-    where = ["kind IN ('run', 'qc')", "id <= ?"]
+    # EVERY kind: the classifier labels only `run` and `qc`, but a resend is
+    # recognised in the order the drain SENT rows, status changes included
+    # (a QC repeat with a status change between is not a repeated block).
+    where = ["id <= ?"]
     args: List[Any] = [int(upto_id)]
     if machine_uid is not None:
         where.append("machine_uid = ?")
@@ -705,9 +961,8 @@ def approve(gateway, machine_uid: str, label: str, run_id: str, *,
     the record of the decision says what the decision was about.
     """
     _require_store(gateway)
-    if label not in HIDE_CANDIDATE_LABELS:
-        raise DedupeRefused("{0!r} is not a label that hides anything"
-                            .format(label))
+    unit = label
+    label, _scope = parse_unit(unit)
     if decision not in ("approved", "rejected"):
         raise DedupeRefused("a decision is 'approved' or 'rejected'")
     if not str(approved_by or "").strip():
@@ -715,24 +970,24 @@ def approve(gateway, machine_uid: str, label: str, run_id: str, *,
                             "approving")
     upto, _sha = parse_run_id(run_id)
     result = _one_bench(gateway, machine_uid, upto)
-    current = result.run_id(machine_uid, label)
+    current = result.run_id(machine_uid, unit)
     if current != run_id:
         raise DedupeRefused(
             "the candidates for {0} / {1} have changed since that report "
             "(it named {2}, the record now gives {3}): run a new dry run"
-            .format(machine_uid, label, run_id, current))
-    ids = result.ids(machine_uid, label)
+            .format(machine_uid, unit, run_id, current))
+    ids = result.ids(machine_uid, unit)
     if not ids:
         raise DedupeRefused("there is nothing to approve for {0} / {1}"
-                            .format(machine_uid, label))
-    examples = _examples(result, machine_uid, (label,))
+                            .format(machine_uid, unit))
+    examples = _examples(result, machine_uid, unit=unit)
     with gateway.transaction():
         res = gateway.sql(
             "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
             "candidates, examples, qc_impact, approved_by, approved_at, "
             "decision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [machine_uid, label, run_id, len(ids), json.dumps(examples),
-             json.dumps(qc_impact(result, machine_uid, now, (label,))),
+            [machine_uid, unit, run_id, len(ids), json.dumps(examples),
+             json.dumps(qc_impact(result, machine_uid, now, (label,), ids)),
              approved_by.strip(),
              now or _now(), decision])
         if res.get("error"):
@@ -741,7 +996,8 @@ def approve(gateway, machine_uid: str, label: str, run_id: str, *,
         got = _read(gateway, "SELECT last_insert_rowid() AS i", [],
                     "the approval's id")
     return {"approval_id": got[0]["i"], "machine_uid": machine_uid,
-            "label": label, "candidates": len(ids), "decision": decision}
+            "label": label, "unit": unit, "candidates": len(ids),
+            "decision": decision}
 
 
 def _annotation_history(gateway, ids: Sequence[int]) -> Dict[int, List[dict]]:
@@ -779,15 +1035,16 @@ def apply(gateway, approval_id: int, *, by: str) -> Dict[str, Any]:
     if appr["decision"] != "approved":
         raise DedupeRefused("approval {0} was {1}: nothing to apply"
                             .format(approval_id, appr["decision"]))
-    uid, label = appr["machine_uid"], appr["rule"]
+    uid, unit = appr["machine_uid"], appr["rule"]
+    label, _scope = parse_unit(unit)
     upto, _sha = parse_run_id(appr["run_id"])
     result = _one_bench(gateway, uid, upto)
-    if result.run_id(uid, label) != appr["run_id"]:
+    if result.run_id(uid, unit) != appr["run_id"]:
         # Cannot happen on an append-only record; said loudly if it does.
         raise DedupeRefused("the record below id {0} no longer gives the "
                             "candidates approval {1} was given".format(
                                 upto, approval_id))
-    ids = result.ids(uid, label)
+    ids = result.ids(uid, unit)
     history = _annotation_history(gateway, ids)
     todo, skipped_hidden, skipped_reinstated = [], 0, 0
     for rid in ids:
@@ -807,7 +1064,7 @@ def apply(gateway, approval_id: int, *, by: str) -> Dict[str, Any]:
         _apply_chunk(gateway, result, todo[start:start + APPLY_CHUNK],
                      label, appr, approval_id, by, at)
     return {"approval_id": int(approval_id), "machine_uid": uid,
-            "label": label, "annotated": len(todo),
+            "label": label, "unit": unit, "annotated": len(todo),
             "already_hidden": skipped_hidden,
             "kept_reinstated": skipped_reinstated}
 
@@ -820,7 +1077,7 @@ def _apply_chunk(gateway, result, ids, label, appr, approval_id, by, at):
                 "INSERT INTO log_annotation (log_id, label, dup_of, rule, "
                 "run_id, by, at, approval_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [rid, ANNOTATION_LABEL[label], c.dup_of,
-                 "{0}:{1}".format(label, c.rule), appr["run_id"],
+                 "{0}:{1}".format(c.unit, c.rule), appr["run_id"],
                  by.strip(), at, int(approval_id)])
             if res.get("error"):
                 raise DedupeRefused("annotating row {0} was refused: {1}"
@@ -899,6 +1156,31 @@ def summary_lines(rep: Dict[str, Any], names: Optional[Dict[str, str]] = None
                        "{0} {1:,}".format(k[6:], v)
                        for k, v in sorted(agg.items())
                        if k.startswith("kept: "))))
+    pred = rep.get("prediction")
+    if pred:
+        t = pred["total"]
+        out.append(
+            "O9 prediction {0:,}-{1:,} replay_duplicate: proposed {2:,} "
+            "(all hide {3:,}); CEILING {4:,} = every run/qc row with an "
+            "identical earlier row on its bench, the most any §10.5 rule can "
+            "propose -> {5}".format(
+                t["predicted"][0], t["predicted"][1],
+                t["proposed_replay_duplicate"], t["proposed_hide"],
+                t["ceiling"], "reachable" if t["reachable"] else
+                "UNREACHABLE by any rule that keeps the definition"))
+        for b in pred["benches"]:
+            out.append(
+                "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "
+                "proposed {5:>6,} ({6:+.1f} %) {7}  ceiling {8:>6,} "
+                "({9:+.1f} %) {10}  burst rows that are ORIGINALS (no earlier "
+                "twin) {11:,}, of them the record's only copy {12:,}".format(
+                    b["since"], b["name"], b["predicted"], b["band"][0],
+                    b["band"][1], b["proposed"],
+                    b["proposed_vs_predicted_pct"],
+                    "in band" if b["within_band"] else "OUT",
+                    b["ceiling"], b["ceiling_vs_predicted_pct"],
+                    "reachable" if b["reachable"] else "UNREACHABLE",
+                    b["no_earlier_twin"], b["only_copy_rows"]))
     moved = [s for s in rep["qc_impact"] if s["last_moves"]]
     spread = [s for s in rep["qc_impact"] if s["spread_changes"]]
     out.append("QC impact: {0} series change; last verdict moves earlier on "
@@ -928,10 +1210,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--now", help="the time QC ages are measured to")
     ap.add_argument("--json", help="write the full report here")
     ap.add_argument("--names", help="JSON {machine_uid: name}")
+    ap.add_argument("--prediction", action="store_true",
+                    help="check §10.5's O9 prediction against the record")
     a = ap.parse_args(argv)
     rows = read_mirror(a.mirror)
     rep = report(classify(rows), since=a.since, now=a.now,
-                 source="mirror:" + a.mirror)
+                 source="mirror:" + a.mirror,
+                 prediction=SPEC_PREDICTION if a.prediction else None)
     names = json.load(open(a.names)) if a.names else {}
     print("\n".join(summary_lines(rep, names)))
     if a.json:

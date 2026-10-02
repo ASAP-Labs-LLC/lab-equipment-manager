@@ -325,8 +325,12 @@ _DDL = (
     " WHERE p.id = NEW.approval_id AND p.decision = 'approved'"
     " AND p.machine_uid = (SELECT m.machine_uid FROM lem_machine_log m"
     "                      WHERE m.id = NEW.log_id)"
-    " AND (p.rule = NEW.label"
-    "      OR (p.rule = 'resend' AND NEW.label = 'replay_duplicate'))) "
+    # An approval's rule is a label, or a label and a storm day
+    # (`replay_duplicate@storm:2026-08-18`): the storm is approved on its own.
+    " AND (substr(p.rule || '@', 1, instr(p.rule || '@', '@') - 1)"
+    "      = NEW.label"
+    "      OR (substr(p.rule || '@', 1, instr(p.rule || '@', '@') - 1)"
+    "          = 'resend' AND NEW.label = 'replay_duplicate'))) "
     "BEGIN SELECT RAISE(ABORT, 'hiding a reading needs an approved "
     "annotation_approval for its bench and rule (D7): nothing was "
     "hidden'); END",

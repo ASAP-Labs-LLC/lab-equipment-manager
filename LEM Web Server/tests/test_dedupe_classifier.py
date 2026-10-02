@@ -235,3 +235,139 @@ def test_fingerprint_drops_only_poll_time_operator_calibration_and_provenance():
     c = dedupe.fingerprint(dedupe.LogRow(3, "m", "t2", "qc", "AF26", "S", "2",
                                          json.dumps({"in_spec": False})))
     assert a == b != c
+
+
+class TestAResendIsAnInsertThatLandedTwice:
+    """`resend` (§10.5, N3) is one thing: a log INSERT that landed, lost its
+    response, and was sent again. The module's drain sends a poll's rows —
+    ALL kinds, status changes included — in INSERTs of up to 100, in order,
+    and a lost response puts the whole batch back on the front of the queue.
+    So a resend has a shape, and the shape is the evidence:
+
+    * the copy repeats a whole batch back to back in the poll's FULL id order
+      (a status row between two readings is part of that order: two QC
+      readings with a status change between them are not a repeated block);
+    * the batch starts on a batch boundary (position 0, 100, 200 ... of the
+      poll) and the copy is a separate INSERT — proven by another bench's row
+      landing between the two (an id gap), by a repeated status change (a
+      bench cannot go YELLOW -> GREEN twice without going back), or by a full
+      100-row batch;
+    * or the repeated block spans two or more samples in identical order —
+      nobody re-tests a stretch of samples and reads every number the same.
+
+    An identical repeat that has none of that evidence — one sample's lines
+    printed twice by the instrument, a QC repeat — is the file's content,
+    whatever its position, and goes through the twin rule like any reading.
+
+    The first two tests are the critic's: both were hidden as resends before.
+    """
+
+    def _classify(self, lab):
+        return dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+
+    def test_a_first_ingest_holding_one_samples_two_line_result_twice(self):
+        """An archive first ingest: a sample's result is two lines, and the
+        instrument printed it twice back to back. One INSERT, consecutive
+        ids, mid-poll. All four rows are genuine."""
+        lab = SimLab()
+        before = [SimLab.run_line("A%02d" % k, {"v": str(k)})
+                  for k in range(7)]
+        two = [SimLab.run_line("S1", {"IBP": "150.2"}),
+               SimLab.run_line("S1", {"FBP": "350.9"})]
+        after = [SimLab.run_line("B%02d" % k, {"v": str(k)})
+                 for k in range(30)]
+        lines = before + two + two + after
+        ids = lab.poll("arch", lines, [GENUINE] * len(lines))
+        got = self._classify(lab).candidates
+        assert [got.get(i) for i in ids[7:11]] == [None] * 4
+
+    def test_a_qc_repeat_with_a_status_change_between(self):
+        """qc, status_change, qc — the standard read the same twice and the
+        bench went GREEN after the first. The repeat is genuine; the status
+        row between them means this is not a block repeated back to back."""
+        lab = SimLab()
+        q = SimLab.qc_line("AF26", "Sulfur", 3.042)
+        st = ("status_change", "", "", "",
+              json.dumps({"from": "YELLOW", "to": "GREEN"}))
+        ts = lab.tick()
+        ids = lab.poll("ms", [q, st, q], [GENUINE] * 3, ts=ts)
+        got = self._classify(lab).candidates
+        assert ids[2] not in got or got[ids[2]].label not in \
+            dedupe.HIDE_CANDIDATE_LABELS
+
+    def test_a_small_poll_of_one_result_printed_twice(self):
+        """[a, b, a, b] as a whole 4-row poll, one INSERT (consecutive ids):
+        the same sample printed twice. Nothing proves a second INSERT."""
+        lab = SimLab()
+        two = [SimLab.run_line("S2", {"IBP": "151.0"}),
+               SimLab.run_line("S2", {"FBP": "351.0"})]
+        ids = lab.poll("sp", two + two, [GENUINE] * 4)
+        got = self._classify(lab).candidates
+        assert not any(i in got and got[i].label in
+                       dedupe.HIDE_CANDIDATE_LABELS for i in ids)
+
+    def test_a_repeated_status_change_proves_the_batch_was_sent_twice(self):
+        """The mirror's Multitek S on 09-17: [qc, YELLOW->GREEN] four times
+        in one poll with consecutive ids. A bench cannot turn GREEN from
+        YELLOW four times in a row; the batch was sent four times."""
+        lab = SimLab()
+        q = SimLab.qc_line("AF26", "Sulfur", 3.042)
+        st = ("status_change", "", "", "",
+              json.dumps({"from": "YELLOW", "to": "GREEN"}))
+        ts = lab.tick()
+        ids = lab.poll("ms", [q, st] * 4,
+                       [GENUINE, GENUINE] + [DUP, GENUINE] * 3, ts=ts)
+        got = self._classify(lab).candidates
+        assert ids[0] not in got
+        assert [got[i].label for i in (ids[2], ids[4], ids[6])] == \
+            ["resend"] * 3
+        assert {got[i].dup_of for i in (ids[2], ids[4], ids[6])} == {ids[0]}
+
+    def test_a_one_row_batch_resent_after_another_benchs_insert(self):
+        lab = SimLab()
+        one = SimLab.run_line("R1", {"v": "5.5"})
+        ts = lab.tick()
+        a = lab.poll("r1", [one], [GENUINE], ts=ts)
+        lab.noise()
+        b = lab.poll("r1", [one], [DUP], ts=ts)
+        got = self._classify(lab).candidates
+        assert a[0] not in got and got[b[0]].label == "resend"
+
+    def test_a_short_batch_resent_mid_poll_is_not_on_a_boundary(self):
+        """An id gap alone is not enough: a resent batch starts where a batch
+        starts. Two identical one-sample lines at position 7 of a poll, with
+        another bench's row between them, are not the shape of a batch the
+        drain sent (its batches start at 0, 100, 200 ...)."""
+        lab = SimLab()
+        ts = lab.tick()
+        head = [SimLab.run_line("H%d" % k, {"v": str(k)}) for k in range(7)]
+        line = SimLab.run_line("S3", {"v": "7.7"})
+        ids = lab.poll("mid", head + [line], [GENUINE] * 8, ts=ts)
+        lab.noise()
+        more = lab.poll("mid", [line], [GENUINE], ts=ts)
+        got = self._classify(lab).candidates
+        assert more[0] not in got or got[more[0]].label not in \
+            dedupe.HIDE_CANDIDATE_LABELS
+
+    def test_a_stretch_of_samples_repeated_in_order_is_a_copy_anywhere(self):
+        """The mirror's Agilent GC 1 on 09-11: 32 rows — 25 samples and the
+        AF26 QC set — then the same 32 again, consecutive ids, mid-file.
+        Nobody re-tests 25 samples and reads every number the same."""
+        lab = SimLab()
+        lead = [SimLab.run_line("P%d" % k, {"v": "p%d" % k}) for k in range(3)]
+        block = [SimLab.run_line("39%03d" % k, {"IBP": "15%d.%d" % (k, k)})
+                 for k in range(25)]
+        ids = lab.poll("gc1", lead + block + block,
+                       [GENUINE] * 28 + [DUP] * 25)
+        got = self._classify(lab).candidates
+        assert all(i not in got for i in ids[:28])
+        assert [got[i].label for i in ids[28:]] == ["resend"] * 25
+        assert [got[i].dup_of for i in ids[28:]] == ids[3:28]
+
+    def test_a_full_batch_of_one_hundred_sent_twice(self):
+        lab = SimLab()
+        rows = [SimLab.run_line("F%03d" % k, {"v": str(k % 3)})
+                for k in range(100)]
+        ids = lab.poll("full", rows + rows, [GENUINE] * 100 + [DUP] * 100)
+        got = self._classify(lab).candidates
+        assert [got[i].label for i in ids[100:]] == ["resend"] * 100

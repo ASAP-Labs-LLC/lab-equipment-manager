@@ -104,7 +104,8 @@ class TestTheDryRun:
         storms = rep["benches"][0]["storms"]
         assert storms == [{"day": "2026-08-18", "polls": 12,
                            "replay_polls": 12, "rows": 72,
-                           "hide_candidates": 72, "not_hidden": {}}]
+                           "hide_candidates": 72, "not_hidden": {},
+                           "unit_suffix": "@storm:2026-08-18"}]
 
     def test_a_storm_of_bursts_that_are_not_copies_is_listed_with_why(self):
         """08-07 on the Agilent: 88 bursts, almost none of them copies.
@@ -188,3 +189,112 @@ class TestQcImpact:
         lab.poll("p", [self._qc(2.0)], [GENUINE])
         lab.poll("p", [self._qc(2.0)], [GENUINE])     # repeat, visible
         assert _report(lab)["qc_impact"] == []
+
+
+class TestStormsGoToReviewOnTheirOwn:
+    """§10.5: "the 08-07 and 08-18 Agilent storms ... go to review rather
+    than being auto-trusted". A storm day's candidates are therefore their
+    OWN approval unit (`replay_duplicate@storm:2026-08-18`): approving a
+    bench's replays approves the ordinary restarts, and the storm stays
+    visible until somebody has looked at that day by itself."""
+
+    def _lab(self):
+        lab = SimLab()
+        lines = [SimLab.run_line("L%d" % k, {"v": str(k)}) for k in range(25)]
+        lab.poll("s", lines, [GENUINE] * 25, ts="2026-08-17T09:00:00")
+        storm = []
+        for k in range(12):
+            storm += lab.poll("s", lines, [DUP] * 25,
+                              ts="2026-08-18T09:%02d:00" % k)
+        calm = lab.poll("s", lines, [DUP] * 25, ts="2026-08-20T09:00:00")
+        return lab, storm, calm
+
+    def test_a_storm_days_rows_are_a_separate_unit(self):
+        lab, storm, calm = self._lab()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        rep = dedupe.report(result)
+        [bench] = rep["benches"]
+        assert set(bench["run_ids"]) == {
+            "replay_duplicate", "replay_duplicate@storm:2026-08-18"}
+        assert result.ids("s", "replay_duplicate") == calm
+        assert result.ids("s", "replay_duplicate@storm:2026-08-18") == storm
+        units = {u["rule"]: u for u in bench["units"]}
+        assert units["replay_duplicate@storm:2026-08-18"]["candidates"] == 300
+        assert units["replay_duplicate@storm:2026-08-18"]["storm"] is True
+        assert units["replay_duplicate"]["storm"] is False
+        # the label totals are unchanged: a storm is a unit, not a new label
+        assert bench["candidates"] == {"replay_duplicate": 325}
+
+    def test_the_imports_history_days_are_not_storms(self):
+        """The 08-27 import stamps one ts per parsed run, so a historical day
+        holds many of its 'polls'. That is the import's shape, not a bench
+        replaying, and it is not a storm."""
+        lab = SimLab()
+        for k in range(12):
+            lab.poll("i", [SimLab.imported_line("I%d_%d" % (k, j), "T", "1",
+                                                "f.csv") for j in range(20)],
+                     [GENUINE] * 20, ts="2025-01-13T09:%02d:00" % k)
+        rep = _report(lab)
+        assert all(b["storms"] == [] for b in rep["benches"])
+
+
+class TestThePredictionIsChecked:
+    """O9's prediction (§10.5) was made from G1's PROXY — rows in polls of
+    20 or more — before anybody had compared the rows' content. The dry run
+    checks it against the one bound content can give: a row is a duplicate
+    under §10.5 only if an identical earlier row exists on its bench, so the
+    rows that HAVE one are the most any rule faithful to §10.5 could ever
+    propose (the "ceiling"). Where the ceiling is below the predicted floor,
+    the prediction is unreachable by construction — and the report says so
+    and lists the burst rows that are the record's ONLY copy of their
+    reading, which is what reaching it would cost."""
+
+    def _lab(self):
+        lab = SimLab()
+        first = [SimLab.run_line("F%d" % k, {"v": "f%d" % k})
+                 for k in range(25)]
+        lab.poll("b", first, [GENUINE] * 25, ts="2026-09-02T09:00:00")
+        lab.poll("b", first, [DUP] * 25, ts="2026-09-03T09:00:00")
+        # a second archive arrives whole and is never replayed: these rows
+        # are the record's only copy of their readings
+        other = [SimLab.run_line("G%d" % k, {"v": "g%d" % k})
+                 for k in range(25)]
+        lab.poll("b", other, [GENUINE] * 25, ts="2026-09-04T09:00:00")
+        return lab
+
+    def test_a_bench_whose_bursts_are_half_first_ingest(self):
+        lab = self._lab()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        chk = dedupe.prediction_check(result, {
+            "since": "2026-09-01", "total": [40, 60], "band": 0.10,
+            "benches": {"b": {"name": "Bench B", "burst_rows": 75}}})
+        [b] = chk["benches"]
+        assert b["burst_rows_measured"] == 75
+        assert b["predicted"] == 75
+        assert b["band"] == [pytest.approx(67.5), pytest.approx(82.5)]
+        assert b["proposed"] == 25 and b["ceiling"] == 25
+        # no rule faithful to §10.5 can propose the 50 with no earlier twin
+        assert b["no_earlier_twin"] == 50
+        assert b["within_band"] is False and b["reachable"] is False
+        # and 25 of them exist nowhere else in the record at all
+        assert b["only_copy_rows"] == 25
+        assert len(b["only_copy_examples"]) == 20
+        assert chk["total"]["ceiling"] == 25
+        assert chk["total"]["reachable"] is False
+
+    def test_the_ceiling_bounds_every_candidate(self):
+        """Every hide candidate except the import's three misread IDs points
+        at an identical earlier row, so the proposal can never exceed the
+        ceiling — on the full synthetic lab, and by construction."""
+        lab = dedupe_sim.build()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        chk = dedupe.prediction_check(result, {
+            "since": "2026-01-01", "total": [1, 2], "band": 0.10,
+            "benches": {}})
+        hide = [c for c in result.candidates.values()
+                if c.label in dedupe.HIDE_CANDIDATE_LABELS
+                and c.rule != "misread_lab_id"]
+        assert len(hide) <= chk["total"]["ceiling"]
+        assert chk["total"]["proposed_hide"] == len(hide) + sum(
+            1 for c in result.candidates.values()
+            if c.rule == "misread_lab_id")

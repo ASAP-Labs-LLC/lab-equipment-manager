@@ -25,6 +25,21 @@ The cases are the ones a content rule gets wrong if it is careless:
 * a re-sent batch (a log INSERT whose response was lost, N3): the whole
   batch twice, in one poll.
 * the 08-27 labshare import's re-inserted batches, and its misread lab IDs.
+
+Added after the round-1 critic broke the resend rule with two genuine
+shapes it had not seen — both are here now, beside the copies they resemble:
+
+* an archive first ingest in which ONE sample's two-line result is printed
+  twice back to back, mid-poll, consecutive ids (genuine);
+* a QC repeat with a status change between the two readings, in one poll
+  (genuine) — and beside it the mirror's Multitek S shape, [qc, YELLOW ->
+  GREEN] sent four times, which is a batch re-sent (a bench cannot turn
+  GREEN from YELLOW four times running);
+* a whole small poll that is one result printed twice (genuine);
+* a stretch of samples repeated in order inside a replay poll, consecutive
+  ids (the mirror's Agilent 09-11 shape: a copy);
+* a storm day — a dozen replay polls in one day (O9's 08-18 shape), which
+  is approved as its own unit.
 """
 
 from __future__ import annotations
@@ -238,4 +253,44 @@ def build() -> SimLab:
     lab.poll(imp, [SimLab.imported_line("9500", "Flash", "61.0",
                                         "pac_2025-11-08.csv")], [GENUINE],
              ts="2025-11-08T09:00:00")
+    # ── ROUND 2: the shapes the round-1 resend rule got wrong ───────────
+    first = "first"
+    head = [SimLab.run_line("F%03d" % k, {"RON": "9%d.%d" % (k % 10, k)})
+            for k in range(40)]
+    two = [SimLab.run_line("F999", {"IBP": "150.2"}),
+           SimLab.run_line("F999", {"FBP": "350.9"})]
+    tail = [SimLab.run_line("F%03d" % k, {"RON": "8%d.%d" % (k % 10, k)})
+            for k in range(40, 70)]
+    lab.poll(first, head[:17] + two + two + head[17:] + tail,
+             [GENUINE] * 74)
+
+    qc = "qcbench"
+    q = SimLab.qc_line("AF26", "Sulfur", 3.042)
+    green = ("status_change", "", "", "",
+             json.dumps({"from": "YELLOW", "to": "GREEN"}))
+    lab.poll(qc, [q, green, q], [GENUINE] * 3)          # a QC repeat
+    q2 = SimLab.qc_line("AF26", "Sulfur", 2.871)
+    lab.poll(qc, [q2, green] * 4,                       # sent four times
+             [GENUINE, GENUINE] + [DUP, GENUINE] * 3)
+
+    dbl = "double"
+    pair = [SimLab.run_line("D1", {"IBP": "151.0"}),
+            SimLab.run_line("D1", {"FBP": "351.0"})]
+    lab.poll(dbl, pair + pair, [GENUINE] * 4)           # printed twice
+
+    gc1 = "stretch"
+    work = [SimLab.run_line("S%03d" % k, {"IBP": "15%d.%d" % (k % 10, k)})
+            for k in range(25)]
+    for line in work:
+        lab.poll(gc1, [line], [GENUINE])
+    lab.poll(gc1, work + work, [DUP] * 50)    # replay, the stretch twice
+
+    storm = "storm"
+    tail_lines = [SimLab.run_line("T%03d" % k, {"v": "t%d" % k})
+                  for k in range(22)]
+    for line in tail_lines:
+        lab.poll(storm, [line], [GENUINE])
+    for k in range(12):                       # a file rewritten in place
+        lab.poll(storm, list(tail_lines), [DUP] * 22,
+                 ts="2026-08-18T09:%02d:21.000000" % k)
     return lab
