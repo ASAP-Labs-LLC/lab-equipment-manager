@@ -226,3 +226,18 @@ def w2b(rw):
             "each": out,
             "origins": sorted(r["origin"] for r in origins.get("rows") or []),
             "lem_sql_to_labcore": type(lab).lem}
+
+
+def w1_with_bridge(rw):
+    """W1 on the store, plus the same question asked of the bridge (§9.3:
+    'with the bridge on: 1 read per 12 s plus 1 per 60 s, and +0 after a
+    kill'). Without a bridge in the target, `bridge_on` says so."""
+    out = w1(rw)
+    from . import mixed_fleet
+    from .world import Unsupported
+    try:
+        out["bridge_on"] = mixed_fleet.w1_bridge_on(rw)
+    except Unsupported as exc:
+        out["bridge_on"] = {"unsupported": str(exc)}
+    return out
+

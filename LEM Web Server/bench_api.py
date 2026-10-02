@@ -763,7 +763,7 @@ class Ingest:
             str(body.get("origin") or ""), "bench")
         key = body.get("lh") if isinstance(body.get("lh"), str) else None
         ts, kind, lab_id, test, value, detail = rows[0]
-        self.x(
+        first = self.x(
             "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
             "test_name, value, detail, origin, bench_epoch, bench_seq, "
             "content_key) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE NOT "
@@ -778,7 +778,23 @@ class Ingest:
             "SELECT id FROM lem_machine_log WHERE machine_uid = ? AND "
             "bench_epoch = ? AND bench_seq = ?", [uid, epoch, seq])
         ids = [custody[0]["id"]] if custody else []
-        for ts, kind, lab_id, test, value, detail in rows[1:]:
+        rest = rows[1:]
+        if not first.get("rows_affected"):
+            # The record's custody row was already here: the bridge pulled it
+            # from LabCore, where this bench projected it in legacy mode with
+            # `detail.jk` (§10.3, M6). Its first rows came that way, in the
+            # projection's own order; only the ones not yet pulled are added
+            # here, and from now on the pull skips this record (it is held as
+            # a bench record), so no row lands twice and none is missing.
+            held = self.q(
+                # raw-log: ingest counts every row of the record, hidden or not
+                "SELECT COUNT(*) AS n FROM lem_machine_log WHERE machine_uid "
+                "= ? AND bench_epoch = ? AND CASE WHEN json_valid(detail) "
+                "THEN json_extract(detail, '$.jk') END = ?", [uid, epoch, jk])
+            n_held = _int_or(held[0].get("n"), 1) if held else 1
+            rest = rows[max(1, n_held):]
+            ids = []
+        for ts, kind, lab_id, test, value, detail in rest:
             self.x("INSERT INTO lem_machine_log (machine_uid, ts, kind, "
                    "lab_id, test_name, value, detail, origin, bench_epoch, "
                    "content_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1101,6 +1117,7 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
         checkpoint that says "nothing" because a read failed would make the
         bench re-send its whole file."""
         try:
+            _hold()             # a record still being imported is not one
             _bench_auth(uid)
 
             def rows(sql, args):
@@ -1152,6 +1169,8 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
         against. From the effective record: a row hidden as a replay is a
         copy of a row that is still there."""
         try:
+            # Half an imported record would read as "never recorded": hold.
+            _hold()
             _bench_auth(uid)
             res = store.read_sql(
                 "SELECT kind, lab_id, test_name, value, detail FROM "

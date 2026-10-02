@@ -1903,8 +1903,12 @@ def create_app(gateway, labcore_gateway=None,
             certificates=_certs["items"], mirror=mstatus,
             jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
             now=_now(), tz=ui_live.lab_tz(),
-            custody=(app.config["CUSTODY"].status_items()
-                     if app.config.get("CUSTODY") is not None else None))
+            custody=((app.config["CUSTODY"].status_items()
+                      if app.config.get("CUSTODY") is not None else [])
+                     + (app.config["BRIDGE"].status_items()
+                        if app.config.get("BRIDGE") is not None else [])
+                     if (app.config.get("CUSTODY") is not None
+                         or app.config.get("BRIDGE") is not None) else None))
 
     # ── the Instruments home's answer (ia-final §3.2, §5) ───────────────
     # Built once per snapshot cycle: the memo key is the snapshot's build
@@ -2445,6 +2449,22 @@ def create_app(gateway, labcore_gateway=None,
         _cust.hydrate()
         _custody.attach(app, _cust)
 
+    # ── the mixed-fleet bridge (transfer spec §10.4) ────────────────────
+    # Only when the store and LabCore are two things: the bridge carries a
+    # v3.9 bench's rows in from LabCore and the config it reads out to it.
+    # Constructed here and started by the server's boot, like the snapshot
+    # poller; it does nothing until the import (§10.1) is verified and the
+    # switch is on, and it is never handed the store as its LabCore.
+    if _is_store(gateway) and labcore_split:
+        import bridge as _bridge
+        app.config["BRIDGE"] = _bridge.Bridge(gateway, labcore)
+    if _is_store(gateway):
+        # What /healthz says about the import (§10.1), read once here and then
+        # kept current by the importer and the bridge: the health check
+        # itself reads nothing.
+        import legacy_import as _li
+        _li.refresh_status(gateway)
+
     def _mirrored_last_qc():
         """The newest QC verdict per (machine, test) from the local log copy.
 
@@ -2754,6 +2774,11 @@ def create_app(gateway, labcore_gateway=None,
             if cust is not None:
                 # last_backup_at/ok, offsite_last_ok (§12), from memory
                 store_info.update(cust.health())
+            # The import from LabCore (§10.1): its state, and how many LabCore
+            # reads it has cost — the number the production estimate is held
+            # to. Local reads of the store, never LabCore.
+            import legacy_import
+            store_info["import"] = legacy_import.cached_status(gateway)
         split = labcore_split
         return {
             "status": "ok",
@@ -2792,6 +2817,11 @@ def create_app(gateway, labcore_gateway=None,
             "labcore_ops": labcore.counts(),
             # v2 benches, from what their syncs said (memory only).
             "benches": bench_registry.summary(),
+            # The mixed-fleet bridge (§12.3: bridge{on,legacy_benches,outbox}),
+            # from the bridge's memory. None when there is no bridge (one
+            # gateway serving as both store and LabCore).
+            "bridge": (app.config["BRIDGE"].status()
+                       if app.config.get("BRIDGE") is not None else None),
         }
 
     # ── the page cache ────────────────────────────────────────────────
