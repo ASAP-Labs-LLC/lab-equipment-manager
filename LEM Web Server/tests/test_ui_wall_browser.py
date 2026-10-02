@@ -161,7 +161,7 @@ const min = q => { const a = [...document.querySelectorAll(q)].filter(vis).map(p
 const bad = [];
 for (const box of [...document.querySelectorAll('.bay, .wa-item a, .qc-card')].filter(vis)) {
   const b = box.getBoundingClientRect();
-  for (const e of box.querySelectorAll('.b-name, .b-wtext, .b-detail, .wa-names, .wa-wtext, .wa-detail, .qc-wtext, .qc-name, .qc-test, .qc-last')) {
+  for (const e of box.querySelectorAll('.b-name, .b-wtext, .b-detail, .wa-names, .wa-wtext, .wa-detail, .qc-wtext, .qc-name, .qc-check, .qc-method, .qc-last, .qc-limits')) {
     if (!vis(e)) continue;
     const r = e.getBoundingClientRect();
     const t = e.textContent.trim();
@@ -258,3 +258,73 @@ def test_kiosk_level_pin_and_theme_pin(server, drv):
     assert drv.execute_script("return document.getElementById('wf-level').textContent") == second["name"]
     assert "pinned" in drv.execute_script("return document.getElementById('wf-rot').textContent")
     assert drv.execute_script("return localStorage.getItem('lem.theme')") in (None, "system", "light")
+
+
+# ── /qc on production's own answer (round 2) ───────────────────────────────
+#
+# Round 1 measured /qc only on demo data, and production's long method names
+# never reached a card. At 1920x1080 production's /qc cut the limits
+# ("185.05 – 187.63 – 190....") and the test names ("ASTM D2887/D86 -
+# Distillation in Petroleum Products..."), so Agilent GC 1's five cards,
+# two of them Out of spec, could not be told apart. Here the server's
+# snapshot is production's /api/machines answer of 1 Oct
+# (tests/fixtures/machines_live_2026-10-01.json), served on the same port,
+# and what tells a card apart is held to never being cut.
+
+import json as _json
+
+PROD_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "machines_live_2026-10-01.json")
+
+
+@pytest.fixture
+def prod_snapshot(server):
+    from datetime import datetime
+    with open(PROD_FIXTURE, encoding="utf-8") as fh:
+        d = _json.load(fh)
+    snaps = server.app.config["SNAPSHOTS"]
+    real = snaps.get
+
+    def get(build_if_missing=True):
+        out = dict(d)
+        out.update(ready=True, built_at=datetime.now().isoformat(), stale=False, age_seconds=3.0, error=None)
+        return out
+    snaps.get = get
+    yield d
+    snaps.get = real
+
+
+QC_WORDS = r"""
+const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.closest('[hidden]'); };
+const cut = [];
+for (const e of document.querySelectorAll('.qc-card .qc-check, .qc-card .qc-limits, .qc-card .qc-name, .qc-card .qc-wtext')) {
+  if (!vis(e)) continue;
+  const t = e.textContent.trim();
+  if (e.scrollWidth > e.clientWidth + 0.5 || e.scrollHeight > e.clientHeight + 1 || t.endsWith('…') || t.endsWith('...')) cut.push(t);
+}
+const gc = [...document.querySelectorAll('.qc-card')].filter(vis)
+  .filter(c => c.querySelector('.qc-name').textContent === 'Agilent GC 1')
+  .map(c => c.querySelector('.qc-wtext').textContent + ' | ' + c.querySelector('.qc-check').textContent);
+const data = JSON.parse(document.getElementById('wall-qc-data').textContent);
+return { cut, gc, n: data.cards.length, headline: document.getElementById('wq-headline-text').textContent,
+         eravap: data.cards.filter(c => c.title === 'Eravap').map(c => c.verdict.word + ' · ' + c.verdict.note),
+         limits: [...document.querySelectorAll('.qc-card .qc-limits')].filter(vis).map(e => e.textContent) };
+"""
+
+
+@pytest.mark.parametrize("size", list(SIZES))
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_qc_on_production_tells_every_card_apart(server, drv, prod_snapshot, size, theme):
+    _open(drv, server.base, "/qc?rotate=0", size, theme)
+    m = drv.execute_script(MEASURE)
+    assert (m["scrollW"], m["scrollH"]) == (m["w"], m["h"]), m
+    name, word = SIZES[size]
+    assert m["qname"] >= name and m["qword"] >= word, m
+    assert m["bad"] == [], m["bad"]
+    w = drv.execute_script(QC_WORDS)
+    assert w["cut"] == [], w["cut"]
+    assert w["n"] == 20 and w["eravap"] == ["No verdict yet · bench stopped"], w
+    assert w["headline"] == "2 checks out of spec · 2 no verdict yet · 16 in spec"
+    # the worst come first: both GC 1 failures are on page 1, told apart
+    assert "Out of spec | 10% Recovery" in w["gc"] and "Out of spec | 50% Recovery" in w["gc"], w["gc"]
+    assert len(set(w["gc"])) == len(w["gc"]), w["gc"]
+    assert any("185.05 to 190.21" in t for t in w["limits"]), w["limits"]

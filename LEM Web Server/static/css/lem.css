@@ -1153,7 +1153,11 @@ a.bay:hover { border-color: var(--border-strong); }
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .qc-name { margin-top: 4px; font-size: var(--w-name); font-weight: 650; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.qc-test { font-size: var(--w-detail); line-height: 1.35; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-check {
+    margin-top: 2px; font-size: var(--w-word); font-weight: 600; line-height: 1.3; color: var(--text);
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+}
+.qc-method { font-size: var(--w-detail); line-height: 1.35; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qc-chart { flex: 1; min-height: 28px; margin: 8px 0 6px; position: relative; display: flex; align-items: center; justify-content: center; }
 .qc-chart svg { position: absolute; inset: 0; display: block; }
 .qc-band { fill: var(--chart-band); }
@@ -1168,6 +1172,6 @@ a.bay:hover { border-color: var(--border-strong); }
 .qc-last .qc-value { font-size: var(--w-word); font-weight: 650; font-variant-numeric: tabular-nums; }
 .qc-last .qc-value.none { font-weight: 500; color: var(--text-muted); font-size: var(--w-detail); }
 .qc-last .qc-at { margin-left: 0.4em; color: var(--text-muted); }
-.qc-last .qc-bandtext { margin-left: auto; padding-left: 10px; color: var(--text-muted); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.qc-limits { font-size: var(--w-detail); line-height: 1.35; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 @media (prefers-reduced-motion: reduce) { .wall * { transition: none !important; } }

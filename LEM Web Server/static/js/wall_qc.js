@@ -124,18 +124,22 @@
             const value = last.value ? last.value + (last.units ? ' ' + last.units : '') : '';
             const at = last.at ? L.when(last.at, tz, Date.now(), data && data.server_now) : '';
             return h('a', { className: 'qc-card v-' + v.key + (v.key === 'out' ? ' stop' : ''), href: c.href,
-                            draggable: 'false', 'data-testid': 'qc-card', title: c.title + ' · ' + c.test + ' · ' + v.word },
+                            draggable: 'false', 'data-testid': 'qc-card', title: c.title + ' · ' + c.test + (c.sample_id ? ' · ' + c.sample_id : '') + ' · ' + v.word },
                 h('span', { className: 'qc-top' },
                     h('span', { className: 'qc-word' }, h('span', { className: 'glyph ' + v.glyph, 'aria-hidden': 'true' }),
                       h('span', { className: 'qc-wtext', text: v.word + (v.note ? ' · ' + v.note : '') })),
                     c.control ? h('span', { className: 'qc-chip', text: c.control.words }) : null),
                 h('span', { className: 'qc-name', text: c.title }),
-                h('span', { className: 'qc-test', text: c.test }),
+                // what tells this check from the instrument's others leads
+                // ("10% Recovery"); what they share is quieter and may be cut
+                h('span', { className: 'qc-check', text: c.check || c.test }),
+                c.method ? h('span', { className: 'qc-method', text: c.method }) : null,
                 h('span', { className: 'qc-chart' }),
                 h('span', { className: 'qc-last' },
                     value ? h('b', { className: 'qc-value', text: value }) : h('span', { className: 'qc-value none', text: 'Never run' }),
-                    at ? h('span', { className: 'qc-at', text: '· ' + at }) : null,
-                    last.band ? h('span', { className: 'qc-bandtext', text: last.band }) : null));
+                    at ? h('span', { className: 'qc-at', text: '· ' + at }) : null),
+                last.range ? h('span', { className: 'qc-limits', text: 'Limits ' + last.range
+                    + (last.target ? ' · target ' + last.target : '') }) : null);
         }
 
         function drawGrid() {
