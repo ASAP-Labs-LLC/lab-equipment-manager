@@ -152,7 +152,9 @@ def test_signed_out_the_gated_sections_show_the_chip(lab, drv):
     base, _gw, _root = lab
     drv.get(base + "/settings")
     chips = [c for c in drv.find_elements("css selector", ".unlock-chip") if c.is_displayed()]
-    assert len(chips) == 3
+    # levels, hours, imports, and Transfer (T-P12: enrolment, retire, the
+    # bridge switch, the journal import and dedupe approvals change the lab)
+    assert len(chips) == 4
     assert _wait(lambda: drv.find_element("id", "levels-table").is_displayed())
     assert "Upper Lab" in drv.find_element("id", "levels-table").text
 

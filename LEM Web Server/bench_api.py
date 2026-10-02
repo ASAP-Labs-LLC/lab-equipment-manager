@@ -262,6 +262,8 @@ def _bounded(fields: dict) -> dict:
         out["road"] = bench_road(out["road"])
     if "unacked" in out:
         out["unacked"] = bench_count(out["unacked"])
+    if "waiting" in out:
+        out["waiting"] = bench_count(out["waiting"])
     if "labcore" in out:
         out["labcore"] = labcore_counts(out["labcore"])
     if "module_version" in out and out["module_version"] is not None:
@@ -323,12 +325,19 @@ class BenchRegistry:
                 stats = _json_or(row.get("stats"), {})
                 # Through the same door as `note`: a row an older build (or
                 # a person) left in the store must not reopen the hole.
+                # What still waits once this sync was acked: the bench's
+                # newest seq less what LEM holds (None when it never said).
+                total = bench_count(stats.get("records_total"))
+                acked_n = bench_count(row.get("acked_seq"))
                 self._entries[uid] = _bounded({
                     "epoch": row.get("bench_epoch"),
                     "acked": row.get("acked_seq"),
                     "road": row.get("road"),
                     "module_version": row.get("module_version"),
                     "unacked": stats.get("unacked"),
+                    "waiting": (max(0, total - acked_n)
+                                if total is not None and acked_n is not None
+                                else None),
                     "labcore": stats.get("labcore"),
                     "digest_mismatch": bool(row.get("digest_mismatch")),
                     "seen": seen.timestamp() if seen else None,
@@ -916,7 +925,10 @@ class Ingest:
                     wall_ts(body.get("ts"), _now_wall()), "%s:%d" % (self.epoch, seq)])
 
     def _state_resolution(self, seq: int, body: dict) -> None:
-        ref = str(body.get("conflict_seq") or "")
+        # The module journals `conflict_ref` (lem_station_module Journal
+        # `_apply`); `conflict_seq` is the name the sync answer hands out.
+        # Either one names the decision this record delivers.
+        ref = str(body.get("conflict_ref") or body.get("conflict_seq") or "")
         if ref:
             # The bench journaled the person's decision: delivered.
             self.x("UPDATE result_conflict SET delivered_at = ? WHERE "
@@ -1531,8 +1543,16 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
                                  "message": "LEM holds this epoch only through "
                                             "seq %d; send from %d"
                                             % (conflict, conflict + 1)})
+        # `unacked` is what the bench held when it sent this sync, before
+        # LEM acked any of it (the floor's `transfer` echoes it as said).
+        # `waiting` is what is still at the bench AFTER this answer: its
+        # newest seq (from_seq - 1 + unacked) less what LEM now holds. The
+        # foot and the instrument page say this one (transfer §14).
+        said = bench_count(stats.get("unacked"))
         registry.note(uid, epoch=epoch, acked=acked, road=stats.get("road"),
                       unacked=stats.get("unacked"),
+                      waiting=(max(0, from_seq - 1 + said - acked)
+                               if said is not None else None),
                       module_version=doc["module_version"],
                       labcore=stats.get("labcore"),
                       digest_mismatch=bool(mismatch) or bool(
