@@ -48,7 +48,7 @@ class TestTheHomeIsInstruments:
         assert 'data-testid="instruments-page"' in body
 
     def test_the_two_old_ways_in_are_still_one_click(self, home):
-        assert 'href="/floor"' in home          # the List · Floor map seg
+        assert 'href="/?view=map"' in home      # the List · Floor map seg (piece 12)
         assert 'href="/checklists"' in home     # the nav
 
     def test_it_says_who_is_signed_in_here_too(self, home):

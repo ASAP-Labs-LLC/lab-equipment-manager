@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).parent / "js" / "round_edit.mjs"
-LAYOUT = Path(__file__).parent / "js" / "layout.mjs"
+LAYOUT = Path(__file__).parent / "js" / "plan.mjs"
 LEMJS = Path(__file__).parent / "js" / "lemjs.mjs"
 
 
@@ -47,8 +47,9 @@ def test_the_floor_layout_is_order_independent():
 
     Two machines are saved on the same bay, and placement used to depend on payload
     order — so whichever reported last claimed the square and the other became
-    invisible. This runs the shipped `layout()` over the real floor, shuffles the
-    payload, and requires identical bays every time.
+    invisible. This runs the shipped `layout()` (static/js/plan.js, since the 3D
+    site and its claimBays were deleted) over production's floor and a clash,
+    reversed, and requires identical bays.
     """
     proc = subprocess.run(["node", str(LAYOUT)], capture_output=True, text=True,
                           timeout=60)
@@ -57,10 +58,11 @@ def test_the_floor_layout_is_order_independent():
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_layout_test_is_reading_the_shipped_code():
-    """The rule moved into the 3D world with the floor. It stays a pure
-    exported function precisely so this test can keep running the real one."""
-    src = (Path(__file__).parent.parent / "static" / "world" / "index.js")
-    assert "export function claimBays(" in src.read_text(encoding="utf-8")
+    """The rule lives in plan.js, the one renderer for the map and the wall.
+    It stays a pure function precisely so this test can run the real one."""
+    src = (Path(__file__).parent.parent / "static" / "js" / "plan.js")
+    assert "function layout(" in src.read_text(encoding="utf-8")
+    assert "static/js/plan.js" in LAYOUT.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
@@ -90,22 +92,6 @@ def test_the_floor_script_actually_boots():
     another function.
     """
     script = Path(__file__).parent / "js" / "floorboot.mjs"
-    proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
-                          timeout=60)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-
-
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_whole_floor_arrangements_are_stable():
-    """Ryan: "also give the ability to re-organize the machines."
-
-    The Arrange bar writes a position per instrument through the same endpoint a
-    drag uses. Its layouts must be a function of the INSTRUMENT, never of the
-    order the payload arrived in — an arrangement that shuffles when a machine
-    reports is not somewhere an operator can put things. Same rule, and same
-    reason, as `claimBays`.
-    """
-    script = Path(__file__).parent / "js" / "arrange.mjs"
     proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
                           timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr

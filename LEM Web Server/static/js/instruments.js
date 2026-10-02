@@ -10,6 +10,11 @@
      the find box        /api/search, Ctrl K, "Searching…" only after 180 ms,
                          and a sentence saying what it searched
 
+   The same page is the floor map (?view=map, piece 12): then the table and
+   chips are not drawn, the Needs-you tiles stack in a column and filter the
+   plan instead of the table, and static/js/floor_map.js (LEMFloorMap) draws
+   the plan from the same answer, handed over on every render.
+
    It refetches when the live feed (LEMLive) says an instrument or the record
    changed. GETs only: an open page never POSTs on a timer (A.7). Every
    string goes in through textContent (LEMShell.h). The pure parts are
@@ -28,6 +33,10 @@
     let refreshFailedAt = null;
     const page = $('main');
     const hasQuality = page && page.dataset.hasQuality === 'true';
+    const MAP = !!(page && page.dataset.view === 'map');
+    const M = () => (MAP ? window.LEMFloorMap : null);
+    /** The view the Needs-you tiles answer to: the map's own when on the map. */
+    const tileView = () => (M() ? { filter: '', level: '', cause: M().view().cause } : view);
 
     try { data = JSON.parse(($('instruments-data') || {}).textContent || 'null'); } catch (_e) { data = null; }
 
@@ -94,7 +103,10 @@
         const ready = data && data.state === 'ready';
         box.hidden = ready;
         $('needs').hidden = !ready;
-        document.querySelector('.inst-table').hidden = !ready;
+        for (const sel of ['.inst-table', '#floor-map']) {
+            const el = document.querySelector(sel);
+            if (el) el.hidden = !ready;
+        }
         if (ready) return;
         const failed = data && data.state === 'unreadable';
         box.replaceChildren(
@@ -112,12 +124,13 @@
     // named once, with its verdict. The tile whose cause is the view is the
     // current one (GC's ink border); with no cause chosen, none is.
     function tile(t, current) {
-        const w = L.tileWords(t, view);
+        const w = L.tileWords(t, tileView());
         const kids = [circle(t.more ? 'more' : t.glyph),
                       h('span', { className: 't-word s-' + (t.more ? 'more' : t.state) }, w.head)];
         if (w.next) kids.push(h('span', { className: 't-next' }, w.next));
         kids.push(h('span', { className: 't-link' }, w.link));
-        const href = w.active ? '/' + L.viewQuery({ filter: '', level: view.level, cause: '' }) : t.href;
+        const href = M() ? M().tileHref(t.key, w.active)
+            : w.active ? '/' + L.viewQuery({ filter: '', level: view.level, cause: '' }) : t.href;
         return h('a', { className: 'ntile' + (current ? ' current' : ''), href,
                         'aria-current': w.active ? 'true' : null,
                         'data-testid': 'needs-tile', 'data-key': t.key }, ...kids);
@@ -130,10 +143,11 @@
         if (!ny) { box.replaceChildren(); return; }
         empty.hidden = ny.count > 0;
         box.hidden = ny.count === 0;
-        const chosen = L.currentTile(ny.tiles, view);
+        const chosen = L.currentTile(ny.tiles, tileView());
         box.replaceChildren(...ny.tiles.map((t, i) => tile(t, i === chosen)));
-        // few tiles share the row instead of leaving most of it empty
-        box.style.setProperty('--cols', String(Math.min(6, Math.max(3, ny.tiles.length))));
+        // few tiles share the row instead of leaving most of it empty (on
+        // the map they stack in their column, one to a row)
+        box.style.setProperty('--cols', MAP ? '1' : String(Math.min(6, Math.max(3, ny.tiles.length))));
         $('needs-caption').textContent = L.needsCaption(ny, refreshFailedAt);
     }
 
@@ -235,6 +249,7 @@
         renderHead();
         if (!data || data.state !== 'ready') return;
         renderNeeds();
+        if (MAP) { if (M()) M().render(data, { failedAt: refreshFailedAt }); return; }
         renderChips();
         renderTable();
     }
@@ -249,7 +264,10 @@
         renderChips();
         renderTable();
     }
-    window.addEventListener('popstate', () => { view = L.parseView(location.search); unknown = L.unknownView(location.search); renderNeeds(); renderChips(); renderTable(); });
+    window.addEventListener('popstate', () => {
+        if (MAP) { if (M()) M().go(window.LEMPlan.parseMapView(location.search), { push: false }); renderNeeds(); return; }
+        view = L.parseView(location.search); unknown = L.unknownView(location.search); renderNeeds(); renderChips(); renderTable();
+    });
     // a link to this same list with another view (a merged tile, "+N more",
     // "Show all") changes the view in place instead of reloading the page
     document.addEventListener('click', (ev) => {
@@ -258,6 +276,15 @@
         const u = new URL(a.getAttribute('href'), location.href);
         if (u.origin !== location.origin || (u.pathname !== '/' && u.pathname !== '/instruments') || u.hash) return;
         if (!page.contains(a)) return;
+        if (MAP) {
+            // on the map, a map link (a tile, a level, "Place it") changes the
+            // map in place; a link to the list is a real navigation
+            if (new URLSearchParams(u.search).get('view') !== 'map' || !M()) return;
+            ev.preventDefault();
+            M().go(window.LEMPlan.parseMapView(u.search));
+            renderNeeds();
+            return;
+        }
         ev.preventDefault();
         go(L.parseView(u.search));
         $('inst-chips').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -271,7 +298,11 @@
         window.LEMLive.bgFetch('/api/ui/instruments')
             .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
             .then(d => { data = d; refreshFailedAt = null; render(); })
-            .catch(() => { refreshFailedAt = refreshFailedAt || new Date().toISOString(); renderNeeds(); })
+            .catch(() => {
+                refreshFailedAt = refreshFailedAt || new Date().toISOString();
+                renderNeeds();
+                if (M()) M().render(data, { failedAt: refreshFailedAt });
+            })
             .finally(() => { inflight = false; });
     }
     if (window.LEMLive) {
@@ -285,7 +316,7 @@
         });
     }
     // times ("Wed 15:04") age on their own; no request
-    setInterval(() => { if (data && data.state === 'ready' && !document.hidden) renderTable(); }, 60000);
+    setInterval(() => { if (!MAP && data && data.state === 'ready' && !document.hidden) renderTable(); }, 60000);
 
     // ── find ──────────────────────────────────────────────────────────────
     const q = $('find-q');
@@ -399,5 +430,7 @@
         q.select();
     });
 
+    // the map asks for the tiles to be redrawn when its cause changes
+    if (MAP) document.addEventListener('lem:map-view', () => renderNeeds());
     render();
 })();

@@ -122,18 +122,12 @@ cd "LEM Web Server"
 .venv/bin/python web_server.pyw --port 5557                # against live LabCore
 ```
 
-### `static/world/` — the 3D floor
+### The floor map — `static/js/plan.js`
 
-The floor view is a rendered 3D site, not a diagram. `templates/floor.html`
-imports `world/index.js`; `web_app.py` serves and cache-busts the assets. Each
-JS file is one subsystem: `engine.js`, `camera.js`, `terrain.js`, `sky.js`,
-`gi.js`, `buildings.js`, `vegetation.js`, `rail.js`, `trains.js`, `props.js`,
-`labels.js`, `textures.js`, `weather.js`, `index.js`.
-
-> A backtick anywhere inside a GLSL template literal — **including in a comment** —
-> ends the literal and the module stops parsing. It has happened twice.
-> `scratchpad/harness/vticks.py` flags it; `node --check` on a copy renamed
-> `.mjs` catches it in a second.
+The floor is drawn flat, by one renderer shared by the Instruments page's map
+view (`/?view=map`, `static/js/floor_map.js`) and the wall. The 3D site that
+used to live in `static/world/` (three.js) was deleted on 2026-10-02 at Ryan's
+decision; `scratchpad/` below is its design record, kept for the lessons.
 
 ### The live push channel
 
@@ -179,8 +173,8 @@ still missing from V5 is tracked in
 
 ## `scratchpad/` — the 3D floor's design record
 
-Working area for the `static/world/` subsystem. Its notes are referenced
-directly from the shipping source, so they are kept with the code.
+Working area for the 3D floor (`static/world/`, deleted 2026-10-02). Kept as
+the design record of what was built and why it lost; nothing ships from here.
 
 - `CONTRACT.md` — the subsystem contract. **Read before writing a line:** each
   builder owns exactly one file and must not edit any other. A change needed in
