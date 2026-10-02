@@ -3,7 +3,8 @@
 
    What it draws, and the one rule for each:
      the fleet pill      ONE verdict on the fleet, never a tally per problem
-     Needs you           the only place problems are listed; one tile per cause
+     Needs you           one tile per cause: the cause and its next step,
+                         never a name or a count; it filters the table
      the chips           views, not counts; the address bar is the view
      the table           every instrument, worst first; Can it run? answers T1
      the find box        /api/search, Ctrl K, "Searching…" only after 180 ms,
@@ -106,40 +107,34 @@
     }
 
     // ── Needs you ─────────────────────────────────────────────────────────
-    function tile(t, first) {
-        const kind = t.more ? 'more' : t.glyph;
-        const word = h('span', { className: 't-word s-' + t.state }, t.cause);
-        const kids = [circle(kind), h('span', { className: 't-names', title: t.names }, t.names || t.cause)];
-        if (t.more) {
-            kids[1] = h('span', { className: 't-names' }, t.cause);
-            kids.push(h('span', { className: 't-next' }, t.names));
-            kids.push(h('span', { className: 't-link' }, 'Show them all'));
-        } else {
-            kids.push(word);
-            if (t.next) kids.push(h('span', { className: 't-next' }, 'Next: ' + lower(t.next.text)));
-            kids.push(h('span', { className: 't-link' }, (t.next && t.next.label) || 'Open'));
-        }
-        return h('a', { className: 'ntile' + (first ? ' current' : ''), href: t.href,
+    // A tile is a cause and its remedy; it names nobody and counts nothing.
+    // Its link filters the table below to its rows, where each instrument is
+    // named once, with its verdict. The tile whose cause is the view is the
+    // current one (GC's ink border); with no cause chosen, the worst is.
+    function tile(t, current) {
+        const w = L.tileWords(t, view);
+        const kids = [circle(t.more ? 'more' : t.glyph),
+                      h('span', { className: 't-word s-' + (t.more ? 'more' : t.state) }, w.head)];
+        if (w.next) kids.push(h('span', { className: 't-next' }, w.next));
+        kids.push(h('span', { className: 't-link' }, w.link));
+        const href = w.active ? '/' + L.viewQuery({ filter: '', level: view.level, cause: '' }) : t.href;
+        return h('a', { className: 'ntile' + (current ? ' current' : ''), href,
+                        'aria-current': w.active ? 'true' : null,
                         'data-testid': 'needs-tile', 'data-key': t.key }, ...kids);
     }
-    function lower(s) { s = String(s || ''); return s ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
 
     function renderNeeds() {
         const ny = data && data.needs_you;
         const box = $('needs-tiles');
         const empty = $('needs-empty');
-        const cap = $('needs-caption');
         if (!ny) { box.replaceChildren(); return; }
         empty.hidden = ny.count > 0;
         box.hidden = ny.count === 0;
-        box.replaceChildren(...ny.tiles.map((t, i) => tile(t, i === 0)));
+        const chosen = ny.tiles.findIndex(t => view.cause && t.key === view.cause);
+        box.replaceChildren(...ny.tiles.map((t, i) => tile(t, i === (chosen >= 0 ? chosen : 0))));
         // few tiles share the row instead of leaving most of it empty
         box.style.setProperty('--cols', String(Math.min(6, Math.max(3, ny.tiles.length))));
-        let words = ny.count ? ny.count + (ny.count === 1 ? ' instrument' : ' instruments') + ' · worst first · updates by itself' : '';
-        if (refreshFailedAt) {
-            words = 'Couldn’t refresh since ' + L.when(refreshFailedAt) + ' · showing the list as last read';
-        }
-        cap.textContent = words;
+        $('needs-caption').textContent = L.needsCaption(ny, refreshFailedAt);
     }
 
     // ── chips and the table ───────────────────────────────────────────────
@@ -233,10 +228,11 @@
         view = Object.assign({ filter: '', level: '', cause: '' }, next || {});
         const url = '/' + L.viewQuery(view);
         if (location.pathname + location.search !== url) history.pushState(view, '', url);
+        renderNeeds();
         renderChips();
         renderTable();
     }
-    window.addEventListener('popstate', () => { view = L.parseView(location.search); renderChips(); renderTable(); });
+    window.addEventListener('popstate', () => { view = L.parseView(location.search); renderNeeds(); renderChips(); renderTable(); });
     // a link to this same list with another view (a merged tile, "+N more",
     // "Show all") changes the view in place instead of reloading the page
     document.addEventListener('click', (ev) => {

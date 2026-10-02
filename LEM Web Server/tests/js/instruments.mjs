@@ -159,5 +159,38 @@ check('Cmd K', L.isFindKey({ key: 'K', metaKey: true }), true);
 check('plain k types a k', L.isFindKey({ key: 'k' }), false);
 check('Ctrl Shift K is the browser\'s', L.isFindKey({ key: 'K', ctrlKey: true, shiftKey: true }), false);
 
+// ── Needs you says a cause once, and names nobody ─────────────────────────
+// Round 2's critic: the tile "OptiMPP 1 and Pensky-Martens 1 · QC out of
+// spec" sat above the two rows that say the same, under a pill that counted
+// them. The tile now draws its cause, its next step and a link that filters
+// the table. Nothing it draws is a name or a number; the caption carries no
+// count either (the nav's "10 need you" is that number's one home on screen).
+{
+  const t = { key: 'ok_but-cal', state: 'ok_but', glyph: 'half', cause: 'Calibration overdue',
+              next: { text: 'Calibrate, then mark the calibration done' }, link: 'Show them',
+              href: '/?cause=ok_but-cal',
+              members: [{ uid: 'dma', title: 'Anton Paar DMA 4500' }, { uid: 'gc2', title: 'GC-2' }] };
+  const w = L.tileWords(t, { cause: '' });
+  check('a tile draws its cause, next step and link', w,
+        { head: 'Calibration overdue', next: 'Next: calibrate, then mark the calibration done',
+          link: 'Show them', active: false });
+  const said = Object.values(w).join(' ');
+  check('a tile names no member', t.members.some(m => said.includes(m.title)), false);
+  check('a tile draws no digit', /\d/.test(said), false);
+  check('the tile whose cause is the view is the pressed one',
+        L.tileWords(t, { cause: 'ok_but-cal' }).active, true);
+  check('when its cause is the view, the link offers the way back',
+        L.tileWords(t, { cause: 'ok_but-cal' }).link, 'Show all');
+  const more = { key: 'more', cause: 'More causes', next: { text: 'PM overdue and Bench stopped' },
+                 link: 'Show all that need you', members: [], more: 3 };
+  check('the overflow tile lists the causes it holds, without a count',
+        L.tileWords(more, { cause: '' }),
+        { head: 'More causes', next: 'PM overdue and Bench stopped', link: 'Show all that need you', active: false });
+}
+check('the caption carries no count', L.needsCaption({ count: 10 }, null), 'Worst first · updates by itself');
+check('nothing needs you: no caption (the empty line says it)', L.needsCaption({ count: 0 }, null), '');
+check('a failed refresh is said, not hidden',
+      L.needsCaption({ count: 4 }, '2026-10-01T09:05:00', 0).startsWith('Couldn’t refresh since '), true);
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

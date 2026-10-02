@@ -338,7 +338,7 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
             out.append({"key": "notok:group:" + digest, "level": "error",
                         "message": "%s are not OK to run: %s." % (
                             _names([title[u] for u in uids]), _lower_first(reason)),
-                        "href": "/?filter=needs", "link": "Show them"})
+                        "href": "/?cause=not_ok-qc", "link": "Show them"})
     for m in ms:
         uid = m.get("machine_uid")
         if overrides is not None and overrides.get(uid):
@@ -346,21 +346,27 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
                         "message": "%s is off line (%s)." % (title[uid], overrides[uid].upper()),
                         "href": href(uid, ""), "link": "Open " + title[uid]})
 
-    due = [m for m in ms if (ready.get(m.get("machine_uid")) or {}).get("state") == OK_BUT
-           and _qc_due(m)]
+    # A line that links to the list says exactly the instruments the list
+    # shows: both key on the instrument's ONE cause (its readiness reason),
+    # the key ui_instruments' tiles and ?cause= filter use (§0.2).
+    def _cause(prefix: str) -> list:
+        return [m for m in ms if (ready.get(m.get("machine_uid")) or {}).get("state") == OK_BUT
+                and str((ready.get(m.get("machine_uid")) or {}).get("reason") or "").startswith(prefix)]
+
+    due = _cause("QC due")
     if due:
         n = len(due)
         out.append({"key": "qcdue", "level": "warning",
                     "message": "%d %s due for QC: %s." % (
                         n, _plural(n, "instrument is", "instruments are"),
                         _names([title[m["machine_uid"]] for m in due])),
-                    "href": href(due[0]["machine_uid"], "qc") if n == 1 else "/?filter=needs",
+                    "href": href(due[0]["machine_uid"], "qc") if n == 1 else "/?cause=ok_but-qc",
                     "link": "Open " + title[due[0]["machine_uid"]] if n == 1 else "Show them"})
 
     # Calibration overdue is a warning (Ryan, 2026-10-01), so it is a line of
     # its own, merged across instruments; it used to ride inside "not OK".
-    cal = [m for m in ms if (ready.get(m.get("machine_uid")) or {}).get("state") == OK_BUT
-           and _overdue(m, "calibration")]
+    # Only where it IS the cause: one behind QC is said on that row instead.
+    cal = _cause("Calibration")
     if cal:
         n = len(cal)
         out.append({"key": "caldue:" + ",".join(sorted(m["machine_uid"] for m in cal)),

@@ -9,8 +9,10 @@ looking, so they are checked here the same way:
 * **No horizontal page scroll at 820x1180 or 390x844, in both themes.** A
   page that scrolls sideways on the bench tablet hides the very column the
   page exists for.
-* **Say it once.** The card's count and the nav's "N need you" are one field;
-  the card has at most six tiles; the chips carry no digits.
+* **Say it once.** In the first 1440x900 screen, no instrument is named
+  twice: the table row names it with its verdict; a Needs-you tile says a
+  cause and its next step and names nobody, and carries no count beside the
+  pill's. The card has at most six tiles; chips and caption carry no digits.
 
 Plus the find box: Ctrl K focuses it, a search lists links and says what it
 searched, and Escape closes it.
@@ -117,20 +119,57 @@ def test_no_horizontal_page_scroll(drv, server, size, theme):
 
 
 def test_say_it_once(drv, server):
-    _open(drv, server.base)
     import json
     import urllib.request
-    live = json.load(urllib.request.urlopen(server.base + "/api/ui/live"))
+    _open(drv, server.base)
+    inst = json.load(urllib.request.urlopen(server.base + "/api/ui/instruments"))
+    titles = [r["title"] for r in inst["instruments"]]
     cap = drv.find_element("id", "needs-caption").text
-    assert cap.startswith("%d instrument" % live["needs_you"]), (cap, live["needs_you"])
+    assert cap == "Worst first · updates by itself", cap
     tiles = drv.find_elements("css selector", "a.ntile")
     assert 0 < len(tiles) <= 6
+    for t in tiles:
+        said = t.text
+        assert not re.search(r"\d", said), ("a tile counts nothing", said)
+        for title in titles:
+            assert title not in said, ("a tile names nobody", title, said)
     chips = [c.text for c in drv.find_elements("css selector", "#inst-chips .chip")]
     assert chips and not any(re.search(r"\d", c) for c in chips), chips
     pills = drv.find_elements("css selector", ".page-head .pill")
     assert len(pills) == 1, "one fleet pill"
     for a in drv.find_elements("css selector", "tr.irow a.iname"):
         assert a.get_attribute("href"), "every row is a link"
+    # the first screen, as a person sees it: every visible text node inside
+    # the viewport, counted per instrument title
+    seen = drv.execute_script("""
+        const out = [];
+        const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+        while (w.nextNode()) {
+            const n = w.currentNode, t = n.textContent.trim();
+            if (!t || n.parentElement.closest('[hidden], script, .find-pop')) continue;
+            const r = document.createRange(); r.selectNodeContents(n);
+            const b = r.getBoundingClientRect();
+            if (b.width && b.height && b.bottom > 0 && b.top < innerHeight) out.push(t);
+        }
+        return out;""")
+    for title in titles:
+        n = sum(1 for t in seen if re.search(r"(^|[^\w-])%s($|[^\w-])" % re.escape(title), t))
+        assert n <= 1, (title, n, [t for t in seen if title in t])
+
+
+def test_the_title_sits_in_the_topbar(drv, server):
+    _open(drv, server.base)
+    h1 = drv.find_elements("css selector", "h1")
+    assert len(h1) == 1 and h1[0].text == "Instruments"
+    assert drv.execute_script("return !!arguments[0].closest('.topbar')", h1[0])
+
+
+def test_a_tile_is_pressed_while_its_cause_is_the_view(drv, server):
+    _open(drv, server.base, "/?cause=ok_but-cal")
+    cur = drv.find_elements("css selector", "a.ntile[aria-current=true]")
+    assert len(cur) == 1 and cur[0].get_attribute("data-key") == "ok_but-cal"
+    assert "current" in cur[0].get_attribute("class")
+    assert cur[0].text.splitlines()[-1] == "Show all"
 
 
 def test_find(drv, server):

@@ -1,8 +1,9 @@
 {% extends "_layout.html" %}
 {#- Instruments, the home page (ia-final §3.2): find an instrument and see who
-    needs you. One heading, one fleet pill, ONE place problems are listed
-    (the Needs-you card), and a table whose Can it run? column answers T1
-    without a click.
+    needs you. One heading (in the topbar, as GC hub and Settings do), one
+    fleet pill, and each fact said once: the table row says which instrument
+    and what is wrong with it (T1 without a click); a Needs-you tile says a
+    cause and its next step, names nobody, and filters the table to its rows.
 
     The first paint's data is the same answer /api/ui/instruments serves,
     carried in a JSON island (data, never code) so the verdicts are on screen
@@ -12,6 +13,7 @@
     failed still says what it knows. -#}
 {% block title %}Instruments{% endblock %}
 {% block topbar %}
+  <h1 class="bar-title">Instruments</h1>
   <nav class="seg seg-lg view-seg" aria-label="Instruments view" data-testid="view-seg">
     <a href="/" aria-current="page">List</a>
     <a href="/floor" data-testid="view-map">Floor map</a>
@@ -38,8 +40,7 @@
 {% block content %}
 <main class="content inst-home" id="main" tabindex="-1" data-testid="instruments-page"
       data-has-quality="{{ 'true' if has_quality else 'false' }}">
-  <header class="page-head">
-    <h1>Instruments</h1>
+  <header class="page-head" aria-label="The fleet">
     <div class="meta" id="inst-meta" data-testid="inst-meta">
       {%- if data.state == 'ready' %}
       <span class="pill {{ data.fleet.pill.level }}" id="fleet-pill" data-testid="fleet-pill"><span class="glyph {{ data.fleet.pill.glyph }}" aria-hidden="true"></span>{{ data.fleet.pill.text }}</span>

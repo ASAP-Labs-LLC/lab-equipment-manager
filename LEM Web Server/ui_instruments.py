@@ -18,11 +18,14 @@ the verdict lives in its own route so that payload stays byte for byte.
 Say each problem once (§0, judge J1's "Instruments repeats problems three
 times"):
 
-* problems are enumerated on the **Needs-you card only**, one tile per CAUSE,
-  so five calibrations that lapsed together are one tile naming five
-  instruments, not five tiles;
-* the page-head carries ONE fleet pill, a verdict on the fleet, not a tally
-  per problem;
+* the table row owns the instance: which instrument, its verdict, and what
+  exactly is wrong with it;
+* the Needs-you tile owns the cause and its remedy, one tile per CAUSE. It
+  names no instrument and carries no count; its link filters the table to
+  the rows it is about. (Round 2's critic: a tile naming "OptiMPP 1 and
+  Pensky-Martens 1 · QC out of spec" above those two rows was a second
+  telling, and its count beside the pill a third.)
+* the page-head carries ONE fleet pill, a verdict on the fleet;
 * the level chips are places, not counts.
 """
 from __future__ import annotations
@@ -43,14 +46,15 @@ GLYPH = {NOT_OK: "error", OFF_LINE: "off", OK_BUT: "half", CANT_TELL: "dashed",
 
 MAX_TILES = 6
 
-# The next step for a tile that names several instruments with one cause.
-MERGED_NEXT = {
-    "not_ok-qc": "Fix each, then rerun its standard",
-    "ok_but-cal": "Calibrate each, then mark it done",
-    "ok_but-qc": "Run each one's QC standard",
-    "ok_but-pm": "Do each PM, then mark it done",
-    "cant_tell-stopped": "Start the LEM module on each bench",
-    "cant_tell-never": "Start the LEM module on each bench",
+# A tile's next step: the remedy for the CAUSE, the same for one member or
+# five. The instrument's own step ("Run STD-1") is on its record.
+CAUSE_NEXT = {
+    "not_ok-qc": "Find the cause, then rerun the standard",
+    "ok_but-cal": "Calibrate, then mark it done",
+    "ok_but-qc": "Run the QC standard",
+    "ok_but-pm": "Do the PM, then mark it done",
+    "cant_tell-stopped": "Start the LEM module in LabStation",
+    "cant_tell-never": "Start the LEM module in LabStation",
     "cant_tell-closed": "Nothing to do until the lab opens",
 }
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -68,16 +72,6 @@ Href = Callable[[str, str], str]
 
 
 # ── small words ─────────────────────────────────────────────────────────────
-
-def _names(titles: List[str], limit: int = 3) -> str:
-    """"A", "A and B", "A, B and C", "A, B and 3 more"."""
-    t = [x for x in titles if x]
-    if len(t) <= 1:
-        return "".join(t)
-    if len(t) <= limit:
-        return ", ".join(t[:-1]) + " and " + t[-1]
-    return ", ".join(t[:limit - 1]) + " and %d more" % (len(t) - limit + 1)
-
 
 def _and(items: List[str]) -> str:
     items = [i for i in items if i]
@@ -186,9 +180,12 @@ def _detail(m: dict, ready: dict) -> str:
     """The one line under a verdict: what exactly, and since when."""
     state, reason = ready["state"], str(ready.get("reason") or "")
     specs = _specs(m)
+    # One cause per instrument reaches the card and the bell, the worst. An
+    # overdue calibration behind QC is on neither, so its row says it, once.
+    also = (" · calibration overdue too" if ui_live._overdue(m, "calibration") else "")
     if state == NOT_OK:
         bad = [s for s in specs if s.get("last_qc_in_spec") is False]
-        return "%s out of spec" % _tests(bad)
+        return "%s out of spec" % _tests(bad) + also
     if state == OK_BUT and reason.startswith("Calibration"):
         cal = [t for t in m.get("maintenance") or []
                if str(t.get("kind") or "").lower() == "calibration" and t.get("status") == "RED"]
@@ -196,7 +193,7 @@ def _detail(m: dict, ready: dict) -> str:
         return "Calibration overdue" + (" since %s" % _day(due) if _day(due) else "")
     if state == OK_BUT and reason.startswith("QC due"):
         due = [s for s in specs if s.get("last_qc_in_spec") is None]
-        return "QC due on %s" % _tests(due)
+        return "QC due on %s" % _tests(due) + also
     if state == OK_BUT:
         return "PM overdue"
     if state == OFF_LINE:
@@ -344,9 +341,12 @@ def fleet(rows: List[dict]) -> dict:
 
 
 def needs_you(rows: List[dict]) -> dict:
-    """The card: one tile per cause, worst first, at most six. When more
-    causes than that exist, the sixth tile is "+N more" to the filter, so
-    nothing that needs you silently falls off the card."""
+    """The card: one tile per cause, worst first, at most six. A tile says
+    its cause, the next step for it and a link that filters the table to its
+    members; the members ride along as data (the filter and the record page
+    use them) but are not drawn. When more causes exist than fit, the sixth
+    tile is "More causes" to the Needs-you view, so nothing that needs you
+    silently falls off the card."""
     groups: Dict[str, List[dict]] = {}
     for r in rows:
         if r["needs_you"] and r["cause"]:
@@ -354,30 +354,26 @@ def needs_you(rows: List[dict]) -> dict:
     tiles = []
     for key, members in groups.items():
         members.sort(key=lambda r: (r["title"].lower(), r["uid"]))
-        first = members[0]
-        state = first["readiness"]["state"]
+        state = members[0]["readiness"]["state"]
         tiles.append({
             "key": key, "state": state, "glyph": GLYPH[state],
-            "cause": first["cause"]["words"],
-            "names": _names([r["title"] for r in members]),
+            "cause": members[0]["cause"]["words"],
+            "next": {"text": CAUSE_NEXT.get(key, "Open each record")},
+            "link": "Show it" if len(members) == 1 else "Show them",
+            "href": "/?cause=" + key,
             "members": [{"uid": r["uid"], "title": r["title"], "href": r["cause"]["href"]}
                         for r in members],
-            "detail": (first["readiness"]["detail"] if len(members) == 1
-                       else "%d instruments" % len(members)),
-            "next": (first["readiness"]["next"] if len(members) == 1 else
-                     {"text": MERGED_NEXT.get(key, "Open each record"),
-                      "label": "Show these %d" % len(members), "href": "/?cause=" + key}),
-            "href": first["cause"]["href"] if len(members) == 1 else "/?cause=" + key,
         })
-    tiles.sort(key=lambda t: (RANK[t["state"]], -len(t["members"]), t["names"].lower()))
+    tiles.sort(key=lambda t: (RANK[t["state"]], -len(t["members"]), t["cause"].lower()))
     count = sum(len(t["members"]) for t in tiles)
     if len(tiles) > MAX_TILES:
         shown = tiles[:MAX_TILES - 1]
         rest = tiles[MAX_TILES - 1:]
         n = sum(len(t["members"]) for t in rest)
         shown.append({"key": "more", "state": rest[0]["state"], "glyph": "more",
-                      "cause": "+%d more" % n, "names": _names([t["cause"] for t in rest]),
-                      "members": [], "detail": "", "next": None, "more": n,
+                      "cause": "More causes",
+                      "next": {"text": _and([t["cause"] for t in rest])},
+                      "link": "Show all that need you", "members": [], "more": n,
                       "href": "/?filter=needs"})
         tiles = shown
     return {"count": count, "tiles": tiles}

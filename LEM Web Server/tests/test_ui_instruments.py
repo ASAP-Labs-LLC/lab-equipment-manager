@@ -18,9 +18,11 @@ What this answers, and why each part is a test rather than a hope:
   answer is "not read yet", with `instruments: None`, never `[]`: an empty
   list would draw "Nothing needs you" over a lab nobody has looked at.
 * **Say each problem once (§0, §12 "Instruments repeats problems three
-  times").** Problems are enumerated in the Needs-you card only. Instruments
-  with the same cause merge into one tile, the page-head gets ONE fleet pill,
-  and the filter chips carry no counts.
+  times").** The table row is the one place an instrument is named with what
+  is wrong with it. A Needs-you tile is a cause and its next step: it names
+  no instrument, carries no count, and filters the table to its rows. The
+  page-head gets ONE fleet pill, the chips carry no counts, and a bell line
+  that links to the list names exactly what that list shows.
 """
 from __future__ import annotations
 
@@ -187,6 +189,18 @@ class TestEachInstrumentSaysWhetherItCanRun:
         assert r["readiness"]["next"]["href"] == "/instruments/a#maintenance"
         assert p["fleet"]["pill"]["text"] == "It can run"
 
+    def test_an_overdue_calibration_behind_a_worse_cause_is_said_on_its_row(self):
+        """Each instrument has ONE cause on the card (the worst), so an
+        overdue calibration behind "QC out of spec" or "QC due" is on no tile
+        and in no bell line. It must still be said somewhere, once: on that
+        instrument's own row, after the cause that outranks it."""
+        p = build([machine("g", specs=[spec("Flash Point", False)], maint=[task("calibration", "RED")]),
+                   machine("b", specs=[spec("Flash Point", None)], maint=[task("calibration", "RED")]),
+                   machine("a", specs=[spec("Flash Point", True)], maint=[task("calibration", "RED")])])
+        assert row(p, "g")["readiness"]["detail"] == "Flash Point out of spec · calibration overdue too"
+        assert row(p, "b")["readiness"]["detail"] == "QC due on Flash Point · calibration overdue too"
+        assert row(p, "a")["readiness"]["detail"] == "Calibration overdue since 1 Sep"
+
     def test_an_ok_instrument_has_no_next_step(self):
         p = build([machine("f", specs=[spec("X", True)])])
         assert row(p, "f")["readiness"]["next"] is None
@@ -245,9 +259,21 @@ class TestTheTableOrder:
 # ── the Needs-you card ──────────────────────────────────────────────────────
 
 class TestNeedsYou:
+    """Round 2 of the critic: "each Needs-you problem is listed in more than
+    one place: the pill, the tile naming the instruments and cause, and the
+    table rows repeating the verdict and the same reason." So each surface
+    now owns ONE kind of fact, and no fact has two:
+
+    * the table row owns the instance: which instrument, its verdict, and
+      what exactly is wrong with it (T1 at 0 clicks);
+    * the tile owns the cause and the remedy: "QC out of spec · Next: find
+      the cause, then rerun the standard". It names no instrument and carries
+      no count, and its link filters the table to the rows it is about;
+    * the pill owns the fleet's verdict (one number, §3.2).
+    """
+
     def test_same_cause_merges_into_one_tile(self):
-        """§3.2: "OptiMPP 1 and OptiMPP 2 · QC due" is one tile. Five
-        calibrations that lapsed together are one sentence, not five tiles."""
+        """§3.2: OptiMPP 1 and OptiMPP 2, both QC due, are one tile."""
         ms = [machine("o1", "OptiMPP 1", specs=[spec("Cloud", None)]),
               machine("o2", "OptiMPP 2", specs=[spec("Pour", None)])]
         tiles = build(ms)["needs_you"]["tiles"]
@@ -255,17 +281,50 @@ class TestNeedsYou:
         t = tiles[0]
         assert t["cause"] == "QC due"
         assert [m["uid"] for m in t["members"]] == ["o1", "o2"]
-        assert t["names"] == "OptiMPP 1 and OptiMPP 2"
 
-    def test_a_tile_links_to_the_section_that_explains_it(self):
-        one = build([machine("gc1", specs=[spec("IBP", False)])])["needs_you"]["tiles"][0]
-        assert one["href"] == "/instruments/gc1#qc"
-        cal = build([machine("a", maint=[task("calibration", "RED")], specs=[spec("X", True)])])
-        assert cal["needs_you"]["tiles"][0]["href"] == "/instruments/a#maintenance"
+    def test_a_tile_says_the_cause_and_the_next_step_never_the_instruments(self):
+        """The words a tile draws are its cause, its next step and its link.
+        None of them may name an instrument (the table row does) or carry a
+        number (a count beside the pill's count was the third telling)."""
+        ms = [machine("o1", "OptiMPP 1", specs=[spec("Cloud Point", False, sample="STD-1")]),
+              machine("pm1", "Pensky-Martens 1", specs=[spec("Flash Point", False, sample="STD-2")]),
+              machine("dma", "Anton Paar DMA 4500", specs=[spec("Density", True)],
+                      maint=[task("calibration", "RED")]),
+              machine("k", "Koehler K23000", specs=[spec("Vapour", None, sample="STD-1")]),
+              machine("c", "Cetane Bench", specs=[spec("CN", True)], maint=[task("pm", "RED")]),
+              machine("q", "Quiet One", running=False, module_state="stopped",
+                      specs=[spec("X", True)])]
+        tiles = build(ms)["needs_you"]["tiles"]
+        assert len(tiles) == 5
+        titles = [m["title"] for m in ms] + ["STD-1", "STD-2"]
+        for t in tiles:
+            said = " ".join([t["cause"], t["next"]["text"], t["link"]])
+            assert "names" not in t and "detail" not in t, t
+            for title in titles:
+                assert title not in said, (title, said)
+            assert not re.search(r"\d", said), said
+
+    def test_the_next_step_belongs_to_the_cause_not_to_one_instrument(self):
+        """A tile with one member and a tile with five say the same next
+        step for the same cause: the step is the remedy for the cause, and
+        the instrument-specific step ("Run STD-1") lives on the record."""
+        one = build([machine("a", specs=[spec("X", None)])])["needs_you"]["tiles"][0]
         two = build([machine("a", specs=[spec("X", None)]),
-                     machine("b", specs=[spec("X", None)])])["needs_you"]["tiles"][0]
-        # a merged tile goes to the list filtered to exactly its members
-        assert two["href"] == "/?cause=" + two["key"]
+                     machine("b", specs=[spec("Y", None)])])["needs_you"]["tiles"][0]
+        assert one["next"]["text"] == two["next"]["text"] == "Run the QC standard"
+        assert one["link"] == "Show it" and two["link"] == "Show them"
+
+    def test_a_tile_filters_the_list_to_its_members(self):
+        """A nameless tile that jumped to one record would be a mystery jump.
+        It filters the table in place to exactly its members, where each row
+        names the instrument and opens its record (no dead end, §0.3)."""
+        p = build([machine("gc1", specs=[spec("IBP", False)]),
+                   machine("a", maint=[task("calibration", "RED")], specs=[spec("X", True)]),
+                   machine("b", maint=[task("calibration", "RED")], specs=[spec("X", True)])])
+        for t in p["needs_you"]["tiles"]:
+            assert t["href"] == "/?cause=" + t["key"]
+            assert sorted(m["uid"] for m in t["members"]) == sorted(
+                r["uid"] for r in p["instruments"] if r["cause"] and r["cause"]["key"] == t["key"])
 
     def test_at_most_six_tiles_and_the_rest_are_counted_not_dropped(self):
         """Seven causes do not fit. The sixth tile becomes "+2 more" linking
@@ -286,6 +345,8 @@ class TestNeedsYou:
         more = [t for t in ny["tiles"] if t.get("more")]
         assert len(more) == 1 and shown + more[0]["more"] == 8
         assert more[0]["href"] == "/?filter=needs"
+        said = " ".join([more[0]["cause"], more[0]["next"]["text"], more[0]["link"]])
+        assert not re.search(r"\d", said), said
 
     def test_worst_cause_first(self):
         ms = [machine("d", "D", specs=[spec("X", None)]),
@@ -308,6 +369,51 @@ class TestNeedsYou:
         inst = c.get("/api/ui/instruments").get_json()
         assert inst["needs_you"]["count"] == live["needs_you"]
         assert live["needs_you"] > 0, "the seed should have something that needs you"
+
+
+class TestTheBellAgreesWithTheCard:
+    """§0.2: two counts of one fact may not disagree. Round 2's critic found
+    the calibration bell line counting every instrument with an overdue
+    calibration while its "Show them" link (and the tile) keyed on the CAUSE,
+    which "QC due" and "QC out of spec" outrank. Alpha (calibration only),
+    Beta (QC due + calibration), Gamma (QC out of spec + calibration): the
+    bell said "2 instruments … Alpha and Beta" and its link listed 1.
+
+    The rule now: a bell line that links to the list says exactly the
+    instruments that list shows, because both key on the same cause."""
+
+    MS = [machine("alpha", "Alpha", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
+          machine("delta", "Delta", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
+          machine("beta", "Beta", specs=[spec("X", None)], maint=[task("calibration", "RED")]),
+          machine("gamma", "Gamma", specs=[spec("X", False)], maint=[task("calibration", "RED")]),
+          machine("eps", "Eps", specs=[spec("Y", None)]),
+          machine("zeta", "Zeta", specs=[spec("X", False)])]
+
+    def _bell(self):
+        ready = {m["machine_uid"]: ui_live.readiness(m, "") for m in self.MS}
+        return ui_live.conditions(machines=self.MS, ready=ready, overrides={}, round_=None,
+                                  audit_spool=0, live_road=None, certificates=None,
+                                  href=lambda u, s: "/instruments/%s#%s" % (u, s), now=NOW)
+
+    def test_the_repro(self):
+        cal = [i for i in self._bell() if i["key"].startswith("caldue")]
+        assert [i["message"] for i in cal] == ["2 instruments are overdue for calibration: Alpha and Delta."]
+        assert cal[0]["href"] == "/?cause=ok_but-cal"
+
+    def test_every_bell_line_to_the_list_names_what_the_list_shows(self):
+        p = build(self.MS)
+        title = {m["machine_uid"]: m["title"] for m in self.MS}
+        linked = [i for i in self._bell() if i["href"].startswith("/?cause=")]
+        assert {i["href"] for i in linked} == {"/?cause=ok_but-cal", "/?cause=ok_but-qc",
+                                               "/?cause=not_ok-qc"}, linked
+        for i in linked:
+            key = i["href"].split("=", 1)[1]
+            shown = [title[r["uid"]] for r in p["instruments"] if r["cause"] and r["cause"]["key"] == key]
+            assert len(shown) == 2, (key, shown)
+            for t in shown:
+                assert t in i["message"], (t, i["message"])
+            for t in set(title.values()) - set(shown):
+                assert not re.search(r"\b%s\b" % t, i["message"]), (t, i["message"])
 
 
 class TestTheFleetPill:
@@ -535,3 +641,13 @@ class TestThePages:
         app, _ = _seeded(tmp_path)
         body = app.test_client().get("/").get_data(as_text=True)
         assert len(re.findall(r"<h1\b", body)) == 1
+
+    def test_the_title_is_in_the_topbar_before_the_view_seg(self, tmp_path):
+        """§3.2: an h1-sized "Instruments" then the List · Floor map seg, as
+        GC hub and LEM's Settings do. Saying the title a second time in a
+        page-head below it would be the page repeating itself."""
+        app, _ = _seeded(tmp_path)
+        body = app.test_client().get("/").get_data(as_text=True)
+        bar = body[body.index('data-testid="topbar"'):body.index("</header>", body.index('data-testid="topbar"'))]
+        assert re.search(r"<h1[^>]*>Instruments</h1>", bar), bar[:400]
+        assert bar.index("<h1") < bar.index('data-testid="view-seg"')

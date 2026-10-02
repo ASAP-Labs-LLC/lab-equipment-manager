@@ -6,6 +6,8 @@
 //   parseView(search) / viewQuery(view)   the address bar is the view (§1)
 //   filterRows(rows, view)                which instruments a view shows
 //   chips(data, view, causeWords)         the view chips: places and views, never counts
+//   tileWords(tile, view)                 what a Needs-you tile draws: cause, next step, link
+//   needsCaption(needsYou, failedAt)      the card's caption: never a count
 //   when(iso, nowMs)                      "09:05", "Wed 15:04", "3 Aug"
 //   searchNote / searchEmpty / searchFailed   what the find box searched, in words
 //   searchRows(answer, hrefFor, opts)     /api/search results as links
@@ -94,6 +96,30 @@
                        next: { filter: v.filter, level: on ? '' : lv.uid, cause: v.cause } });
         }
         return out;
+    }
+
+    const lowerFirst = (s) => { s = String(s || ''); return s ? s.charAt(0).toLowerCase() + s.slice(1) : s; };
+
+    /** A Needs-you tile's words. Its cause, the next step for that cause and
+        a link that filters the table to its rows; never a member's name and
+        never a count (the rows name them, the pill counts the fleet). The
+        tile whose cause is the current view is pressed, and its link is the
+        way back to the whole list. */
+    function tileWords(t, view) {
+        const active = !!(view && view.cause && t && t.key === view.cause);
+        if (t && t.key === 'more') {
+            return { head: t.cause, next: (t.next && t.next.text) || '', link: t.link, active: false };
+        }
+        return { head: (t && t.cause) || '',
+                 next: t && t.next && t.next.text ? 'Next: ' + lowerFirst(t.next.text) : '',
+                 link: active ? 'Show all' : ((t && t.link) || 'Show them'), active };
+    }
+
+    /** The card's caption. No count: "10 need you" has its one home in the
+        nav. A failed background refresh is said, never hidden. */
+    function needsCaption(ny, failedAt, nowMs) {
+        if (failedAt) return 'Couldn’t refresh since ' + when(failedAt, nowMs) + ' · showing the list as last read';
+        return ny && ny.count ? 'Worst first · updates by itself' : '';
     }
 
     const pad = (n) => String(n).padStart(2, '0');
@@ -192,7 +218,7 @@
             String(ev.key || '').toLowerCase() === 'k';
     }
 
-    const api = { parseView, viewQuery, filterRows, chips, when, searchNote, searchEmpty, searchFailed,
+    const api = { parseView, viewQuery, filterRows, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
                   searchRows, showLoading, isFindKey, LOADING_AFTER_MS };
     root.LEMInstruments = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
