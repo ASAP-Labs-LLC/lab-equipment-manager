@@ -1,11 +1,11 @@
 """Run the editor's reorder routine for real, in node.
 
-The markup tests in test_checklist_editor_ui.py can prove the drag is *wired*;
+The markup tests in test_round_editor.py can prove the drag is *wired*;
 they cannot prove a reorder produces the right list. And reading the code was not
 enough last time — the first drag implementation was cancelled by its own guard on
 every attempt and looked fine in every static check.
 
-So `tests/js/reorder.mjs` pulls `moveItem` straight out of checklists.html and
+So `tests/js/round_edit.mjs` runs `moveItem` from the shipped round editor and
 exercises it, including the two cases most likely to be wrong: the selected row
 following its item, and a subtask dragged above its parent (which must detach,
 because a parent may only sit above its child).
@@ -16,13 +16,16 @@ from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).parent / "js" / "reorder.mjs"
+SCRIPT = Path(__file__).parent / "js" / "round_edit.mjs"
 LAYOUT = Path(__file__).parent / "js" / "layout.mjs"
 LEMJS = Path(__file__).parent / "js" / "lemjs.mjs"
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
 def test_the_reorder_routine_behaves():
+    """The old editor's moveItem lived in checklists.html; the round editor
+    (piece 10) carries it as LEMRoundEditLogic.moveItem, and
+    tests/js/round_edit.mjs runs the same cases against the shipped file."""
     proc = subprocess.run(["node", str(SCRIPT)], capture_output=True, text=True,
                           timeout=60)
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -32,9 +35,10 @@ def test_the_reorder_routine_behaves():
 def test_it_is_reading_the_shipped_code():
     """If moveItem were renamed or removed, the script must fail loudly rather
     than quietly test nothing."""
-    src = (Path(__file__).parent.parent / "templates" / "checklists.html")
+    src = (Path(__file__).parent.parent / "static" / "js" / "round_edit.js")
     assert "function moveItem(" in src.read_text(encoding="utf-8")
-    assert "checklists.html" in SCRIPT.read_text(encoding="utf-8")
+    assert "round_edit.js" in SCRIPT.read_text(encoding="utf-8")
+    assert "moveItem(" in SCRIPT.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node not installed")

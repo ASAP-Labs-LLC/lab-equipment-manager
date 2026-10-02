@@ -30,9 +30,9 @@ from web_app import create_app
 
 # Every page that includes the shared nav. The stamp lives there so it cannot
 # be on some pages and not others.
-# (the round, /checklists/<slot>, is a shell page: its #app-version is
-# checked with the others in tests/test_ui_shell_pages.py)
-PAGES = ("/", "/floor", "/maintenance", "/checklists/edit", "/logs")
+# (the round, /checklists/<slot>, and the round editor, /checklists/edit, are
+# shell pages: their #app-version is checked in tests/test_ui_shell_pages.py)
+PAGES = ("/", "/floor", "/maintenance", "/logs")
 
 
 @pytest.fixture

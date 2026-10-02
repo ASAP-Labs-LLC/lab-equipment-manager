@@ -35,9 +35,9 @@ ROOT = Path(__file__).resolve().parent.parent
 T = ROOT / "templates"
 STATIC = ROOT / "static"
 
-SHELL_PAGES = ["/settings", "/help"]
+SHELL_PAGES = ["/settings", "/help", "/checklists/edit", "/checklists/edit/new", "/checklists/trends"]
 # the pages still drawn by _nav.html that have a Sign in of their own
-OLD_PAGES = ["/", "/checklists/edit", "/maintenance", "/logs"]
+OLD_PAGES = ["/", "/maintenance", "/logs"]
 
 
 class StubAuth:
@@ -106,7 +106,7 @@ class TestOneSheet:
         uses = [p.name for p in T.glob("*.html") if 'id="signin-sheet"' in p.read_text()]
         assert uses == ["_signin.html"], uses
 
-    @pytest.mark.parametrize("name", ["home.html", "checklists.html", "maintenance.html", "logs.html"])
+    @pytest.mark.parametrize("name", ["home.html", "round_edit.html", "maintenance.html", "logs.html"])
     def test_no_page_sends_you_to_the_floor_to_sign_in(self, name):
         src = (T / name).read_text()
         assert "the sign-in dialog lives there" not in src
@@ -259,6 +259,10 @@ class TestTheActsThatWait:
         src = (T / "maintenance.html").read_text()
         assert re.search(r'<textarea\b[^>]*id="done-note"[^>]*\brequired\b', src)
 
-    def test_a_tick_waits_for_sign_in(self):
-        src = (T / "checklists.html").read_text()
-        assert re.search(r"needAuth\([^)]*'tick'", src), "a signed-out tick must open 'Sign in to tick'"
+    def test_saving_a_round_waits_for_sign_in(self):
+        """The round's own tick is tests/test_round_page.py's; the editor's
+        Save is gated, and a 401 mid-session opens the same sheet."""
+        src = (T / "round_edit.html").read_text()
+        assert re.search(r'id="ed-save"[^>]*data-gated="save the round"', src)
+        js = (STATIC / "js" / "round_edit.js").read_text()
+        assert "LEMSignIn.need('save the round', save)" in js

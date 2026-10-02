@@ -36,9 +36,10 @@ T = ROOT / "templates"
 JS = ROOT / "static" / "js"
 CSS = ROOT / "static" / "css"
 
-SHELL_PAGES = ["/settings", "/help", "/checklists/opening"]
+SHELL_PAGES = ["/settings", "/help", "/checklists/opening", "/checklists/edit",
+               "/checklists/edit/new?slot=opening", "/checklists/trends"]
 # pages still drawn by the old _nav.html (later pieces replace them)
-OLD_PAGES = ["/", "/floor", "/maintenance", "/checklists/edit", "/logs", "/checklists/trends"]
+OLD_PAGES = ["/", "/floor", "/maintenance", "/logs"]
 WALL_PAGES = ["/qc"]
 NAV = [("instruments", "Instruments", "/"), ("checklists", "Checklists", "/checklists"),
        ("qc", "QC", None), ("log", "Log", "/logs"), ("settings", "Settings", "/settings")]

@@ -54,6 +54,7 @@ more of it should be added.
 """
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -939,7 +940,8 @@ class TestThePagesReadTheStatusTheyGetBack:
         assert "{history: []}" not in src
 
     def test_the_checklist_archive_tells_unreadable_from_empty(self):
-        src = _tpl("checklists.html")
+        src = (Path(__file__).resolve().parent.parent / "static" / "js"
+               / "round_archive.js").read_text(encoding="utf-8")
         assert "This is not an empty archive" in src
 
     def test_the_maintenance_page_tells_unreadable_from_nothing_done(self):

@@ -253,8 +253,9 @@ class TestNothingIsAskedThroughANativeBox:
 
     #: THE FLOOR, AND ONLY THE FLOOR — deliberately, and said out loud rather
     #: than left as a silent gap. `maintenance.html` still asks for a
-    #: completion note through a `prompt()` and `checklists.html` still deletes
-    #: through two `confirm()`s. Both pages need this sheet ported to them and
+    #: completion note through a `prompt()` (the old checklists.html, which
+    #: deleted through two `confirm()`s, is gone: its editor deletes through a
+    #: sheet). That page needs this sheet ported to them and
     #: neither has it yet; listing them here would make this a red test about
     #: work nobody has claimed, and quietly dropping them would make the class
     #: name a lie. When the sheet moves, they go in the tuple.
@@ -664,8 +665,7 @@ class TestTheWordsBuiltInJavaScriptOnThePagesWithNoHarness:
 
     #: floor.html is excluded — floorboot.mjs runs it and reads the markup it
     #: actually produces, which is strictly better than this.
-    SCRIPTED = ("home.html", "logs.html", "maintenance.html",
-                "checklists.html")
+    SCRIPTED = ("home.html", "logs.html", "maintenance.html")
 
     #: Never prose. `machine` alone is a query-string key and a CSV column;
     #: the rest are identifiers the wire contract is written on.
