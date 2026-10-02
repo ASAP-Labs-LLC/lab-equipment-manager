@@ -191,6 +191,66 @@ def test_the_tick_shows_within_a_frame_stays_and_a_second_tap_sends_nothing(drv,
     assert "Cody" in _rows(d)[0].find_element(By.CSS_SELECTOR, ".rby").text
 
 
+HOLD_POSTS = """
+window.__release = [];
+const f0 = window.fetch;
+window.fetch = function (u, o) {
+  if (!(o && o.method === 'POST')) return f0.apply(this, arguments);
+  const args = arguments, self = this;
+  return new Promise(res => window.__release.push(() => res(f0.apply(self, args))));
+};
+"""
+
+
+def test_the_header_and_bench_bar_agree_with_a_row_that_is_still_saving(drv, server, opening):
+    """Round 1's critic, with 4 s of latency: the row said ticked and
+    "Saving…", the pill "0 of 3 done", the bench bar "Nothing ticked yet
+    today". A page that contradicts itself for as long as the network takes
+    is the P1 bug's cousin: the person reads the header and taps again. Here
+    the POST is held open; the header must already count the tick and the
+    bench bar must say it is saving, then "Saved" once it is answered."""
+    d = drv
+    _sign_in(d)
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 3)
+    _js(d, HOLD_POSTS)
+    _rows(d)[0].click()
+    assert _rows(d)[0].get_attribute("data-state") == "saving"
+    assert d.find_element(By.ID, "round-pill-text").text == "1 of 3 done"
+    assert d.find_element(By.ID, "bb-saved-text").text == "1 tick saving…"
+    assert d.find_element(By.ID, "bench-bar").get_attribute("data-save") == "saving"
+    time.sleep(1.0)                                    # still held: still agreeing
+    assert d.find_element(By.ID, "round-pill-text").text == "1 of 3 done"
+    _js(d, "window.__release.forEach(f => f());")
+    assert _wait(lambda: d.find_element(By.ID, "bb-saved-text").text.startswith("Saved "))
+    assert _rows(d)[0].get_attribute("data-state") == "done"
+    assert d.find_element(By.ID, "round-pill-text").text == "1 of 3 done"
+
+
+def test_a_session_gone_on_the_server_asks_for_sign_in_and_the_tick_lands(drv, server, opening):
+    """Round 1: the server had dropped the session, the page still showed
+    Cody, and a tap ended in "Not saved: Authentication required" with no way
+    on but a reload. Now the row reverts, the sign-in sheet opens in place,
+    and after signing in the tick lands without a second tap."""
+    d = drv
+    _sign_in(d)
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 3)
+    d.delete_all_cookies()                             # the server forgets us
+    first = opening["items"][0]["uid"]
+    _rows(d)[0].click()
+    assert _wait(lambda: d.find_element(By.ID, "signin-sheet").get_attribute("open") is not None)
+    assert _rows(d)[0].get_attribute("data-checked") == ""
+    assert "signed out" in _rows(d)[0].find_element(By.CSS_SELECTOR, ".rerr").text
+    assert d.find_element(By.ID, "bb-out").is_displayed()          # the bench bar agrees
+    d.find_element(By.ID, "signin-user").send_keys("Cody")
+    d.find_element(By.ID, "signin-pass").send_keys(PASSWORD)
+    d.find_element(By.ID, "signin-ok").click()
+    assert _wait(lambda: (server_state(server, opening["uid"]).get(first) or {}).get("checked"))
+    assert _wait(lambda: _rows(d)[0].get_attribute("data-state") == "done")
+    assert d.find_element(By.ID, "bb-name").text == "Cody"
+
+
 def test_t4b_four_clicks_one_typed_two_screens_and_three_of_three_with_names(drv, server, opening):
     d = drv
     _sign_in(d)

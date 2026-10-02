@@ -183,6 +183,74 @@ const flush = () => new Promise(res => setTimeout(res, 0));
   check('...posting the trimmed value', posts[0].body, { item_uid: 'b', value: '2900', day: '2026-10-01' });
 }
 
+// ── the header moves with the row, in the same task ─────────────────────────
+// Round 1's critic, at 4 s of latency: the row said ticked and "Saving…" while
+// the pill said "0 of 4 done" and the bench bar "Nothing ticked yet today".
+// The row was painted on the tap but the header only after the answer, so
+// for as long as the network took the page contradicted itself. The round
+// now calls deps.head() after every batch of row paints: the tap, the
+// answer, a merge that changed anything, and a refused value.
+{
+  const heads = [];
+  const posts = [];
+  const r = L.createRound({
+    send: (kind, cl, body) => new Promise(res => posts.push({ res })),
+    paint: () => {},
+    head: () => heads.push(L.saveWords(r.counts(), r.lastSaved()).text + ' | ' + r.counts().done),
+    user: () => 'Cody',
+    now: () => new Date('2026-10-01T08:02:00'),
+  });
+  r.load(day(), 'opening');
+  r.tap('a');
+  check('the tap repaints the header at once, before any answer',
+        heads, ['1 tick saving… | 1']);
+  posts[0].res({ ok: true, body: { ok: true } });
+  await flush();
+  check('...and again when the answer lands', heads[heads.length - 1], 'Saved 08:02 · all ticks on the server | 1');
+  const n = heads.length;
+  const seq = r.beginFetch();
+  r.merge(day({ 'cl-open': { a: { checked: true, user: 'Cody', at: '2026-10-01T08:02:00', value: '' },
+                             c: { checked: true, user: 'Ryan', at: '2026-10-01T08:03:00', value: '' } } }), seq);
+  check('a merge that changed a row repaints the header', [heads.length, heads[heads.length - 1].split(' | ')[1]], [n + 1, '2']);
+  r.merge(day({ 'cl-open': { a: { checked: true, user: 'Cody', at: '2026-10-01T08:02:00', value: '' },
+                             c: { checked: true, user: 'Ryan', at: '2026-10-01T08:03:00', value: '' } } }), r.beginFetch());
+  check('a merge that changed nothing does not', heads.length, n + 1);
+}
+
+// ── a session that expired on the server asks for sign-in, in place ─────────
+// Round 1: the server had dropped the session, the page still thought Cody
+// was signed in, and a tap ended in "Not saved: Authentication required" with
+// no way forward but a reload. A 401 now reverts the row, says why in words
+// a person can act on, and hands deps.expired() the act to run again after
+// sign-in, so the person signs in and the tick lands without a second tap.
+{
+  const posts = [];
+  const expired = [];
+  const r = L.createRound({
+    send: (kind, cl, body) => new Promise(res => posts.push({ body, res })),
+    paint: () => {},
+    expired: (act, again) => expired.push([act, again]),
+    user: () => 'Cody',
+    now: () => new Date('2026-10-01T08:02:00'),
+  });
+  r.load(day(), 'opening');
+  r.tap('a');
+  posts[0].res({ ok: false, status: 401, error: 'Authentication required', body: { error: 'Authentication required' } });
+  await flush();
+  check('a 401 reverts the row', r.row('a').st.checked, false);
+  check('...says what to do', r.row('a').error, 'Not saved: you were signed out. Sign in and it saves.');
+  check('...and asks for sign-in with the act to run again', expired.map(e => e[0]), ['tick']);
+  expired[0][1]();
+  check('running it again is a fresh absolute tick', [posts.length, posts[1].body.checked], [2, true]);
+  posts[1].res({ ok: false, status: 503, error: 'LabCore is busy.', body: {} });
+  await flush();
+  check('a refusal that is not a 401 does not ask for sign-in', expired.length, 1);
+  r.save('b', '2900');
+  posts[2].res({ ok: false, status: 401, error: 'Authentication required', body: {} });
+  await flush();
+  check('a reading signed out asks to save this reading', expired.map(e => e[0]), ['tick', 'save this reading']);
+}
+
 // ── signed out, nothing is sent ─────────────────────────────────────────────
 {
   const { r, posts } = harness({ user: '' });
@@ -197,7 +265,12 @@ check('-1.5', L.parseReading('number', '-1.5'), { ok: true, value: '-1.5' });
 check('.5', L.parseReading('number', '.5'), { ok: true, value: '.5' });
 // A comma is refused, not guessed at: "1,000" is a thousand to one person and
 // one to another, and a cylinder read as 1 PSI is a false alarm in the trend.
-for (const bad of ['2900psi', 'nan', 'inf', '1e3', '', '2.9.0', '1,000.5', '2,5', '1,000']) {
+// "-0" is not a reading anybody took: a signed zero is a slip (round 1's
+// critic saw it saved), so it is refused with the sentence that fixes it.
+check('-0 says to drop the sign', L.parseReading('number', '-0'), { ok: false, error: 'Enter 0 without a sign' });
+check('+0.0 too', L.parseReading('number', '+0.0').ok, false);
+check('0 itself is a reading', L.parseReading('number', '0'), { ok: true, value: '0' });
+for (const bad of ['2900psi', 'nan', 'inf', '1e3', '', '2.9.0', '1,000.5', '2,5', '1,000', '-0', '-.0']) {
   check(`refused: ${JSON.stringify(bad)}`, L.parseReading('number', bad).ok, false);
 }
 check('text takes anything that is not blank', L.parseReading('text', ' half full '), { ok: true, value: 'half full' });

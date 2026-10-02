@@ -36,6 +36,8 @@
             return t ? { ok: true, value: t } : { ok: false, error: 'Write the note first, then Save' };
         }
         if (!NUM.test(t)) return { ok: false, error: 'Enter a number, like 2900' };
+        // a signed zero is a slip, not a reading: say the fix, do not guess
+        if (/^[-+]/.test(t) && Number(t) === 0) return { ok: false, error: 'Enter 0 without a sign' };
         return { ok: true, value: t };
     }
 
@@ -122,8 +124,11 @@
 
     // ── the round's state, over injected deps ──────────────────────────────
     /** deps: send(kind 'toggle'|'value', checklistUid, body) -> Promise<{ok,
-        error, body}>, paint(uid), user() -> '' signed out, now() -> Date,
-        settled() optional, after any answer. */
+        status, error, body}>, paint(uid), user() -> '' signed out, now() -> Date.
+        Optional: head(), after every batch of row paints, so the pill and the
+        bench bar never disagree with a row; expired(act, again), when a save
+        came back 401 (the server's session is gone): ask for sign-in, then
+        run again(); settled(), after any answer. */
     function createRound(deps) {
         let rows = [];
         let byUid = new Map();
@@ -190,7 +195,9 @@
             return out;
         }
 
-        function write(r, members, kind, body, next) {
+        function head() { if (deps.head) deps.head(); }
+
+        function write(r, members, kind, body, next, act, again) {
             const prev = members.map(x => Object.assign({}, x.st));
             const at = _iso(deps.now());
             const who = deps.user();
@@ -202,6 +209,7 @@
             });
             pending++;
             members.forEach(x => deps.paint(x.uid));
+            head();
             body.day = day;
             // sent now, in the same task as the paint: nothing can come between
             let sent;
@@ -216,12 +224,16 @@
                         x.stamp = seq;
                         if (!(res && res.ok)) x.st = prev[i];
                     });
+                    const gone = !!(res && !res.ok && res.status === 401);
                     if (res && res.ok) lastSaved = at;
                     else {
-                        r.error = 'Not saved: ' + String((res && res.error) || 'LEM did not say why.');
+                        r.error = gone ? 'Not saved: you were signed out. Sign in and it saves.'
+                            : 'Not saved: ' + String((res && res.error) || 'LEM did not say why.');
                         r.unsaved = true;
                     }
                     members.forEach(x => deps.paint(x.uid));
+                    head();
+                    if (gone && deps.expired && again) deps.expired(act, again);
                     if (deps.settled) deps.settled();
                 });
         }
@@ -232,7 +244,8 @@
             if (r.saving || r.st.checked) return 'none';    // Undo is the only way back
             if (r.kind !== 'tick') return 'focus';
             if (!deps.user()) return 'signin';
-            write(r, group(r), 'toggle', { item_uid: r.uid, checked: true }, () => ({ checked: true }));
+            write(r, group(r), 'toggle', { item_uid: r.uid, checked: true }, () => ({ checked: true }),
+                'tick', () => tap(uid));
             return 'tick';
         }
 
@@ -241,9 +254,11 @@
             if (!r || r.saving || !r.st.checked) return 'none';
             if (!deps.user()) return 'signin';
             if (r.kind === 'tick') {
-                write(r, group(r), 'toggle', { item_uid: r.uid, checked: false }, () => ({ checked: false }));
+                write(r, group(r), 'toggle', { item_uid: r.uid, checked: false }, () => ({ checked: false }),
+                    'undo', () => undo(uid));
             } else {
-                write(r, [r], 'value', { item_uid: r.uid, value: '' }, () => ({ checked: false, value: '' }));
+                write(r, [r], 'value', { item_uid: r.uid, value: '' }, () => ({ checked: false, value: '' }),
+                    'undo', () => undo(uid));
             }
             return 'untick';
         }
@@ -253,9 +268,10 @@
             if (!r || (r.kind !== 'number' && r.kind !== 'text')) return 'none';
             if (r.saving) return 'none';
             const p = parseReading(r.kind, raw);
-            if (!p.ok) { r.error = p.error; deps.paint(r.uid); return 'refused'; }
+            if (!p.ok) { r.error = p.error; deps.paint(r.uid); head(); return 'refused'; }
             if (!deps.user()) return 'signin';
-            write(r, [r], 'value', { item_uid: r.uid, value: p.value }, () => ({ checked: true, value: p.value }));
+            write(r, [r], 'value', { item_uid: r.uid, value: p.value }, () => ({ checked: true, value: p.value }),
+                'save this reading', () => save(uid, raw));
             return 'saving';
         }
 
@@ -279,6 +295,7 @@
                 }
             }
             changed.forEach(u => deps.paint(u));
+            if (changed.length) head();
             return { restructure: false, changed };
         }
 
@@ -314,8 +331,20 @@
         paint: (uid) => paintRow(uid),
         user: () => (root.LEMSignIn ? root.LEMSignIn.user() : (document.body.dataset.user || '')),
         now: () => new Date(),
-        settled: () => { paintHead(); if (LV) LV.pollNow(); },
+        head: () => paintHead(),
+        expired: (act, again) => signedOutHere(act, again),
+        settled: () => { if (LV) LV.pollNow(); },
     });
+
+    /** The server dropped the session while the page still showed a name:
+        say so everywhere a name is shown (the same event signin.js sends),
+        then ask for sign-in in place with the act waiting. */
+    function signedOutHere(act, again) {
+        document.body.dataset.user = '';
+        document.body.classList.add('anon');
+        document.dispatchEvent(new CustomEvent('lem:auth', { detail: { user: '' } }));
+        gate(act, again);
+    }
 
     function rowEl(uid) {
         return $('lists').querySelector('.rrow[data-item="' + (root.CSS && CSS.escape ? CSS.escape(uid) : uid) + '"]');
@@ -375,7 +404,6 @@
             }
         }
         if (input) markDirty(el, r);
-        if (!r.saving) paintHead();
     }
 
     /** A saved reading hides its Save until the value is changed. */
@@ -428,6 +456,9 @@
         main.dataset.state = state;
         $('lists').hidden = state !== 'ready';
         $('round-reading').hidden = state !== 'reading';
+        // busy only while it is the thing on screen: a hidden spinner that
+        // still says aria-busy reads as "loading" to anything that asks
+        $('round-reading').setAttribute('aria-busy', state === 'reading' ? 'true' : 'false');
         $('round-empty').hidden = state !== 'empty';
         $('round-failed').hidden = state !== 'failed';
     }
@@ -515,13 +546,12 @@
                     return;
                 }
                 const m = round.merge(res.body, s);
-                if (m.restructure) {
-                    // someone edited the round: rebuild, but never under a save or a typed value
-                    if (round.counts().saving || anyHeld()) return;
-                    round.load(res.body, SLOT);
-                    build();
-                    show(round.lists().length ? 'ready' : 'empty');
-                }
+                if (!m.restructure) { paintHead(); return; }   // the clock moves "Overdue" too
+                // someone edited the round: rebuild, but never under a save or a typed value
+                if (round.counts().saving || anyHeld()) return;
+                round.load(res.body, SLOT);
+                build();
+                show(round.lists().length ? 'ready' : 'empty');
             });
     }
 

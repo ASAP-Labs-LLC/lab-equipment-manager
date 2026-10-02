@@ -87,7 +87,7 @@
   </section>
 
   {#- every state that is not a round, each its own sentence (A.1) -#}
-  <section class="card round-note" id="round-reading" data-testid="round-reading"{% if R %} hidden{% endif %} aria-busy="true">
+  <section class="card round-note" id="round-reading" data-testid="round-reading"{% if R %} hidden{% endif %} aria-busy="{{ 'false' if R else 'true' }}">
     <div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
     <p>Reading today's {{ slot }} round from LabCore…</p>
   </section>
