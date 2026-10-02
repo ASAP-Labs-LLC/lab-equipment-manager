@@ -175,21 +175,37 @@ class TestChromelessWithAWayHome:
 
 # ── cost ────────────────────────────────────────────────────────────────────
 
+# the live feed's transfer facts (ui_transfer.read_facts), as the fake store
+# records them (the first 60 characters of each SELECT)
+TRANSFER_FACTS = r"\b(result_confli|bench_token|bench_cursor)|^SELECT c\.machine_uid, c\.stats, c\.last_seen"
+
+
 class TestZeroLabCoreOps:
     def test_floor_page_and_its_polls_read_nothing_at_all(self, seeded):
-        """Memory only: not LabCore, and not the store either."""
+        """Memory only: not LabCore, and the wall's own routes not the store
+        either. The one local read in the window is the live feed's
+        transfer facts (T-P12's foot line, every page's: unresolved
+        conflicts, re-enrolments, bench cursors), three SELECTs on the local
+        store remembered for ui_transfer's TTL, so ten polls read them once.
+        That read is the app shell's, not the wall's, and it never reaches
+        LabCore; it is pinned here so a second one would show."""
         app, store, lab = seeded
         c = app.test_client()
         store.reads.clear()
         lab.calls.clear()
         c.get("/floor")
+        assert store.reads == [], store.reads
         cursor = None
         for _ in range(10):
             live = c.get("/api/ui/live" + ("?since=" + cursor if cursor else "")).get_json()
             cursor = live["cursor"]
+            n = len(store.reads)
             assert c.get("/api/ui/wall/floor").status_code == 200
+            assert len(store.reads) == n, store.reads[n:]
         assert lab.calls == [], lab.calls
-        assert store.reads == [], store.reads
+        assert len(store.reads) <= 3, store.reads
+        for q in store.reads:
+            assert re.search(TRANSFER_FACTS, q), q
 
     def test_qc_page_and_its_polls_cost_labcore_nothing(self, seeded):
         app, store, lab = seeded
@@ -203,8 +219,13 @@ class TestZeroLabCoreOps:
         c.get("/wall")
         assert lab.calls == [], lab.calls
         # the chart history is a local read, and it is remembered for a
-        # minute: eleven loads and polls inside that minute read it once
-        assert len(store.reads) <= 1, store.reads
+        # minute: eleven loads and polls inside that minute read it once.
+        # The live feed's transfer facts (three local SELECTs, TTL-cached,
+        # the shell's not the wall's: see the floor test) are the rest.
+        hist = [q for q in store.reads
+                if not re.search(TRANSFER_FACTS, q)]
+        assert len(hist) <= 1, store.reads
+        assert len(store.reads) - len(hist) <= 3, store.reads
 
     def test_a_cold_server_is_not_made_to_read(self, tmp_path):
         """No snapshot yet: a TV reconnecting after a restart must not be the
