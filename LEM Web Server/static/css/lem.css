@@ -988,3 +988,85 @@ a.bay:hover { border-color: var(--border-strong); }
     .arrange-bar { flex-wrap: wrap; }
 }
 @media (prefers-reduced-motion: reduce) { .bay { transition: none; } }
+
+/* ── the data transfer (transfer §14, T-P12) ──────────────────────────────
+   GC's record anatomy, one more time: a section's title and one sentence on
+   the left, hairline .kv rows on the right. A row's value is a glyph and a
+   word on one line, the action (if the row has one) at the line's end, and
+   at most one caption line under it. Status colour lives in the glyph only. */
+.tr-kv, .cf-kv { grid-template-columns: 180px minmax(0, 1fr); }
+.tr-kv > .v, .cf-kv > .v { display: grid; row-gap: 2px; align-content: start; color: var(--text); }
+.tr-kv > div:nth-last-child(-n+2), .cf-kv > div:nth-last-child(-n+2) { border-bottom: 0; }
+.tr-line { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.tr-line .val { min-width: 0; overflow-wrap: anywhere; }
+.tr-line .glyph:not(.final):not(.held):not(.error):not(.never):not(.working) { visibility: hidden; }
+.tr-act { margin-left: auto; padding-left: var(--s3); font-weight: 600; color: var(--text); text-decoration: none; white-space: nowrap; }
+.tr-act:hover { text-decoration: underline; text-underline-offset: 2px; }
+.tr-kv > .v .caption, .cf-kv > .v .caption { padding-left: calc(10px + var(--s2)); line-height: 1.4; }
+.cf-kv > .k .caption { display: block; margin-top: 2px; }
+.tr-kv.stale { opacity: 0.6; }
+.tr-foot { margin: 0; }
+.tr-state, .tr-state[data-state="error"] { padding: 0; }
+.rec-foot { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--border-light); }
+.mono { font-family: var(--mono); font-size: 0.95em; }
+
+/* the foot's Data line: the same row as the fleet line, with a status glyph */
+.sb-data .glyph { width: 8px; height: 8px; }
+.sb-data .glyph.held::before, .sb-data .glyph.held::after { display: none; }
+.sb-data .glyph.error { width: 9px; height: 8px; }
+
+/* /results/conflicts: one row per held result. The two values are the
+   point, so they are the largest text on the row; the two buttons sit at
+   the row's end, equal weight (neither is the page's primary). */
+.cf-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-light); }
+.cf-list:empty { display: none; }
+.cf-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2) var(--s5); align-items: center;
+          padding: var(--s4) 0; border-bottom: 1px solid var(--border-light); }
+.cf-title { margin: 0 0 var(--s2); font-size: var(--fs-sm); color: var(--text); display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 var(--s2); }
+.cf-title .sep { color: var(--text-muted); }
+.cf-vals { display: grid; grid-template-columns: 150px minmax(0, 1fr); margin: 0; font-size: var(--fs-sm); row-gap: 4px; }
+.cf-vals dt { color: var(--text-muted); }
+.cf-vals dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.cf-vals .num { font-size: var(--fs-md); font-variant-numeric: tabular-nums; font-weight: 650; }
+.cf-acts { display: flex; flex-direction: column; gap: var(--s2); align-items: stretch; }
+.cf-msg { grid-column: 1 / -1; margin: 0; font-size: var(--fs-sm); }
+.cf-msg:empty { display: none; }
+.cf-msg.err { color: var(--st-error); }
+
+/* Settings › Transfer */
+.tr-block { display: grid; gap: var(--s3); padding-top: var(--s4); border-top: 1px solid var(--border-light); }
+.tr-block:first-of-type, .load-state + .tr-block { border-top: 0; padding-top: 0; }
+.tr-block[hidden] { display: none; }
+.tr-block .set-row > div:first-child { min-width: 0; flex: 1 1 280px; }
+.tr-block .set-row > .btn, .tr-block .set-row > .file-btn { flex: none; }
+.sec-ico { display: inline-grid; width: 16px; height: 16px; flex: none; color: var(--text); }
+.sec-ico svg { width: 16px; height: 16px; }
+.tr-tbl th[scope="row"] { font-weight: 500; font-size: var(--fs-sm); color: var(--text); padding: 10px var(--s3); border-bottom: 1px solid var(--border-light); }
+.tr-tbl th[scope="row"] .caption { display: block; }
+.tr-tbl td.tr-c-act { text-align: right; white-space: nowrap; }
+.tr-tbl .num { font-variant-numeric: tabular-nums; }
+.tr-reasons { margin: var(--s2) 0 0; padding-left: 1.1em; font-size: var(--fs-sm); color: var(--text); display: grid; gap: 4px; }
+.tr-reasons:empty { display: none; }
+.tr-bridge { align-items: flex-start; }
+.tr-bridge .btn[disabled] { opacity: 0.55; }
+#tr-dedupe-out .kv > .v { display: grid; gap: 4px; justify-items: start; }
+.tr-stopped { list-style: none; margin: var(--s2) 0 0; padding: 0 0 0 calc(10px + var(--s2)); display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+.tr-stopped li { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); }
+.tr-stopped .btn { min-height: 32px; }
+
+@media (max-width: 1099px) {
+    .tr-tbl .tr-c-road { display: none; }
+}
+@media (max-width: 699px) {
+    .tr-kv, .cf-kv { grid-template-columns: minmax(0, 1fr); }
+    .tr-kv > .k, .cf-kv > .k { padding-bottom: 0; border-bottom: 0; font-size: var(--fs-xs); }
+    .tr-kv > .v, .cf-kv > .v { padding-top: 2px; }
+    .tr-kv > div:nth-last-child(2), .cf-kv > div:nth-last-child(2) { border-bottom: 0; }
+    .cf-row { grid-template-columns: minmax(0, 1fr); }
+    .cf-acts { flex-direction: row; flex-wrap: wrap; }
+    .cf-acts .btn { flex: 1 1 140px; min-height: 44px; }
+    .cf-vals { grid-template-columns: 130px minmax(0, 1fr); }
+    .tr-tbl .tr-c-wait { display: none; }
+    .tr-tbl .tr-wait-inline { display: block; color: var(--text); font-weight: 600; }
+}
+.tr-wait-inline { display: none; }

@@ -476,10 +476,14 @@ class TestEveryReaderNamesTheEffectiveView:
         # hidden or not), the ids a settle just added, and the import's
         # proof, which re-hashes every legacy row the record holds — a
         # hidden row is still a row the import put there.
+        # transfer_routes.py: bridge-off's bench half (§12.1 step 5), "the
+        # bridge has pulled no reading from LabCore for 7 days" — about
+        # every row it pulled, hidden or not.
         assert files == ["bench_api.py"] * 4 + ["bridge.py"] * 2 + [
             "custody.py", "dedupe.py", "dedupe.py"] + [
             "legacy_import.py"] * 17 + ["lem_store.py"] * 4 + [
-            "log_mirror.py", "log_mirror.py", "web_app.py", "web_app.py"], allowed
+            "log_mirror.py", "log_mirror.py", "transfer_routes.py",
+            "web_app.py", "web_app.py"], allowed
 
     def test_the_check_would_catch_a_split_literal(self, tmp_path):
         bad = tmp_path / "bad.py"
