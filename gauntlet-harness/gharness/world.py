@@ -497,9 +497,14 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 "expect_audit_hits": (sum(1 for v in gw.expect_audit_hits.values() if v)
                                       if gw.expect_ops else None),
                 "injected": gw.injected,
-                # Counted from the server's store when the target has one.
-                "conflicts": self._store_count("result_conflict"),
-                "rejected": None,
+                # The server's store is the authority once a bench delivers to
+                # it (P7/P8). Until then the bench journal holds the record of
+                # what the results road decided — read here with the harness's
+                # OWN CRC reader, never the module's word. None where neither
+                # exists (v3.9): "no conflicts" and "no record of conflicts"
+                # are different sentences.
+                "conflicts": self._decision_count("conflict"),
+                "rejected": self._decision_count("rejected"),
                 "labcore_ops": gw.ops_total(),
                 "v2_syncs": v2,
                 "records_resent": srv.records_resent if (srv is not None and v2) else None,
@@ -518,6 +523,51 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 # suppress" are different sentences.
                 "suppressed_rereads": getattr(self.m, "_journal_suppressed", None),
             }
+
+        def journal_records(self):
+            """Every CRC-valid record in the bench journal, in file order, or
+            None when the target keeps no journal (v3.9)."""
+            d = self.journal_dir()
+            if not os.path.isdir(d):
+                return None
+            out = []
+            for n in sorted(os.listdir(d)):
+                if not _SEG.match(n):
+                    continue
+                with open(os.path.join(d, n), "rb") as f:
+                    for line in f.read().splitlines(True):
+                        m = _CRC_TAIL.search(line)
+                        if not m or not _crc_ok(line):
+                            continue
+                        out.append(json.loads(line[:m.start()] + b"}"))
+            return out
+
+        def _decision_count(self, kind):
+            """Conflict CELLS (`conflict`) or parked cells (`rejected`). From
+            the LEM store's result_conflict when the bench's records reach it;
+            otherwise from the bench journal."""
+            stored = None
+            if kind == "conflict" and self.store_kind() == "lem":
+                stored = self._store_count("result_conflict")
+                if stored:
+                    return stored
+            recs = self.journal_records()
+            if recs is None:
+                return stored          # the store's 0, or None: unmeasurable
+            if kind == "conflict":
+                return len({(tuple(r.get("of") or ()), c[0], c[1])
+                            for r in recs if r.get("kind") == "conflict"
+                            for c in r.get("cells") or ()})
+            return sum(1 for r in recs if r.get("kind") == kind)
+
+        def filed_cells(self, lab, test="Density"):
+            """How many `filed` records name this cell (None: no journal)."""
+            recs = self.journal_records()
+            if recs is None:
+                return None
+            return sum(1 for r in recs if r.get("kind") == "filed"
+                       for c in r.get("cells") or ()
+                       if c[0] == lab and c[1] == test)
 
         def _store_count(self, table):
             if self.store_kind() != "lem":

@@ -68,12 +68,13 @@ def test_an_armed_kill_that_is_never_reached_is_an_error(W, loaded):
     c = W()
     c.emit(3)
     # A point this worktree has plumbing for but no call site yet: the
-    # combined guard read comes with P3. (P1's journal points are reached now —
-    # K1b, K8r and T5 kill through them.)
-    c.kill_at("after_combined_read")
+    # uploader's chunk boundary comes with P8. (P1's journal points and P3's
+    # results-road points are reached now — K1b, K8r, T5 and the road's
+    # after_combined_read kill through them.)
+    c.kill_at("between_upload_chunks")
     c.poll()
     with pytest.raises(KillNeverReached) as e:
-        c.assert_killed("after_combined_read")
+        c.assert_killed("between_upload_chunks")
     assert "never called" in str(e.value)
 
 
@@ -115,9 +116,36 @@ def test_unmeasurable_counters_are_none_not_zero(W):
     c = W(road_modes={"A": "404", "B": "404"})
     c.emit(1); c.poll()
     t = c.tally("t", "t")
-    assert t["conflicts"] is None
-    assert t["expect_audit_hits"] is None
+    # A 404 bench never syncs v2: nothing re-sent can be counted.
     assert t["records_resent"] is None
+    # The bench journals the results road's decisions and sends `expect` (P3),
+    # so these ARE measured on this target — as a real 0, read from the
+    # journal on disk and the ops the gateway saw.
+    assert t["conflicts"] == 0 and t["rejected"] == 0
+    assert t["expect_audit_hits"] == 0
+    # And with no journal on disk (v3.9 keeps none) the same counters are
+    # None again, not 0: "no conflicts" and "no record of conflicts" differ.
+    import shutil
+    shutil.rmtree(c.journal_dir())
+    assert c._decision_count("conflict") is None
+    assert c._decision_count("rejected") is None
+
+
+def test_a_conflict_is_counted_from_the_benchs_own_journal(W, loaded):
+    """A3's measurement, pinned: the analyst types a cell while the bench
+    holds the reading; the conflict the bench journals is what `conflicts`
+    counts until a bench delivers its records to the LEM store (P8)."""
+    lh = loaded[0]
+    lab = lh.lab_id(0)
+    c = W()
+    c.gw.fake.sql("DELETE FROM samples WHERE lab_id = ?", [lab])
+    c.emit(1); c.poll()
+    c.gw.seed_samples([lab])
+    c.analyst_edit(lab, "0.6000")
+    c.settle(polls=3)
+    t = c.tally("t", "t")
+    assert t["conflicts"] == 1
+    assert t["analyst_overwritten"] == 0
 
 
 # ── the LEM store (v4) side of the tally, and T0 on it ─────────────────────

@@ -61,10 +61,13 @@ class CountingLabCore:
 
     def write(self, operation, params=None, source=""):
         self._note("write", operation)
-        for op in (params or {}).get("operations") or []:
+        results = []
+        for i, op in enumerate((params or {}).get("operations") or []):
             p = op.get("params") or {}
             self.cells[(p.get("lab_id"), p.get("test_name"))] = p.get("value")
-        return {"ok": True, "results": []}
+            results.append({"index": i, "ok": True})
+        # LabCore's _wop_batch answer, read per index by the guarded road.
+        return {"ok": True, "results": results}
 
     def sql(self, sql, args=None, source=""):
         self._note("sql", sql)
@@ -86,11 +89,31 @@ class CountingLabCore:
                                               "title": "Bench",
                                               "config": self.configs[uid]}]}
             return {"ok": True, "rows": []}
-        if '"samples"' in sql:
-            keys = {str(a).lower() for a in (args or [])}
-            return {"ok": True, "rows": [{"lab_id": s} for s in self.samples
-                                         if s.lower() in keys]}
+        if '"samples"' in sql or "sample_tests" in sql:
+            return self._results_read(sql, args)
         return {"ok": True, "rows": []}
+
+    def _results_read(self, sql, args):
+        """The guarded results road's one read (identity LEFT JOIN the
+        poll's cells, or cells by key): answered by real SQL over the
+        samples and cells this fake holds, so the module's own query text
+        is what is exercised, not a guess at its shape."""
+        import sqlite3
+        db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
+        db.execute('CREATE TABLE "samples" (lab_id TEXT PRIMARY KEY)')
+        db.execute("CREATE TABLE sample_tests (lab_id TEXT, test_name TEXT, "
+                   "result TEXT, updated_at TEXT, operator TEXT)")
+        db.executemany('INSERT INTO "samples" VALUES (?)',
+                       [(x,) for x in self.samples])
+        db.executemany("INSERT INTO sample_tests VALUES (?,?,?,?,?)",
+                       [(k[0], k[1], v, "2026-10-01 09:00:00", "")
+                        for k, v in self.cells.items()])
+        try:
+            rows = [dict(r) for r in db.execute(sql, list(args or []))]
+        except sqlite3.Error as exc:
+            return {"error": str(exc)}
+        return {"ok": True, "rows": rows}
 
     def is_running(self):
         return True
@@ -804,14 +827,11 @@ class TestALongOutageLosesNoResult:
     def test_more_held_results_than_the_backlog_cap_all_file(
             self, bench, lab, lem, monkeypatch):
         """D2 holds results for as long as LEM is dark — an outage over a long
-        weekend holds more than IDENTITY_BACKLOG_LIMIT (5,000) of them. The
-        identity backlog drops its OLDEST past that cap ("they stay in the
-        machine log"), which is a defensible answer for a backlog the bench
-        made itself and a silent loss for results D2 promised to file. So the
-        held results must enter the results road no faster than it drains,
-        the rest waiting in the uncapped, journal-backed factor queue. Scaled
-        down: a cap of 20 and 60 held results; all 60 file, none is lost."""
-        monkeypatch.setattr(mod, "IDENTITY_BACKLOG_LIMIT", 20)
+        weekend holds thousands of them. The identity backlog used to drop its
+        OLDEST past a 5,000 cap, a silent loss for results D2 promised to
+        file; that cap is retired (§3.2), and this pins that it stays so: far
+        more held results than one poll's identity ceiling (here 2 chunks of
+        5) all file once a road returns, none lost."""
         monkeypatch.setattr(mod, "IDENTITY_LOOKUP_CHUNK", 5)
         b = bench()
         labs = ["L-%02d" % i for i in range(60)]
@@ -831,9 +851,8 @@ class TestALongOutageLosesNoResult:
             self, bench, lab, lem, monkeypatch):
         """The same, with LabStation restarted while still dark: the held
         results come back from the journal, and must come back into the
-        uncapped queue they were waiting in — not straight into the capped
-        backlog, which would drop all but the newest 20 here."""
-        monkeypatch.setattr(mod, "IDENTITY_BACKLOG_LIMIT", 20)
+        results road, every one of them, however many polls the identity
+        ceiling makes the drain take."""
         monkeypatch.setattr(mod, "IDENTITY_LOOKUP_CHUNK", 5)
         b = bench()
         labs = ["L-%02d" % i for i in range(60)]
