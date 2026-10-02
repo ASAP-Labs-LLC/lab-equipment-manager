@@ -61,17 +61,19 @@ check('no band: no track', R.bandPos({ low: null, expected: null, high: null }, 
 
 // ── the card's sentence ─────────────────────────────────────────────────────
 const NOW = Date.parse('2026-10-01T13:30:00');
+// the card's time names its day like every time on the record (round 4):
+// "today 09:00", "yesterday 15:04", never a bare 09:00
 check('QC stop: what, against what, when, next',
   R.captionText({ lead: 'QC out of spec on 10% Recovery and 50% Recovery', std: 'AF26',
     at: '2026-09-30T15:04:24', too: '', next: 'Fix, then rerun AF26' }, NOW),
-  'QC out of spec on 10% Recovery and 50% Recovery (AF26, Wed 15:04). Next: fix, then rerun AF26.');
+  'QC out of spec on 10% Recovery and 50% Recovery (AF26, yesterday 15:04). Next: fix, then rerun AF26.');
 check('a warning behind it is in the same sentence',
   R.captionText({ lead: 'QC out of spec on Flash Point', std: 'AF26', at: '2026-10-01T09:00:00',
     too: 'calibration overdue since 21 Jun too', next: 'Fix, then rerun AF26' }, NOW),
-  'QC out of spec on Flash Point (AF26, 09:00); calibration overdue since 21 Jun too. Next: fix, then rerun AF26.');
+  'QC out of spec on Flash Point (AF26, today 09:00); calibration overdue since 21 Jun too. Next: fix, then rerun AF26.');
 check('nothing to do: no "Next:"',
   R.captionText({ lead: 'Its check is in spec', std: 'AF26', at: '2026-10-01T08:38:39', too: '', next: null }, NOW),
-  'Its check is in spec (AF26, 08:38).');
+  'Its check is in spec (AF26, today 08:38).');
 check('a warning with no standard has no empty brackets',
   R.captionText({ lead: 'Calibration overdue since 11 Jul', std: '', at: null, too: '', next: 'Calibrate it, then mark the calibration done' }, NOW),
   'Calibration overdue since 11 Jul. Next: calibrate it, then mark the calibration done.');
@@ -137,6 +139,58 @@ check('a network failure is LEM not answering',
   R.staleText({ status: 0 }, T0, T0 + 1000).startsWith('Couldn\'t refresh this instrument (LEM did not answer).'), true);
 check('an HTTP failure without words says its status',
   R.staleText({ status: 502 }, T0, T0 + 1000).startsWith('Couldn\'t refresh this instrument (HTTP 502).'), true);
+
+// ── the chart never contradicts the row above it (round 4's critic) ────────
+// The QC row's "Last" comes from the bench's status (the spec it publishes);
+// the chart comes from LEM's QC log. They are two reads of the same runs and
+// can disagree: the log lags, or (the dev seed, demo_floor) holds nothing yet.
+// The old chart then said "No runs of this check on file yet" under a row
+// showing "Last 0.0018 · 07:30": the page claimed no run while displaying
+// one. withLatest() adds the row's own run to what is drawn when the log
+// does not have it, and marks it, so the chart and the row tell one story.
+const NOW4 = Date.parse('2026-10-02T12:00:00');
+const row = { value: 0.0018, at: '2026-10-02T07:30:00', low: 0.0011, expected: 0.0015, high: 0.0019 };
+const empty = R.withLatest({ points: [], failures: 0, violations: [] }, row, '24', NOW4);
+check('an empty log under a row with a result draws that result',
+  empty.points.map(p => [p.ts, p.value, p.from]), [['2026-10-02T07:30:00', 0.0018, 'status']]);
+check('and says how many of the drawn runs are in the log', [empty.logged, empty.from_status], [0, true]);
+check('no series at all is the same as an empty one',
+  R.withLatest(null, row, 'all', NOW4).points.length, 1);
+const logged = { points: [{ ts: '2026-10-01T07:30:00', value: 0.0016 }, { ts: '2026-10-02T07:30:00', value: 0.0018 }], failures: 0, violations: [] };
+check('a log that already has the row\'s run is drawn as it is',
+  [R.withLatest(logged, row, '24', NOW4).points.length, R.withLatest(logged, row, '24', NOW4).from_status], [2, false]);
+const behind = { points: [{ ts: '2026-10-01T07:30:00', value: 0.0016 }], failures: 0, violations: [{ rule: 'shift', indices: [0] }] };
+const b2 = R.withLatest(behind, row, '24', NOW4);
+check('a log behind the row gets the row\'s run on the end, marked',
+  b2.points.map(p => p.from || 'log'), ['log', 'status']);
+check('the control findings keep their indices (the run is appended, never inserted)',
+  b2.violations[0].indices, [0]);
+const outRow = { value: 0.0021, at: '2026-10-02T07:30:00', low: 0.0011, expected: 0.0015, high: 0.0019 };
+check('an appended run outside the limits is counted as outside',
+  R.withLatest({ points: [], failures: 0, violations: [] }, outRow, '24', NOW4).failures, 1);
+check('a row with no result adds nothing: the empty chart is honest then',
+  R.withLatest({ points: [], failures: 0, violations: [] }, { value: null, at: null }, '24', NOW4).points.length, 0);
+check('90 days does not draw a run older than 90 days',
+  R.withLatest({ points: [] }, { value: 1, at: '2026-05-01T07:30:00', low: 0, high: 2 }, '90d', NOW4).points.length, 0);
+check('the same run a few seconds apart in the two reads is one run',
+  R.withLatest({ points: [{ ts: '2026-10-02T07:29:58', value: 0.0018 }] }, row, '24', NOW4).points.length, 1);
+check('the chart model keeps which runs came from the status',
+  R.chartModel(Object.assign({}, b2, { low: 0.0011, high: 0.0019, expected: 0.0015 }), { w: 600, h: 200 }).points.map(p => p.from), ['log', 'status']);
+check('the caption says where the newest run came from when the log is behind',
+  R.rangeCaption(b2, '24'), '2 runs since 1 Oct · none outside the limits · newest from the bench\'s status');
+check('the caption for a log with nothing in it says the run is the bench\'s',
+  R.rangeCaption(empty, '24'), '1 run on 2 Oct · from the bench\'s status, none in LEM\'s QC log yet');
+
+// ── a time always carries its day on the record (round 4's critic) ─────────
+// "When 07:30" next to "Last result Thu 07:49" read as if the older one were
+// newer. On the record a time names its day.
+check('today says today', R.stamp('2026-10-02T07:30:00', NOW4), 'Today 07:30');
+check('yesterday says yesterday', R.stamp('2026-10-01T07:49:00', NOW4), 'Yesterday 07:49');
+check('this week names the weekday', R.stamp('2026-09-29T15:04:00', NOW4), 'Tue 15:04');
+check('older names the date', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
+check('inside a sentence it is lower case', R.stamp('2026-10-02T07:30:00', NOW4, true), 'today 07:30');
+check('a weekday keeps its capital mid-sentence', R.stamp('2026-09-29T15:04:00', NOW4, true), 'Tue 15:04');
+check('no time is nothing, never a made-up one', R.stamp(null, NOW4), '');
 
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

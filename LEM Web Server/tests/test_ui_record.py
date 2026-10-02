@@ -526,6 +526,26 @@ class TestTheHead:
         assert h["level"] == "Lab testing Machines"
         assert h["uid"] == "bf8e64b59f12"
 
+    def test_last_result_is_never_older_than_a_qc_row_on_the_same_page(self):
+        """Round 4's critic: the head said "Last result Thu 07:49" while the
+        QC row under it showed a run at 07:30 today. `last_activity` is the
+        bench's last parse; a QC run the bench reported in its status is a
+        result too. The head says the newest of them, so the page never calls
+        an older time the last one."""
+        m = dict(prod("Agilent GC 1"))
+        m["last_activity"] = "2026-09-30T07:49:00"
+        m["effective_specs"] = [dict(s, last_qc_at="2026-10-01T07:30:00", last_qc_superseded_by=None)
+                                for s in m["effective_specs"]]
+        assert m["effective_specs"], "the capture's GC 1 has checks to stamp"
+        assert record(m)["head"]["last_result_at"] == "2026-10-01T07:30:00"
+
+    def test_last_result_keeps_the_newer_activity(self):
+        m = dict(prod("Agilent GC 1"))
+        m["last_activity"] = "2026-10-01T09:00:00"
+        m["effective_specs"] = [dict(s, last_qc_at="2026-10-01T07:30:00", last_qc_superseded_by=None)
+                                for s in m["effective_specs"]]
+        assert record(m)["head"]["last_result_at"] == "2026-10-01T09:00:00"
+
     def test_maintenance_section_has_the_tasks(self):
         rec = record(prod("Agilent GC 1"))
         assert rec["maintenance"] == []

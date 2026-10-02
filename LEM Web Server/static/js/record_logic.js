@@ -77,7 +77,7 @@
     /** The readiness card's one sentence (§3.1 bar). */
     function captionText(c, nowMs) {
         if (!c || !c.lead) return '';
-        const paren = [c.std || '', c.at ? when(c.at, nowMs) : ''].filter(Boolean).join(', ');
+        const paren = [c.std || '', c.at ? stamp(c.at, nowMs, true) : ''].filter(Boolean).join(', ');
         let s = c.lead + (paren ? ' (' + paren + ')' : '') + (c.too ? '; ' + c.too : '') + '.';
         if (c.next) s += ' Next: ' + lowerFirst(c.next) + '.';
         return s;
@@ -103,14 +103,80 @@
     }
     const RANGE_EMPTY = { '24': 'No runs on file for this check yet', '90d': 'No runs in the last 90 days', all: 'No runs on file for this check yet' };
 
-    /** "24 runs since 4 Aug · 1 outside the limits" */
+    /** "24 runs since 4 Aug · 1 outside the limits". A series withLatest()
+        topped up with the row's own run says so, in the same line. */
     function rangeCaption(series, range) {
         const pts = (series && series.points) || [];
         if (!pts.length) return RANGE_EMPTY[range] || RANGE_EMPTY['24'];
         const n = pts.length;
-        const head = (range === 'all' ? 'All ' : '') + n + (n === 1 ? ' run' : ' runs') + ' since ' + day(pts[0].ts);
         const f = Number(series.failures) || 0;
-        return head + ' · ' + (f ? f + ' outside the limits' : 'none outside the limits');
+        if (series.from_status && !series.logged) {
+            return '1 run on ' + day(pts[n - 1].ts) + (f ? ' · outside the limits' : '') +
+                ' · from the bench\'s status, none in LEM\'s QC log yet';
+        }
+        const head = (range === 'all' ? 'All ' : '') + n + (n === 1 ? ' run' : ' runs') + ' since ' + day(pts[0].ts);
+        return head + ' · ' + (f ? f + ' outside the limits' : 'none outside the limits') +
+            (series.from_status ? ' · newest from the bench\'s status' : '');
+    }
+
+    /** The chart and the row above it tell one story (round 4's critic).
+
+        The row's Last and When are the bench's status (the spec it publishes
+        with every poll); the chart is LEM's QC log. Two reads of the same
+        runs, and the log can lag or (a fresh bench, the dev seed) hold none
+        yet. Drawing only the log then put "No runs of this check on file"
+        under a row showing a run: an empty read presented as "never run".
+
+        So when the row has a result newer than anything the log returned, it
+        is appended (never inserted: the control findings' indices are
+        positions in the logged points and must stay so) and marked
+        `from: 'status'`. It is drawn and counted against the limits; it is
+        not analysed for control, because the log is what the control rules
+        were run on. `logged` is how many drawn runs came from the log.
+        The same run seen by both reads a moment apart (≤ 2 min, same value)
+        is one run. 90 days does not draw a row result older than 90 days. */
+    function withLatest(series, chk, range, nowMs) {
+        const s = series || {};
+        const pts = (s.points || []).slice();
+        const out = Object.assign({}, s, { points: pts, failures: Number(s.failures) || 0,
+            violations: (s.violations || []).slice(), logged: pts.length, from_status: false });
+        const c = chk || {};
+        const v = num(c.value);
+        if (v === null) return out;
+        const at = c.at ? Date.parse(c.at) : NaN;
+        const now = nowMs === undefined ? Date.now() : nowMs;
+        if (range === '90d' && !(at >= now - 90 * 86400000)) return out;
+        const lastLog = pts.length ? pts[pts.length - 1] : null;
+        if (lastLog) {
+            const lt = Date.parse(lastLog.ts || '');
+            // without a time on the row there is nothing to say it is newer
+            if (isNaN(at)) return out;
+            if (!isNaN(lt) && lt >= at - 120000) return out;
+        }
+        const lo = num(c.low), hi = num(c.high);
+        const outside = (hi !== null && v > hi) || (lo !== null && v < lo);
+        pts.push({ ts: c.at || null, value: v, in_spec: !outside, from: 'status' });
+        out.from_status = true;
+        if (outside) out.failures += 1;
+        return out;
+    }
+
+    /** A time on the record always names its day: "Today 07:30",
+        "Yesterday 07:49", "Tue 15:04", "3 Aug" (round 4's critic: a bare
+        "07:30" beside "Thu 07:49" read as the older of the two). `lower`
+        for the middle of a sentence. */
+    function stamp(iso, nowMs, lower) {
+        const w = when(iso, nowMs);
+        if (!w) return '';
+        const t = Date.parse(iso);
+        const d = new Date(t), n = new Date(nowMs === undefined ? Date.now() : nowMs);
+        const day0 = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+        const days = Math.round((day0(n) - day0(d)) / 86400000);
+        const hmS = hm(t);
+        // only the words are lowered: a weekday keeps its capital
+        if (days === 0) return (lower ? 'today ' : 'Today ') + hmS;
+        if (days === 1) return (lower ? 'yesterday ' : 'Yesterday ') + hmS;
+        return w;
     }
 
     /** A statistical-control finding, as a caption marked provisional: never
@@ -177,7 +243,7 @@
         const points = pts.map((p, i) => {
             const v = num(p.value);
             const outside = (hi !== null && v > hi) || (lo !== null && v < lo);
-            return { i, x: x(i), y: y(v), outside: !!outside, value: v, ts: p.ts, in_spec: p.in_spec };
+            return { i, x: x(i), y: y(v), outside: !!outside, value: v, ts: p.ts, in_spec: p.in_spec, from: p.from || 'log' };
         });
         const ticks = [];
         if (n) {
@@ -212,7 +278,7 @@
         return 'Couldn\'t refresh this instrument (' + why + '). Shown as of ' + at + '; it may be out of date.';
     }
 
-    const api = { windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    const api = { withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

@@ -173,6 +173,22 @@ def _newest(rows: List[dict]) -> Optional[str]:
     return max(ats) if ats else None
 
 
+def last_result(m: dict, rows: List[dict]) -> Optional[str]:
+    """The head's "Last result": the newest of the bench's last parse and
+    every QC run on the page. Round 4's critic: the head said "Thu 07:49"
+    over a QC row at 07:30 today, because it read only ``last_activity``.
+    A time that cannot be read loses to one that can; it is never guessed."""
+    best, best_t = None, None
+    for iso in [m.get("last_activity")] + [c.get("at") for c in rows]:
+        t = ui_live._local(iso) if iso else None
+        if t is None:
+            best = best or (iso or None)
+            continue
+        if best_t is None or t > best_t:
+            best, best_t = iso, t
+    return best
+
+
 def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str]) -> dict:
     """The bar's one sentence, in parts: {lead, std, at, too, next}.
 
@@ -335,7 +351,7 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
         "title": row["title"],
         "head": {
             "bench": {"word": b["word"], "at": b["at"]},
-            "last_result_at": m.get("last_activity") or None,
+            "last_result_at": last_result(m, rows),
             "level": levels.get(m.get("level_uid") or "") or None,
             "placed": m.get("pos") is not None,
             "uid": row["uid"],

@@ -103,7 +103,12 @@ def machine(uid, title=None, *, specs=None, targets=None, maint=None, status="GR
             "qc_targets": targets or [], "maintenance": maint or [], "status": status,
             "reason": "", "module_running": running, "module_state": module_state,
             "live": live, "level_uid": level, "pos": list(pos) if pos else None,
-            "watching": watching, "last_poll": last_poll}
+            "watching": watching, "last_poll": last_poll,
+            # Judged at a fixed moment, 1 Oct 13:18 (the capture's). A pass
+            # counts for 24 h, so a machine judged "now" read these 11:23
+            # passes as in spec until 2 Oct 11:23 and as QC due after it:
+            # the suite went red on its own at 11:23 the next day.
+            "qc_judged": {"at": "2026-10-01T13:18:00", "hours": 24.0, "from": ""}}
 
 
 def spec(test, ok, at="2026-10-01T11:23:00", sample="AF26"):

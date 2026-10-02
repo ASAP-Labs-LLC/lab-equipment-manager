@@ -939,13 +939,13 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .tbl.qc .c-when { color: var(--text-muted); white-space: nowrap; }
 .tbl.qc .c-verdict { white-space: nowrap; }
 .tbl.qc .verdict, .tbl.mt .verdict { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
-.tbl.qc .c-verdict .sub { padding-left: 18px; }
+.tbl.qc .c-verdict .sub { padding-left: 18px; white-space: normal; max-width: 22ch; }
 .tbl.qc .fold-band { display: none; }
 .tbl.qc .fold-last { display: none; }
 .qc-none { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s4); font-size: var(--fs-sm); color: var(--text-muted); }
 
 /* the band track: min, target and max as a picture, the last result on it */
-.track { position: relative; display: block; width: 120px; height: 14px; }
+.track { position: relative; display: block; width: 104px; height: 14px; }
 .track::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; border-radius: 1px; background: var(--border-light); }
 .track .band { position: absolute; top: 3px; height: 8px; border-radius: 2px; background: var(--chart-band); box-shadow: inset 0 0 0 1px var(--chart-tick); }
 .track .mid { position: absolute; top: 1px; width: 1.5px; height: 12px; margin-left: -0.75px; background: var(--text-muted); }
@@ -978,6 +978,8 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .qchart .qpt { fill: var(--chart-ink); }
 .qchart .qpt.last { stroke: var(--bg-card); stroke-width: 2; }
 .qchart .qpt.out { fill: var(--st-error); }
+/* a run the bench reported that LEM's QC log does not hold yet: hollow, same ink */
+.qchart .qpt.status:not(.out) { fill: var(--bg-card); stroke: var(--chart-ink); stroke-width: 1.75; }
 .qchart .qring { fill: none; stroke: var(--text); stroke-width: 1.25; stroke-dasharray: 2.5 2; }
 .qchart .qlab { font-size: 11px; fill: var(--text); font-variant-numeric: tabular-nums; }
 .qchart .qk { fill: var(--chart-axis); }

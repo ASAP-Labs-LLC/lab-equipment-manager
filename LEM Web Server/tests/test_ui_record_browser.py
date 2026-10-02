@@ -165,3 +165,70 @@ def test_the_head_leads_with_the_pill_and_the_bench(server, drv):
     bg = drv.execute_script("return getComputedStyle(arguments[0]).backgroundColor", pill)
     r, g, b = [int(x) for x in bg[bg.index("(") + 1:bg.index(")")].split(",")[:3]]
     assert max(r, g, b) - min(r, g, b) < 16, bg
+
+
+def test_the_chart_never_says_no_runs_under_a_row_that_shows_one(server, drv):
+    """Round 4's critic: PAC Flash 2 on this very seed showed "Last 63.6 ·
+    09:13" in its QC row and, right under it, "No runs of this check on file
+    yet". The row reads the bench's status; the chart reads LEM's QC log,
+    which the seed (like a freshly started bench) holds nothing of. A page
+    that shows a run and says there is none has presented an empty read as
+    "never run". Every record whose selected check has a result must draw
+    that result, and say where it came from."""
+    seen = 0
+    for r in _rows(server):
+        with server.app.test_client() as c:
+            rec = c.get("/api/ui/instruments/" + r["uid"]).get_json()
+        if rec.get("state") != "ready" or not rec["qc"]["checks"]:
+            continue
+        sel = next(x for x in rec["qc"]["checks"] if x["test"] == rec["qc"]["selected"])
+        if sel["value"] is None or sel["low"] is None:
+            continue
+        seen += 1
+        _open(drv, server, r["uid"])
+        assert _wait(lambda: drv.execute_script(
+            "return !!document.querySelector('#chart-plot svg.qchart, #chart-plot .chart-note')")), r["title"]
+        plot = drv.find_element("id", "chart-plot").text
+        assert "No runs" not in plot, "%s: %r under a row showing %s" % (r["title"], plot, sel["value"])
+        assert drv.execute_script("return document.querySelectorAll('#chart-plot .qpt').length") >= 1, r["title"]
+        cap = drv.find_element("id", "chart-cap").text
+        if drv.execute_script("return document.querySelectorAll('#chart-plot .qpt.status').length"):
+            assert "bench's status" in cap, cap
+            if drv.execute_script("return document.querySelectorAll('#chart-plot .qpt:not(.status)').length") == 0:
+                # nothing logged: a 24 runs / 90 days / All seg would choose between nothing
+                assert not _visible(drv, "#chart-range"), r["title"]
+    assert seen >= 3, "the seed should have records with results to check (%d)" % seen
+
+
+def test_every_time_on_the_record_names_its_day(server, drv):
+    """Round 4's critic: the QC row's When read "07:30" with no day, beside a
+    head reading "Thu 07:49", and the head's "Last result" was older than the
+    row. A bare HH:MM is never printed, and the head's last result is the
+    newest time on the page."""
+    import re
+    uid = next(r["uid"] for r in _rows(server) if r["readiness"]["state"] == "ok")
+    _open(drv, server, uid)
+    for cell in drv.find_elements("css selector", "#qc-rows td.c-when"):
+        t = cell.get_attribute("textContent").strip()
+        assert not re.fullmatch(r"\d{2}:\d{2}", t), "a bare time in When: %r" % t
+    meta = drv.find_element("id", "rec-meta").text
+    assert not re.search(r"Last result \d{2}:\d{2}", meta), meta
+
+
+def test_the_qc_table_fits_its_card(server, drv):
+    """A time that names its day ("Today 09:53") is wider than a bare one.
+    The card clips what overflows it (overflow: hidden), so a When column
+    pushed past the edge is cut mid-word with no scroll to find it: checked
+    on every record with checks, at the two widths the bar names."""
+    try:
+        for w, h in ((1440, 900), (820, 1180)):
+            drv.set_window_size(w, h)
+            for r in _rows(server):
+                _open(drv, server, r["uid"])
+                over = drv.execute_script(
+                    "const t=document.getElementById('qc-tbl'), c=document.getElementById('qc-card');"
+                    "if (!t || t.hidden) return 0;"
+                    "return Math.ceil(t.getBoundingClientRect().right - c.getBoundingClientRect().right);")
+                assert over <= 0, "%s at %d: the QC table runs %dpx past its card" % (r["title"], w, over)
+    finally:
+        drv.set_window_size(1440, 900)

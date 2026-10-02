@@ -79,9 +79,9 @@
             h('span', { className: 's-' + r.state, text: r.word })));
         if (hd.bench && hd.bench.word) {
             const w = hd.bench.word;
-            add(h('span', { text: 'Bench ' + w.charAt(0).toLowerCase() + w.slice(1) + (hd.bench.at ? ' · ' + L.when(hd.bench.at) : '') }));
+            add(h('span', { text: 'Bench ' + w.charAt(0).toLowerCase() + w.slice(1) + (hd.bench.at ? ' · ' + R.stamp(hd.bench.at, undefined, true) : '') }));
         }
-        if (hd.last_result_at) add(h('span', { text: 'Last result ' + L.when(hd.last_result_at) }));
+        if (hd.last_result_at) add(h('span', { text: 'Last result ' + R.stamp(hd.last_result_at, undefined, true) }));
         if (hd.level) add(h('span', { text: hd.level }));
         add(h('span', { className: 'mono', text: hd.uid }));
         $('rec-meta').replaceChildren(...bits);
@@ -112,7 +112,7 @@
     function tile(t) {
         const kids = [circle(t.glyph), h('span', { className: 't-title', text: t.title }),
             h('span', { className: 't-word', text: t.word })];
-        const detail = t.detail + (t.at && t.key === 'bench' ? ' · ' + L.when(t.at) : '');
+        const detail = t.detail + (t.at && t.key === 'bench' ? ' · ' + R.stamp(t.at, undefined, true) : '');
         if (detail) kids.push(h('span', { className: 't-detail', text: detail }));
         const a = t.action;
         if (a && a.href) kids.push(h('a', { className: 't-link', href: a.href, text: a.label }));
@@ -176,14 +176,14 @@
                     h('button', { type: 'button', className: 'qc-pick', 'aria-pressed': sel ? 'true' : 'false', title: 'Show its chart' }, c.title),
                     sub ? h('span', { className: 'sub', text: sub }) : null,
                     h('span', { className: 'fold-band' },
-                        h('span', { className: 'fold-last', text: 'Last ' + R.fmtQC(c.value, c) + (c.at ? ' · ' + L.when(c.at) : '') }),
+                        h('span', { className: 'fold-last', text: 'Last ' + R.fmtQC(c.value, c) + (c.at ? ' · ' + R.stamp(c.at, undefined, true) : '') }),
                         bandCell(c), track(c))),
                 h('td', { className: 'c-band' }, bandCell(c)),
                 h('td', { className: 'c-track' }, track(c)),
                 h('td', { className: 'c-last num', text: R.fmtQC(c.value, c) }),
                 h('td', { className: 'c-verdict' }, h('span', { className: 'verdict ' + (VERDICT_CLASS[v.key] || '') }, glyph(v.glyph),
                     h('span', { text: v.word })), v.detail ? h('span', { className: 'sub', text: v.detail }) : null),
-                h('td', { className: 'c-when', text: c.at ? L.when(c.at) : '' }));
+                h('td', { className: 'c-when', text: c.at ? R.stamp(c.at) : '' }));
         }));
     }
     $('qc-rows').addEventListener('click', (ev) => {
@@ -273,13 +273,18 @@
             return;
         }
         // the series for this check on the standard it is on NOW
-        const s = t.series.find(x => x.test_name === c.test && x.sample_id === c.sample_id && !x.superseded) ||
+        const logged = t.series.find(x => x.test_name === c.test && x.sample_id === c.sample_id && !x.superseded) ||
                   t.series.find(x => x.test_name === c.test && !x.superseded) || null;
+        // the row above shows the bench's newest run; if the log has not got
+        // it yet the chart draws it too, marked, never "no runs" under a run
+        const s = R.withLatest(logged, c, range);
         // a check with no runs on file at all has no history to choose
         // between: the seg would be a control that does nothing (round 3).
         // An empty 90 days keeps it, to go back to 24 runs or All.
         const empty = !s || !(s.points || []).length;
-        $('chart-range').hidden = empty && range !== '90d';
+        // the same for a chart whose one run is the bench's status: there is
+        // no logged history for 24 runs / 90 days / All to choose between
+        $('chart-range').hidden = (empty || !s.logged) && range !== '90d';
         if (empty) {
             // said once, in the plot; the caption line under the title stays
             // empty rather than repeat it, and the empty plot is not 176px
@@ -326,7 +331,12 @@
             if (p.outside) el = svg('path', { d: 'M' + p.x + ' ' + (p.y - 6) + 'l5.5 9.5h-11z', class: 'qpt out' });
             else el = svg('circle', { cx: p.x, cy: p.y, r: p.i === lastI ? 4 : 2.75, class: 'qpt' + (p.i === lastI ? ' last' : '') });
             const tip = svg('title', {});
-            tip.textContent = L.when(p.ts) + ' · ' + R.fmtQC(p.value, c) + (c.units ? ' ' + c.units : '') + (p.outside ? ' · outside the limits' : '');
+            tip.textContent = R.stamp(p.ts) + ' · ' + R.fmtQC(p.value, c) + (c.units ? ' ' + c.units : '') + (p.outside ? ' · outside the limits' : '');
+            if (p.from === 'status') {
+                // drawn hollow: a run the bench reported, not yet in LEM's QC log
+                el.setAttribute('class', el.getAttribute('class') + ' status');
+                tip.textContent += ' · from the bench\'s status, not yet in LEM\'s QC log';
+            }
             el.appendChild(tip);
             box.appendChild(el);
         }
@@ -378,7 +388,7 @@
         const kv = (k, ...v) => [h('div', { className: 'k', text: k }), h('div', { className: 'v' }, ...v)];
         $('bench-body').replaceChildren(h('div', { className: 'kv' },
             ...kv('Reads from', b.reads_from ? h('span', { className: 'mono', text: b.reads_from }) : h('span', { className: 'muted', text: 'Not reported' })),
-            ...kv('Bench', glyph(b.glyph === 'final' ? 'final' : 'dashed'), ' ' + b.word + (b.at ? ' · last poll ' + L.when(b.at) : '')),
+            ...kv('Bench', glyph(b.glyph === 'final' ? 'final' : 'dashed'), ' ' + b.word + (b.at ? ' · last poll ' + R.stamp(b.at, undefined, true) : '')),
             ...kv('Live road', b.live_road ? 'Yes: it reports to LEM directly' : 'No: its readings reach LEM via LabCore'),
             ...kv('Replays not re-sent', h('span', { className: 'muted', text: b.replays_not_resent === null ? 'Not reported by this bench\'s module version' : String(b.replays_not_resent) }))),
             h('p', { className: 'caption', text: 'Instruments are added and configured in LabStation\'s LEM module.' }));
@@ -412,7 +422,7 @@
         sel.value = p.test || (opts[0] && opts[0].test) || '';
         const c = data.qc.checks.find(x => x.test === sel.value);
         $('action-what').value = c ? (c.title + ' read ' + R.fmtQC(c.value, c) + (c.units ? ' ' + c.units : '') + ' on ' + (c.sample_id || 'the standard') +
-            ', outside ' + R.bandText(c) + (c.at ? ' (' + L.when(c.at) + ')' : '') + '.') : '';
+            ', outside ' + R.bandText(c) + (c.at ? ' (' + R.stamp(c.at, undefined, true) + ')' : '') + '.') : '';
         $('action-err').hidden = true;
         openSheet('action-sheet');
         $('action-what').focus();
