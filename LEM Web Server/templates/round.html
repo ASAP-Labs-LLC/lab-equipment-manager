@@ -31,7 +31,7 @@
   <div class="rentry">
     <input class="rinput" type="text" {% if kind == 'number' %}inputmode="decimal" {% endif %}enterkeyhint="done" autocomplete="off" spellcheck="false" value="{{ (st.value if st else '') or '' }}" aria-label="{{ item.text }}{% if item.units %}, in {{ item.units }}{% endif %}" placeholder="{{ '—' if kind == 'number' else 'Note' }}">
     {%- if item.units %}<span class="runits">{{ item.units }}</span>{% endif %}
-    <button type="button" class="btn rsave">Save</button>
+    <button type="button" class="btn btn-primary rsave">Save</button>
   </div>
   {%- endif %}
   <div class="rmeta">

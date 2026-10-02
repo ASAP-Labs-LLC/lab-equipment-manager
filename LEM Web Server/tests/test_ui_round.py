@@ -327,6 +327,18 @@ def test_no_horizontal_scroll_and_aa_text(drv, server, opening, scheme, w, h):
     done, todo = _js(d, "const l=[...document.querySelectorAll('#lists .rlabel')];"
                         "return [getComputedStyle(l[0]).color, getComputedStyle(l[2]).color];")
     assert done == todo, "a ticked label is drawn greyed"
+    # ...but done and to-do still read apart at a glance (round 1's blind
+    # judges, both themes: "the ticked items glare as brightly as the open
+    # ones"). By weight, not colour: what is left is heavier than what is
+    # done, the next row sits on a band, and its Save is the filled button.
+    wd, wt = _js(d, "const l=[...document.querySelectorAll('#lists .rlabel')];"
+                    "return [+getComputedStyle(l[0]).fontWeight, +getComputedStyle(l[2]).fontWeight];")
+    assert wt > wd, f"to-do label weight {wt} is not heavier than done {wd}"
+    nxt = _js(d, "const n=document.querySelector('#lists .rrow.next');"
+                 "return n && [n.dataset.item, getComputedStyle(n).backgroundColor];")
+    assert nxt and nxt[0] == opening["items"][2]["uid"], nxt
+    assert nxt[1] not in ("rgba(0, 0, 0, 0)", "transparent"), "the next row has no band"
+    assert "btn-primary" in _rows(d)[1].find_element(By.CSS_SELECTOR, ".rsave").get_attribute("class")
     bad = _js(d, CONTRAST_JS)
     assert bad == [], bad
     # every target on a row is at least 44 px (48 for the tick)

@@ -226,8 +226,10 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .rrow[data-checked="1"] { cursor: default; }
 .rrow[data-checked="1"]:hover { background: transparent; }
 .rrow.sub { padding-left: calc(var(--s4) + 40px); }
-/* the next thing to do, marked the way GC marks "Now": an ink edge */
-.rrow.next { box-shadow: inset 3px 0 0 var(--ink); }
+/* the next thing to do, marked the way GC marks "Now": an ink edge, on a
+   band, so the eye lands on what is left and not on what is done */
+.rrow.next { box-shadow: inset 3px 0 0 var(--ink); background: var(--bg-hover); }
+.rrow.next:hover { background: var(--bg-active); }
 
 .rrow .tick {
     grid-area: tick; width: 48px; height: 48px; display: grid; place-items: center; padding: 0;
@@ -239,14 +241,16 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .rrow:not([data-checked="1"]):hover .tick { border-color: var(--ink); }
 .rrow .tick[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); }
 .rrow .tick[aria-pressed="true"] svg { opacity: 1; transform: none; }
-.rrow .tick[data-reading] { border-style: dashed; }
-.rrow .tick[data-reading][aria-pressed="true"] { border-style: solid; }
 
 .rrow .rbody { grid-area: body; display: grid; gap: 2px; min-width: 0; }
-.rrow .rlabel { font-size: 16px; font-weight: 560; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
+/* Done and to-do differ by weight, never by colour: what is left is set
+   semibold, what is done regular, both at full --text (J1: a greyed label
+   reads as disabled, and whoever checks the round must read what was done) */
+.rrow .rlabel { font-size: 16px; font-weight: 600; color: var(--text); line-height: 1.35; overflow-wrap: anywhere; }
 .rrow.sub .rlabel { font-size: 15px; font-weight: 500; }
+.rrow[data-checked="1"] .rlabel { font-weight: 400; }
 .rrow .rcap { font-size: var(--fs-sm); color: var(--text-muted); }
-.rrow .rcap .link { color: var(--text); }
+.rrow .rcap .link { color: var(--text); white-space: nowrap; }
 .rrow .rerr { margin: 2px 0 0; font-size: var(--fs-sm); color: var(--st-error); display: flex; gap: var(--s2); align-items: baseline; }
 .rrow .rerr::before { content: ""; flex: none; width: 11px; height: 10px; background: var(--st-error); clip-path: polygon(50% 0, 100% 100%, 0 100%); transform: translateY(1px); }
 
@@ -259,7 +263,7 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 }
 .rrow .undo {
     min-height: 44px; padding: 0 var(--s2); border: 0; background: none; color: var(--text); font: inherit; font-size: var(--fs-sm);
-    font-weight: 550; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; border-radius: var(--radius-sm);
+    font-weight: 500; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; border-radius: var(--radius-sm);
 }
 .rrow .undo:hover { background: var(--bg-hover); }
 
@@ -275,7 +279,7 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .gc .rrow[data-kind="text"] .rinput { width: 220px; text-align: left; font-size: 16px; }
 .gc .rrow .rinput:focus-visible, .gc .rrow .rinput:focus { border-color: var(--border-focus); box-shadow: var(--ring); outline: none; }
 .rrow .runits { font-size: var(--fs-sm); color: var(--text-muted); min-width: 28px; }
-.rrow .rsave { height: 44px; padding: 0 18px; }
+.rrow .rsave { height: 44px; padding: 0 20px; font-weight: 600; }
 /* a saved reading shows its value, not a Save, until somebody changes it */
 .rrow[data-checked="1"]:not([data-dirty="1"]) .rsave { visibility: hidden; }
 
@@ -343,6 +347,9 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
     .rrow[data-kind="number"], .rrow[data-kind="text"] { grid-template-areas: "tick body" "tick entry" "tick meta"; }
     .rrow.sub { padding-left: calc(var(--s3) + 24px); }
     .rrow .rmeta { justify-content: flex-start; }
+    /* the label sits on the tick's centre line, not above it */
+    .rrow .tick { align-self: start; }
+    .rrow .rbody { min-height: 48px; align-content: center; }
     .rrow .rmeta:not(:has(.rby:not(:empty))):not(:has(.undo:not([hidden]))) { display: none; }
     .rrow .rentry { justify-content: flex-start; margin-top: var(--s1); }
     .gc .rrow .rinput { width: 120px; }
