@@ -39,6 +39,9 @@ import pytest
 import lem_station_module as mod
 
 DAY = 86400.0
+#: Transfer spec §3.4: a segment is deleted only when it is more than 30
+#: days old (and every record in it is durable).
+SPEC_RETENTION_DAYS = 30
 SEEDS = range(150)
 
 
@@ -119,7 +122,10 @@ class World:
         j = self.j
         before = _on_disk(j)
         durable, epoch = j.durable, j.epoch
-        limit = self.now.timestamp() - mod.JOURNAL_RETENTION_DAYS * DAY
+        # The spec's 30 days, written here and NOT read from the module: a
+        # property computed from the code's own constant passes whatever
+        # that constant is (30 -> 29 went unnoticed in round 1).
+        limit = self.now.timestamp() - SPEC_RETENTION_DAYS * DAY
         j.prune(self.now, early=early)
         after = _on_disk(j)
         for name, (recs, mtime) in before.items():

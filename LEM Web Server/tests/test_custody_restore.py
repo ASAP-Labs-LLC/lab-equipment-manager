@@ -282,6 +282,87 @@ def test_restore_after_a_backup_of_a_restored_store_still_converges(
     s2.close()
 
 
+def _raise_cursor(path, to, restamp_all):
+    """Raise the backup's bench_cursor.acked_seq the way someone with the bare
+    file can, and re-stamp its manifest: just the file hash, or (the stronger
+    attacker) the whole manifest recomputed with custody's own code."""
+    import sqlite3
+    con = sqlite3.connect(path)
+    con.execute("UPDATE bench_cursor SET acked_seq = ?", [to])
+    con.commit()
+    man = custody.read_manifest(path)
+    if restamp_all:
+        man.update(custody.describe(con))
+    con.close()
+    man["sha256"] = custody.file_sha256(path)
+    with open(custody.manifest_path(path), "w") as f:
+        json.dump(man, f)
+
+
+@pytest.mark.parametrize("restamp_all", [False, True],
+                         ids=["file-hash-restamped", "whole-manifest-restamped"])
+def test_a_backup_whose_cursor_was_raised_is_refused_and_nothing_is_lost(
+        tmp_path, m, restamp_all):
+    """The round-1 hole, end to end with the real module journal. A backup's
+    cursor raised by 5 used to verify, restore, and answer the bench's sync
+    with 409 at the raised number — the bench adopts it (N3) and never resends
+    those five. Now the raised backup is refused and the store left alone;
+    the honest backup restores, 409s at the true number, and the drain gives
+    (lost, dup) = (0, 0) against the pre-restore set."""
+    import shutil
+    (tmp_path / "store").mkdir()
+    path = str(tmp_path / "store" / "lem.db")
+    store = LocalStoreGateway(path)
+    kit.seed_machine(store)
+    cust = custody.Custody(store, backup_dir=str(tmp_path / "backup"),
+                           clock=lambda: T0)
+    cust.hydrate()
+    client = kit.make_app(store).test_client()
+    bench = RealBench(m, tmp_path / "journal", client, kit.enroll(client))
+    for _ in range(4):
+        bench.print_lines(5).sync()
+    at_backup = bench.j.acked
+    honest = cust.backup_now()
+    assert honest["ok"], honest
+    for _ in range(3):
+        bench.print_lines(5).sync()
+    total = bench.j.acked
+    assert total > at_backup + 5
+    assert bench.j.durable == at_backup
+    bench.age_everything(days=31)              # retention does its worst
+    bench.j.prune(datetime.now())
+    pre_restore = _bench_set(store)
+    store.close()
+
+    raised = str(tmp_path / "evil" / os.path.basename(honest["path"]))
+    os.makedirs(os.path.dirname(raised))
+    shutil.copyfile(honest["path"], raised)
+    shutil.copyfile(custody.manifest_path(honest["path"]),
+                    custody.manifest_path(raised))
+    _raise_cursor(raised, at_backup + 5, restamp_all)
+    before = custody.file_sha256(path)
+    with pytest.raises(custody.RestoreRefused) as exc:
+        custody.restore(raised, path, now=T0)
+    assert "1..%d" % (at_backup + 5) in str(exc.value) or \
+        "bench_cursor" in str(exc.value), exc.value.problems
+    assert custody.file_sha256(path) == before, "a refused restore touched " \
+                                               "the store"
+
+    done = custody.restore(honest["path"], path, now=T0)
+    assert done["ok"]
+    restored = LocalStoreGateway(path)
+    bench.client = kit.make_app(restored).test_client()
+    r = bench.sync()
+    assert r.status_code == 409 and r.get_json()["acked"] == at_backup
+    bench.drain()
+    after = _bench_set(restored)
+    lost = sum((pre_restore[0] - after[0]).values())
+    dup = sum((after[0] - pre_restore[0]).values())
+    assert (lost, dup) == (0, 0)
+    assert after[1] == pre_restore[1]
+    restored.close()
+
+
 # ── the restore drill ────────────────────────────────────────────────────────
 
 def _port_free(port):
@@ -313,10 +394,13 @@ def drill_env(tmp_path):
     store.close()
 
 
-@pytest.mark.skipif(not _port_free(DRILL_PORT),
-                    reason="the drill port is busy on this machine")
 def test_the_drill_restores_boots_a_scratch_port_and_records_the_result(
         drill_env):
+    # A busy port is a FAILURE here, not a skip: a skipped drill test is a
+    # green suite that proved nothing about the drill.
+    assert _port_free(DRILL_PORT), (
+        "port %d (this piece's assigned drill port) is in use; free it or set "
+        "LEM_TEST_DRILL_PORT — the drill test does not skip" % DRILL_PORT)
     store, cust, client = drill_env
     assert cust.backup_now()["ok"]
     out = cust.drill_now(port=DRILL_PORT)
@@ -361,6 +445,37 @@ def test_a_drill_on_a_tampered_backup_fails_and_says_so(drill_env):
     assert meta["drill_ok"] == "0"
     items = [i for i in cust.status_items() if i["key"].startswith("custody:drill")]
     assert items and items[0]["level"] == "error"
+
+
+def test_a_drill_on_a_backup_rewritten_with_its_manifest_fails_on_the_ledger(
+        drill_env):
+    """Someone rewrites a reading AND recomputes the manifest with custody's
+    own code: the file verifies against itself. The drill must still fail,
+    because the live store's ledger holds the manifest digest it wrote."""
+    store, cust, client = drill_env
+    b = cust.backup_now()
+    import sqlite3
+    con = sqlite3.connect(b["path"])
+    trig = con.execute("SELECT name, sql FROM sqlite_master WHERE type = "
+                       "'trigger'").fetchall()
+    for name, _sql in trig:
+        con.execute('DROP TRIGGER "%s"' % name)
+    con.execute("UPDATE lem_machine_log SET value = '1' WHERE id = 1")
+    for _name, sql in trig:
+        con.execute(sql)
+    con.commit()
+    man = custody.read_manifest(b["path"])
+    man.update(custody.describe(con))
+    con.close()
+    man["sha256"] = custody.file_sha256(b["path"])
+    with open(custody.manifest_path(b["path"]), "w") as f:
+        json.dump(man, f)
+    assert custody.verify(b["path"])["ok"] is True      # it fools verify()
+    out = cust.drill_now(port=DRILL_PORT)
+    assert out["ok"] is False
+    assert any("ledger" in p for p in out["problems"]), out["problems"]
+    assert store.read_sql("SELECT value FROM store_meta WHERE key = "
+                          "'drill_ok'")["rows"][0]["value"] == "0"
 
 
 def test_a_drill_whose_port_is_taken_fails_fast_and_says_so(drill_env):

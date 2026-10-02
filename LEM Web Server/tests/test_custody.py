@@ -607,6 +607,40 @@ class TestBridgeOff:
         r = client.post("/api/transfer/bridge", json={"on": True})
         assert r.status_code == 200 and _meta(store, "bridge") == "on"
 
+    def test_the_refusal_at_26_h_1_min_says_the_age_without_contradiction(
+            self, client, cust, bench, clock):
+        """At 26 h 1 min "is 26 h old; only within 26 h" reads as if it
+        should have been allowed. The age is said to the minute."""
+        _sign_in(client)
+        bench.journal(1).sync()
+        cust.backup_now()
+        cust.offsite_now()
+        clock.advance(hours=26, minutes=1)
+        text = client.post("/api/transfer/bridge",
+                           json={"on": False}).get_json()["refusals"][0]
+        assert "26 h 1 min old" in text, text
+        assert "more than 26 h" in text, text
+
+    def test_an_offsite_time_in_the_future_refuses(self, client, store, cust,
+                                                   clock):
+        """A clock set wrong, or an edited value, must not unlock bridge-off:
+        a copy "made" in the future proves nothing about a copy made now."""
+        _sign_in(client)
+        future = (clock() + custody.timedelta(days=3650)).isoformat()
+        store.sql("INSERT INTO store_meta (key, value) VALUES "
+                  "('offsite_last_ok', ?)", [future])
+        cust.hydrate()
+        r = client.post("/api/transfer/bridge", json={"on": False})
+        assert r.status_code == 409
+        assert any("future" in s for s in r.get_json()["refusals"])
+        assert _meta(store, "bridge") is None
+        # a few seconds of skew between two clocks is not "the future"
+        store.sql("UPDATE store_meta SET value = ? WHERE key = "
+                  "'offsite_last_ok'",
+                  [(clock() + custody.timedelta(seconds=30)).isoformat()])
+        cust.hydrate()
+        assert cust.bridge_off_refusals() == []
+
     def test_a_stored_offsite_time_that_cannot_be_read_refuses(
             self, client, store, cust):
         _sign_in(client)

@@ -24,14 +24,25 @@ is the protection, in five parts.
    arrived while the copy was being made is on one disk only, and the bench
    must keep it.
 
-3. **A manifest that can catch tampering.** Beside every copy:
-   per-day row count and SHA-256 over that day's `lem_machine_log` rows by id
-   (the spec's `log_digest`, also written into the store), a digest of every
-   annotation (an annotation can hide a row), each table's row count, and each
-   bench epoch's running digest recomputed from what the bench sent. `verify`
+3. **A manifest that can catch tampering, and witnesses outside the file.**
+   Beside every copy: a SHA-256 over every row of every table, all columns
+   (round 1 checked most tables by row COUNT, and a backup whose
+   `bench_cursor.acked_seq` was raised 25 -> 30 verified, restored, 409'd the
+   bench to 30 and lost seqs 26..30 for good); a digest of the schema, guard
+   triggers included; per-day row count and SHA-256 over that day's
+   `lem_machine_log` rows by id (the spec's `log_digest`, also written into the
+   store); and each bench epoch recomputed from what the bench sent. `verify`
    recomputes all of it from a scratch COPY of the file — backups are copied,
-   never opened in place — and names the day or epoch that differs. A restore
-   refuses a file that does not re-verify.
+   never opened in place — names the table, day or epoch that differs, and
+   refuses any epoch whose records are not exactly 1..acked reproducing the
+   cursor's digest (LEM writes both in one transaction, so it never wrote
+   such a file, and restoring it is how records get lost).
+   Whoever can rewrite a file can rewrite its manifest with this very code,
+   so each backup's manifest digest also goes into the live store's ledger
+   (`store_meta.backup_ledger`), and the off-host folder keeps its own copy of
+   each manifest. A restore refuses a file that does not re-verify, a file any
+   witness disagrees with, and — unless a person accepts it — a file nothing
+   outside it can witness.
 
 4. **Off-host, nightly, checked at the target.** The newest backup is copied
    to `LEM_BACKUP_OFFSITE` (Ryan names it: D5) and its SHA-256 re-read THERE.
@@ -58,7 +69,8 @@ Command line (the server must be STOPPED for a restore)::
 
     python custody.py backup   [--store PATH] [--backup-dir DIR]
     python custody.py verify   BACKUP.db
-    python custody.py restore  BACKUP.db [--store PATH]
+    python custody.py restore  BACKUP.db [--store PATH] [--offsite DIR]
+                               [--ledger STORE] [--accept-unwitnessed]
     python custody.py list     [--backup-dir DIR]
 """
 from __future__ import annotations
@@ -82,7 +94,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-FORMAT = "lem-backup/1"
+FORMAT = "lem-backup/2"
 KEEP_HOURLY, KEEP_DAILY, KEEP_MONTHLY = 48, 35, 24
 
 BACKUP_EVERY = timedelta(hours=1)
@@ -91,6 +103,8 @@ BACKUP_RETRY = timedelta(minutes=5)
 BACKUP_AMBER = timedelta(hours=2)
 #: §11: off-host amber at 26 h, and the bridge-off refusal at the same age.
 OFFSITE_MAX = timedelta(hours=26)
+#: Two clocks a few seconds apart are not "the future"; beyond this they are.
+OFFSITE_FUTURE_SLACK = timedelta(minutes=5)
 #: Nightly: inside the night window once it is 20 h since the last copy, and
 #: at any hour once it is a full day (a server that was off overnight).
 OFFSITE_NIGHT_AFTER = timedelta(hours=20)
@@ -205,9 +219,21 @@ def manifest_path(db_path: str) -> str:
 def read_manifest(db_path: str) -> dict:
     with open(manifest_path(db_path), "r", encoding="utf-8") as f:
         man = json.load(f)
-    if not isinstance(man, dict) or man.get("format") != FORMAT:
+    if not isinstance(man, dict) or not str(man.get("format") or "").startswith(
+            "lem-backup/"):
         raise ValueError("not a LEM backup manifest")
+    if man.get("format") != FORMAT:
+        raise ValueError("manifest format %s, and this LEM reads %s: an older "
+                         "manifest does not pin every row, so it cannot vouch "
+                         "for the file" % (man.get("format"), FORMAT))
     return man
+
+
+def manifest_digest(man: dict) -> str:
+    """The SHA-256 of a manifest's content (which carries the file's own
+    SHA-256, so it pins the file too). This is what the ledger and the
+    off-host folder witness."""
+    return hashlib.sha256(canonical(man)).hexdigest()
 
 
 def _write_manifest(db_path: str, man: dict) -> None:
@@ -263,44 +289,95 @@ def _day(ts) -> str:
     return text[:10] if re.match(r"^\d{4}-\d{2}-\d{2}", text) else "undated"
 
 
+def _int(value) -> Optional[int]:
+    """An integer, or None for anything that is not one (a describe() of a
+    damaged file must report it, never crash on it)."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _rows_in_order(con, table: str):
+    """Every row of `table` in a stable order: by rowid, or by every column
+    for a WITHOUT ROWID table. Returns (columns, cursor)."""
+    if table == "lem_machine_log":
+        # Spelled out so the raw-read audit in test_gateway_split sees it.
+        # A hidden row is still in the record; a backup that skipped it
+        # could not prove it unaltered.
+        # raw-log: audit — the digest covers EVERY row, hidden ones included
+        cur = con.execute("SELECT * FROM lem_machine_log ORDER BY rowid")
+        return [d[0] for d in cur.description], cur
+    q = '"%s"' % table.replace('"', '""')
+    try:
+        cur = con.execute("SELECT * FROM %s ORDER BY rowid" % q)
+    except sqlite3.OperationalError:
+        n = len(con.execute("PRAGMA table_info(%s)" % q).fetchall())
+        cur = con.execute("SELECT * FROM %s ORDER BY %s" % (
+            q, ", ".join(str(i) for i in range(1, n + 1))))
+    return [d[0] for d in cur.description], cur
+
+
 def describe(con) -> dict:
-    """Everything the manifest records about a database: counts, the daily
-    log digest, the annotation digest, every bench epoch recomputed, and the
-    `durable` candidates. Pure over the connection; never writes."""
+    """Everything the manifest records about a database. Pure over the
+    connection; never writes.
+
+    * `content`: per table, the row count and a SHA-256 over EVERY row, every
+      column, in rowid order — so no cell of any table is "checked by count
+      only" (round 1 left bench_cursor, bench_record.kind, the server-made
+      tables and more pinned by count alone);
+    * `schema_sha256`: over sqlite_master, so a dropped or added trigger is a
+      different file;
+    * `log_digest`: per day of lem_machine_log, the spec's daily digest;
+    * `annotations`: the annotation digest (an annotation can hide a row);
+    * `epochs`: each bench epoch recomputed from what the bench sent, with
+      `intact` — LEM holds exactly 1..acked and they reproduce LEM's running
+      digest — kept apart from what the BENCH said (`problems` has both);
+    * `durable`: the acked of each INTACT epoch, and only those.
+    """
     tables = _tables(con)
-    out: Dict[str, Any] = {"tables": {}, "log_digest": {}, "annotations": None,
-                           "epochs": [], "durable": [], "titles": {},
-                           "schema_version": None}
+    out: Dict[str, Any] = {"tables": {}, "content": {}, "log_digest": {},
+                           "annotations": None, "epochs": [], "durable": [],
+                           "titles": {}, "schema_version": None,
+                           "schema_sha256": None}
+    sh = hashlib.sha256()
+    for row in con.execute("SELECT type, name, tbl_name, sql FROM "
+                           "sqlite_master ORDER BY type, name"):
+        sh.update(canonical(list(row)) + b"\n")
+    out["schema_sha256"] = sh.hexdigest()
     for t in tables:
-        out["tables"][t] = con.execute(
-            'SELECT COUNT(*) FROM "%s"' % t.replace('"', '""')).fetchone()[0]
+        cols, cur = _rows_in_order(con, t)
+        h = hashlib.sha256(canonical(cols) + b"\n")
+        n = 0
+        is_log = t == "lem_machine_log"
+        ts_i = cols.index("ts") if is_log and "ts" in cols else None
+        day_h: Dict[str, Any] = {}
+        day_n: Dict[str, int] = {}
+        for row in cur:
+            line = canonical(list(row)) + b"\n"
+            h.update(line)
+            n += 1
+            if is_log:
+                day = _day(row[ts_i] if ts_i is not None else None)
+                dh = day_h.get(day)
+                if dh is None:
+                    dh = day_h[day] = hashlib.sha256(canonical(cols) + b"\n")
+                dh.update(line)
+                day_n[day] = day_n.get(day, 0) + 1
+        out["tables"][t] = n
+        out["content"][t] = {"rows": n, "sha256": h.hexdigest()}
+        if is_log:
+            out["log_digest"] = {d: {"rows": day_n[d],
+                                     "sha256": day_h[d].hexdigest()}
+                                 for d in sorted(day_n)}
+        if t == "log_annotation":
+            out["annotations"] = {"rows": n, "sha256": h.hexdigest()}
     if "store_meta" in tables:
         row = con.execute("SELECT value FROM store_meta WHERE key = "
                           "'schema_version'").fetchone()
         out["schema_version"] = row[0] if row else None
-    if "lem_machine_log" in tables:
-        # raw-log: audit — the digest covers EVERY row, hidden ones included
-        cur = con.execute("SELECT * FROM lem_machine_log ORDER BY rowid")
-        cols = [d[0] for d in cur.description]
-        ts_i = cols.index("ts") if "ts" in cols else None
-        hashers: Dict[str, Any] = {}
-        counts: Dict[str, int] = {}
-        for row in cur:
-            day = _day(row[ts_i] if ts_i is not None else None)
-            h = hashers.get(day)
-            if h is None:
-                h = hashers[day] = hashlib.sha256(canonical(cols) + b"\n")
-            h.update(canonical(list(row)) + b"\n")
-            counts[day] = counts.get(day, 0) + 1
-        out["log_digest"] = {d: {"rows": counts[d], "sha256": hashers[d].hexdigest()}
-                             for d in sorted(counts)}
-    if "log_annotation" in tables:
-        h = hashlib.sha256()
-        n = 0
-        for row in con.execute("SELECT * FROM log_annotation ORDER BY rowid"):
-            h.update(canonical(list(row)) + b"\n")
-            n += 1
-        out["annotations"] = {"rows": n, "sha256": h.hexdigest()}
     if "lem_machine_config" in tables:
         out["titles"] = {r[0]: r[1] for r in con.execute(
             "SELECT machine_uid, title FROM lem_machine_config")}
@@ -309,8 +386,11 @@ def describe(con) -> dict:
             "SELECT machine_uid, bench_epoch, acked_seq, durable_seq, digest, "
             "records_total, digest_mismatch FROM bench_cursor "
             "ORDER BY machine_uid, bench_epoch").fetchall()
-        for uid, epoch, acked, durable, digest, total, mismatch in cursors:
-            acked = int(acked or 0)
+        for uid, epoch, raw_acked, raw_durable, digest, raw_total, mismatch \
+                in cursors:
+            acked = _int(raw_acked)
+            durable = _int(raw_durable)
+            total = _int(raw_total)
             d, held, expect, gaps, max_seq = DIGEST_ZERO, 0, 1, [], 0
             for seq, body in con.execute(
                     "SELECT bench_seq, body FROM bench_record WHERE "
@@ -320,40 +400,59 @@ def describe(con) -> dict:
                 max_seq = seq
                 if seq != expect and len(gaps) < 3:
                     gaps.append(expect)
-                expect = seq + 1
-                if seq <= acked:
+                expect = (_int(seq) or 0) + 1
+                if acked is not None and _int(seq) is not None \
+                        and seq <= acked:
                     d = chain(d, str(body).encode("utf-8"))
-            problems = []
-            if held != acked or max_seq != acked or gaps:
-                problems.append(
-                    "LEM holds %d record(s) of this epoch up to seq %d, but "
+            # What LEM itself wrote. bench_api writes a record and the cursor
+            # that counts it in ONE transaction, contiguous from 1, so a store
+            # LEM wrote always has these; a file that does not was changed.
+            internal = []
+            if acked is None:
+                internal.append("its cursor's acked_seq %r is not a number"
+                                % (raw_acked,))
+            elif held != acked or max_seq != acked or gaps:
+                internal.append(
+                    "LEM holds %d record(s) of this epoch up to seq %s, but "
                     "its cursor says 1..%d%s" % (
                         held, max_seq, acked,
                         (" (missing from seq %d)" % gaps[0]) if gaps else ""))
-            if (digest or DIGEST_ZERO) != d:
-                problems.append(
+            if acked is not None and (digest or DIGEST_ZERO) != d:
+                internal.append(
                     "LEM's stored records no longer reproduce its own running "
-                    "digest through seq %d: a stored record was changed" % acked)
-            if total is not None and int(total) < acked:
-                problems.append(
+                    "digest through seq %d: a stored record was changed"
+                    % acked)
+            if durable is None or (acked is not None and durable > acked):
+                internal.append("its cursor's durable_seq %r is past acked %r"
+                                % (raw_durable, raw_acked)
+                                if durable is not None else
+                                "its cursor's durable_seq %r is not a number"
+                                % (raw_durable,))
+            # What the BENCH said: a disagreement worth a red line, but the
+            # copy is still a faithful copy of the store.
+            said = []
+            if total is not None and acked is not None and total < acked:
+                said.append(
                     "the bench counts %d record(s) in this epoch, and LEM "
-                    "holds %d" % (int(total), acked))
+                    "holds %d" % (total, acked))
             if mismatch:
                 try:
                     at = json.loads(mismatch).get("through")
-                except (ValueError, AttributeError):
+                except (ValueError, AttributeError, TypeError):
                     at = None
-                problems.append(
+                said.append(
                     "the bench's journal and LEM disagreed at or before seq %s"
                     % (at if at is not None else "?"))
+            problems = internal + said
             out["epochs"].append({
                 "machine_uid": uid, "epoch": epoch, "acked": acked,
-                "held": held, "records_total": (int(total) if total is not None
-                                                else None),
+                "durable_seq": durable, "held": held, "records_total": total,
                 "cursor_digest": digest, "recomputed": d,
-                "ok": not problems, "problems": problems})
-            out["durable"].append({"machine_uid": uid, "epoch": epoch,
-                                   "acked": acked})
+                "intact": not internal, "ok": not problems,
+                "internal": internal, "problems": problems})
+            if not internal:
+                out["durable"].append({"machine_uid": uid, "epoch": epoch,
+                                       "acked": acked})
     return out
 
 
@@ -442,6 +541,14 @@ def pre_migration_backup(store_path: str, found_version) -> dict:
     behind it is the one step that must not go ahead."""
     out = take_backup(store_path, default_backup_dir(store_path), _utcnow(),
                       kind="pre_migration")
+    try:
+        _ledger_add_raw(store_path, os.path.basename(out["path"]),
+                        manifest_digest(out["manifest"]))
+    except (sqlite3.Error, OSError, ValueError) as exc:
+        # The copy exists and verifies; only its witness is missing, and a
+        # restore of it will say so rather than pass silently.
+        logger.warning("custody: the pre-migration backup could not be "
+                       "entered in the store's ledger: %s", exc)
     logger.warning("custody: pre-migration backup of schema %s taken: %s",
                    found_version, out["path"])
     return out
@@ -528,8 +635,10 @@ def verify(path: str, scratch_dir: Optional[str] = None) -> dict:
     """Re-verify a backup against its manifest, on a scratch COPY.
 
     {"ok", "problems": [sentences], "manifest"}. Every difference is named:
-    the day whose log rows changed, the table whose count changed, the bench
-    epoch whose records no longer reproduce their digest."""
+    the day whose log rows changed, the table whose rows changed, the schema,
+    the bench epoch whose cursor or records differ — and any epoch LEM could
+    not have written. It checks the file against ITS OWN manifest only;
+    `restore` adds the witnesses outside the file."""
     problems: List[str] = []
     try:
         man = read_manifest(path)
@@ -570,8 +679,15 @@ def verify(path: str, scratch_dir: Optional[str] = None) -> dict:
     return {"ok": not problems, "problems": problems, "manifest": man}
 
 
+_EPOCH_FIELDS = ("acked", "durable_seq", "held", "records_total",
+                 "cursor_digest", "recomputed", "intact", "problems")
+
+
 def _compare(man: dict, desc: dict) -> List[str]:
     out = []
+    if man.get("schema_sha256") != desc.get("schema_sha256"):
+        out.append("the schema (tables, indexes, guard triggers) differs from "
+                   "the manifest: something was dropped, added or redefined")
     want, have = man.get("log_digest") or {}, desc.get("log_digest") or {}
     for day in sorted(set(want) | set(have)):
         w, h = want.get(day), have.get(day)
@@ -589,36 +705,217 @@ def _compare(man: dict, desc: dict) -> List[str]:
     if (man.get("annotations") or None) != (desc.get("annotations") or None):
         out.append("log_annotation differs from the manifest (an annotation "
                    "can hide a row)")
-    tw, th = man.get("tables") or {}, desc.get("tables") or {}
-    for t in sorted(set(tw) | set(th)):
-        if tw.get(t) != th.get(t):
-            out.append("table %s: %s row(s), the manifest says %s"
-                       % (t, th.get(t, "no"), tw.get(t, "none")))
+    cw, ch = man.get("content") or {}, desc.get("content") or {}
+    for t in sorted(set(cw) | set(ch)):
+        w, h = cw.get(t), ch.get(t)
+        if w == h:
+            continue
+        if w is None:
+            out.append("table %s: %d row(s), and the manifest has no such "
+                       "table" % (t, h["rows"]))
+        elif h is None:
+            out.append("table %s: gone; the manifest has %d row(s)"
+                       % (t, w["rows"]))
+        elif w["rows"] != h["rows"]:
+            out.append("table %s: %d row(s), the manifest says %d"
+                       % (t, h["rows"], w["rows"]))
+        else:
+            out.append("table %s: %d row(s) as the manifest says, but a row's "
+                       "content differs" % (t, h["rows"]))
     ew = {(e["machine_uid"], e["epoch"]): e for e in man.get("epochs") or []}
     eh = {(e["machine_uid"], e["epoch"]): e for e in desc.get("epochs") or []}
-    for key in sorted(set(ew) | set(eh)):
+    for key in sorted(set(ew) | set(eh), key=lambda k: (str(k[0]), str(k[1]))):
         w, h = ew.get(key), eh.get(key)
-        if w is None or h is None or w.get("recomputed") != h.get("recomputed") \
-                or w.get("held") != h.get("held"):
-            out.append("bench_record for %s epoch %s: what the bench sent no "
-                       "longer matches the manifest" % key)
+        name = "bench_cursor / bench_record for %s epoch %s" % key
+        if w is None or h is None:
+            out.append("%s: %s" % (name, "not in the manifest" if w is None
+                                   else "in the manifest, gone from the file"))
+            continue
+        diff = [f for f in _EPOCH_FIELDS if w.get(f) != h.get(f)]
+        if diff:
+            out.append("%s: %s" % (name, "; ".join(
+                "%s %s, the manifest says %s" % (f, _short(h.get(f)),
+                                                 _short(w.get(f)))
+                for f in diff)))
+    # Independent of the manifest: a file LEM wrote never has an epoch whose
+    # records do not support its cursor. The manifest can be recomputed by
+    # whoever changed the file; this cannot be argued with. Restoring such a
+    # file would answer the bench's sync with a cursor past what is held, the
+    # bench would adopt it (N3) and never resend the difference.
+    for key in sorted(eh, key=lambda k: (str(k[0]), str(k[1]))):
+        e = eh[key]
+        if e.get("intact") is False:
+            internal = e.get("internal") or []
+            out.append("bench_cursor for %s epoch %s: %s — LEM writes a record "
+                       "and its cursor in one transaction, so it never wrote "
+                       "this; restoring it would lose bench records"
+                       % (key[0], key[1], "; ".join(internal) or "not intact"))
     if str(man.get("schema_version")) != str(desc.get("schema_version")):
         out.append("schema_version %s, the manifest says %s"
                    % (desc.get("schema_version"), man.get("schema_version")))
     return out
 
 
-def restore(backup_path: str, store_path: str,
-            now: Optional[datetime] = None) -> dict:
-    """Put a verified backup where the store is. THE SERVER MUST BE STOPPED.
+def _short(v) -> str:
+    text = repr(v)
+    return text if len(text) <= 24 else text[:20] + "…"
 
-    The file it replaces is kept beside it (`.before-restore-<stamp>`, with
-    its -wal and -shm), never deleted. Refuses (RestoreRefused) a backup that
-    does not re-verify, and touches nothing when it does."""
+
+# ── witnesses outside the file ───────────────────────────────────────────────
+#
+# verify() checks a file against its own manifest. Whoever can rewrite the
+# file can rewrite the manifest beside it with this very code, so a restore
+# also asks places the file does not control: the live store's ledger of
+# every backup's manifest digest, and the off-host folder's own copy of the
+# manifest. Any witness that DISAGREES refuses the restore outright; a
+# restore that nothing can witness is refused unless a person accepts it.
+
+LEDGER_KEY = "backup_ledger"
+LEDGER_KEEP = 600
+
+
+def read_ledger(store_path: str) -> Dict[str, str]:
+    """{backup file name: manifest digest} from a store file, read-only.
+    Raises on a store that cannot be read; {} only when it has no ledger."""
+    con = sqlite3.connect(_ro_uri(store_path), uri=True)
+    try:
+        row = con.execute("SELECT value FROM store_meta WHERE key = ?",
+                          [LEDGER_KEY]).fetchone()
+    finally:
+        con.close()
+    if not row or not row[0]:
+        return {}
+    v = json.loads(row[0])
+    if not isinstance(v, dict):
+        raise ValueError("the ledger is not a map")
+    return {str(k): str(d) for k, d in v.items()}
+
+
+def ledger_with(current: Dict[str, str], name: str, digest: str) -> Dict[str, str]:
+    """The ledger plus one entry: every pre-migration entry, and the
+    LEDGER_KEEP newest others (names sort by time) — more than retention
+    keeps, so every retained backup stays in it."""
+    merged = dict(current)
+    merged[name] = digest
+    pre = {k: v for k, v in merged.items() if "-premigration" in k}
+    rest = sorted((k for k in merged if k not in pre), reverse=True)
+    out = dict(pre)
+    for k in rest[:LEDGER_KEEP]:
+        out[k] = merged[k]
+    return out
+
+
+def _ledger_add_raw(store_path: str, name: str, digest: str) -> None:
+    """For the pre-migration copy, taken before the store is open: write the
+    ledger entry into the old file directly (store_meta is not guarded)."""
+    con = sqlite3.connect(store_path)
+    try:
+        row = con.execute("SELECT value FROM store_meta WHERE key = ?",
+                          [LEDGER_KEY]).fetchone()
+        cur = json.loads(row[0]) if row and row[0] else {}
+        con.execute("INSERT INTO store_meta (key, value) VALUES (?, ?) ON "
+                    "CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [LEDGER_KEY, json.dumps(ledger_with(cur, name, digest),
+                                            sort_keys=True)])
+        con.commit()
+    finally:
+        con.close()
+
+
+def witness(backup_path: str, man: dict, ledger_store: Optional[str] = None,
+            offsite_dir: Optional[str] = None) -> dict:
+    """{"witnesses": [who agreed], "problems": [who disagreed], "notes":
+    [who could not say, and why]} for one backup and its manifest."""
+    name = os.path.basename(backup_path)
+    digest = manifest_digest(man)
+    seen: List[str] = []
+    problems: List[str] = []
+    notes: List[str] = []
+    if ledger_store:
+        if not os.path.exists(ledger_store):
+            notes.append("there is no store at %s to hold a ledger"
+                         % ledger_store)
+        else:
+            try:
+                ledger = read_ledger(ledger_store)
+            except (sqlite3.Error, OSError, ValueError) as exc:
+                # a failed read is not "no entry": said, and not a witness
+                notes.append("the store's backup ledger could not be read "
+                             "(%s)" % exc)
+            else:
+                got = ledger.get(name)
+                if got is None:
+                    notes.append("the store's backup ledger has no entry for "
+                                 "%s" % name)
+                elif got != digest:
+                    problems.append(
+                        "the store's backup ledger recorded a different "
+                        "manifest for %s when it was taken (%s… against %s…): "
+                        "the backup and its manifest were changed afterwards"
+                        % (name, got[:12], digest[:12]))
+                else:
+                    seen.append("the store's backup ledger (%s)" % ledger_store)
+    if offsite_dir:
+        here = os.path.realpath(os.path.dirname(os.path.abspath(backup_path)))
+        if here == os.path.realpath(offsite_dir):
+            notes.append("the file is the off-host copy, so the off-host "
+                         "folder cannot witness it")
+        else:
+            mp = manifest_path(os.path.join(offsite_dir, name))
+            try:
+                with open(mp, "r", encoding="utf-8") as f:
+                    other = json.load(f)
+            except FileNotFoundError:
+                notes.append("the off-host folder has no copy of %s" % name)
+            except (OSError, ValueError) as exc:
+                notes.append("the off-host manifest could not be read (%s)"
+                             % exc)
+            else:
+                if manifest_digest(other) != digest:
+                    problems.append(
+                        "the off-host copy's manifest for %s differs from the "
+                        "one beside this file: one of them was changed after "
+                        "the copy was made" % name)
+                else:
+                    seen.append("the off-host manifest (%s)" % mp)
+    return {"witnesses": seen, "problems": problems, "notes": notes}
+
+
+def restore(backup_path: str, store_path: str,
+            now: Optional[datetime] = None,
+            offsite_dir: Optional[str] = "env",
+            ledger_store: Optional[str] = "target",
+            accept_unwitnessed: bool = False) -> dict:
+    """Put a verified, witnessed backup where the store is. THE SERVER MUST
+    BE STOPPED (the drill restores to a scratch path instead).
+
+    Refuses (RestoreRefused), touching nothing, when the file does not
+    re-verify against its manifest, when any witness outside the file
+    disagrees with that manifest, or when no witness exists at all and
+    `accept_unwitnessed` was not given. The ledger is read from the store
+    being replaced unless `ledger_store` names another; the off-host folder
+    is `LEM_BACKUP_OFFSITE` unless `offsite_dir` names one. The file it
+    replaces is kept beside it (`.before-restore-<stamp>`, with its -wal and
+    -shm), never deleted."""
     v = verify(backup_path, scratch_dir=os.path.dirname(os.path.abspath(
         store_path)) or None)
     if not v["ok"]:
         raise RestoreRefused(v["problems"])
+    if offsite_dir == "env":
+        offsite_dir = default_offsite_dir()
+    if ledger_store == "target":
+        ledger_store = store_path
+    w = witness(backup_path, v["manifest"], ledger_store=ledger_store,
+                offsite_dir=offsite_dir)
+    if w["problems"]:
+        raise RestoreRefused(w["problems"])
+    if not w["witnesses"] and not accept_unwitnessed:
+        raise RestoreRefused(
+            ["nothing outside the file can witness it — %s. A backup and its "
+             "manifest rewritten together would look exactly like this, so "
+             "the restore needs a person to accept it unwitnessed"
+             % ("; ".join(w["notes"]) or "no store ledger and no off-host "
+                                          "folder were given")])
     now = now or _utcnow()
     stamp = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     kept = None
@@ -638,7 +935,9 @@ def restore(backup_path: str, store_path: str,
     os.replace(tmp, store_path)
     _fsync_dir(os.path.dirname(os.path.abspath(store_path)))
     return {"ok": True, "kept": kept, "backup": backup_path,
-            "manifest": v["manifest"], "problems": []}
+            "manifest": v["manifest"], "problems": [],
+            "witnesses": w["witnesses"], "notes": w["notes"],
+            "unwitnessed": not w["witnesses"]}
 
 
 # ── the drill's server ───────────────────────────────────────────────────────
@@ -726,6 +1025,14 @@ def boot_and_ask(store_path: str, port: int, scratch: str,
 
 def _hours(td: timedelta) -> int:
     return int(td.total_seconds() // 3600)
+
+
+def _age_text(td: timedelta) -> str:
+    """"26 h 1 min": to the minute, so an age just over a limit never reads
+    as the limit itself."""
+    mins = int(td.total_seconds() // 60)
+    h, m = divmod(mins, 60)
+    return "%d h %d min" % (h, m) if m else "%d h" % h
 
 
 class Custody:
@@ -829,7 +1136,10 @@ class Custody:
             rec = reconcile_of(man)
             self._set({"last_backup_at": _iso(now), "last_backup_ok": "1",
                        "last_backup_file": man["file"],
-                       "last_backup_error": None,
+                       "last_backup_error": (
+                           ("its durable mark and ledger entry were not "
+                            "recorded: %s" % published)[:500]
+                           if published else None),
                        "reconcile": json.dumps({"epochs": rec,
                                                 "titles": man.get("titles")}),
                        "reconcile_at": _iso(now)})
@@ -844,11 +1154,34 @@ class Custody:
 
     def publish_durable(self, man: dict) -> Optional[str]:
         """`durable_seq` per (uid, epoch) = the acked the BACKUP holds, never
-        lowered by an older backup and never past what the store has acked;
-        and the day digests, in the same transaction. Returns an error text
-        or None."""
+        lowered by an older backup and never past what the store has acked
+        (and only for epochs the copy holds intact: `describe` leaves the
+        others out); the day digests; and the backup's entry in the store's
+        ledger — all in one transaction, so a durable the benches act on
+        always has a witnessed backup behind it. Returns an error text or
+        None."""
         try:
+            got = self.store.read_sql("SELECT value FROM store_meta WHERE "
+                                      "key = ?", [LEDGER_KEY])
+            if not isinstance(got, dict) or got.get("error") \
+                    or "rows" not in got:
+                # a failed read is not an empty ledger: writing {} + one
+                # entry would erase every earlier backup's witness
+                raise RuntimeError("the backup ledger could not be read: %s"
+                                   % ((got or {}).get("error")
+                                      if isinstance(got, dict) else got))
+            cur = json.loads(got["rows"][0]["value"] or "{}") \
+                if got["rows"] else {}
+            if not isinstance(cur, dict):
+                raise RuntimeError("the backup ledger is not a map")
+            ledger = ledger_with(cur, man["file"], manifest_digest(man))
             with self.store.transaction():
+                res = self.store.sql(
+                    "INSERT INTO store_meta (key, value) VALUES (?, ?) ON "
+                    "CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    [LEDGER_KEY, json.dumps(ledger, sort_keys=True)])
+                if res.get("error"):
+                    raise RuntimeError(res["error"])
                 for d in man.get("durable") or []:
                     res = self.store.sql(
                         "UPDATE bench_cursor SET durable_seq = MAX(durable_seq,"
@@ -962,7 +1295,12 @@ class Custody:
             target = os.path.join(scratch, "lem.db")
             # 1. restore, which re-verifies the manifest first
             try:
-                done = restore(b["path"], target)
+                # witnessed by the LIVE store's ledger (and the off-host
+                # manifest): a backup rewritten together with its manifest
+                # re-verifies against itself and must still fail here
+                done = restore(b["path"], target,
+                               ledger_store=self.store_path,
+                               offsite_dir=self.offsite_dir)
             except RestoreRefused as exc:
                 result["checks"].append({"name": "manifest", "ok": False,
                                          "detail": "; ".join(exc.problems)})
@@ -970,10 +1308,14 @@ class Custody:
                 return self.record_drill(result)
             man = done["manifest"]
             result["checks"].append({"name": "manifest", "ok": True,
-                                     "detail": "re-verified: %d day(s) of log "
-                                               "digest, %d bench epoch(s)" % (
+                                     "detail": "re-verified: every row of %d "
+                                               "table(s), %d day(s) of log "
+                                               "digest, %d bench epoch(s); "
+                                               "witnessed by %s" % (
+                                                   len(man.get("content") or {}),
                                                    len(man.get("log_digest") or {}),
-                                                   len(man.get("epochs") or []))})
+                                                   len(man.get("epochs") or []),
+                                                   " and ".join(done["witnesses"]))})
             # 2. boot on the scratch port, read-only
             if not _port_free(port):
                 text = "port %d is in use, so the scratch server could not " \
@@ -1160,9 +1502,14 @@ class Custody:
             return ["The time of the last off-host copy (%r) cannot be read, "
                     "so its age is unknown." % raw]
         age = now - at
+        if age < -OFFSITE_FUTURE_SLACK:
+            return ["The last off-host copy is recorded at %s, which is in the "
+                    "future by this server's clock. A clock set wrong, or an "
+                    "edited value, cannot vouch for a copy made now." % raw]
         if age > OFFSITE_MAX:
-            return ["The last off-host copy is %d h old; the bridge can be "
-                    "turned off only within 26 h of one." % _hours(age)]
+            return ["The last off-host copy is %s old, more than 26 h. The "
+                    "bridge can be turned off once a newer copy completes."
+                    % _age_text(age)]
         return []
 
     def status_items(self) -> List[dict]:
@@ -1196,6 +1543,10 @@ class Custody:
             item("backup:old", "warning",
                  "The newest backup of the LEM store is %d h old."
                  % _hours(now - last))
+        if ok is True and st.get("last_backup_error"):
+            item("backup:unpublished", "warning",
+                 "The last backup of the LEM store is good, but %s."
+                 % str(st["last_backup_error"])[:200])
         rec = self._reconcile()
         for e in rec.get("epochs") or []:
             if e.get("ok"):
@@ -1209,6 +1560,11 @@ class Custody:
             item("offsite:none", "warning",
                  "The LEM store has no off-host copy yet%s." % (
                      "" if self.offsite_dir else ": no target is named"))
+        elif off - now > OFFSITE_FUTURE_SLACK:
+            item("offsite:future", "warning",
+                 "The off-host copy of the LEM store is recorded in the "
+                 "future (%s): this server's clock or the record is wrong."
+                 % st.get("offsite_last_ok"))
         elif now - off > OFFSITE_MAX:
             item("offsite:old", "warning",
                  "The off-host copy of the LEM store is %d h old."
@@ -1527,6 +1883,15 @@ def main(argv=None) -> int:
     s = sub.add_parser("restore")
     s.add_argument("backup")
     s.add_argument("--store", default=None)
+    s.add_argument("--offsite", default="env",
+                   help="the off-host folder whose manifest witnesses the "
+                        "backup (default: LEM_BACKUP_OFFSITE)")
+    s.add_argument("--ledger", default="target",
+                   help="a store file whose backup ledger witnesses it "
+                        "(default: the store being replaced)")
+    s.add_argument("--accept-unwitnessed", action="store_true",
+                   help="restore although nothing outside the file can "
+                        "witness it (a witness that DISAGREES still refuses)")
     args = p.parse_args(argv)
     from lem_store import default_store_path
     if args.cmd == "verify":
@@ -1538,14 +1903,18 @@ def main(argv=None) -> int:
     if args.cmd == "restore":
         store = args.store or default_store_path()
         try:
-            out = restore(args.backup, store)
+            out = restore(args.backup, store, offsite_dir=args.offsite,
+                          ledger_store=args.ledger,
+                          accept_unwitnessed=args.accept_unwitnessed)
         except RestoreRefused as exc:
-            print("REFUSED: the backup does not re-verify:")
+            print("REFUSED:")
             for line in exc.problems:
                 print(" -", line)
             return 1
         print("Restored %s over %s; the file it replaced is kept at %s"
               % (args.backup, store, out["kept"]))
+        print("Witnessed by: %s" % (", ".join(out["witnesses"]) or
+                                    "NOTHING (accepted unwitnessed)"))
         return 0
     store = args.store or default_store_path()
     bdir = args.backup_dir or default_backup_dir(store)
