@@ -741,3 +741,181 @@ class TestLookFirstIsWhereARestartReReads:
         assert tier[("single_repeat", DUP)] == 0
         first = tier[("look_first", DUP)] + tier[("look_first", GENUINE)]
         assert tier[("look_first", DUP)] >= 0.6 * first, tier
+
+
+class TestO9IsClosedByMeasurement:
+    """The lead's revision of O9 (decisions.md, 2026-10-02). The old bar --
+    replay_duplicate inside 110k-140k -- was a phase-2 prediction scaled
+    from a ~99k note, never Ryan's number, and the record cannot reach it:
+    only 64,790 rows have an identical earlier row on their bench (the
+    CEILING), and no rule that keeps one copy of every reading can propose
+    more. So O9 is closed by MEASUREMENT, and the report must state:
+
+    * the record's ceiling and the candidates, side by side, as the first
+      thing a reader sees -- no band is judged on the total any more;
+    * for the benches whose bursts ARE replays (Agilent GC 1, Eraspec,
+      Eraspec NIR) the candidates within +/-10 % of G1's burst rows;
+    * for Agilent GC 2, where G1 counted 654 burst rows and the rules
+      propose 395, an EXPLANATION, not a band: every burst row the rules
+      did not propose is either a row with no earlier twin (nothing for it
+      to be a copy of) or a twin listed for review, counted by rule; and
+      twenty concrete burst rows with no earlier twin, each with what it
+      is -- the bench's first ingest, a Lab ID no earlier poll carried, or
+      a re-processed result shown beside the closest earlier row of the
+      same Lab ID and the number that moved. A reader checks those twenty
+      against a printout; he does not take "first ingests" on trust.
+
+    The verdict is MET only when the band benches are in band AND the
+    explained bench's burst rows are fully accounted (no twin left
+    unlabelled) with its twenty examples; otherwise NOT MET, naming why.
+    """
+
+    BAR = {"since": "2026-09-01", "total": None, "band": 0.10,
+           "revision": "lead revision 2026-10-02 (decisions.md)",
+           "benches": {
+               "b": {"name": "Bench B", "burst_rows": 25, "bar": "band"},
+               "g": {"name": "GC", "burst_rows": 87, "bar": "explain"}}}
+
+    def _lab(self):
+        lab = SimLab()
+        b = [SimLab.run_line("B44%03d" % k, {"v": "b%d" % k})
+             for k in range(25)]
+        lab.poll("b", b, [GENUINE] * 25, ts="2026-09-02T09:00:00")
+        lab.poll("b", b, [DUP] * 25, ts="2026-09-03T09:00:00")
+        # GC: the bench's first ingest of its file (every Lab ID new) ...
+        first = [SimLab.run_line("40%03d" % k, {
+            "ASTM D2887 - Distillation, IBP": "%d.5" % (100 + k)})
+            for k in range(25)]
+        lab.poll("g", first, [GENUINE] * 25, ts="2026-09-18T10:11:54")
+        # ... the same samples re-processed 41 minutes later (numbers new)
+        redo = [SimLab.run_line("40%03d" % k, {
+            "ASTM D2887 - Distillation, IBP": "%d.9" % (100 + k)})
+            for k in range(20)]
+        lab.poll("g", redo, [GENUINE] * 20, ts="2026-09-18T10:52:54")
+        # ... a replay of the first ingest, which the rules propose
+        lab.poll("g", first[5:25], [DUP] * 20, ts="2026-09-23T16:55:03")
+        # ... and a batch of new results with one identical re-test of an
+        # earlier sample among them: a twin, listed, never proposed
+        new = [SimLab.run_line("41%03d" % k, {
+            "ASTM D2887 - Distillation, IBP": "%d.1" % (200 + k)})
+            for k in range(21)]
+        lab.poll("g", new[:10] + [first[2]] + new[10:],
+                 [GENUINE] * 22, ts="2026-09-30T15:35:54")
+        return lab
+
+    def _check(self, lab=None, bar=None):
+        lab = lab or self._lab()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        return result, dedupe.prediction_check(result, bar or self.BAR)
+
+    def test_the_spec_prediction_is_the_revised_bar(self):
+        p = dedupe.SPEC_PREDICTION
+        assert p["total"] is None
+        assert "2026-10-02" in p["revision"]
+        bars = {w["name"]: w["bar"] for w in p["benches"].values()}
+        assert bars == {"Agilent GC 1": "band", "Eraspec": "band",
+                        "Eraspec NIR": "band", "Agilent GC 2": "explain"}
+
+    def test_the_total_is_reported_not_judged(self):
+        _r, chk = self._check()
+        t = chk["total"]
+        assert t["predicted"] is None and t["within_band"] is None
+        assert t["ceiling"] == 25 + 20 + 1
+        assert t["proposed_replay_duplicate"] == 45
+        assert t["candidates_of_ceiling_pct"] == round(100.0 * 45 / 46, 1)
+
+    def test_the_explained_bench_accounts_for_every_burst_row(self):
+        _r, chk = self._check()
+        g = next(b for b in chk["benches"] if b["machine_uid"] == "g")
+        assert g["bar"] == "explain"
+        assert g["burst_rows_measured"] == 87 == g["predicted"]
+        assert g["proposed"] == 20
+        s = g["shortfall"]
+        assert s == {"g1_burst_rows": 87, "burst_rows_proposed": 20,
+                     "not_proposed": 67, "no_earlier_twin": 66,
+                     "listed_for_review": 1,
+                     "listed_by_rule": {"lone_twin_in_burst": 1},
+                     "unlabelled_twin": 0}
+        assert g["explained"] is True
+
+    def test_twenty_examples_of_burst_rows_with_no_earlier_twin(self):
+        result, chk = self._check()
+        g = next(b for b in chk["benches"] if b["machine_uid"] == "g")
+        ex = g["no_twin_examples"]
+        assert len(ex) == 20
+        assert len({e["id"] for e in ex}) == 20
+        has_earlier = dedupe._has_earlier(result.rows.values())
+        for e in ex:
+            row = result.rows[e["id"]]
+            assert row.machine_uid == "g" and e["id"] not in has_earlier
+            assert e["poll_rows"] >= dedupe.BURST_ROWS
+        # spread over every poll that holds such rows, not the first 20
+        assert {e["ts"][:16] for e in ex} == {
+            "2026-09-18T10:11", "2026-09-18T10:52", "2026-09-30T15:35"}
+        why = {e["ts"][:16]: e["why"] for e in ex}
+        assert why == {"2026-09-18T10:11": "first_ingest",
+                       "2026-09-18T10:52": "re_processed",
+                       "2026-09-30T15:35": "new_lab_id"}
+        redo = [e for e in ex if e["why"] == "re_processed"]
+        for e in redo:
+            # beside the closest earlier row of the same Lab ID, with the
+            # number that moved
+            ear = result.rows[e["earlier"]["id"]]
+            assert ear.lab_id == e["lab_id"] and ear.ts < e["ts"]
+            assert e["earlier"]["moved"] == "IBP %s -> %s" % (
+                json.loads(ear.detail)["values"][
+                    "ASTM D2887 - Distillation, IBP"],
+                json.loads(result.rows[e["id"]].detail)["values"][
+                    "ASTM D2887 - Distillation, IBP"])
+        firsts = [e for e in ex if e["why"] == "first_ingest"]
+        # the first ingest's rows are what the later replay copied
+        assert any(e["later_copies"] == 1 for e in firsts)
+        assert all(e["earlier"] is None for e in ex
+                   if e["why"] != "re_processed")
+
+    def test_met_when_bands_hold_and_the_shortfall_is_explained(self):
+        _r, chk = self._check()
+        v = chk["verdict"]
+        assert v["met"] is True, v
+        assert v["benches_out_of_band"] == []
+        assert v["benches_unexplained"] == []
+        lines = dedupe.o9_lines(chk)
+        assert lines[1].startswith("  VERDICT: MET")
+        text = "\n".join(lines)
+        assert "CEILING 46" in lines[2] and "replay_duplicate 45" in lines[2]
+        assert "INSIDE" not in text
+        assert "110,000" not in text
+        # with no band on the total there is no floor for a looser
+        # definition to miss
+        assert "no definition reaches the floor" not in text
+        # the twenty examples are printed, one line each
+        shown = [l for l in lines if l.startswith("      #")]
+        assert len(shown) == 20
+        assert any("re-processed" in l and "IBP" in l and "->" in l
+                   for l in shown)
+        assert any("first ingest" in l for l in shown)
+
+    def test_a_band_bench_out_of_band_is_not_met(self):
+        bar = json.loads(json.dumps(self.BAR))
+        bar["benches"]["b"]["burst_rows"] = 50
+        _r, chk = self._check(bar=bar)
+        v = chk["verdict"]
+        assert v["met"] is False and v["benches_out_of_band"] == ["Bench B"]
+        assert dedupe.o9_lines(chk)[1].startswith("  VERDICT: NOT MET")
+
+    def test_an_unlabelled_twin_leaves_the_shortfall_unexplained(self):
+        """The explanation is a check on the rules: a burst row with an
+        earlier twin that the rules neither proposed nor listed is a fourth
+        bucket, and a bug -- the shortfall is then NOT explained."""
+        lab = self._lab()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        listed = next(i for i, c in result.candidates.items()
+                      if c.machine_uid == "g"
+                      and c.label == "probable_duplicate")
+        del result.candidates[listed]
+        chk = dedupe.prediction_check(result, self.BAR)
+        g = next(b for b in chk["benches"] if b["machine_uid"] == "g")
+        assert g["shortfall"]["unlabelled_twin"] == 1
+        assert g["explained"] is False
+        assert chk["verdict"]["benches_unexplained"] == ["GC"]
+        assert chk["verdict"]["met"] is False

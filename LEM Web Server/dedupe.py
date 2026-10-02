@@ -1339,18 +1339,36 @@ def _since(result: Classification, uid: str, since: str) -> Dict[str, Any]:
             "run_hide_candidates": hide}
 
 
-#: The prediction §10.5 makes for this lab's record (transfer-final.md
-#: §10.5 "Predicted"), with G1's burst rows per bench since 09-01
-#: (baseline gaps.md G1). The uids are the benches G1 measured.
+#: O9's bar as the lead revised it (decisions.md, 2026-10-02), with G1's
+#: burst rows per bench since 09-01 (baseline gaps.md G1). The uids are the
+#: benches G1 measured.
+#:
+#: The total is REPORTED, not judged (`total: None`): §10.5's old
+#: 110k-140k was a phase-2 prediction scaled from a ~99k note, never Ryan's
+#: number, and it sits above the record's ceiling (64,790 rows with an
+#: identical earlier row on their bench), so no rule that keeps one copy of
+#: every reading reaches it. It is kept in `withdrawn_total` so the report
+#: can say what it was and why it went.
+#:
+#: Per bench, `bar` is `band` (candidates within +/- `band` of G1's burst
+#: rows: GC 1, Eraspec, Eraspec NIR, whose bursts ARE replays) or `explain`
+#: (Agilent GC 2: G1 counts its first ingest and its re-processed results
+#: as bursts, and the shortfall is shown row by row instead).
 SPEC_PREDICTION: Dict[str, Any] = {
     "since": "2026-09-01",
-    "total": [110000, 140000],
+    "total": None,
+    "withdrawn_total": [110000, 140000],
+    "revision": "lead revision 2026-10-02 (decisions.md)",
     "band": 0.10,
     "benches": {
-        "bf8e64b59f12": {"name": "Agilent GC 1", "burst_rows": 3235},
-        "3afa991a66e9": {"name": "Agilent GC 2", "burst_rows": 654},
-        "ae05c9c117d7": {"name": "Eraspec", "burst_rows": 3482},
-        "5345176988c2": {"name": "Eraspec NIR", "burst_rows": 24888},
+        "bf8e64b59f12": {"name": "Agilent GC 1", "burst_rows": 3235,
+                         "bar": "band"},
+        "3afa991a66e9": {"name": "Agilent GC 2", "burst_rows": 654,
+                         "bar": "explain"},
+        "ae05c9c117d7": {"name": "Eraspec", "burst_rows": 3482,
+                         "bar": "band"},
+        "5345176988c2": {"name": "Eraspec NIR", "burst_rows": 24888,
+                         "bar": "band"},
     },
     # What the 110k-140k was scaled from: ASK-CLAUDE.md (3 Sep) "about
     # 99,000 of 220,841 rows ... exist because a sample was written again on
@@ -1455,12 +1473,37 @@ def prediction_check(result: Classification,
               else "re_processed"] += 1
         first_copy_polls = sorted(polls.values(),
                                   key=lambda p: (-p["first_copies"], p["ts"]))
+        # The shortfall against G1, row by row: every burst row the rules
+        # did not propose is a row with no earlier twin, or a twin listed
+        # for review (by rule), or -- a bug, never folded in -- a twin the
+        # rules left unlabelled.
+        bar = want.get("bar", "band")
+        acc = accounted(burst)
+        listed_by_rule = collections.Counter(
+            result.candidates[r.id].rule for r in burst if r.id in review)
+        shortfall = {
+            "g1_burst_rows": predicted,
+            "burst_rows_proposed": acc["hide_candidates"],
+            "not_proposed": len(burst) - acc["hide_candidates"],
+            "no_earlier_twin": len(no_twin),
+            "listed_for_review": acc["listed_for_review"],
+            "listed_by_rule": dict(listed_by_rule),
+            "unlabelled_twin": acc.get("unlabelled_twin", 0),
+        }
+        no_twin_examples = _no_twin_examples(
+            no_twin, bench_rows, per_poll, oldest, lab_since)
+        explained = (shortfall["unlabelled_twin"] == 0
+                     and len(no_twin_examples) == min(EXAMPLES_PER_BENCH,
+                                                      len(no_twin)))
         benches.append({
             "machine_uid": uid, "name": want.get("name", uid),
+            "bar": bar, "shortfall": shortfall,
+            "no_twin_examples": no_twin_examples,
+            "explained": explained,
             "first_copy_polls": first_copy_polls,
             "since": since, "predicted": predicted, "band": [lo, hi],
             "burst_rows_measured": len(burst),
-            "burst_rows_accounted": accounted(burst),
+            "burst_rows_accounted": acc,
             "hide_needed_for_band": need,
             # visible rows must cover every distinct reading of the window
             # (rows - ceiling of them first appear there); hiding `need`
@@ -1487,7 +1530,8 @@ def prediction_check(result: Classification,
                 r.brief() for r in new[::nstep][:EXAMPLES_PER_BENCH]],
             "reachable_by_any_definition": loose >= lo,
         })
-    t_lo, t_hi = prediction["total"]
+    judged = prediction.get("total") is not None
+    t_lo, t_hi = prediction["total"] if judged else (None, None)
     replay = sum(1 for c in result.candidates.values()
                  if c.label == "replay_duplicate")
     ceiling = len(has_earlier)
@@ -1498,42 +1542,69 @@ def prediction_check(result: Classification,
     burst_rows = len(in_bursts)
     out = {
         "source": "transfer-final.md §10.5 Predicted; G1 (baseline gaps.md)",
+        "revision": prediction.get("revision", ""),
+        "withdrawn_total": prediction.get("withdrawn_total"),
         "total": {
-            "predicted": [t_lo, t_hi],
+            # None when the bar reports the total without judging it (the
+            # lead's revision of O9): there is then no band to be in
+            "predicted": [t_lo, t_hi] if judged else None,
             "proposed_replay_duplicate": replay,
             "proposed_hide": len(hide),
             "ceiling": ceiling,
+            "candidates_of_ceiling_pct": round(
+                100.0 * replay / ceiling, 1) if ceiling else None,
+            "hide_of_ceiling_pct": round(
+                100.0 * len(hide) / ceiling, 1) if ceiling else None,
             "rows_in_polls_of_20_or_more": burst_rows,
-            "proxy_within_predicted": t_lo <= burst_rows <= t_hi,
+            "proxy_within_predicted": (t_lo <= burst_rows <= t_hi
+                                       if judged else None),
             "burst_rows_accounted": accounted(in_bursts),
-            "within_band": t_lo <= replay <= t_hi,
-            "reachable": ceiling >= t_lo,
-            "readings_erased_at_floor": max(0, int(t_lo) - ceiling),
+            "within_band": t_lo <= replay <= t_hi if judged else None,
+            "reachable": ceiling >= t_lo if judged else None,
+            "readings_erased_at_floor": (max(0, int(t_lo) - ceiling)
+                                         if judged else 0),
             "any_definition_ceiling": len(result.rows) - len(firsts),
-            "reachable_by_any_definition":
-                len(result.rows) - len(firsts) >= t_lo,
+            "reachable_by_any_definition": (
+                len(result.rows) - len(firsts) >= t_lo if judged else None),
         },
         "benches": benches,
     }
-    out_benches = [b["name"] for b in benches if not b["within_band"]]
-    total_ok = out["total"]["within_band"]
+    wt = prediction.get("withdrawn_total")
+    if wt:
+        # what the withdrawn band would have cost: hiding its floor leaves
+        # fewer visible rows than distinct readings
+        out["total"]["withdrawn_floor_erases"] = max(0, int(wt[0]) - ceiling)
+        out["total"]["proxy_within_withdrawn"] = (
+            wt[0] <= burst_rows <= wt[1])
+    banded = [b for b in benches if b["bar"] == "band"]
+    out_benches = [b["name"] for b in banded if not b["within_band"]]
+    unexplained = [b["name"] for b in benches
+                   if b["bar"] == "explain" and not b["explained"]]
+    total_ok = out["total"]["within_band"] if judged else True
+    met = bool(total_ok) and not out_benches and not unexplained
     out["verdict"] = {
         # computed from the CANDIDATES, never from the proxy
-        "met": total_ok and not out_benches,
-        "total_within_band": total_ok,
+        "met": met,
+        "total_within_band": out["total"]["within_band"],
         "benches_out_of_band": out_benches,
+        "benches_unexplained": unexplained,
+        "benches_explained": [b["name"] for b in benches
+                              if b["bar"] == "explain" and b["explained"]],
         # both bars must hold, and the benches' rows are part of the
         # total, so the cost is the larger of the two, not their sum
         "readings_erased_to_meet": max(
             out["total"]["readings_erased_at_floor"],
-            sum(b["readings_erased_at_band_floor"] for b in benches)),
-        "unblocks": "" if (total_ok and not out_benches) else (
-            "Ryan's revision of the predicted band (D7: per-bench hiding "
-            "is his decision); no rule faithful to §10.5 reaches it"
-            if not (out["total"]["reachable"]
-                    and all(b["reachable"] for b in benches))
-            else "a rule change: the band is reachable without erasing a "
-                 "reading"),
+            sum(b["readings_erased_at_band_floor"] for b in banded)),
+        "unblocks": "" if met else "; ".join(x for x in (
+            "a rule: a burst twin on {0} is neither proposed nor listed"
+            .format(", ".join(unexplained)) if unexplained else "",
+            ("Ryan's revision of the predicted band (D7: per-bench hiding "
+             "is his decision); no rule faithful to §10.5 reaches it"
+             if not ((out["total"]["reachable"] is not False)
+                     and all(b["reachable"] for b in banded))
+             else "a rule change: the band is reachable without erasing a "
+                  "reading") if (out_benches or not total_ok) else "")
+            if x),
     }
     claim = prediction.get("earlier_claim")
     if claim:
@@ -1556,6 +1627,90 @@ def prediction_check(result: Classification,
                          "reachable": per[u] >= int(n)}
                         for u, n in sorted(claim.get("benches", {}).items())],
         }
+    return out
+
+
+def _short_key(key: str) -> str:
+    """`ASTM D2887/D86 - Distillation ..., IBP` -> `IBP`: the column a
+    person finds on the printout."""
+    return key.rsplit(", ", 1)[-1]
+
+
+def _readings(row: LogRow) -> Dict[str, str]:
+    d = row.detail_dict()
+    vals = d.get("values") if isinstance(d, dict) else None
+    if isinstance(vals, dict) and vals:
+        return {str(k): str(v) for k, v in vals.items()}
+    return {row.test_name or "value": row.value}
+
+
+def _no_twin_examples(no_twin: Sequence[LogRow], bench_rows: Sequence[LogRow],
+                      per_poll: Dict[str, int], oldest: str,
+                      lab_since: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Twenty burst rows with NO identical earlier row on their bench,
+    spread over the record in time (every poll that holds such rows gets
+    its share), each with what it is:
+
+    * ``first_ingest`` -- the bench's first poll ever: the file arriving
+      whole, nothing before it to copy;
+    * ``new_lab_id`` -- a Lab ID no earlier poll of the bench carried;
+    * ``re_processed`` -- a Lab ID the bench sent before, with numbers that
+      moved: shown beside the CLOSEST earlier row of that Lab ID (fewest
+      readings different; the latest on a tie) and the first number that
+      moved, ``IBP 148.38 -> 148.56``.
+
+    `later_copies` counts the identical rows that come AFTER it on the
+    bench: a first ingest replayed later is the original those replays
+    are proposed against, never a copy itself."""
+    if not no_twin:
+        return []
+    fp_n: Dict[Tuple[str, ...], int] = collections.Counter(
+        fingerprint(r) for r in bench_rows)
+    by_lab: Dict[str, List[LogRow]] = collections.defaultdict(list)
+    for r in bench_rows:
+        by_lab[r.lab_id].append(r)
+    rows = sorted(no_twin, key=lambda r: (r.ts, r.id))
+    step = max(1, len(rows) // EXAMPLES_PER_BENCH)
+    out = []
+    for r in rows[::step][:EXAMPLES_PER_BENCH]:
+        why = ("first_ingest" if r.ts == oldest else
+               "new_lab_id" if lab_since.get(r.lab_id) == r.ts else
+               "re_processed")
+        mine = _readings(r)
+        earlier = None
+        if why == "re_processed":
+            before = [e for e in by_lab[r.lab_id]
+                      if (e.ts, e.id) < (r.ts, r.id) and e.kind == r.kind
+                      and e.ts != r.ts]
+            if before:
+                def differs(e: LogRow) -> int:
+                    theirs = _readings(e)
+                    return sum(1 for k in set(mine) | set(theirs)
+                               if mine.get(k) != theirs.get(k))
+                n = {e.id: differs(e) for e in before}
+                fewest = min(n.values())
+                best = max((e for e in before if n[e.id] == fewest),
+                           key=lambda e: (e.ts, e.id))
+                theirs = _readings(best)
+                moved = next((k for k in mine if theirs.get(k) != mine[k]),
+                             None)
+                earlier = {
+                    "id": best.id, "ts": best.ts,
+                    "readings_moved": fewest,
+                    "moved": ("{0} {1} -> {2}".format(
+                        _short_key(moved), theirs.get(moved, "(none)"),
+                        mine[moved]) if moved is not None else
+                        "the detail outside the readings"),
+                }
+        first_key = next(iter(mine))
+        out.append({
+            "id": r.id, "ts": r.ts, "kind": r.kind, "lab_id": r.lab_id,
+            "test_name": r.test_name,
+            "reading": "{0} {1}".format(_short_key(first_key),
+                                        mine[first_key]),
+            "poll_rows": per_poll[r.ts], "why": why, "earlier": earlier,
+            "later_copies": fp_n[fingerprint(r)] - 1,
+        })
     return out
 
 
@@ -2052,8 +2207,151 @@ def _acc(a: Dict[str, int]) -> str:
 
 
 def o9_lines(pred: Dict[str, Any]) -> List[str]:
-    """O9, closed as arithmetic: what the prediction measured, where every
-    one of those rows goes, and what reaching it would erase."""
+    """O9, closed by measurement: the record's ceiling and the candidates,
+    the verdict on the bar, where every burst row goes, and -- for a bench
+    whose bar is an explanation -- the twenty rows that explain it.
+
+    Line 0 names the bar, line 1 is the verdict, line 2 the ceiling and the
+    candidates: what a reader skimming the output sees first."""
+    t = pred["total"]
+    if t["predicted"] is None:
+        out = _o9_measured_head(pred)
+    else:
+        out = _o9_band_head(pred)
+    e = pred.get("earlier_claim")
+    if e:
+        out.append(
+            "  THE CLAIM IT WAS SCALED FROM ({0}): {1:,} of the record up to "
+            "id {2:,}; the record THEN allowed at most {3:,} ({4:,} run/qc "
+            "rows) -> {5}".format(
+                e["source"], e["claimed"], e["upto_id"], e["ceiling_then"],
+                e["run_qc_rows_then"],
+                "reachable" if e["reachable"] else "never reachable"))
+        for b in e["benches"]:
+            out.append("    {0:<13} claimed {1:>6,}  ceiling then {2:>6,}"
+                       .format(b["name"], b["claimed"], b["ceiling_then"]))
+    out.append(
+        "  WITHOUT OUR KEY: rows whose Lab ID their bench had sent in an "
+        "earlier poll (any content: re-tests and re-processed results "
+        "counted as re-emissions too) = {0:,} -> {1}.".format(
+            t["any_definition_ceiling"],
+            "the total is reported, not judged, so there is no floor to "
+            "reach" if t["predicted"] is None else
+            "the floor is reached only by also hiding re-tests and "
+            "re-processed results, which are readings" if
+            t["reachable_by_any_definition"] else
+            "no definition reaches the floor"))
+    for b in pred["benches"]:
+        out.append(
+            "  since {0} {1:<13} any definition at most {2:>6,} "
+            "(first appearances {3:,}) -> {4}".format(
+                b["since"], b["name"], b["any_definition_ceiling"],
+                b["first_appearances"],
+                "NO definition reaches the band"
+                if not b["reachable_by_any_definition"] else
+                "reached only by also hiding re-tests and re-processed "
+                "results" if not b["reachable"] else "reachable"))
+    for b in pred["benches"]:
+        polls = b.get("first_copy_polls") or []
+        if b["within_band"] or not polls or b.get("bar") == "explain":
+            continue
+        firsts = sum(p["first_copies"] for p in polls)
+        shown = []
+        for p in polls[:6]:
+            what = ("first ingest: {0:,} rows of new Lab IDs".format(
+                p["new_lab_id"])
+                    if p["first_poll"] else ", ".join(
+                        x for x in (
+                            "{0:,} rows of new Lab IDs".format(
+                                p["new_lab_id"])
+                            if p["new_lab_id"] else "",
+                            "{0:,} re-processed".format(p["re_processed"])
+                            if p["re_processed"] else "") if x))
+            shown.append("{0} {1} {2:,} of {3:,} ({4})".format(
+                p["ts"][5:10], p["ts"][11:16], p["first_copies"], p["rows"],
+                what))
+        more = len(polls) - len(shown)
+        out.append(
+            "  WHY G1 IS HIGH FOR {0}: {1:,} of G1's {2:,} burst rows are the "
+            "first copy of their reading (no identical earlier row): {3}{4}."
+            .format(b["name"], firsts,
+                    b["burst_rows_measured"], "; ".join(shown),
+                    "; and {0} more poll{1}".format(more, "s" * (more > 1))
+                    if more else ""))
+    for b in pred["benches"]:
+        status = ("in band" if b["within_band"] else
+                  "EXPLAINED" if b.get("bar") == "explain" and b["explained"]
+                  else "UNEXPLAINED" if b.get("bar") == "explain" else "OUT")
+        out.append(
+            "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "
+            "proposed {5:>6,} ({6:+.1f} %) {7}  ceiling {8:>6,} ({9:+.1f} %)"
+            "  burst rows: {10}".format(
+                b["since"], b["name"], b["predicted"], b["band"][0],
+                b["band"][1], b["proposed"], b["proposed_vs_predicted_pct"],
+                status, b["ceiling"], b["ceiling_vs_predicted_pct"],
+                _acc(b["burst_rows_accounted"])))
+    for b in pred["benches"]:
+        if b.get("bar") == "explain":
+            out.extend(_explain_lines(b))
+    return out
+
+
+def _explain_lines(b: Dict[str, Any]) -> List[str]:
+    """A bench whose bar is an explanation: the shortfall against G1 row by
+    row, the polls that hold G1's burst rows with no earlier twin, and
+    twenty of those rows, one line each, to check against a printout."""
+    s = b["shortfall"]
+    out = [
+        "  WHY {0} IS {1:,} UNDER G1: of G1's {2:,} burst rows ({3:,} "
+        "measured) the rules propose {4:,}; the other {5:,} are {6:,} rows "
+        "with NO identical earlier row (nothing for them to be a copy of) "
+        "and {7:,} twins listed for review, never hidden ({8}){9}.".format(
+            b["name"], b["predicted"] - b["proposed"], s["g1_burst_rows"],
+            b["burst_rows_measured"], s["burst_rows_proposed"],
+            s["not_proposed"], s["no_earlier_twin"], s["listed_for_review"],
+            ", ".join("{0} {1:,}".format(k, n) for k, n in
+                      sorted(s["listed_by_rule"].items(),
+                             key=lambda kv: -kv[1])) or "none",
+            "; {0:,} twins NEITHER proposed NOR listed -- a rule bug".format(
+                s["unlabelled_twin"]) if s["unlabelled_twin"] else ""),
+    ]
+    for p in b.get("first_copy_polls") or []:
+        what = []
+        if p["first_poll"]:
+            what.append("the bench's first ingest")
+        if p["new_lab_id"]:
+            what.append("{0:,} of new Lab IDs".format(p["new_lab_id"]))
+        if p["re_processed"]:
+            what.append("{0:,} re-processed".format(p["re_processed"]))
+        out.append("    poll {0} {1}: {2:,} of its {3:,} rows have no earlier "
+                   "twin ({4})".format(p["ts"][:10], p["ts"][11:16],
+                                       p["first_copies"], p["rows"],
+                                       ", ".join(what)))
+    ex = b.get("no_twin_examples") or []
+    out.append("    {0} of the {1:,} rows with no earlier twin, spread over "
+               "time:".format(len(ex), s["no_earlier_twin"]))
+    label = {"first_ingest": "first ingest", "new_lab_id": "new Lab ID",
+             "re_processed": "known Lab ID, new numbers (re-processed "
+                             "or re-run)"}
+    for n, e in enumerate(ex, 1):
+        line = "      #{0:<2} id {1} {2} {3:<18.18} {4:<18.18} poll of " \
+               "{5:,}: {6}".format(n, e["id"], e["ts"][:16],
+                                   json.dumps(e["lab_id"]),
+                            e["reading"], e["poll_rows"], label[e["why"]])
+        if e["earlier"]:
+            line += " -- closest earlier id {0} ({1}): {2}".format(
+                e["earlier"]["id"], e["earlier"]["ts"][:16],
+                e["earlier"]["moved"])
+        if e["later_copies"]:
+            line += "; copied {0:,}x later (the original of those)".format(
+                e["later_copies"])
+        out.append(line)
+    return out
+
+
+def _o9_band_head(pred: Dict[str, Any]) -> List[str]:
+    """O9 judged against a predicted band on the total (§10.5 as written,
+    before the lead's revision)."""
     t = pred["total"]
     lo, hi = t["predicted"]
     v = pred["verdict"]
@@ -2091,76 +2389,52 @@ def o9_lines(pred: Dict[str, Any]) -> List[str]:
             "in band" if t["within_band"] else
             "the band needs Ryan's revision (D7), not a looser rule"),
     ]
-    e = pred.get("earlier_claim")
-    if e:
+    return out
+
+
+def _o9_measured_head(pred: Dict[str, Any]) -> List[str]:
+    """O9 as the lead revised it: the total is reported against the
+    record's ceiling, not judged against a band."""
+    t = pred["total"]
+    v = pred["verdict"]
+    expl = v.get("benches_explained") or []
+    if v["met"]:
+        verdict = (
+            "  VERDICT: MET -- every band bench within its band of G1; "
+            "{0} explained row by row below.".format(
+                ", ".join(expl) + "'s shortfall" if expl else "no shortfall"))
+    else:
+        verdict = (
+            "  VERDICT: NOT MET -- benches out of band: {0}; shortfall not "
+            "explained: {1}; unblocked only by {2}.".format(
+                ", ".join(v["benches_out_of_band"]) or "none",
+                ", ".join(v.get("benches_unexplained") or ()) or "none",
+                v["unblocks"]))
+    out = [
+        "O9 -- closed by measurement ({0}).".format(
+            pred.get("revision") or "the total is reported, not judged"),
+        verdict,
+        "  CEILING {0:,} rows have an identical earlier row on their bench "
+        "(rows - distinct readings: no rule that keeps one copy of every "
+        "reading can propose more); CANDIDATES replay_duplicate {1:,} "
+        "({2} % of the ceiling), every hide candidate {3:,} ({4} %). "
+        "Nothing is hidden until Ryan approves a bench (D7).".format(
+            t["ceiling"], t["proposed_replay_duplicate"],
+            t["candidates_of_ceiling_pct"], t["proposed_hide"],
+            t["hide_of_ceiling_pct"]),
+        "  G1's PROXY, rows in polls of >= 20, is {0:,} -- a count of burst "
+        "rows, not of copies. WHERE THOSE ROWS GO: {1}".format(
+            t["rows_in_polls_of_20_or_more"],
+            _acc(t["burst_rows_accounted"])),
+    ]
+    wt = pred.get("withdrawn_total")
+    if wt:
         out.append(
-            "  THE CLAIM IT WAS SCALED FROM ({0}): {1:,} of the record up to "
-            "id {2:,}; the record THEN allowed at most {3:,} ({4:,} run/qc "
-            "rows) -> {5}".format(
-                e["source"], e["claimed"], e["upto_id"], e["ceiling_then"],
-                e["run_qc_rows_then"],
-                "reachable" if e["reachable"] else "never reachable"))
-        for b in e["benches"]:
-            out.append("    {0:<13} claimed {1:>6,}  ceiling then {2:>6,}"
-                       .format(b["name"], b["claimed"], b["ceiling_then"]))
-    out.append(
-        "  WITHOUT OUR KEY: rows whose Lab ID their bench had sent in an "
-        "earlier poll (any content: re-tests and re-processed results "
-        "counted as re-emissions too) = {0:,} -> {1}.".format(
-            t["any_definition_ceiling"],
-            "the floor is reached only by also hiding re-tests and "
-            "re-processed results, which are readings" if
-            t["reachable_by_any_definition"] else
-            "no definition reaches the floor"))
-    for b in pred["benches"]:
-        out.append(
-            "  since {0} {1:<13} any definition at most {2:>6,} "
-            "(first appearances {3:,}) -> {4}".format(
-                b["since"], b["name"], b["any_definition_ceiling"],
-                b["first_appearances"],
-                "NO definition reaches the band"
-                if not b["reachable_by_any_definition"] else
-                "reached only by also hiding re-tests and re-processed "
-                "results" if not b["reachable"] else "reachable"))
-    for b in pred["benches"]:
-        polls = b.get("first_copy_polls") or []
-        if b["within_band"] or not polls:
-            continue
-        firsts = sum(p["first_copies"] for p in polls)
-        shown = []
-        for p in polls[:6]:
-            what = ("first ingest: {0:,} rows of new Lab IDs".format(
-                p["new_lab_id"])
-                    if p["first_poll"] else ", ".join(
-                        x for x in (
-                            "{0:,} rows of new Lab IDs".format(
-                                p["new_lab_id"])
-                            if p["new_lab_id"] else "",
-                            "{0:,} re-processed".format(p["re_processed"])
-                            if p["re_processed"] else "") if x))
-            shown.append("{0} {1} {2:,} of {3:,} ({4})".format(
-                p["ts"][5:10], p["ts"][11:16], p["first_copies"], p["rows"],
-                what))
-        more = len(polls) - len(shown)
-        out.append(
-            "  WHY G1 IS HIGH FOR {0}: {1:,} of G1's {2:,} burst rows are the "
-            "first copy of their reading (no identical earlier row): {3}{4}."
-            .format(b["name"], firsts,
-                    b["burst_rows_measured"], "; ".join(shown),
-                    "; and {0} more poll{1}".format(more, "s" * (more > 1))
-                    if more else ""))
-    for b in pred["benches"]:
-        out.append(
-            "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "
-            "proposed {5:>6,} ({6:+.1f} %) {7}  ceiling {8:>6,} ({9:+.1f} %)"
-            "  burst rows: {10}; to reach the band erases {11:,} readings"
-            .format(b["since"], b["name"], b["predicted"], b["band"][0],
-                    b["band"][1], b["proposed"],
-                    b["proposed_vs_predicted_pct"],
-                    "in band" if b["within_band"] else "OUT",
-                    b["ceiling"], b["ceiling_vs_predicted_pct"],
-                    _acc(b["burst_rows_accounted"]),
-                    b["readings_erased_at_band_floor"]))
+            "  THE WITHDRAWN PREDICTION {0:,}-{1:,} (scaled from G1's proxy, "
+            "which is {2} it): above the ceiling; hiding its floor would "
+            "erase at least {3:,} readings from every view.".format(
+                wt[0], wt[1], "within" if t.get("proxy_within_withdrawn")
+                else "outside", t.get("withdrawn_floor_erases", 0)))
     return out
 
 
