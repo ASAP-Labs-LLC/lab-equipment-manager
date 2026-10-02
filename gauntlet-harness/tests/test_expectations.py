@@ -23,8 +23,14 @@ SPEC_9 = ("S0 K1 K2 K3 K4 K5 K6 K7 K8 K9 K9c K9r N1 N2 N3 N4 N5 N6 F1 F2 F3 F4 F
 BASELINE_19 = set("K1 K2 K3 K4 K5 K6 K7 K8 K9 N3 N4 F3 F4 F5 R2 R3 R4 R5 R6".split())
 
 
+#: Rows the harness adds beyond §9, each with the reason in its own v4_spec.
+#: A1j: A1 with the journal lost — the guard read alone (A1 cannot show it:
+#: the journal stops the re-read before the guard is asked).
+HARNESS_ONLY = ["A1j"]
+
+
 def test_every_section_9_scenario_has_both_rows():
-    assert sorted(EXP) == sorted(SPEC_9)
+    assert sorted(EXP) == sorted(SPEC_9 + HARNESS_ONLY)
     for sid, row in EXP.items():
         assert "v3.9" in row and "v4" in row and row["v4"], sid
         assert row.get("v4_spec"), sid

@@ -1072,10 +1072,14 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
         newest: Dict[tuple, dict] = {}
         for r in res["rows"]:
             detail = _json_or(r.get("detail"), {})
+            in_spec = detail.get("in_spec")
             newest[(r.get("test_name"), r.get("lab_id"))] = {
                 "test_name": r.get("test_name"), "lab_id": r.get("lab_id"),
                 "ts": r.get("ts"), "value": r.get("value"),
-                "verdict": detail.get("verdict")}
+                "verdict": detail.get("verdict"),
+                # What the station module itself writes (qc_log_detail): a
+                # v2 bench rebuilds its QC memory from this after a restart.
+                "in_spec": in_spec if isinstance(in_spec, bool) else None}
         return [newest[k] for k in sorted(newest, key=lambda k: (str(k[0]),
                                                                 str(k[1])))]
 

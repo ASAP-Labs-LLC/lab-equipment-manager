@@ -232,4 +232,5 @@ class TestRowsAreNeverLostAtTheHandOff:
         cells = [o["params"] for _op, params in written
                  for o in (params or {}).get("operations", [])]
         assert cells == [{"lab_id": "L-1", "test_name": "Flash Point",
-                          "value": "62.5"}]
+                          "value": "62.5", "expect": "",
+                          "source": "LEM Station:m1"}]

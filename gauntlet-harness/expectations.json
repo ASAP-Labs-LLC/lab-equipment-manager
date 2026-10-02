@@ -1810,6 +1810,50 @@
    },
    "v4_spec": "0 overwritten (today 5)"
   },
+  "A1j": {
+   "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
+   "v3.9": {
+    "scenario": "A1j single_csv",
+    "what": "analyst corrects 5 filed cells; journal lost; restart",
+    "printed": 5,
+    "log_rows": 10,
+    "log_lost": 0,
+    "log_dup": 5,
+    "log_stray": 0,
+    "res_lost": 0,
+    "res_wrong": 5,
+    "cell_dup_sends": 5,
+    "cell_dup_lands": 5,
+    "still_held_at_bench": 0,
+    "still_queued_log": 0,
+    "kills": 0,
+    "restarts": 1,
+    "ops": 63,
+    "notes": [],
+    "lost": 0,
+    "dup": 5,
+    "labelled_dup": 0,
+    "labelled_rows": 0,
+    "truth_prints": 5,
+    "stored_effective": 10,
+    "analyst_overwritten": 5,
+    "expect_audit_hits": null,
+    "injected": 0,
+    "conflicts": null,
+    "rejected": null,
+    "labcore_ops": 63,
+    "v2_syncs": 0,
+    "records_resent": null,
+    "roads_used": [],
+    "max_sends_per_cell": 2,
+    "suppressed_rereads": null
+   },
+   "v4": {
+    "analyst_overwritten": 0,
+    "conflicts": 5
+   },
+   "v4_spec": "0 overwritten with the journal lost (today 5): the guard read alone (harness row; A1w adds 0 re-sent, P8)"
+  },
   "A3": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
    "v3.9": {
@@ -1981,9 +2025,11 @@
    },
    "v4": {
     "res_lost": 1,
-    "failing_cell_sends": 3
+    "failing_cell_sends": 3,
+    "rejected": 1,
+    "failing_cell_filed": 0
    },
-   "v4_spec": "0 filed for that cell; parked after 3 tries; visible"
+   "v4_spec": "0 filed for that cell; parked after 3 tries; visible (1 rejected record)"
   },
   "E0": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2013,6 +2059,9 @@
     },
     "v2_syncs": {
      "ge": 1
+    },
+    "results_road_ops_per_filing_poll": {
+     "le": 2
     }
    },
    "v4_spec": "≤ 2 LabCore ops per filing poll, v2 mode (today +3)"

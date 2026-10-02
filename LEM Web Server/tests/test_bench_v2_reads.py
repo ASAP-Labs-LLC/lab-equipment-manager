@@ -97,6 +97,24 @@ class TestConfigV2:
         assert last[("Sulfur", "AF26")]["value"] == "9.0"
         assert lab.ops == 0
 
+    def test_last_qc_says_in_spec_for_the_rows_the_module_writes(
+            self, client, token, store):
+        """The station module records a QC verdict as `detail.in_spec`, not
+        `verdict` (qc_log_detail). A v2 bench rebuilds its QC memory from this
+        list after a restart — it no longer reads LabCore's log, which no
+        longer holds its rows — so without `in_spec` a passed QC came back
+        as "assigned but not yet run"."""
+        for value, ok, ts in (("41.0", True, "2026-10-01T08:00:00"),
+                              ("44.0", False, "2026-10-01T09:00:00")):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, ?, 'qc', 'QC1', 'Flash', "
+                "?, ?)", [UID, ts, value, json.dumps({"in_spec": ok})])
+            assert "error" not in res, res
+        last = _get(client, "/api/v2/bench/%s/config" % UID, token).get_json()[
+            "last_qc"]
+        assert [(q["value"], q["in_spec"]) for q in last] == [("44.0", False)]
+
     def test_the_rev_moves_when_the_configuration_does_and_only_then(
             self, client, token, store, app):
         rev1 = _get(client, "/api/v2/bench/%s/config" % UID, token).get_json()[
