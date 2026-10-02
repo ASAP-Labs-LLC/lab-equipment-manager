@@ -187,7 +187,32 @@
         return { plot, points, ticks, lines: { low: lo === null ? null : y(lo), high: hi === null ? null : y(hi), mid: mid === null ? null : y(mid) } };
     }
 
-    const api = { fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    // ── how long a pass counts, and a refresh that failed ──────────────────
+    /** §3.1's QC intro, middle sentence, with the window the verdicts were
+        judged by: {hours, from} from the server (from = the standard that
+        set it, "" = the lab default). */
+    function windowSentence(w) {
+        const hrs = w && num(w.hours) > 0 ? num(w.hours) : 24;
+        const h = String(Math.round(hrs * 100) / 100);
+        return 'A passing check counts for ' + h + ' h' + (w && w.from ? ', as ' + w.from + ' sets' : '') + '.';
+    }
+    function hm(ms) {
+        const d = new Date(ms);
+        return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+    /** The card's line when a refresh failed: what is on screen is the last
+        answer read, and it says so (a failed read is never an answer).
+        `fail` is {status, error}: status 0 = no answer at all. */
+    function staleText(fail, sinceMs, nowMs) {
+        const f = fail || {};
+        const why = f.error ? String(f.error).replace(/[.\s]+$/, '')
+            : (f.status ? 'HTTP ' + f.status : 'LEM did not answer');
+        const same = new Date(sinceMs).toDateString() === new Date(nowMs === undefined ? Date.now() : nowMs).toDateString();
+        const at = (same ? '' : day(new Date(sinceMs).toISOString()) + ' ') + hm(sinceMs);
+        return 'Couldn\'t refresh this instrument (' + why + '). Shown as of ' + at + '; it may be out of date.';
+    }
+
+    const api = { windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

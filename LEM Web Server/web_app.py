@@ -1876,12 +1876,46 @@ def create_app(gateway, labcore_gateway=None,
             return cached
         return _round_last["value"] if _round_last["day"] == day else None
 
-    def _live_payload(cursor):
+    # ── QC is judged at a moment (§3.1: "A passing check counts for 24 h") ──
+    # Every UI answer (home, record, nav count, bell) reads the merged
+    # machines through this one door, stamped with the moment it is judged
+    # at and the window each machine's passes count for. /api/machines does
+    # not: it stays byte-for-byte what the benches and GC hub read.
+    _windows_memo: dict = {"key": None, "value": {}}
+
+    def _qc_windows(snap: dict) -> Dict[str, tuple]:
+        """uid -> (hours, which standard said so), for machines whose
+        assigned standards state their own life; the rest get 24 h. Built
+        once per snapshot from the library the benches read (qcsample arm),
+        by the bench's own rule (qc_samples.window_from_standards)."""
+        key = snap.get("built_at")
+        if _windows_memo["key"] == key and key is not None:
+            return _windows_memo["value"]
+        from qc_samples import window_from_standards
+        tables = snapshots.tables() or {}
+        library = [{"name": str((r or {}).get("c1") or ""), "tests": (r or {}).get("c3")}
+                   for r in tables.get("qcsample") or []]
+        out = {}
+        for m in snap.get("machines") or []:
+            hours, what = window_from_standards(library, m.get("qc_targets") or [])
+            if hours:
+                out[m.get("machine_uid")] = (hours, what)
+        _windows_memo.update(key=key, value=out)
+        return out
+
+    def _ui_merged(snap: dict, now: Optional[datetime] = None) -> Optional[List[dict]]:
+        """The merged machines the UI judges, or None when nothing was read."""
         from live_presence import merge_machines
+        if not snap.get("ready"):
+            return None
+        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        return ui_live.judged(merged, now or _now(), _qc_windows(snap))
+
+    def _live_payload(cursor):
         snap = snapshots.get(build_if_missing=False)
         ready = bool(snap.get("ready"))
-        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
-                                 STATUS_COLORS) if ready else None)
+        now = _now()
+        merged = _ui_merged(snap, now)
         tables = snapshots.tables() if ready else None
         mirror = app.config.get("LOG_MIRROR")
         try:
@@ -1894,7 +1928,7 @@ def create_app(gateway, labcore_gateway=None,
             notices=app.config["NOTICES"], audit_spool=len(audit_spool),
             certificates=_certs["items"], mirror=mstatus,
             jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
-            now=_now(), tz=ui_live.lab_tz(),
+            now=now, tz=ui_live.lab_tz(),
             custody=(app.config["CUSTODY"].status_items()
                      if app.config.get("CUSTODY") is not None else None))
 
@@ -1919,9 +1953,12 @@ def create_app(gateway, labcore_gateway=None,
                 err = "LabCore did not answer the first read: %s" % (
                     (m.group(2) if m else str(err)).strip().rstrip(".")[:200])
             return dict(ui_instruments.unread(err), **meta)
-        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        now = _now()
+        merged = _ui_merged(snap, now) or []
         overrides = ui_live.overrides_from_tables(snapshots.tables())
-        key = (snap.get("built_at"),
+        # A pass ages out with no new data at all, so the minute it is judged
+        # in is part of the key: the memo holds for a minute, never all night.
+        key = (snap.get("built_at"), now.strftime("%Y-%m-%dT%H:%M"),
                tuple((m.get("machine_uid"), m.get("status"), bool(m.get("live")),
                       m.get("last_poll"), m.get("module_state")) for m in merged),
                tuple(sorted((overrides or {}).items())) if overrides is not None else None)
@@ -1929,6 +1966,9 @@ def create_app(gateway, labcore_gateway=None,
             _inst_memo["value"] = ui_instruments.build(
                 machines=merged, overrides=overrides, levels=snap.get("levels") or [],
                 href=_record_href, default_level=snap.get("default_level") or "")
+            # the record judges its rows at this same instant, so its table
+            # cannot disagree with the row it opened from
+            _inst_memo["value"]["judged_at"] = now.isoformat()
             _inst_memo["key"] = key
         return dict(_inst_memo["value"], **meta)
 
@@ -1958,7 +1998,7 @@ def create_app(gateway, labcore_gateway=None,
                               "uid": machine_uid}, **meta)
         row = next((r for r in home["instruments"] if r["uid"] == machine_uid), None)
         snap = snapshots.get(build_if_missing=False)
-        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        merged = _ui_merged(snap, home.get("judged_at") and datetime.fromisoformat(home["judged_at"])) or []
         m = next((x for x in merged if x.get("machine_uid") == machine_uid), None)
         if row is None or m is None:
             return 404, dict({"state": "missing", "uid": machine_uid}, **meta)

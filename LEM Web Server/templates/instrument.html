@@ -32,12 +32,18 @@
       <p class="ready-cap" id="ready-cap" data-testid="ready-caption"></p>
       <button type="button" class="btn btn-primary" id="ready-primary" data-testid="ready-primary" hidden></button>
     </div>
+    {#- a refresh that failed is said here, never swallowed: the card keeps
+        what it last read, dimmed, and this line says it is not current -#}
+    <p class="ready-stale" id="ready-stale" role="status" data-testid="ready-stale" hidden>
+      <span class="glyph never" aria-hidden="true"></span><span id="ready-stale-text"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="ready-stale-retry">Try again</button>
+    </p>
     <div class="rtiles" id="ready-tiles" data-testid="ready-tiles"></div>
   </section>
 
   <section class="sec" id="qc" data-testid="section-qc" aria-labelledby="qc-h">
     <div class="about"><h2 id="qc-h"><span class="ico ico-target" aria-hidden="true"></span>QC</h2>
-      <p id="qc-intro"></p></div>
+      <p id="qc-intro">{% if data.qc.standards %}Checked against {{ data.qc.standards|join(', ') }} by assignment. {% endif %}A passing check counts for {{ '%g'|format(data.qc.window.hours) }} h{% if data.qc.window.from %}, as {{ data.qc.window.from }} sets{% endif %}. The bench reads these off the instrument; nobody types QC here.</p></div>
     <div class="body" id="qc-body">
       <div class="card table-card qc-card" id="qc-card">
         <table class="tbl qc" id="qc-tbl" aria-describedby="qc-intro">

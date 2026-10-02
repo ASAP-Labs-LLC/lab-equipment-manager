@@ -75,6 +75,102 @@ def _bench_word(machine: dict) -> str:
     return "bench stopped" if machine.get("last_poll") else "bench never checked in"
 
 
+# ── how long a pass counts (§3.1: "A passing check counts for 24 h") ────────
+#
+# A pass says the instrument read true WHEN it ran. "Can it run?" is about
+# now, so a pass older than its window is QC due, never In spec (round 3's
+# critic: OptiMPP 1 and 2 read "OK to run" in production off 3 Aug passes).
+# The number is the lab's (qc_samples.resolve_qc_window: a standard that
+# states its own life, else 24 h); the boundary is the bench's
+# (data_source.qc_is_stale: age >= window is stale), so the record and the
+# bench never disagree about one pass at one second.
+#
+# The moment and the window ride on the machine as `qc_judged`, stamped by
+# ``judged`` on the merged copies the UI reads (never on /api/machines, which
+# stays byte-for-byte). Every function below takes a machine, so the stamp
+# reaches the card, the tiles, the rows, the home, the bell and the nav count
+# through the one rule without a clock argument threaded through each.
+
+QC_WINDOW_HOURS = 24.0
+
+
+def judged(machines: Optional[List[dict]], now: datetime,
+           windows: Optional[Dict[str, tuple]] = None) -> Optional[List[dict]]:
+    """Copies of `machines`, each stamped with the moment its QC is judged at
+    and the window a pass counts for: ``qc_judged = {at, hours, from}``.
+
+    `windows` is uid -> (hours, what said so), from the standards assigned
+    to it (``qc_samples.window_from_standards``); a uid without one gets
+    24 h. None in, None out: a list nobody read stays unread."""
+    if machines is None:
+        return None
+    out = []
+    for m in machines:
+        m = dict(m)
+        hours, what = (windows or {}).get(m.get("machine_uid"), (0.0, "")) or (0.0, "")
+        try:
+            hours = float(hours)
+        except (TypeError, ValueError):
+            hours = 0.0
+        if not (hours > 0 and hours != float("inf")):
+            hours, what = QC_WINDOW_HOURS, ""
+        m["qc_judged"] = {"at": now.isoformat(), "hours": hours, "from": str(what or "")}
+        out.append(m)
+    return out
+
+
+def qc_window(machine: dict) -> dict:
+    """``{hours, from}``: how long a pass on this machine counts, and which
+    standard said so ("" = the lab default)."""
+    j = machine.get("qc_judged") or {}
+    try:
+        hours = float(j.get("hours"))
+    except (TypeError, ValueError):
+        hours = 0.0
+    if not hours > 0:
+        return {"hours": QC_WINDOW_HOURS, "from": ""}
+    return {"hours": hours, "from": str(j.get("from") or "")}
+
+
+def _local(iso: Any) -> Optional[datetime]:
+    """A timestamp as naive lab-local time, or None when it cannot be read.
+    The bench writes naive local time; an offset (a v2 bench's "Z") is
+    converted, never compared across zones."""
+    try:
+        t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone().replace(tzinfo=None)
+    return t
+
+
+def _judged_at(machine: dict) -> datetime:
+    # A machine nobody stamped is judged NOW: a forgotten stamp can only make
+    # a pass due, never keep an old one in spec.
+    return _local((machine.get("qc_judged") or {}).get("at")) or datetime.now()
+
+
+def hours_words(hours: float) -> str:
+    """24.0 -> "24 h", 4.5 -> "4.5 h"."""
+    return ("%g h" % round(float(hours), 2))
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _stale_pass(spec: dict, machine: dict) -> Optional[str]:
+    """None while a pass still counts; else the row's reason it does not."""
+    w = qc_window(machine)
+    tail = "a pass counts for " + hours_words(w["hours"])
+    at = _local(spec.get("last_qc_at"))
+    if at is None:
+        return "when it passed is not on record · " + tail
+    if (_judged_at(machine) - at).total_seconds() < w["hours"] * 3600.0:
+        return None
+    return "last passed %d %s · %s" % (at.day, _MONTHS[at.month - 1], tail)
+
+
 def check_verdict(spec: Optional[dict], machine: dict) -> dict:
     """ONE check's verdict (§4.1), by the rule ``readiness`` judges the whole
     instrument with, so a QC row, the QC tile and the card cannot disagree.
@@ -89,6 +185,11 @@ def check_verdict(spec: Optional[dict], machine: dict) -> dict:
       what makes the card say "OK to run, but… QC due on X". A check whose
       band is not published yet counts once its bench is checking in, since
       then a run could judge it and nobody has;
+    * a pass on a bench that is checking in, older than its window
+      (``qc_window``: 24 h unless its standard says otherwise), is **QC due
+      · last passed 3 Aug**: it said the instrument read true then, not now
+      (checked after the stopped-bench rule below, which says why nothing
+      new is judged);
     * a pass is **In spec** only while its bench is checking in. A stopped
       bench vouches for nothing new, so its card says Can't tell and the
       check says **No verdict yet · bench stopped** (round 2's critic:
@@ -113,6 +214,9 @@ def check_verdict(spec: Optional[dict], machine: dict) -> dict:
     if not running:
         return {"key": "none", "word": "No verdict yet", "glyph": "never",
                 "detail": _bench_word(machine)}
+    aged = _stale_pass(spec, machine) if spec is not None else None
+    if aged:
+        return {"key": "due", "word": "QC due", "glyph": "half", "detail": aged}
     return {"key": "in", "word": "In spec", "glyph": "final", "detail": ""}
 
 

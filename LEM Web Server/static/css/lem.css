@@ -163,6 +163,12 @@ a.user-chip { text-decoration: none; }
    still answers a click: the click opens "Sign in to <act>". Never
    pointer-events:none; a button that does nothing reads as broken. */
 body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-style: dashed; cursor: pointer; }
+/* A sheet's go button: the primary's ink fill, but not a .btn-primary.
+   Sheets (the sign-in sheet included) sit closed in every page's DOM, and
+   §0.1 counts one primary per page: the page's own next step. */
+dialog.sheet .sheet-go { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+dialog.sheet .sheet-go:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
+dialog.sheet .sheet-go:disabled { opacity: .6; cursor: default; }
 /* …except the page's ONE primary. Muted words on its ink fill were 3.75:1
    (light) and 2.15:1 (dark), under AA, and the next step looked disabled.
    It keeps its own words and edge and says "sign in first" with a lock. */
@@ -879,6 +885,14 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .rglyph .tglyph { width: 20px; height: 20px; }
 .ready-cap { margin: 0; flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.45; }
 .ready-card #ready-primary { flex: none; margin-left: auto; }
+/* a refresh that failed: the last answer stays, dimmed, under a line that
+   says so (glyph + words, no colour fill) */
+.ready-stale { display: flex; align-items: center; gap: var(--s2); margin: 0 0 var(--s3); padding: var(--s2) var(--s3);
+    border-radius: var(--radius-md); background: var(--bg-sunken); font-size: var(--fs-sm); color: var(--text); }
+.ready-stale[hidden] { display: none; }
+.ready-stale #ready-stale-text { flex: 1; min-width: 0; }
+.ready-stale .btn { flex: none; }
+.ready-card.is-stale .bar h2, .ready-card.is-stale .ready-cap, .ready-card.is-stale .rtiles { opacity: .55; }
 .rtiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
 .rtiles[data-n="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 /* glyph beside the words, not above them: a tile is a line of fact, and a
@@ -972,6 +986,8 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .chart-line { margin: 0; font-size: var(--fs-sm); color: var(--text-muted); display: flex; gap: var(--s2); align-items: baseline; }
 .chart-line .ctl-k { font-size: var(--fs-xs); font-weight: 600; color: var(--text); }
 .chart-line.err { color: var(--text); }
+.chart-line .btn { align-self: center; }
+.chart-head .seg[hidden] { display: none; }
 .chart-note { display: flex; align-items: center; gap: var(--s2); min-height: 120px; font-size: var(--fs-sm); color: var(--text-muted); }
 .chart-note.err { color: var(--text); }
 .chart-note .btn { margin-left: var(--s2); }
@@ -991,8 +1007,6 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 
 /* the sheets: a sheet is its own screen, and its submit is that screen's
    one ink button (the page's primary stays the card's) */
-dialog.sheet .sheet-go { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
-dialog.sheet .sheet-go:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
 .rec-sheet { width: min(520px, calc(100vw - 32px)); }
 .rec-sheet .form p { margin: 0; }
 .gc .rec-sheet textarea { height: auto; padding: 8px var(--s3); width: 100%; resize: vertical; line-height: 1.45; }

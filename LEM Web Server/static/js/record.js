@@ -66,14 +66,21 @@
 
     // ── the head ──────────────────────────────────────────────────────────
     function renderHead() {
-        // No status pill and no bench state here: the card right below says
-        // the verdict, and its Bench tile the bench, and saying either again
-        // 80px above would be the "said twice" defect (§0.2). The meta line
-        // is the facts no tile carries.
+        // §3.1's meta line, in its order: the instrument pill (glyph + word,
+        // neutral fill: colour only in the glyph), "Bench checking in ·
+        // 13:15", "Last result 08:46", the level, the uid in mono. GC's own
+        // record leads its meta with the pill; a reader scanning the head
+        // gets the answer before reaching the card.
         const hd = data.head;
+        const r = data.readiness;
         const bits = [];
         const add = (node) => { if (bits.length) bits.push(h('span', { className: 'sep', 'aria-hidden': 'true' }, '·')); bits.push(node); };
-        // the bench's state is the Bench tile's; the head carries what no tile does
+        add(h('span', { className: 'pill rec-pill', 'data-testid': 'record-pill' }, glyph(r.glyph === 'dashed' ? 'dashed' : r.glyph),
+            h('span', { className: 's-' + r.state, text: r.word })));
+        if (hd.bench && hd.bench.word) {
+            const w = hd.bench.word;
+            add(h('span', { text: 'Bench ' + w.charAt(0).toLowerCase() + w.slice(1) + (hd.bench.at ? ' · ' + L.when(hd.bench.at) : '') }));
+        }
         if (hd.last_result_at) add(h('span', { text: 'Last result ' + L.when(hd.last_result_at) }));
         if (hd.level) add(h('span', { text: hd.level }));
         add(h('span', { className: 'mono', text: hd.uid }));
@@ -125,6 +132,7 @@
             });
             kids.push(' by assignment. ');
         }
+        kids.push(R.windowSentence(data.qc.window) + ' ');
         kids.push('The bench reads these off the instrument; nobody types QC here.');
         p.replaceChildren(...kids);
     }
@@ -226,8 +234,11 @@
         if (!c) { el.textContent = ''; return; }
         const u = uncert[c.test];
         if (u === undefined) { loadU(c.test); return; }
-        el.className = 'chart-line' + (u !== 'loading' && !u.ok ? ' err' : '');
-        el.textContent = u === 'loading' ? 'Reading the uncertainty register…' : R.uLine(u, c);
+        const bad = u !== 'loading' && !u.ok;
+        el.className = 'chart-line' + (bad ? ' err' : '');
+        el.replaceChildren(h('span', { text: u === 'loading' ? 'Reading the uncertainty register…' : R.uLine(u, c) }),
+            // a failed read can be asked again, like the chart's (round 3)
+            bad ? h('button', { type: 'button', className: 'btn btn-ghost btn-sm', onclick: () => loadU(c.test), text: 'Try again' }) : '');
     }
     function note(kind, text, retry) {
         return h('div', { className: 'chart-note' + (kind === 'err' ? ' err' : ''), role: 'status' },
@@ -264,7 +275,12 @@
         // the series for this check on the standard it is on NOW
         const s = t.series.find(x => x.test_name === c.test && x.sample_id === c.sample_id && !x.superseded) ||
                   t.series.find(x => x.test_name === c.test && !x.superseded) || null;
-        if (!s || !(s.points || []).length) {
+        // a check with no runs on file at all has no history to choose
+        // between: the seg would be a control that does nothing (round 3).
+        // An empty 90 days keeps it, to go back to 24 runs or All.
+        const empty = !s || !(s.points || []).length;
+        $('chart-range').hidden = empty && range !== '90d';
+        if (empty) {
             // said once, in the plot; the caption line under the title stays
             // empty rather than repeat it, and the empty plot is not 176px
             cap.textContent = '';
@@ -445,23 +461,57 @@
     }, () => S.toast('Corrective action opened · ' + (window.LEMSignIn ? window.LEMSignIn.user() : '') + ' · ' + hm()));
 
     // ── live: refetch when this instrument or the snapshot changed ─────────
+    // A refresh that fails is SAID (a failed read is never an answer): the
+    // card keeps what it last read, dimmed, under a line that says it could
+    // not refresh, why, and as of when; it retries every 20 s and on every
+    // live tick, and "Try again" asks now. Round 3's critic: six 503s in a
+    // row left the old verdict on screen with no mark at all.
     let inflight = false;
+    let readAt = Date.now();          // when what is on screen was read
+    let failed = null;                // {status, error} while refreshing fails
+    let retry = null;
+    function showStale() {
+        const card = $('readiness');
+        const line = $('ready-stale');
+        card.classList.toggle('is-stale', !!failed);
+        line.hidden = !failed;
+        if (failed) $('ready-stale-text').textContent = R.staleText(failed, readAt, Date.now());
+    }
     function refetch() {
         if (inflight || !window.LEMLive) return;
         inflight = true;
+        $('ready-stale-retry').disabled = true;
         window.LEMLive.bgFetch('/api/ui/instruments/' + encodeURIComponent(uid))
-            .then(r => { if (r.status === 404) { location.reload(); throw new Error('gone'); } if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(r => {
+                if (r.status === 404) { location.reload(); throw Object.assign(new Error('gone'), { gone: true }); }
+                if (!r.ok) {
+                    return r.json().catch(() => ({})).then(b => {
+                        throw Object.assign(new Error('HTTP ' + r.status), { status: r.status, said: b && b.error });
+                    });
+                }
+                return r.json();
+            })
             .then(d => {
+                if (!d || d.state !== 'ready') throw Object.assign(new Error('not ready'), { status: 503, said: d && d.error });
                 const before = JSON.stringify((data.qc.checks.find(c => c.test === selected) || {}).at);
                 data = d;
                 if (!data.qc.checks.some(c => c.test === selected)) selected = data.qc.selected;
                 const after = JSON.stringify((data.qc.checks.find(c => c.test === selected) || {}).at);
                 if (before !== after) { for (const k of Object.keys(trend)) delete trend[k]; }
+                readAt = Date.now();
+                failed = null;
+                if (retry) { clearInterval(retry); retry = null; }
                 render();
             })
-            .catch(() => {})
-            .finally(() => { inflight = false; });
+            .catch(e => {
+                if (e && e.gone) return;
+                failed = { status: (e && e.status) || 0, error: (e && e.said) || '' };
+                if (!retry) retry = setInterval(() => { if (!document.hidden) refetch(); }, 20000);
+                showStale();
+            })
+            .finally(() => { inflight = false; $('ready-stale-retry').disabled = false; });
     }
+    $('ready-stale-retry').addEventListener('click', () => refetch());
     if (window.LEMLive) {
         let lastAt = data.built_at;
         window.LEMLive.subscribe((u) => {
@@ -472,11 +522,12 @@
         });
     }
     // times ("Wed 15:04") age on their own; no request
-    setInterval(() => { if (!document.hidden) { renderHead(); renderCard(); renderQc(); } }, 60000);
+    setInterval(() => { if (!document.hidden) { renderHead(); renderCard(); renderQc(); showStale(); } }, 60000);
 
     function render() {
         renderHead();
         renderCard();
+        showStale();
         renderQcIntro();
         renderQc();
         renderChart();

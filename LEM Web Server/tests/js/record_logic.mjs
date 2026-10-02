@@ -116,5 +116,27 @@ check('next year says so', R.dayIn('2027-07-22', OCT2), '22 Jul 2027');
 check('last year says so', R.dayIn('2025-07-22', OCT2), '22 Jul 2025');
 check('no date is a dash', R.dayIn(null, OCT2), '—');
 
+// ── how long a pass counts (§3.1 QC intro) ─────────────────────────────────
+// Round 3's critic: the page dropped "A passing check counts for 24 h", the
+// sentence that tells a reader why a pass from August is QC due today.
+check('the lab default', R.windowSentence({ hours: 24, from: '' }), 'A passing check counts for 24 h.');
+check('a standard\'s own window names the standard',
+  R.windowSentence({ hours: 4, from: 'AF26 · Flash Point' }), 'A passing check counts for 4 h, as AF26 · Flash Point sets.');
+check('a fraction of an hour is kept', R.windowSentence({ hours: 1.5, from: '' }), 'A passing check counts for 1.5 h.');
+check('no window said is the default, not nothing', R.windowSentence(null), 'A passing check counts for 24 h.');
+
+// ── a refresh that failed is said, never swallowed ─────────────────────────
+// Round 3's critic: six 503s in a row left the old verdict on screen with no
+// mark. The page keeps what it last read (a blank card answers nothing) but
+// says, in words, that it is no longer current and why.
+const T0 = Date.parse('2026-10-01T13:15:00');
+const stale = R.staleText({ status: 503, error: 'LabCore did not answer the first read' }, T0, T0 + 120000);
+check('the stale line says it could not read, why, and as of when',
+  stale, 'Couldn\'t refresh this instrument (LabCore did not answer the first read). Shown as of ' + new Date(T0).getHours().toString().padStart(2, '0') + ':15; it may be out of date.');
+check('a network failure is LEM not answering',
+  R.staleText({ status: 0 }, T0, T0 + 1000).startsWith('Couldn\'t refresh this instrument (LEM did not answer).'), true);
+check('an HTTP failure without words says its status',
+  R.staleText({ status: 502 }, T0, T0 + 1000).startsWith('Couldn\'t refresh this instrument (HTTP 502).'), true);
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

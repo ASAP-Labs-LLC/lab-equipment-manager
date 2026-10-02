@@ -31,12 +31,14 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 import demo_floor
 import ui_instruments
+import ui_live
 import ui_record
 from labcore_gateway import FakeLabCoreGateway
 from live_presence import LivePresence
@@ -103,8 +105,15 @@ PROD = json.loads(FIXTURE.read_text())
 LEVELS = {lv["uid"]: lv["name"] for lv in PROD["levels"]}
 
 
-def prod(title):
-    return next(m for m in PROD["machines"] if m["title"] == title)
+# The moment the capture was taken (its newest heartbeat is 13:17:49). QC is
+# judged AT a moment: a pass counts for 24 h (§3.1), so a test that judged
+# 1 Oct's capture by today's wall clock would find a different lab every day.
+AT = datetime(2026, 10, 1, 13, 18)
+
+
+def prod(title, at=AT, windows=None):
+    m = next(m for m in PROD["machines"] if m["title"] == title)
+    return ui_live.judged([m], at, windows)[0]
 
 
 def href(uid, section):
@@ -208,6 +217,20 @@ class TestOnePrimaryAndItIsTheNextStep:
             assert "btn-primary" not in (JS / name).read_text(), name
 
 
+    def test_the_whole_page_has_exactly_one_primary(self, tmp_path):
+        """§0.1, counted over the page as served, shell included. The closed
+        sign-in sheet's submit was a second .btn-primary on every record
+        (round 3's shooter: "2 in the DOM"). A dialog's own go button is a
+        sheet's (`.sheet-go`, the same ink fill), so the page's one primary
+        is the card's, shown when there is a next step and hidden when not."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        for r in c.get("/api/ui/instruments").get_json()["instruments"]:
+            html = c.get("/instruments/" + r["uid"]).get_data(as_text=True)
+            assert len(re.findall(r"\bbtn-primary\b", html)) == 1, r["uid"]
+            assert re.search(r'class="btn btn-primary" id="ready-primary"', html)
+
+
 class TestTiles:
     def test_qc_bench_on_line_and_maintenance_only_when_scheduled(self):
         """Production has 0 scheduled tasks: three tiles, not an empty fourth."""
@@ -291,6 +314,20 @@ class TestTheQcTable:
         assert c["units"] == "°C"
         assert c["value"] == 331.51 and c["verdict"]["word"] == "In spec"
 
+    def test_units_are_written_as_the_lab_writes_them(self):
+        """LabCore stores Viscocity's units as ASCII "mm2/s"; a record that
+        prints them so reads like a typo (round 3's critic)."""
+        assert record(prod("Viscocity"))["qc"]["checks"][0]["units"] == "mm²/s"
+
+    def test_a_refresh_failure_is_not_swallowed(self):
+        """Round 3's critic: `.catch(() => {})` on the record's own refresh
+        kept a stale verdict on screen through six 503s with no mark. The
+        browser walk is tests/test_ui_record_browser.py; this guards the
+        source so the swallow cannot come back unnoticed."""
+        js = (JS / "record.js").read_text()
+        assert ".catch(() => {})" not in js
+        assert 'id="ready-stale"' in (T / "instrument.html").read_text()
+
     def test_viscosity_keeps_its_test_words(self):
         c = record(prod("Viscocity"))["qc"]["checks"][0]
         assert c["method"] == "ASTM D445 40C"
@@ -315,6 +352,148 @@ class TestTheQcTable:
     def test_standards_are_named_for_the_intro_sentence(self):
         assert record(prod("Agilent GC 1"))["qc"]["standards"] == ["AF26"]
         assert record(prod("OptiMPP 1"))["qc"]["standards"] == ["CP", "PP"]
+
+
+class TestAPassCountsFor24Hours:
+    """§3.1's QC sentence: "A passing check counts for 24 h", and §4.1's QC
+    due for a pass that has aged out of it. Round 3's critic found OptiMPP 1
+    and 2 reading "OK to run · All 2 checks in spec (4 Aug)" in production off
+    passes two months old. A pass says the instrument read true THEN; the
+    record's one answer is about NOW, so a pass past its window is QC due
+    (OK to run, but…), never In spec.
+
+    The window is the lab's own rule (qc_samples.resolve_qc_window): a
+    standard that states its own life wins, else 24 h. The boundary is the
+    bench's (data_source.qc_is_stale: age >= window is stale), so the record
+    and the bench cannot disagree about the same pass at the same second."""
+
+    def test_optimpp_august_passes_are_qc_due_not_in_spec(self):
+        rec = record(prod("OptiMPP 1"))
+        r = rec["readiness"]
+        assert r["state"] == "ok_but" and r["word"] == "OK to run, but…"
+        for c in rec["qc"]["checks"]:
+            assert c["verdict"]["key"] == "due", c
+            assert c["verdict"]["word"] == "QC due"
+            assert c["verdict"]["glyph"] == "half"
+            # the row says why: when it last passed, and how long a pass counts
+            assert c["verdict"]["detail"] == "last passed 3 Aug · a pass counts for 24 h"
+        assert r["caption"]["lead"] == "QC due on Cloud Point, mini method and Pour Point, mini method"
+        assert r["caption"]["next"] == "Run CP and PP"
+        assert r["primary"] is None          # a warning: Ryan, 2026-10-01
+        qc_tile = next(t for t in r["tiles"] if t["key"] == "qc")
+        assert qc_tile["word"] == "QC due" and qc_tile["current"] is True
+
+    def test_production_on_1_oct_had_three_instruments_due(self):
+        """The whole capture, judged at the moment it was taken: OptiMPP 1
+        and 2 (3 Aug) and Aquamax 3 (30 Sep 11:23, 26 h before) are QC due.
+        Multitek S passed at 14:00 the day before, 23 h 18 min earlier: it
+        still counts."""
+        due = sorted(m["title"] for m in PROD["machines"]
+                     if ui_live.readiness(prod(m["title"]))["reason"].startswith("QC due"))
+        assert due == ["Aquamax 3", "OptiMPP 1", "OptiMPP 2"]
+        assert record(prod("Multitek S"))["readiness"]["word"] == "OK to run"
+        assert record(prod("PAC Flash 2"))["readiness"]["word"] == "OK to run"
+
+    def test_the_boundary_is_the_benches(self):
+        """Multitek S passed at 2026-09-30T14:00:24.759917."""
+        before = prod("Multitek S", at=datetime(2026, 10, 1, 14, 0, 24))
+        after = prod("Multitek S", at=datetime(2026, 10, 1, 14, 0, 25))
+        assert ui_live.readiness(before)["state"] == "ok"
+        assert ui_live.readiness(after)["state"] == "ok_but"
+
+    def test_a_standards_own_window_decides(self):
+        """PAC Flash 2 passed at 08:38; a standard good for 4 h has aged out
+        by 13:18, and the record says which window it used and where from."""
+        uid = prod("PAC Flash 2")["machine_uid"]
+        rec = record(prod("PAC Flash 2", windows={uid: (4.0, "AF26 · Flash Point")}))
+        assert rec["readiness"]["state"] == "ok_but"
+        assert rec["qc"]["checks"][0]["verdict"]["detail"] == "last passed 1 Oct · a pass counts for 4 h"
+        assert rec["qc"]["window"] == {"hours": 4.0, "from": "AF26 · Flash Point"}
+        assert record(prod("PAC Flash 2"))["qc"]["window"] == {"hours": 24.0, "from": ""}
+
+    def test_a_stopped_bench_still_reads_no_verdict_yet(self):
+        """§4.1: assigned, bench stopped -> No verdict yet. The 3 Sep pass is
+        out of its window too, but the reason nothing new is judged is the
+        bench, and the row says that, as it did."""
+        c = record(prod("Viscocity"))["qc"]["checks"][0]
+        assert c["verdict"]["word"] == "No verdict yet"
+        assert c["verdict"]["detail"] == "bench stopped"
+
+    def test_a_failed_check_stays_out_of_spec_however_old(self):
+        """A stop stands until somebody reruns the standard: age never turns
+        Out of spec into QC due."""
+        later = prod("Agilent GC 1", at=datetime(2026, 12, 1))
+        assert ui_live.readiness(later)["state"] == "not_ok"
+
+    def test_a_machine_nobody_stamped_is_judged_now(self):
+        """Fail safe: a caller that forgot to say WHEN gets the wall clock,
+        so a forgotten stamp can only make a pass due, never keep an old one
+        in spec. The raw August capture is due today."""
+        raw = next(m for m in PROD["machines"] if m["title"] == "OptiMPP 1")
+        assert ui_live.readiness(raw)["state"] == "ok_but"
+
+    def test_a_pass_whose_time_cannot_be_read_is_not_in_spec(self):
+        """A failed read is never an answer: a pass with no readable time
+        cannot be said to be inside any window."""
+        m = prod("PAC Flash 2")
+        s = dict(m["effective_specs"][0], last_qc_at="not a time")
+        c = record(dict(m, effective_specs=[s]))["qc"]["checks"][0]
+        assert c["verdict"]["key"] == "due"
+        assert c["verdict"]["detail"] == "when it passed is not on record · a pass counts for 24 h"
+
+    def test_the_intro_sentence_says_the_window(self):
+        """§3.1's QC intro has three sentences; round 3 dropped the middle one."""
+        page = (T / "instrument.html").read_text()
+        assert "A passing check counts for" in page
+        js = (JS / "record.js").read_text()
+        assert "R.windowSentence(" in js
+
+
+class TestTheRouteJudgesQcNow:
+    def _shift(self, monkeypatch, hours):
+        import web_app
+        real = web_app._now()
+        monkeypatch.setattr(web_app, "_now", lambda: real + timedelta(hours=hours))
+
+    def test_a_pass_ages_out_without_any_new_data(self, tmp_path, monkeypatch):
+        """Nothing in LabCore changes when a pass turns 24 h old; the answer
+        must change anyway. The home's memo was keyed on the data alone, so
+        it would have served the morning's "OK to run" all night."""
+        app, gw = _seeded(tmp_path)
+        c = app.test_client()
+        first = c.get("/api/ui/instruments").get_json()
+        ok_now = {r["uid"] for r in first["instruments"] if r["readiness"]["state"] == "ok"}
+        assert ok_now, "the dev seed has instruments that are OK to run"
+        self._shift(monkeypatch, 48)
+        later = c.get("/api/ui/instruments").get_json()
+        states = {r["uid"]: r["readiness"]["state"] for r in later["instruments"]}
+        assert all(states[u] == "ok_but" for u in ok_now), states
+        rec = c.get("/api/ui/instruments/" + sorted(ok_now)[0]).get_json()
+        assert rec["readiness"]["state"] == "ok_but"
+        assert rec["qc"]["window"]["hours"] == 24.0
+        assert gw.calls == [] or all(k != "write" for k, _ in gw.calls)
+
+    def test_the_live_count_ages_with_it(self, tmp_path, monkeypatch):
+        """The nav's Needs-you count and the bell are the same rule (§0.2)."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        before = c.get("/api/ui/live").get_json()["needs_you"]
+        self._shift(monkeypatch, 48)
+        after = c.get("/api/ui/live").get_json()["needs_you"]
+        assert after > before
+
+
+class TestShortNames:
+    def test_a_method_qualifier_is_part_of_the_name(self):
+        """"Pour Point, mini method" is not a distillation point: cutting at
+        the comma named both OptiMPP checks "mini method", so a caption read
+        "QC due on mini method and mini method"."""
+        assert ui_record.short_test("ASTM D7346 - Pour Point, mini method") == \
+            ("Pour Point, mini method", "ASTM D7346")
+        assert ui_record.short_test("ASTM D2887/D86 - Distillation in Petroleum Products, 10% Recovery") == \
+            ("10% Recovery", "ASTM D2887/D86")
+        assert ui_record.short_test("ASTM D2887/D86 - Distillation in Petroleum Products, FBP") == \
+            ("FBP", "ASTM D2887/D86")
 
 
 class TestNoVerdictYetIsNotNoQcAssigned:

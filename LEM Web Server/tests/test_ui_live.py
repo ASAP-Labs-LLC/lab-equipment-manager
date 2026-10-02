@@ -387,8 +387,11 @@ class TestTheBell:
         inside "not OK to run"; since calibration is a warning (Ryan,
         2026-10-01) it needs its own line, merged across instruments."""
         m = [{"machine_uid": u, "title": u.upper(), "module_state": "running", "module_running": True,
-              "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True}],
-              "maintenance": [{"kind": "calibration", "status": "RED"}]} for u in ("a", "b")]
+              "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True,
+                                   "last_qc_at": "2026-10-01T09:00:00"}],
+              "maintenance": [{"kind": "calibration", "status": "RED"}],
+              "qc_judged": {"at": "2026-10-01T10:00:00", "hours": 24.0, "from": ""}}
+             for u in ("a", "b")]
         ready = {x["machine_uid"]: ui_live.readiness(x, "") for x in m}
         items = ui_live.conditions(machines=m, ready=ready, overrides={}, round_=None,
                                    audit_spool=0, live_road=None, certificates=None,
@@ -411,9 +414,15 @@ class TestTheBell:
 # ── readiness (§3.1) ────────────────────────────────────────────────────────
 
 class TestReadiness:
+    # A pass counts for 24 h (§3.1), so a pass carries when it ran and the
+    # machine when it is judged; without them the pass would be judged by
+    # today's wall clock (ui_live.judged).
+    JUDGED = {"at": "2026-10-01T10:00:00", "hours": 24.0, "from": ""}
     BASE = {"machine_uid": "u", "title": "GC", "status": "GREEN", "module_state": "running",
-            "module_running": True, "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True}],
-            "qc_targets": [{"test": "IBP"}], "maintenance": []}
+            "module_running": True,
+            "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True,
+                                 "last_qc_at": "2026-10-01T09:00:00"}],
+            "qc_targets": [{"test": "IBP"}], "maintenance": [], "qc_judged": JUDGED}
 
     def _r(self, override="", **kw):
         return ui_live.readiness(dict(self.BASE, **kw), override)["state"]
@@ -428,6 +437,9 @@ class TestReadiness:
         assert self._r(maintenance=[{"kind": "pm", "status": "RED"}]) == ui_live.OK_BUT
         assert self._r(module_running=False, module_state="stopped") == ui_live.CANT_TELL
         assert self._r(effective_specs=[], qc_targets=[]) == ui_live.NO_QC
+        # a pass older than its window is QC due, a warning, not In spec
+        assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": True,
+                                         "last_qc_at": "2026-09-30T10:00:00"}]) == ui_live.OK_BUT
 
     def test_only_qc_or_an_override_can_say_no(self):
         """Ryan, 2026-10-01: "PM overdue = warning, Calibration overdue =

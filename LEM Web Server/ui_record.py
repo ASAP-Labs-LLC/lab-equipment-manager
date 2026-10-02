@@ -43,7 +43,9 @@ from ui_live import CANT_TELL, NO_QC, NOT_OK, OFF_LINE, OK, OK_BUT
 # land on one of these (tests/test_ui_record.py).
 SECTIONS = ("qc", "maintenance", "bench")
 
-UNITS = {"C": "°C", "F": "°F", "degC": "°C", "degF": "°F"}
+UNITS = {"C": "°C", "F": "°F", "degC": "°C", "degF": "°F",
+         # a kinematic viscosity is mm²/s; LabCore stores it in ASCII
+         "mm2/s": "mm²/s", "mm^2/s": "mm²/s", "cm3": "cm³", "g/cm3": "g/cm³", "kg/m3": "kg/m³"}
 
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
@@ -84,7 +86,12 @@ def short_test(name: str) -> Tuple[str, str]:
     method = re.sub(r"\s+", " ", method).strip()
     rest = rest.strip()
     if ", " in rest:
-        rest = rest.rsplit(", ", 1)[1].strip()
+        # "…, 10% Recovery" / "…, FBP" is a point on a curve and is the name;
+        # "Pour Point, mini method" is a qualifier and stays with it (cutting
+        # there named both OptiMPP checks "mini method")
+        tail = rest.rsplit(", ", 1)[1].strip()
+        if re.match(r"^(\d|[A-Z]{2,}\b)", tail):
+            rest = tail
     return rest or raw, method
 
 
@@ -342,6 +349,9 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
             "tiles": _tiles(row, primary),
         },
         "qc": {"assigned": bool(rows), "checks": rows, "selected": _selected(rows),
+               # §3.1's intro: "A passing check counts for 24 h", said with
+               # the window the verdicts were judged by, not a constant
+               "window": ui_live.qc_window(m),
                "standards": sorted({c["sample_id"] for c in rows if c["sample_id"]})},
         "maintenance": maintenance(m),
         "bench": bench(m),
