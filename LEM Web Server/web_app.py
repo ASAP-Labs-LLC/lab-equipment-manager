@@ -1557,6 +1557,11 @@ def create_app(gateway, labcore_gateway=None,
         if (request.args.get("view") or "") == "map":
             # The floor map in the shell is its own piece; until it lands the
             # floor page IS the map, rather than a List view that ignores ?view.
+            # A record's "Show on the floor map" names its instrument, and the
+            # floor opens that instrument's panel (?machine=), not the whole lab.
+            focus = (request.args.get("focus") or "").strip()
+            if focus:
+                return redirect(url_for("floor", machine=focus))
             return redirect(url_for("floor"))
         return render_template("instruments.html", nav="instruments",
                                data=_instruments_payload(),
@@ -1956,6 +1961,56 @@ def create_app(gateway, labcore_gateway=None,
         resp = jsonify(_instruments_payload())
         resp.headers["Cache-Control"] = "no-store"
         return resp
+
+    # ── the record (ia-final §3.1, piece 5) ────────────────────────────
+    # One instrument, out of the same memory the home reads: its row of
+    # /api/ui/instruments (so the verdict is the home's) and its merged
+    # machine. Three answers, three sentences: the record, "no such
+    # instrument" (404, a statement about the lab) and "could not ask" (503,
+    # a statement about LEM). A record page that answered 404 while LabCore
+    # was down would tell a tech their instrument had been deleted.
+    def _record_payload(machine_uid: str):
+        """-> (status, payload). 0 LabCore ops: snapshot memory only."""
+        import ui_record
+        from live_presence import merge_machines
+        home = _instruments_payload()
+        meta = {k: home.get(k) for k in ("built_at", "stale", "labcore_online")}
+        if home.get("state") != "ready":
+            return 503, dict({"state": home.get("state"), "error": home.get("error"),
+                              "uid": machine_uid}, **meta)
+        row = next((r for r in home["instruments"] if r["uid"] == machine_uid), None)
+        snap = snapshots.get(build_if_missing=False)
+        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        m = next((x for x in merged if x.get("machine_uid") == machine_uid), None)
+        if row is None or m is None:
+            return 404, dict({"state": "missing", "uid": machine_uid}, **meta)
+        overrides = ui_live.overrides_from_tables(snapshots.tables()) or {}
+        levels = {str(lv.get("uid")): str(lv.get("name") or "")
+                  for lv in snap.get("levels") or []}
+        rec = ui_record.build(row, m, levels, override=overrides.get(machine_uid, ""))
+        return 200, dict(rec, **meta)
+
+    @app.route("/api/ui/instruments/<machine_uid>")
+    def api_ui_record(machine_uid):
+        """The record's answer: see ui_record. 0 LabCore ops."""
+        status, body = _record_payload(machine_uid)
+        resp = jsonify(body)
+        resp.status_code = status
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.route("/instruments/<machine_uid>")
+    def instrument_record(machine_uid):
+        """The record. The first paint carries the answer (a JSON island the
+        page draws with textContent); record.js keeps it live and fetches the
+        chart's history, the one read a person pays for by opening it."""
+        status, body = _record_payload(machine_uid)
+        if status != 200:
+            return render_template("instrument_missing.html", nav="instruments",
+                                   data=body), status
+        return render_template("instrument.html", nav="instruments", data=body,
+                               has_quality=any(r.rule == "/quality"
+                                               for r in app.url_map.iter_rules()))
 
     @app.template_filter("json_island")
     def _json_island(value) -> str:
@@ -5390,6 +5445,13 @@ def create_app(gateway, labcore_gateway=None,
             },
         }
 
+    def _trim_qc_points(points, rng):
+        """`ui_record.trim_points` over QcPoint objects (it reads dicts)."""
+        import ui_record
+        keyed = [{"ts": str(p.ts or ""), "i": i} for i, p in enumerate(points)]
+        kept = ui_record.trim_points(keyed, rng, _now().isoformat())
+        return [points[k["i"]] for k in kept]
+
     @app.route("/api/machines/<machine_uid>/qc-trend")
     def api_qc_trend(machine_uid):
         """The control chart: is this instrument IN CONTROL, and what does its
@@ -5402,6 +5464,13 @@ def create_app(gateway, labcore_gateway=None,
         moved, reported as perfect.
         """
         import qc_series
+        import ui_record
+        # ?range=24|90d|all is the record's "24 runs · 90 days · All" seg.
+        # Without it the answer is the floor's: the last CHART_POINTS.
+        rng = (request.args.get("range") or "").strip()
+        if rng and rng not in ui_record.RANGES:
+            return jsonify({"error": "A chart range is one of %s, not %r."
+                            % (", ".join(ui_record.RANGES), rng[:20])}), 400
         try:
             events = _qc_events(machine_uid)
         except LabCoreError as exc:
@@ -5448,9 +5517,11 @@ def create_app(gateway, labcore_gateway=None,
             # the series it was found in, so analysing the whole history and
             # then trimming the points would leave every index off by the
             # number dropped and the UI circling the wrong readings.
+            pts = (series.points[-CHART_POINTS:] if not rng else
+                   _trim_qc_points(series.points, rng))
             shown = qc_series.QcSeries(
                 machine_uid=series.machine_uid, test_name=series.test_name,
-                points=series.points[-CHART_POINTS:],
+                points=pts,
                 pass_band=series.pass_band, sample_id=series.sample_id)
             std_dev, k = certs.get((name, sample_id), (None, None))
             limits = qc_series.certificate_limits(

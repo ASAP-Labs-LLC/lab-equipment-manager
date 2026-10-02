@@ -3725,6 +3725,7 @@ function renderTally() {
 }
 
 let FIRST_LOAD = true;
+let FOCUS_DONE = false;   // ?machine= opened (or not on this floor)
 
 async function load() {
   // A slow first call (LabCore waking up) must not blank the floor — keep the
@@ -3801,6 +3802,14 @@ async function load() {
   // the tab back to QC, threw away the scroll position and reflashed the trend
   // — a blink on the old 30s timer, a flicker at 2s. Same idea as the
   // signature guard in lem.js: decide what "changed" means, then honour it.
+  // ?machine=<uid>: the record's "Show on the floor map" names an instrument;
+  // its panel opens once, on the first picture that has it.
+  if (!selected && !FOCUS_DONE) {
+    const want = new URLSearchParams(location.search).get('machine');
+    const hit = want ? MACHINES.find(x => x.machine_uid === want) : null;
+    if (!want || hit) FOCUS_DONE = true;
+    if (hit) selected = hit;
+  }
   if (selected) {
     const sig = panelSignature(selected);
     if (sig !== PANEL_SIG) { PANEL_SIG = sig; select(selected); }

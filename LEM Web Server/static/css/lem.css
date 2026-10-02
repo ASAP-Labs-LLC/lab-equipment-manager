@@ -843,3 +843,180 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
     .table-card .tbl th:first-child, .table-card .tbl td:first-child { padding-left: var(--s4); }
     .table-card .tbl th:last-child, .table-card .tbl td:last-child { padding-right: var(--s4); }
 }
+
+/* ── the record (ia-final §3.1, piece 5; templates/instrument.html) ──────
+   GC hub's /instruments/<id> anatomy. One card, one primary, one emphasis.
+   Status colour is spent ONLY on a glyph and its word: the head's pill is
+   neutral, the current tile has GC's 1.5px INK border, a failed check's row
+   has no tint, the chart marks a result outside its limits with a red
+   triangle and nothing else. tests/test_ui_record.py reads this block for
+   a red background or border. */
+.content.record { max-width: 1240px; }
+.content.record:focus { outline: none; }
+.record .page-head { margin-bottom: var(--s4); }
+.record .page-head h1 { font-size: 30px; }
+.rec-pill { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
+.rec-pill .s-ok, .rec-pill .s-no_qc, .rec-pill .s-cant_tell, .rec-pill .s-off_line { color: var(--text); }
+.record .glyph.half { border-radius: 50%; border: 1.5px solid var(--st-held); background: linear-gradient(90deg, var(--st-held) 50%, transparent 50%); }
+
+/* the card: verdict, one sentence, one button */
+.ready-card { padding: var(--s4) var(--s5) var(--s5); margin-bottom: var(--s4); }
+.ready-card .bar { flex-wrap: nowrap; align-items: center; gap: var(--s4); margin-bottom: var(--s3); min-height: 40px; }
+.ready-card .bar h2 { display: inline-flex; align-items: center; gap: var(--s2); font-size: var(--fs-xl); white-space: nowrap; flex: none; }
+/* the verdict is said in ink; its glyph carries the colour (§0.1) */
+.ready-card .bar h2 [class^="s-"] { color: var(--text); }
+.rglyph { display: inline-grid; }
+.rglyph .tglyph { width: 20px; height: 20px; }
+.ready-cap { margin: 0; flex: 1; min-width: 0; font-size: var(--fs-sm); color: var(--text-muted); line-height: 1.45; }
+.ready-card #ready-primary { flex: none; margin-left: auto; }
+.rtiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
+.rtiles[data-n="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.rtile {
+    display: grid; align-content: start; gap: 3px; min-width: 0; padding: var(--s3) var(--s4);
+    border-radius: var(--radius-md); background: var(--bg-sunken); border: 1.5px solid transparent;
+}
+.rtile .tglyph { width: 22px; height: 22px; margin-bottom: 4px; }
+.rtile .t-title { font-size: var(--fs-xs); color: var(--text-muted-sunken); font-weight: 500; }
+.rtile .t-word { font-size: 13px; font-weight: 600; color: var(--text); }
+.rtile .t-detail { font-size: var(--fs-xs); color: var(--text-muted-sunken); line-height: 1.4; overflow-wrap: anywhere; }
+.rtile .t-link { justify-self: start; margin-top: 4px; font-size: var(--fs-xs); font-weight: 600; color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.rtile.current { background: var(--bg-card); border-color: var(--ink); }
+.rtile.current .t-word { font-weight: 700; }
+.rtile.current .t-title, .rtile.current .t-detail { color: var(--text-muted); }
+
+/* QC: the table. The selected row is GC's: 3px ink bar and --bg-active. */
+.record .sec { padding: var(--s5) 0; }
+.record .ready-card + .sec { border-top: 0; padding-top: var(--s2); }
+.qc-card { overflow: hidden; }
+.tbl.qc th { padding: 10px var(--s3); white-space: nowrap; }
+.tbl.qc th:first-child, .tbl.qc td:first-child { padding-left: var(--s4); }
+.tbl.qc th:last-child, .tbl.qc td:last-child { padding-right: var(--s4); }
+.tbl.qc th b { font-weight: 650; color: var(--text); }
+.tbl.qc td { padding: 10px var(--s3); }
+.tbl.qc .c-check { white-space: nowrap; }
+.tbl.qc tbody tr:last-child td { border-bottom: 0; }
+.tbl.qc .qrow { cursor: pointer; }
+.tbl.qc .qrow:hover td { background: var(--bg-hover); }
+.tbl.qc .qrow.is-sel td { background: var(--bg-active); }
+.tbl.qc .qrow.is-sel td:first-child { box-shadow: inset 3px 0 0 var(--ink); }
+.qc-pick { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--text); cursor: pointer; text-align: left; }
+.qc-pick:hover { text-decoration: underline; text-underline-offset: 2px; }
+.tbl.qc .sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); }
+.tbl.qc .c-band { color: var(--text-muted); white-space: nowrap; }
+.tbl.qc .c-band b { color: var(--text); font-weight: 650; }
+.tbl.qc .c-last { text-align: right; font-weight: 650; white-space: nowrap; }
+.tbl.qc th.c-last { text-align: right; }
+.tbl.qc .c-when { color: var(--text-muted); white-space: nowrap; }
+.tbl.qc .c-verdict { white-space: nowrap; }
+.tbl.qc .verdict, .tbl.mt .verdict { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
+.tbl.qc .c-verdict .sub { padding-left: 18px; }
+.tbl.qc .fold-band { display: none; }
+.tbl.qc .fold-last { display: none; }
+.qc-none { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s4); font-size: var(--fs-sm); color: var(--text-muted); }
+
+/* the band track: min, target and max as a picture, the last result on it */
+.track { position: relative; display: block; width: 120px; height: 14px; }
+.track::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; border-radius: 1px; background: var(--border-light); }
+.track .band { position: absolute; top: 3px; height: 8px; border-radius: 2px; background: var(--chart-band); box-shadow: inset 0 0 0 1px var(--chart-tick); }
+.track .mid { position: absolute; top: 1px; width: 1.5px; height: 12px; margin-left: -0.75px; background: var(--text-muted); }
+.track .dot { position: absolute; top: 2.5px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--ink); box-shadow: 0 0 0 2px var(--bg-card); }
+.track .dot.out { border-radius: 0; width: 11px; height: 10px; margin-left: -5.5px; top: 2px; box-shadow: none;
+    background: var(--st-error); clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.track .dot.out.high { margin-left: -11px; }
+.track .dot.out.low { margin-left: 0; }
+.track.none::before { background: transparent; }
+.is-sel .track .dot { box-shadow: 0 0 0 2px var(--bg-active); }
+
+/* the chart card under the table */
+.chart-card { padding: var(--s4) var(--s5) var(--s4); }
+.chart-head { display: flex; align-items: flex-start; gap: var(--s4); margin-bottom: var(--s2); }
+.chart-title { flex: 1; min-width: 0; }
+.chart-title h3 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
+.chart-title .caption { margin: 2px 0 0; }
+.chart-plot { min-height: 176px; }
+.qchart { display: block; overflow: visible; }
+.qchart .qband { fill: var(--chart-band); }
+.qchart .qlim { stroke: var(--chart-ref); stroke-width: 1; stroke-dasharray: 4 3; }
+.qchart .qmid { stroke: var(--chart-axis); stroke-width: 1; }
+.qchart .qline { fill: none; stroke: var(--chart-ref); stroke-width: 1.25; }
+.qchart .qpt { fill: var(--chart-ink); }
+.qchart .qpt.last { stroke: var(--bg-card); stroke-width: 2; }
+.qchart .qpt.out { fill: var(--st-error); }
+.qchart .qring { fill: none; stroke: var(--text); stroke-width: 1.25; stroke-dasharray: 2.5 2; }
+.qchart .qlab { font-size: 11px; fill: var(--text); font-variant-numeric: tabular-nums; }
+.qchart .qk { fill: var(--chart-axis); }
+.qchart .qtick { font-size: 11px; fill: var(--chart-axis); }
+.chart-foot { display: grid; gap: 2px; margin-top: var(--s2); padding-top: var(--s2); border-top: 1px solid var(--border-light); }
+.chart-line { margin: 0; font-size: var(--fs-sm); color: var(--text-muted); display: flex; gap: var(--s2); align-items: baseline; }
+.chart-line .ctl-k { font-size: var(--fs-xs); font-weight: 600; color: var(--text); }
+.chart-line.err { color: var(--text); }
+.chart-note { display: flex; align-items: center; gap: var(--s2); min-height: 120px; font-size: var(--fs-sm); color: var(--text-muted); }
+.chart-note.err { color: var(--text); }
+.chart-note .btn { margin-left: var(--s2); }
+.chart-skel { display: grid; gap: 14px; padding: 24px 0; }
+.chart-skel i { display: block; height: 10px; border-radius: 5px; background: var(--bg-sunken); }
+.chart-skel i:nth-child(2) { width: 86%; }
+.chart-skel i:nth-child(3) { width: 72%; }
+.sec-actions { gap: var(--s2); }
+
+/* Maintenance and Bench (read-only until pieces 6 and 7) */
+.tbl.mt td, .tbl.mt th { padding: 10px var(--s4); }
+.tbl.mt tbody tr:last-child td { border-bottom: 0; }
+.record .kv .v { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.record .kv > div:nth-last-child(-n+2) { border-bottom: 0; }
+.record .sec .caption { margin: 0; }
+.rec-foot { margin: var(--s4) 0 0; padding-top: var(--s4); border-top: 1px solid var(--border-light); }
+
+/* the sheets: a sheet is its own screen, and its submit is that screen's
+   one ink button (the page's primary stays the card's) */
+dialog.sheet .sheet-go { background: var(--ink); border-color: var(--ink); color: var(--ink-fg); }
+dialog.sheet .sheet-go:hover { background: var(--ink-hover); border-color: var(--ink-hover); }
+.rec-sheet { width: min(520px, calc(100vw - 32px)); }
+.rec-sheet .form p { margin: 0; }
+.gc .rec-sheet textarea { height: auto; padding: 8px var(--s3); width: 100%; resize: vertical; line-height: 1.45; }
+.rec-sheet select { width: 100%; }
+.rec-sheet .choice { border: 0; margin: 0; padding: 0; display: grid; gap: var(--s2); font-size: var(--fs-sm); }
+.rec-sheet .errline { margin: 0; }
+
+/* the page that cannot show an instrument (404 / 503) */
+.record-missing h1 { font-size: 22px; margin-bottom: var(--s2); }
+.record-missing p { max-width: 640px; }
+
+/* 1100-1399 and the 820 iPad: tiles 3-up; the QC table folds the band and
+   its track under the check's name, so nothing scrolls sideways */
+@media (max-width: 1260px) {
+    .rtiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    /* a fourth tile (Maintenance) takes the next row whole, laid out
+       sideways, rather than leave two thirds of it empty */
+    .rtiles[data-n="4"] .rtile:nth-child(4) { grid-column: 1 / -1; grid-template-columns: 22px auto auto minmax(0, 1fr) auto;
+        align-items: center; column-gap: var(--s3); }
+    .rtiles[data-n="4"] .rtile:nth-child(4) .tglyph { margin: 0; }
+    .rtiles[data-n="4"] .rtile:nth-child(4) .t-link { margin: 0; }
+}
+@media (max-width: 1099px) {
+    .ready-card .bar { flex-wrap: wrap; }
+    .ready-cap { flex-basis: 100%; order: 3; }
+    .tbl.qc .c-band, .tbl.qc .c-track { display: none; }
+    .tbl.qc .fold-band { display: flex; align-items: center; gap: var(--s3); margin-top: 6px; font-size: var(--fs-xs); color: var(--text-muted); }
+    .tbl.qc .fold-band .track { width: 110px; }
+    .record .sec { gap: var(--s3); }
+}
+@media (max-width: 699px) {
+    .record .page-head h1 { font-size: 24px; }
+    .ready-card { padding: var(--s4); }
+    .ready-card #ready-primary { width: 100%; order: 4; height: 44px; }
+    .rtiles, .rtiles[data-n="3"] { grid-template-columns: 1fr; }
+    /* two-line rows (§6): the check and its verdict, then its last
+       result, band and track; nothing is clipped and nothing scrolls */
+    #show-map { display: none; }
+    .tbl.qc .c-when, .tbl.qc .c-last { display: none; }
+    .tbl.qc td, .tbl.qc th { padding: 10px var(--s3); }
+    .tbl.qc .c-check { white-space: normal; }
+    .tbl.qc .fold-band { flex-wrap: wrap; row-gap: 4px; }
+    .tbl.qc .fold-last { display: block; flex-basis: 100%; color: var(--text); font-weight: 600; }
+    .tbl.qc .fold-band .track { width: 90px; }
+    .tbl.qc .c-verdict { vertical-align: top; }
+    .chart-head { flex-wrap: wrap; }
+    .chart-card { padding: var(--s3); }
+}
+/* ── end of the record ─────────────────────────────────────────────────── */

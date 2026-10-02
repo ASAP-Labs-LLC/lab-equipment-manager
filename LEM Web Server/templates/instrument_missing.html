@@ -1,0 +1,36 @@
+{% extends "_layout.html" %}
+{#- An instrument the record cannot show (GC hub's instrument_missing.html).
+    Two different sentences, two status codes: 404 says there is no such
+    instrument (a statement about the lab); 503 says LEM could not ask (a
+    statement about LEM, and the page comes back by itself). A record that
+    said "no such instrument" while LabCore was down would tell a tech their
+    instrument had been deleted. -#}
+{% block title %}{{ 'Unknown instrument' if data.state == 'missing' else 'Instrument' }}{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Instruments</a><span class="sep" aria-hidden="true">›</span><span class="here mono" aria-current="page">{{ data.uid }}</span></nav>
+{% endblock %}
+{% block content %}
+<main class="content record-missing" id="main" tabindex="-1" data-testid="instrument-missing-page" data-state="{{ data.state }}">
+  {%- if data.state == 'missing' %}
+  <h1>No instrument “{{ data.uid }}”</h1>
+  <p class="muted">LEM has read every instrument and none has this id. It may have been removed, or the link may be old. <a class="link" href="/">See every instrument</a>.</p>
+  {%- elif data.state == 'unreadable' %}
+  <h1>Couldn't show this instrument</h1>
+  <p class="muted">LEM could not ask LabCore about its instruments, so it cannot say whether “{{ data.uid }}” exists. This is not a missing instrument. The page shows it by itself once LabCore answers.</p>
+  {%- if data.error %}<p class="caption" data-testid="missing-error">{{ data.error }}</p>{% endif %}
+  <p><a class="link" href="/">Back to Instruments</a></p>
+  {%- else %}
+  <h1>Not read from LabCore yet</h1>
+  <p class="muted">LEM reads every instrument within a few seconds of starting. This page shows “{{ data.uid }}” by itself once it has.</p>
+  <p><a class="link" href="/">Back to Instruments</a></p>
+  {%- endif %}
+</main>
+{%- if data.state != 'missing' %}
+<script type="application/json" id="record-wait">{{ {'uid': data.uid}|json_island }}</script>
+{%- endif %}
+{% endblock %}
+{% block scripts %}
+{%- if data.state != 'missing' %}
+<script src="/static/js/record_wait.js?v={{ v('js/record_wait.js') }}"></script>
+{%- endif %}
+{% endblock %}
