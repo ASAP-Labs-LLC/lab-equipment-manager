@@ -419,8 +419,9 @@ class TestTheLogIsTheRecordAndTheSpecIsACache:
         # Written as a second row rather than by renaming the first: the
         # record is append-only (the store's trigger refuses an UPDATE), so
         # this lab's log simply starts out holding the other test's reading.
-        gw.sql("INSERT INTO log_annotation (log_id, label, by, at) "
-               "SELECT id, 'import_leftover', 'test', 't' FROM lem_machine_log")
+        # (Hidden under an approval: the store refuses a hide without one.)
+        from approval_helper import hide
+        hide(gw, "1 = 1", label="import_leftover")
         gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
                "test_name, value, detail) VALUES ('5fd04c0031f9', "
                "'2026-09-02T17:06:41', 'qc', 'AF26', 'Something Else', '9.9', "

@@ -1799,9 +1799,9 @@ class TestTheTriggerNamesOneEvent:
         # Gone from what the reader sees — hidden by an annotation, because
         # the record itself is append-only and refuses the DELETE this test
         # used to simulate "aged out of the window" with.
-        assert "error" not in gw.sql(
-            "INSERT INTO log_annotation (log_id, label, by, at) "
-            "SELECT id, 'import_leftover', 'test', 't' FROM lem_machine_log")
+        # (under an approval: the store refuses a hide without one, D7)
+        from approval_helper import hide
+        hide(gw, "1 = 1", label="import_leftover")
         out = EquipmentHistory(gw).timeline("m1")
         assert [e.uid for e in out] == ["CA-1"]
         assert out[0].caused_by == ""

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import io
 import json
 import logging
@@ -8181,4 +8182,28 @@ def create_app(gateway, labcore_gateway=None,
     app.config["DEV_TOOLS"] = dev_tools_allowed(labcore_raw, dev_tools)
     if app.config["DEV_TOOLS"]:
         _register_dev_tools(app, gateway, snapshots)
+    # §10.5: dedupe dry run, per-bench approval, apply, reinstate. On the
+    # store only — `dedupe` refuses any gateway that is not LEM's store.
+    import dedupe_routes
+
+    def _dedupe_password_ok(user: str, password: str) -> bool:
+        """The approver's password, checked again at the moment of approving
+        (D7). The admin password is the --dev escape hatch, as at sign-in;
+        otherwise LabCore's login answers, and the session it opens is
+        closed straight away — this is a check, not a second sign-in."""
+        if admin_pw and hmac.compare_digest(str(password), str(admin_pw)):
+            return True
+        try:
+            got, token, _err = auth_backend.login(user, password)
+        except Exception:                              # noqa: BLE001
+            return False
+        if token:
+            try:
+                auth_backend.logout(token)
+            except Exception:                          # noqa: BLE001
+                pass
+        return bool(got) and str(got).strip().lower() == user.strip().lower()
+
+    dedupe_routes.register(app, gateway,
+                           verify_password=_dedupe_password_ok)
     return app
