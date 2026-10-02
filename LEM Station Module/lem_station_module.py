@@ -19,6 +19,7 @@ resolve stringized annotations for a module missing from sys.modules.
 """
 import ast
 import csv
+import difflib
 import hashlib
 import io
 import json
@@ -27,6 +28,7 @@ import os
 import re
 import secrets
 import shutil
+import struct
 import threading
 import time
 import unicodedata
@@ -71,7 +73,13 @@ CORRECTION_KEY = "__corrections__"
 # measurement: reserved, so no consumer writes it as a test name, a log value
 # or a CSV column. See "The bench journal".
 JOURNAL_KEY = "__journal__"
-RESERVED_ROW_KEYS = (LAB_ID_KEY, RAW_KEY, CORRECTION_KEY, JOURNAL_KEY) + TIMESTAMP_KEYS
+# Where a row's print came from when that is not simply "read live off the
+# instrument": "ambiguous" marks a line the rewrite resolver recorded although
+# it may repeat one already recorded (transfer v4 §4.2). It rides into the log
+# detail as `origin` so the record shows it; never a measurement.
+ORIGIN_KEY = "__origin__"
+RESERVED_ROW_KEYS = (LAB_ID_KEY, RAW_KEY, CORRECTION_KEY, JOURNAL_KEY,
+                     ORIGIN_KEY) + TIMESTAMP_KEYS
 # "manual" is the bench with no parser: an older instrument that prints to paper
 # or to nothing at all, whose readings the operator types in. It ingests nothing
 # — everything after the row is the same path a parsed print takes.
@@ -2601,8 +2609,7 @@ def _read_tail(path: str, last_position: int) -> tuple:
         identity = file_identity(os.fstat(f.fileno()))
         f.seek(last_position)
         data = f.read()
-        new_position = f.tell()
-    return data, last_position, new_position, identity
+    return data, last_position, last_position + len(data), identity
 
 
 class _Print(str):
@@ -2611,10 +2618,13 @@ class _Print(str):
     A str in every other respect, so everything downstream of the ingest —
     the parser, the template capture, the recent-prints list — treats it
     exactly as before. `pk` is what the journal's store check compares; `src`
-    and `lh` say what a file line's key was made of (transfer v4 §4.1)."""
+    and `lh` say what a file line's key was made of (transfer v4 §4.1);
+    `origin` is "ambiguous" for a line the rewrite resolver recorded although
+    it may repeat one (§4.2)."""
     pk = None
     src = None
     lh = None
+    origin = "live"
 
 
 def _keyed(text: str, pk: Optional[str], src: Optional[str] = None,
@@ -2683,6 +2693,995 @@ def tail_new_lines(path: str, last_position: int) -> tuple:
             if piece.strip():
                 out.append((last_position + m.start(), part, piece, line_hash))
     return out, new_position, identity
+
+
+# ── Source readers: the cursor, quiescence and the rewrite resolver ─────────
+#
+# Transfer v4 §4. A tailed file usually only grows, and then a byte offset is
+# all a bench needs. Instruments also rewrite the whole file, trim its head,
+# correct a line in place, keep it newest-first, or rotate it away and start a
+# new one. v3.9 met every one of those with "the offset is past the end, start
+# again from 0" and re-logged whole files; its offset lived in LabCore and was
+# saved only when somebody pressed OK in Settings, so every clean restart
+# replayed the file from wherever that was (Phase 1: K6 30 duplicate rows for
+# one restart, R2 12 lost and 12 doubled, R3 5 doubled, R5 a lost reading plus
+# two stray Lab IDs). The pieces here:
+#
+#   cursor.json     where the bench is up to in each source: offset, a hash of
+#                   the head and of the bytes just before the offset, the
+#                   file's identity, and a lineage that names this run of
+#                   offsets. Saved after the journal's fsync on every poll that
+#                   consumed anything — never before (§3.3 (a) then (b)).
+#   snapshot.bin    the ordered 16-byte hashes of the lines consumed, O.
+#   quiescence      a change the cursor cannot explain is resolved only once
+#                   the file has stopped changing (2 polls, 10 s), so a poll
+#                   in the middle of a whole-file rewrite decides nothing (Q1).
+#   the resolver    an ORDERED diff of O against the file now, N. Not a count
+#                   of identical lines: counting is what lost X1 and X2.
+#
+# `lem_machine_config.last_position` is no longer read. It is still mirrored
+# onto the machine (and so published) for a bench rolled back to v3.9.
+
+CURSOR_NAME = "cursor.json"
+SNAPSHOT_NAME = "snapshot.bin"
+_SNAPSHOT_MAGIC = b"LEMSNAP1\n"
+# The cursor's two windows (§4.1): the head catches a file replaced by another
+# that happens to be longer, the tail catches an edit just before the offset.
+CURSOR_HEAD_BYTES = 4096
+CURSOR_TAIL_BYTES = 256
+# Quiescence: unchanged size, mtime and identity across two polls at least
+# this far apart on the bench's clock. Also the wait before an unterminated
+# last line is taken as complete.
+QUIET_SECONDS = 10.0
+# A file that never goes quiet (an instrument that saves on every poll) would
+# hold its change forever. After this long waiting, the bench reads the part
+# of the file that has held still — byte-identical to what a poll at least
+# QUIET_SECONDS earlier saw — and says on the status line that it is waiting
+# for the rest. A whole-file rewrite takes seconds, not a minute, so inside
+# this cap a poll mid-rewrite (Q1) is still never taken for a trim.
+QUIET_MAX_WAIT = timedelta(seconds=60)
+# How many earlier looks at a still-changing file are kept to compare against.
+HELD_LOOKS = 4
+# Every 15 minutes a bench on the append path hashes the whole file against
+# the snapshot (files up to 32 MB): a same-size edit outside both windows is
+# invisible to the cursor's hashes and would otherwise never be seen (R6deep).
+RESCAN_EVERY = timedelta(minutes=15)
+RESCAN_MAX_BYTES = 32 * 1024 * 1024
+# The ordered diff's wall-clock budget. Measured for the spec at 0.01–0.03 s
+# on 80,000 lines for every ordinary shape; it is quadratic only on periodic
+# content, which is caught before it starts.
+REWRITE_DIFF_BUDGET = 2.0
+# When distinct lines are under this share of what is left after stripping
+# (and there are at least PERIODIC_MIN_LINES), the content is periodic: the
+# diff could align it many ways, and the tail anchor is used instead.
+PERIODIC_DISTINCT_FRACTION = 0.05
+PERIODIC_MIN_LINES = 100
+# A rotation repeating more than this many of the old file's last lines, in
+# order, at the top of the new one is not plausible: that is a trim.
+ROTATION_OVERLAP_MAX = 20
+# Lines left unstripped at the end of a common suffix, so the diff still sees
+# where the old file's newest lines really are (see `_ordered_opcodes`).
+SUFFIX_STRIP_MARGIN = 32
+# How many of O's newest lines the fallback anchors on.
+TAIL_ANCHOR_LINES = 64
+# Timestamps per read when a restarted bench asks LabCore which of the rows it
+# owes already landed — well under SQLite's 999-variable limit on old builds.
+OWED_CHECK_STAMPS = 200
+# multi_csv: a file is moved here before it is read (the move proves the
+# instrument has let go of it) and out to processed/ only after the journal
+# holds it. A kill in between leaves it here, where the next poll finds it.
+INFLIGHT_DIRNAME = ".lem_inflight"
+
+
+def line_digest(body: bytes) -> bytes:
+    """The 16-byte hash of one line's bytes (terminator excluded) — the unit
+    of snapshot.bin, and the same bytes as a run record's `lh` in hex."""
+    return hashlib.sha256(body).digest()[:16]
+
+
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+class Resolution:
+    """What the resolver decided about a changed file.
+
+    `new` are indices into N (the file now, in FILE order) of the lines that
+    are new readings, listed in the order they were printed; `ambiguous` the
+    subset recorded although they may repeat a recorded line; `ambiguity` the
+    journal record that says so, or None."""
+
+    __slots__ = ("kind", "new", "ambiguous", "ambiguity", "newest_first")
+
+    def __init__(self, kind, new, ambiguous=(), ambiguity=None,
+                 newest_first=False):
+        self.kind = kind
+        self.new = list(new)
+        self.ambiguous = set(ambiguous)
+        self.ambiguity = ambiguity
+        self.newest_first = bool(newest_first)
+
+    def __repr__(self):
+        return ("Resolution(%r, new=%r, ambiguous=%r, ambiguity=%r, "
+                "newest_first=%r)" % (self.kind, self.new, sorted(self.ambiguous),
+                                      self.ambiguity, self.newest_first))
+
+
+class _Fallback(Exception):
+    """The ordered diff will not run here: the content is periodic, or the
+    budget ran out. The argument says which."""
+
+
+def _matching_blocks(a, b, deadline):
+    """difflib's matching blocks, computed under a deadline. The recursion of
+    `SequenceMatcher.get_matching_blocks`, unrolled so the clock can be
+    checked between every `find_longest_match` — the stdlib call cannot be
+    interrupted, and an instrument file must never hold a poll hostage."""
+    sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+    queue = [(0, len(a), 0, len(b))]
+    blocks = []
+    while queue:
+        if time.monotonic() > deadline:
+            raise _Fallback("budget")
+        alo, ahi, blo, bhi = queue.pop()
+        i, j, k = sm.find_longest_match(alo, ahi, blo, bhi)
+        if k:
+            blocks.append((i, j, k))
+            if alo < i and blo < j:
+                queue.append((alo, i, blo, j))
+            if i + k < ahi and j + k < bhi:
+                queue.append((i + k, ahi, j + k, bhi))
+    blocks.sort()
+    merged = []
+    for i, j, k in blocks:
+        if merged and merged[-1][0] + merged[-1][2] == i \
+                and merged[-1][1] + merged[-1][2] == j:
+            merged[-1] = (merged[-1][0], merged[-1][1], merged[-1][2] + k)
+        else:
+            merged.append((i, j, k))
+    return merged
+
+
+def _ordered_opcodes(a, b, budget):
+    """`SequenceMatcher(None, a, b, autojunk=False).get_opcodes()`, after
+    stripping the common prefix and suffix, under `budget` seconds.
+
+    The suffix is stripped only beyond a margin of SUFFIX_STRIP_MARGIN lines.
+    Stripped blindly, X1 breaks: [L0, L1, L2, L1] trimmed to [L2, L1] plus a
+    third L1 shares the suffix "L1", and once that is cut away the diff
+    anchors the remaining L1s to each other and calls L2 the new line — the
+    reading that was really printed is lost and an old one doubled. Kept in
+    view, the old [L2, L1] lines up with the start of the new file. A file
+    whose appended lines repeat more than 32 of its last lines in order is
+    the only thing the margin cannot see past, and that is periodic content,
+    which is caught below."""
+    na, nb = len(a), len(b)
+    p = 0
+    top = min(na, nb)
+    while p < top and a[p] == b[p]:
+        p += 1
+    s = 0
+    while s < top - p and a[na - 1 - s] == b[nb - 1 - s]:
+        s += 1
+    s = max(0, s - SUFFIX_STRIP_MARGIN)
+    a_mid, b_mid = a[p:na - s], b[p:nb - s]
+    total = len(a_mid) + len(b_mid)
+    if total >= PERIODIC_MIN_LINES and \
+            len(set(a_mid) | set(b_mid)) < PERIODIC_DISTINCT_FRACTION * total:
+        raise _Fallback("periodic")
+    if budget <= 0:
+        raise _Fallback("budget")
+    blocks = _matching_blocks(a_mid, b_mid, time.monotonic() + budget)
+    ops = []
+    if p:
+        ops.append(("equal", 0, p, 0, p))
+    i = j = 0
+    for bi, bj, k in blocks + [(len(a_mid), len(b_mid), 0)]:
+        tag = ""
+        if i < bi and j < bj:
+            tag = "replace"
+        elif i < bi:
+            tag = "delete"
+        elif j < bj:
+            tag = "insert"
+        if tag:
+            ops.append((tag, p + i, p + bi, p + j, p + bj))
+        if k:
+            ops.append(("equal", p + bi, p + bi + k, p + bj, p + bj + k))
+        i, j = bi + k, bj + k
+    if s:
+        ops.append(("equal", na - s, na, nb - s, nb))
+    # adjacent equals (prefix + first block) read as one
+    out = []
+    for op in ops:
+        if out and out[-1][0] == op[0] == "equal" and out[-1][2] == op[1] \
+                and out[-1][4] == op[3]:
+            out[-1] = ("equal", out[-1][1], op[2], out[-1][3], op[4])
+        else:
+            out.append(op)
+    return out
+
+
+def _head_tail_overlap(O, N, deadline=None):
+    """The largest k < len(O) with N[:k] == O[-k:] (0 if none): how many of
+    the old file's last lines the new file starts with.
+
+    One KMP pass (N's opening lines as the pattern, O's tail as the text), so
+    it is linear however often N's first line recurs in O. The first version
+    sliced O at every copy of N[0] and compared; with a QC line every third
+    line of 80,000 that took 6.7 s. `deadline` is accepted and not needed."""
+    L = min(len(N), len(O) - 1)
+    if L <= 0:
+        return 0
+    P = N[:L]
+    fail = [0] * L
+    q = 0
+    for i in range(1, L):
+        while q and P[i] != P[q]:
+            q = fail[q - 1]
+        if P[i] == P[q]:
+            q += 1
+        fail[i] = q
+    q = 0
+    for x in O[len(O) - L:]:
+        while q and x != P[q]:
+            q = fail[q - 1]
+        if x == P[q]:
+            q += 1
+            if q == L:
+                break           # only at the very end: len(text) == L
+    return q
+
+
+def _tail_anchored(Oc, Nc, why):
+    """The fallback: find where O's newest lines sit in N, and call what
+    follows them new. Distinct content anchors in exactly one place and the
+    answer is exact. Periodic content can anchor in several: the LARGER set of
+    candidates is recorded and the lines only it contains are labelled
+    ambiguous — record, never drop (§4.2)."""
+    nN = len(Nc)
+    m = min(len(Oc), TAIL_ANCHOR_LINES, nN)
+    cands = []
+    while m >= 1 and not cands:
+        anchor = Oc[-m:]
+        first = anchor[0]
+        cands = [q for q in range(m, nN + 1)
+                 if Nc[q - m] == first and Nc[q - m:q] == anchor]
+        if not cands:
+            m //= 2
+    if not cands:
+        # O's newest line is nowhere in N: a new file, all of it new. The lines
+        # that also appear in O may be repeats.
+        olds = set(Oc)
+        amb = [j for j in range(nN) if Nc[j] in olds]
+        return list(range(nN)), amb, {"kind": "periodic", "why": why,
+                                       "lines": len(amb), "candidates": 0,
+                                       "chosen": "recorded"}
+    lo, hi = cands[0], cands[-1]
+    return (list(range(lo, nN)), list(range(lo, hi)),
+            {"kind": "periodic", "why": why, "lines": hi - lo,
+             "candidates": len(cands), "chosen": "recorded"})
+
+
+def resolve_rewrite(O, N, rotated: bool = False, newest_first: bool = False,
+                    budget: float = REWRITE_DIFF_BUDGET,
+                    predecessor: bool = False) -> Resolution:
+    """Which lines of N (the file now) are new, given O (the lines consumed),
+    both in file order. `rotated`: the file under the name is a different file
+    from the one O was read from. `newest_first`: this source keeps its newest
+    line at the top. Transfer v4 §4.2, shape by shape:
+
+      continuation  O's newest line is still matched (whole-file rewrite, head
+                    trim, an edit somewhere): the inserted and replacing lines
+                    of the diff are new. Or N opens with O's last k lines
+                    (a head trim the diff aligned elsewhere): N after them.
+      correction    O's head kept and O's newest lines replaced by as many or
+                    more (R6, or a correction plus a print): the replacing
+                    lines are new; the originals stay in the record.
+      rotation      anything else that lost O's newest line: a new file, or
+                    the old one cut back and started again. All of N is new,
+                    the lines that match O labelled.
+      (shift)       where a head-trim reading and the diff's reading of the
+                    same bytes disagree, both are recorded and the lines only
+                    one calls new are labelled (§4.2 "periodic": the diff
+                    could shift) — at most ROTATION_OVERLAP_MAX of them; a
+                    plain append (N = all of O + more) is never widened.
+      rotation_overlap  a different file that starts with up to 20 of O's
+                    last lines in order (X3): a rotation repeating them, or a
+                    trim done as write-temp-then-rename. All of N recorded,
+                    the overlap labelled.
+      newest_first  N is O with lines added at the TOP (R2): marked, and from
+                    then on both are reversed before the diff.
+
+    A ROTATED file (`rotated`: a different file identity under the name) is
+    not read by the diff's end at all unless more than ROTATION_OVERLAP_MAX of
+    O's lines reappear in it in order. A different file holding a handful of
+    O's lines is a new file whose instrument printed them again — the same QC
+    triplet every morning — or, by the very same bytes, a short file saved
+    through a temp file. Either way all of N is recorded and the lines that
+    match O are labelled. Read by the diff's end instead (round 1), a new
+    day's "QC triplet, then a sample" ended in a `replace`, was taken for a
+    correction, and the triplet was lost without a trace. More than twenty
+    lines in order is a rewrite of the same content (temp-then-rename of a
+    large export), and the shapes above apply.
+
+    `predecessor`: the bench found the old file still in the folder under
+    another name. A temp-file rewrite leaves no old file behind, so this
+    settles the one shape the bytes cannot: a new file that starts with ALL
+    of a short old file is then a rotation (labelled overlap), not a copy
+    plus more; and it is never taken for a newest-first prepend.
+    """
+    nO, nN = len(O), len(N)
+    deadline = time.monotonic() + max(budget, 0.0)
+    if newest_first:
+        Oc, Nc = list(reversed(O)), list(reversed(N))
+
+        def fidx(i):
+            return nN - 1 - i
+    else:
+        Oc, Nc = O, N
+
+        def fidx(i):
+            return i
+
+    def out(kind, new, amb=(), ambiguity=None):
+        return Resolution(kind, [fidx(i) for i in new], [fidx(i) for i in amb],
+                          ambiguity, newest_first)
+
+    if not nO:
+        return out("fresh", range(nN))
+    copy = Nc[:nO] == list(Oc)
+    if rotated:
+        if copy:
+            # N starts with ALL of O: a temp-file copy plus more, unless the
+            # old file is still in the folder (then a rotation that repeats it)
+            k = nO if predecessor else 0
+        else:
+            k = _head_tail_overlap(Oc, Nc, deadline)
+        if 1 <= k <= ROTATION_OVERLAP_MAX:
+            return out("rotation_overlap", range(nN), range(k),
+                       {"kind": "rotation_overlap", "lines": k,
+                        "chosen": "recorded"})
+    if not newest_first and not (rotated and predecessor) and nN > nO \
+            and N[nN - nO:] == list(O) and N[:nO] != list(O):
+        j = nN - nO
+        return Resolution("newest_first", range(j - 1, -1, -1), (), None, True)
+    if not copy:
+        k = _head_tail_overlap(Oc, Nc)
+        if k > ROTATION_OVERLAP_MAX:
+            # N opens with more than twenty of O's last lines in order: a head
+            # trim (R3), and only what follows is new. Said before the diff,
+            # because difflib's longest match over a long file full of repeated
+            # QC lines can take seconds in a single uninterruptible call.
+            return out("continuation", range(k, nN))
+    try:
+        ops = _ordered_opcodes(list(Oc), list(Nc), budget)
+    except _Fallback as why:
+        new, amb, ambiguity = _tail_anchored(list(Oc), list(Nc), str(why))
+        return out("fallback", new, amb, ambiguity)
+    added = [j for tag, _i1, _i2, j1, j2 in ops if tag in ("insert", "replace")
+             for j in range(j1, j2)]
+    if rotated and not copy:
+        matched = [j for tag, _i1, _i2, j1, j2 in ops if tag == "equal"
+                   for j in range(j1, j2)]
+        if len(matched) <= ROTATION_OVERLAP_MAX:
+            # A different file with a few of O's lines in it: all of it new.
+            return out("rotation", range(nN), matched,
+                       {"kind": "rotation_overlap", "lines": len(matched),
+                        "where": "within", "file": "new",
+                        "chosen": "recorded"} if matched else None)
+    trim = []
+
+    def shifted(kind, new):
+        """The diff's answer, widened by the head-trim reading when N opens
+        with O's last lines and that reading has new lines the diff does not
+        (§4.2's "the diff could shift" case): [QC3, QC3] trimmed to [QC3]
+        plus S, QC2, QC3 is, by the same bytes, two lines inserted between
+        the old QC3s. Both readings are recorded; the lines only the trim
+        calls new are labelled — unless there are more of them than any
+        plausible print burst (then the trim reading is not taken)."""
+        if copy:
+            # N is all of O plus more: a plain append by its bytes, the one
+            # reading R7p's gate row fixes.
+            return out(kind, new)
+        if not trim:
+            trim.append(_head_tail_overlap(Oc, Nc, deadline))
+        k = trim[0]
+        have = set(new)
+        extra = [j for j in range(k, nN) if j not in have] if k else []
+        if not extra or len(extra) > ROTATION_OVERLAP_MAX:
+            return out(kind, new)
+        return out(kind, sorted(have | set(range(k, nN))), extra,
+                   {"kind": "periodic", "why": "shift", "lines": len(extra),
+                    "candidates": 2, "chosen": "recorded"})
+
+    end = next(op for op in ops if op[1] <= nO - 1 < op[2])
+    if end[0] == "equal":
+        return shifted("continuation", added)
+    # O's newest line is not where it was. A CORRECTION (R6) keeps O's head
+    # and replaces its last lines with as many or more (a corrected line, or
+    # one plus a new print). Anything else that lost O's newest line removed
+    # more of O than it put back, and difflib's longest-match alignment is no
+    # guide to it: it pairs a repeated QC line with any older copy it likes,
+    # and reading that as a correction drops the new copy.
+    head_kept = ops[0][0] == "equal" and ops[0][1] == 0 and ops[0][3] == 0
+    removed = sum(i2 - i1 for tag, i1, i2, _j1, _j2 in ops if tag != "equal")
+    if head_kept and end[0] == "replace" and removed <= len(added):
+        return shifted("correction", added)
+    matched = [j for tag, _i1, _i2, j1, j2 in ops if tag == "equal"
+               for j in range(j1, j2)]
+    k = _head_tail_overlap(Oc, Nc, deadline)
+    if k:
+        # N opens with O's last k lines: a head trim (R3, X1) — everything
+        # after the overlap is new. Lines after it that the diff found in O
+        # are where the two readings disagree: recorded, and labelled.
+        amb = [j for j in matched if j >= k]
+        return out("continuation", range(k, nN), amb,
+                   {"kind": "periodic", "why": "shift", "lines": len(amb),
+                    "candidates": 2, "chosen": "recorded"} if amb else None)
+    # Cut back and started again (or, rotated, a new file): every line of N
+    # is recorded, and the ones that match O are labelled.
+    return out("rotation", range(nN), matched,
+               {"kind": "rotation_overlap", "lines": len(matched),
+                "file": "new" if rotated else "same",
+                "chosen": "recorded"} if matched else None)
+
+
+def resolve_by_count(O, N, rotated: bool = False, newest_first: bool = False,
+                     budget: float = REWRITE_DIFF_BUDGET,
+                     predecessor: bool = False) -> Resolution:
+    """The rule the ordered diff replaced, kept as a reference: a line of N is
+    new when N holds more copies of it than O did. Right for distinct lines;
+    wrong whenever the instrument prints a line that repeats one still in the
+    file — X1 loses its third L1, X2 all three repeated QC lines. Not called
+    by the module. The gate's mutation self-test swaps it in for
+    `resolve_rewrite` and must go red; test_rewrite_resolver.py shows the
+    loss in one line."""
+    left = {}
+    for h in O:
+        left[h] = left.get(h, 0) + 1
+    new = []
+    for j, h in enumerate(N):
+        if left.get(h, 0) > 0:
+            left[h] -= 1
+        else:
+            new.append(j)
+    return Resolution("count", new, (), None, newest_first)
+
+
+def file_lineage(path: str, identity: str) -> str:
+    """The lineage of a file first seen at `path` with `identity`: the name of
+    the run of byte offsets its line keys are made of. Deterministic, so a
+    bench that lost its cursor computes the same keys again and the journal
+    recognises them."""
+    return hashlib.sha256(("lineage\0%s\0%s" % (os.path.normcase(
+        os.path.abspath(path)), identity)).encode("utf-8")).hexdigest()[:24]
+
+
+def next_lineage(lineage: str, data: bytes) -> str:
+    """The lineage after a rewrite was resolved: a function of the old lineage
+    and the new bytes, so a bench killed after journaling the resolution and
+    before saving its cursor resolves the same file to the same keys."""
+    return hashlib.sha256(("%s\0" % lineage).encode("utf-8")
+                          + hashlib.sha256(data).digest()).hexdigest()[:24]
+
+
+def multi_file_key(uid: str, name: str, size: int, mtime_ns: int,
+                   sha256_hex: str) -> str:
+    """multi_csv's replay key (§4.3): the file's name, size, modification time
+    and content. A re-read before the move is the same key; identical bytes
+    exported again under the same name have a new mtime and are a new
+    reading."""
+    return hashlib.sha256(("multi\0%s\0%s\0%d\0%d\0%s" % (
+        uid, name, int(size), int(mtime_ns), sha256_hex)).encode(
+        "utf-8")).hexdigest()[:32]
+
+
+def _split_chunks(data: bytes, final_complete: bool) -> tuple:
+    """([(start, end, body)], partial_start): the complete lines of `data`,
+    and where an unfinished last line starts (None if there is none). A line
+    ends at \\n, \\r\\n or \\r — but a \\r at the very end may be the first
+    half of \\r\\n, so it is not an end yet. `final_complete` takes the last
+    line whole however it ends (the file is quiet)."""
+    out = []
+    partial = None
+    n = len(data)
+    for m in _BYTE_LINE.finditer(data):
+        chunk = m.group()
+        if not chunk:
+            continue
+        start, end = m.start(), m.end()
+        terminated = chunk.endswith(b"\n") or (chunk.endswith(b"\r") and end < n)
+        if not terminated and not final_complete:
+            partial = start
+            break
+        out.append((start, end, chunk.rstrip(b"\r\n")))
+    return out, partial
+
+
+def _decode_block(data: bytes) -> str:
+    try:
+        data.decode("utf-8")
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "cp1252"
+
+
+def _prints_from(data: bytes, chunks, base: int, lineage: str, src_label: str,
+                 origin_of=None) -> list:
+    """Keyed prints for `chunks` of `data` (file offsets = base + start)."""
+    encoding = _decode_block(data)
+    out = []
+    for idx, (start, end, body) in enumerate(chunks):
+        lh = line_digest(body).hex()
+        text = data[start:end].decode(encoding, errors="replace")
+        origin = origin_of(idx) if origin_of else "live"
+        for part, piece in enumerate(text.splitlines()):
+            if piece.strip():
+                p = _keyed(piece, file_line_key(lineage, base + start, part, lh),
+                           src=src_label, lh=lh)
+                p.origin = origin
+                out.append(p)
+    return out
+
+
+class CursorStore:
+    """cursor.json and snapshot.bin in one bench's journal folder.
+
+    Written in the order snapshot.bin, then cursor.json, each by atomic
+    replace. cursor.json names the snapshot it goes with (count and sha256),
+    so a kill between the two leaves a cursor that knows its snapshot is not
+    the one on disk — and the source rebuilds O from the file itself, which
+    is what O was read from."""
+
+    def __init__(self, directory: str) -> None:
+        self.dir = directory
+
+    def _path(self, name: str) -> str:
+        return os.path.join(self.dir, name)
+
+    def load(self) -> tuple:
+        """({key: cursor}, {key: [hashes] | None}, [notice]). A missing
+        cursor.json is "this bench has no cursor yet"; an unreadable one is
+        set aside and SAID, never taken for an empty one."""
+        notices: List[str] = []
+        path = self._path(CURSOR_NAME)
+        try:
+            with open(path, "rb") as f:
+                raw = f.read()
+        except FileNotFoundError:
+            return {}, {}, notices
+        except OSError as exc:
+            raise JournalError(f"cannot read {path}: {exc}") from exc
+        try:
+            doc = json.loads(raw.decode("utf-8"))
+            sources = doc["sources"]
+            if not isinstance(sources, dict):
+                raise ValueError("no sources in it")
+        except (UnicodeDecodeError, ValueError, KeyError, TypeError) as exc:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            aside = path + ".bad-" + stamp
+            try:
+                os.replace(path, aside)
+            except OSError:
+                aside = path
+            notices.append(
+                f"This bench's source cursor ({CURSOR_NAME}) could not be read "
+                f"({exc}); it was kept as {os.path.basename(aside)} and the "
+                "file is being read again from the top — lines the journal "
+                "already holds are recognised and not recorded twice.")
+            return {}, {}, notices
+        return sources, self._load_snapshots(sources), notices
+
+    def _load_snapshots(self, sources: dict) -> dict:
+        snaps: Dict[str, Optional[list]] = {k: None for k in sources}
+        try:
+            with open(self._path(SNAPSHOT_NAME), "rb") as f:
+                data = f.read()
+        except OSError:
+            return snaps
+        if not data.startswith(_SNAPSHOT_MAGIC):
+            return snaps
+        pos = len(_SNAPSHOT_MAGIC)
+        try:
+            while pos < len(data):
+                (klen,) = struct.unpack_from("<I", data, pos)
+                pos += 4
+                key = data[pos:pos + klen].decode("utf-8")
+                pos += klen
+                (n,) = struct.unpack_from("<I", data, pos)
+                pos += 4
+                body = data[pos:pos + 16 * n]
+                pos += 16 * n
+                if len(body) != 16 * n:
+                    break
+                want = (sources.get(key) or {}).get("snapshot") or {}
+                if want.get("n") == n and want.get("sha") == _sha(body):
+                    snaps[key] = [body[i:i + 16] for i in range(0, len(body), 16)]
+        except (struct.error, UnicodeDecodeError):
+            pass
+        return snaps
+
+    def save(self, cursors: dict, snapshots: dict, fsync=None) -> None:
+        parts = [_SNAPSHOT_MAGIC]
+        doc = {"version": 1, "sources": {}}
+        for key, cur in cursors.items():
+            body = b"".join(snapshots.get(key) or ())
+            kb = key.encode("utf-8")
+            parts += [struct.pack("<I", len(kb)), kb,
+                      struct.pack("<I", len(body) // 16), body]
+            entry = dict(cur)
+            entry["snapshot"] = {"n": len(body) // 16, "sha": _sha(body)}
+            doc["sources"][key] = entry
+        os.makedirs(self.dir, exist_ok=True)
+        atomic_write(self._path(SNAPSHOT_NAME), b"".join(parts), fsync=fsync)
+        atomic_write(self._path(CURSOR_NAME), canonical_body(doc), fsync=fsync)
+
+
+class _SourceRead:
+    """One poll's read of a source, not yet consumed. `commit` makes it
+    consumed — the cursor saved, or the files moved — and runs only after the
+    journal holds what was read (§3.3 (b) after (a))."""
+
+    def __init__(self, prints, records=(), commit=None, offset=None):
+        self.prints = prints
+        self.records = list(records)
+        self._commit = commit
+        self.offset = offset
+
+    def commit(self) -> List[str]:
+        return self._commit() if self._commit else []
+
+
+class SingleCsvSource:
+    """One tailed file of one bench: its cursor, its snapshot, and what the
+    file looked like at the last poll (for the quiet rule). Not thread-safe
+    by itself; the module calls it from one poll at a time."""
+
+    def __init__(self, path: str, store: Optional[CursorStore]) -> None:
+        self.path = path
+        self.key = "single_csv:" + os.path.normcase(os.path.abspath(path))
+        self.store = store
+        self.cursor: Optional[dict] = None
+        self.O: Optional[list] = []
+        self.full_checked: Optional[datetime] = None
+        self.obs: Optional[tuple] = None
+        self.notices: List[str] = []
+        self.loaded = False
+        # A change waiting for the file to go quiet: since when, and earlier
+        # looks at the file (time, size, sha256) to find the part that held
+        # still. `waiting` is the standing status-line sentence.
+        self.pending_since: Optional[datetime] = None
+        self.looks: list = []
+        self.waiting = ""
+
+    def status_note(self) -> str:
+        """A sentence that stays on the status line while this source holds
+        a change it has not finished reading, or ""."""
+        return self.waiting
+
+    def _wait_note(self, text: str) -> None:
+        """Set the standing sentence; the first time in a stretch of waiting
+        it is also said once, as a notice."""
+        if not self.waiting:
+            self.notices.append(text)
+        self.waiting = text
+
+    def _settled(self) -> None:
+        self.pending_since = None
+        self.looks = []
+
+    # ── state ────────────────────────────────────────────────────────────────
+
+    def load(self) -> None:
+        """Read the saved cursor once. A load that RAISES leaves the source
+        unloaded, so the next poll asks again: a cursor the OS would not hand
+        over this time is not a bench with no cursor."""
+        if self.loaded:
+            return
+        if self.store is None:
+            self.loaded = True
+            return
+        sources, snaps, notices = self.store.load()
+        self.loaded = True
+        self.notices.extend(notices)
+        cur = sources.get(self.key)
+        if isinstance(cur, dict) and isinstance(cur.get("offset"), int):
+            self.cursor = cur
+            self.O = snaps.get(self.key)          # None: rebuild from the file
+            self.full_checked = None             # validate against the file soon
+
+    def _save(self, cursor: dict, O: list) -> List[str]:
+        self.cursor, self.O = cursor, O
+        if self.store is None:
+            return []
+        try:
+            self.store.save({self.key: cursor}, {self.key: O})
+        except OSError as exc:
+            return [f"The source cursor could not be saved ({exc}); a restart "
+                    "will read from the last saved point, and the journal will "
+                    "recognise what it already holds."]
+        return []
+
+    # ── the quiet rule ───────────────────────────────────────────────────────
+
+    def _observe(self, state: tuple, now: datetime) -> bool:
+        """Record what the file looks like now; True when it has looked
+        exactly like this for QUIET_SECONDS of the bench's clock (which takes
+        at least two polls)."""
+        if self.obs is not None and self.obs[0] == state:
+            return (now - self.obs[1]).total_seconds() >= QUIET_SECONDS
+        self.obs = (state, now)
+        return False
+
+    # ── reading ──────────────────────────────────────────────────────────────
+
+    def read(self, now: datetime) -> _SourceRead:
+        """What is new in the file. Raises OSError when it cannot be read —
+        a file that cannot be read is an error, never "nothing new"."""
+        self.load()
+        with open(self.path, "rb") as f:
+            st = os.fstat(f.fileno())
+            fid = file_identity(st)
+            state = (st.st_size, st.st_mtime_ns, fid)
+            quiet = self._observe(state, now)
+            cur = self.cursor
+            if cur is None:
+                return self._append(f, st.st_size, quiet, now,
+                                    {"offset": 0, "file_id": fid,
+                                     "lineage": file_lineage(self.path, fid),
+                                     "newest_first": False}, fresh=True)
+            offset = int(cur["offset"])
+            if cur.get("file_id") == fid and st.st_size >= offset \
+                    and not cur.get("unsettled") \
+                    and self._windows_match(f, cur, offset):
+                if self.O is None:
+                    self.O = self._hashes(f, offset)
+                if self._rescan_due(now) and st.st_size <= RESCAN_MAX_BYTES:
+                    if self._hashes(f, offset) == self.O:
+                        self.full_checked = now
+                        self._settled()
+                        self.waiting = ""
+                        return self._append(f, st.st_size, quiet, now, cur)
+                    return self._rewrite(f, st, fid, quiet, now, rescanned=True)
+                self._settled()
+                self.waiting = ""
+                return self._append(f, st.st_size, quiet, now, cur)
+            return self._rewrite(f, st, fid, quiet, now)
+
+    def _rescan_due(self, now: datetime) -> bool:
+        return self.full_checked is None or now - self.full_checked >= RESCAN_EVERY
+
+    @staticmethod
+    def _window_hashes(f, offset: int) -> tuple:
+        f.seek(0)
+        head = f.read(min(offset, CURSOR_HEAD_BYTES))
+        start = max(0, offset - CURSOR_TAIL_BYTES)
+        f.seek(start)
+        tail = f.read(offset - start)
+        return _sha(head), _sha(tail)
+
+    def _windows_match(self, f, cur: dict, offset: int) -> bool:
+        return self._window_hashes(f, offset) == (cur.get("head_hash"),
+                                                  cur.get("tail_hash"))
+
+    @staticmethod
+    def _hashes(f, end: int) -> list:
+        f.seek(0)
+        data = f.read(end)
+        chunks, _ = _split_chunks(data, final_complete=True)
+        return [line_digest(body) for _s, _e, body in chunks]
+
+    def _cursor_at(self, f, offset: int, fid: str, lineage: str,
+                   newest_first: bool, unsettled: bool = False) -> dict:
+        head, tail = self._window_hashes(f, offset)
+        cur = {"offset": offset, "head_hash": head, "tail_hash": tail,
+               "file_id": fid, "lineage": lineage,
+               "newest_first": bool(newest_first)}
+        if unsettled:
+            # Only the bottom of a newest-first file was read: its top is
+            # still unread, so the next poll diffs again instead of tailing.
+            cur["unsettled"] = True
+        return cur
+
+    def _append(self, f, size: int, quiet: bool, now: datetime, cur: dict,
+                fresh: bool = False) -> _SourceRead:
+        """The append path: whole lines after the offset. A last line with no
+        end waits until the file has been quiet, then is taken whole."""
+        last_position = int(cur["offset"])
+        f.seek(last_position)
+        data = f.read(size - last_position)
+        chunks, _partial = _split_chunks(data, final_complete=quiet)
+        if not chunks:
+            return _SourceRead([])
+        # The end of the last whole line read: where the next poll starts.
+        new_position = last_position + chunks[-1][1]
+        prints = _prints_from(data, chunks, last_position, cur["lineage"],
+                              "file:" + self.key)
+        end = new_position
+        cursor = self._cursor_at(f, end, cur["file_id"], cur["lineage"],
+                                 cur.get("newest_first"))
+        O = list(self.O or []) + [line_digest(b) for _s, _e, b in chunks]
+        checked = now if fresh else self.full_checked
+
+        def commit():
+            self.full_checked = checked
+            return self._save(cursor, O)
+        return _SourceRead(prints, commit=commit, offset=end)
+
+    def _rewrite(self, f, st, fid: str, quiet: bool, now: datetime,
+                 rescanned: bool = False) -> _SourceRead:
+        """The rewrite path (§4.1 2): once the file is quiet — or, when it has
+        not gone quiet within QUIET_MAX_WAIT, on the part of it that has held
+        still — the renamed predecessor is drained if the file was rotated,
+        and the resolver decides what of the file is new."""
+        cur = self.cursor
+        f.seek(0)
+        whole = f.read(st.st_size)
+        base, region = 0, None
+        if quiet:
+            data = whole
+        else:
+            region = self._held_region(whole, now, bool(cur.get("newest_first")))
+            if region is None:
+                return _SourceRead([])
+            base, size = region
+            data = whole[base:base + size]
+        # Not quiet: only lines the writer has ended are whole.
+        chunks, _ = _split_chunks(data, final_complete=quiet)
+        if region is not None and not chunks:
+            return _SourceRead([])     # nothing whole has held still yet
+        rotated = cur.get("file_id") != fid
+        prints: list = []
+        O = None if self.O is None else list(self.O)
+        records = []
+        found = False
+        if rotated:
+            drained, O, found = self._drain_sibling(cur, O)
+            prints += drained
+        N = [line_digest(body) for _s, _e, body in chunks]
+        if O is None:
+            # The snapshot is gone and the file is not the one the cursor
+            # describes: there is nothing to diff against. Record everything,
+            # labelled; the journal's keys still drop what it already holds.
+            res = Resolution("no_snapshot", range(len(N)), range(len(N)),
+                             {"kind": "no_snapshot", "lines": len(N),
+                              "chosen": "recorded"}, cur.get("newest_first"))
+        else:
+            resolution = resolve_rewrite(O, N, rotated=rotated,
+                                         newest_first=bool(cur.get("newest_first")),
+                                         predecessor=found)
+            res = resolution
+        used = data[:chunks[-1][1]] if chunks else b""
+        lineage = next_lineage(cur["lineage"], used)
+        new = [chunks[i] for i in res.new]
+        amb = {k for k, i in enumerate(res.new) if i in res.ambiguous}
+        fresh = _prints_from(data, new, base, lineage, "file:" + self.key,
+                             origin_of=lambda k: "ambiguous" if k in amb else "live")
+        prints += fresh
+        if res.ambiguity:
+            rec = {"kind": "ambiguity", "src": "file:" + self.key,
+                   "ambiguity": res.ambiguity["kind"],
+                   "lines": res.ambiguity.get("lines", 0),
+                   "chosen": res.ambiguity.get("chosen", "recorded"),
+                   "detail": res.ambiguity, "resolution": res.kind,
+                   "pks": [p.pk for p in fresh if p.origin == "ambiguous"]}
+            records.append(rec)
+        if region is not None and base:
+            # The bottom of a newest-first file: everything is "read" as far
+            # as the offset goes, but the top is not — next poll diffs again.
+            end = len(whole)
+            cursor = self._cursor_at(f, end, fid, lineage, res.newest_first,
+                                     unsettled=True)
+        else:
+            end = len(used)
+            cursor = self._cursor_at(f, end, fid, lineage, res.newest_first)
+        if region is not None:
+            waited = int((now - self.pending_since).total_seconds()) \
+                if self.pending_since else 0
+            self._wait_note(
+                f"The instrument's file {os.path.basename(self.path)} has not "
+                f"stopped changing for {waited} s; the bench read the "
+                f"{len(chunks)} lines that have held still and will read the "
+                "rest as it settles. Nothing is lost by waiting.")
+        else:
+            self.waiting = ""
+        if rescanned:
+            self.notices.append(
+                "The instrument's file changed somewhere the bench had already "
+                "read (found by the 15-minute check); the changed lines were "
+                "recorded as new readings.")
+
+        def commit():
+            self.full_checked = now
+            self._settled()
+            return self._save(cursor, N)
+        return _SourceRead(prints, records=records, commit=commit,
+                           offset=end)
+
+    def _held_region(self, data: bytes, now: datetime,
+                     newest_first: bool) -> Optional[tuple]:
+        """(start, size) of the part of a still-changing file that has held
+        still, once the change has waited QUIET_MAX_WAIT; None to keep
+        waiting. "Held still" is the quiet rule applied to a region: the
+        bytes are identical to an earlier look at the whole file taken at
+        least QUIET_SECONDS ago — at the top of the file, or for a newest-
+        first file (which grows at the top) at the bottom."""
+        if self.pending_since is None:
+            self.pending_since = now
+        n = len(data)
+        valid = []
+        if n <= RESCAN_MAX_BYTES:
+            for t, size, sha in self.looks:
+                if size > n:
+                    continue
+                if _sha(data[:size]) == sha:
+                    valid.append((t, 0, size, sha))
+                elif newest_first and _sha(data[n - size:]) == sha:
+                    valid.append((t, n - size, size, sha))
+            here = _sha(data)
+            if not valid or valid[-1][3] != here or valid[-1][2] != n:
+                valid.append((now, 0, n, here))
+            self.looks = [(t, size, sha) for t, _b, size, sha in valid][-HELD_LOOKS:]
+        waited = now - self.pending_since
+        if waited < QUIET_MAX_WAIT:
+            return None
+        cands = [(size, start) for t, start, size, _sha_ in valid
+                 if size and (now - t).total_seconds() >= QUIET_SECONDS]
+        if not cands:
+            self._wait_note(
+                f"The instrument's file {os.path.basename(self.path)} has not "
+                f"stopped changing for {int(waited.total_seconds())} s and "
+                + ("no part of it has held still" if n <= RESCAN_MAX_BYTES else
+                   "it is too large to compare while it changes")
+                + "; the bench reads it as soon as it settles. Nothing is "
+                "lost by waiting.")
+            return None
+        size, start = max(cands)
+        return start, size
+
+    def _drain_sibling(self, cur: dict, O: Optional[list]) -> tuple:
+        """X4: lines appended to the old file after the last poll and before it
+        was renamed away. Find it in the same folder by its identity and read
+        it on from the cursor, under the old lineage — exactly the keys the
+        append path would have given those lines."""
+        folder = os.path.dirname(os.path.abspath(self.path)) or "."
+        want = cur.get("file_id")
+        me = os.path.normcase(os.path.abspath(self.path))
+        try:
+            entries = list(os.scandir(folder))
+        except OSError as exc:
+            self.notices.append(f"Could not look for the renamed old file in "
+                                f"{folder} ({exc}).")
+            return [], O, False
+        for entry in entries:
+            try:
+                if os.path.normcase(os.path.abspath(entry.path)) == me \
+                        or not entry.is_file():
+                    continue
+                with open(entry.path, "rb") as g:
+                    if file_identity(os.fstat(g.fileno())) != want:
+                        continue
+                    offset = int(cur["offset"])
+                    size = os.fstat(g.fileno()).st_size
+                    if size < offset or not self._windows_match(g, cur, offset):
+                        self.notices.append(
+                            f"The instrument's old file ({entry.name}) was "
+                            "changed as well as renamed; only the new file "
+                            "was read.")
+                        return [], O, True
+                    if O is None:
+                        O = self._hashes(g, offset)
+                    g.seek(offset)
+                    data = g.read(size - offset)
+            except OSError:
+                continue
+            chunks, _ = _split_chunks(data, final_complete=True)
+            prints = _prints_from(data, chunks, offset, cur["lineage"],
+                                  "file:" + self.key)
+            return (prints, (O or []) + [line_digest(b) for _s, _e, b in chunks],
+                    True)
+        return [], O, False
 
 
 # ── Status evaluation (ported from LEM V5.0 data_source.evaluate_box) ────────
@@ -2997,6 +3996,12 @@ def run_log_detail(row: dict) -> dict:
     if raw:
         detail["raw"] = raw
         detail["corrections"] = applied
+    # A line the rewrite resolver recorded although it may repeat one already
+    # recorded (transfer v4 §4.2) says so in the record itself: a labelled,
+    # visible possible duplicate, never a silent one and never a silent loss.
+    origin = row.get(ORIGIN_KEY)
+    if origin and origin != "live":
+        detail["origin"] = origin
     return detail
 
 
@@ -5597,6 +6602,11 @@ class LEMStationModule:
         # refuse a new record rather than silently evict an accepted one, and a
         # maxlen deque can only do the second. See LOG_EVENT_LIMIT.
         self._pending_events: deque = deque()
+        # One file reader per (machine, path): its cursor, snapshot and the
+        # quiet rule's last look at the file (see `SingleCsvSource`).
+        self._sources: dict = {}
+        self._source_pending = None
+        self._poll_clock: Optional[datetime] = None
         self._events_dropped = 0         # records there was no room for
         # Whether the last drain got its records into LabCore. Optimistic at
         # construction: nothing has been refused, and the caps that consult it
@@ -6078,7 +7088,14 @@ class LEMStationModule:
         in a background thread)."""
         if self._machine is None:
             return
-        machine, prints, error = self._ingest(self._machine)
+        # The source readers' quiet rule runs on the poll's clock, so a test
+        # (and the gate) that polls every 30 s of simulated time is measured
+        # on that time, not on how fast the machine running it is.
+        self._poll_clock = now
+        try:
+            machine, prints, error = self._ingest(self._machine)
+        finally:
+            self._poll_clock = None
         payload = self._process_outcome(machine, prints, error,
                                         list(self._history), now)
         self._show_outcome(payload)
@@ -6184,6 +7201,20 @@ class LEMStationModule:
             self._journal_disk_checked = now
         return state
 
+    def _source_notes(self, machine) -> str:
+        """What the file reader has to say (an unreadable cursor set aside, a
+        renamed file that was also changed, a change found by the 15-minute
+        check), said once on the status line — and, for as long as it lasts,
+        that a file which will not stop changing is being waited for."""
+        parts = []
+        for source in (getattr(self, "_sources", None) or {}).values():
+            while source.notices:
+                parts.append(source.notices.pop(0))
+            note = getattr(source, "status_note", None)
+            if callable(note) and note() and note() not in parts:
+                parts.append(note())
+        return " ".join(parts)
+
     def _journal_status(self, machine) -> str:
         """One sentence about the journal for the status line, or ""."""
         uid = str(getattr(machine, "uid", "") or "") if machine is not None else ""
@@ -6247,7 +7278,12 @@ class LEMStationModule:
         except JournalError:
             pass
         if entries:
-            self._pending_events.extendleft(reversed(entries))
+            # Not queued yet: some of these rows may have LANDED before the
+            # previous process died — written, then killed before the mark said
+            # so (K2: 100 rows logged twice). `_journal_verify_owed` asks
+            # LabCore which are already there before any is sent again.
+            self._journal_owed = list(entries) + list(
+                getattr(self, "_journal_owed", None) or [])
         if backlog:
             with self._results_lock:
                 self._identity_backlog = backlog + list(self._identity_backlog)
@@ -6286,7 +7322,7 @@ class LEMStationModule:
         return out
 
     def _journal_poll(self, machine, journal, prints, rows, sources, now,
-                      messages) -> bool:
+                      messages, extra_records=()) -> bool:
         """(a): append this poll's readings in ONE fsync'd write, then queue
         their log rows tagged with the record they came from. Returns whether
         they were journaled; False leaves the caller on today's road."""
@@ -6294,7 +7330,8 @@ class LEMStationModule:
                     if src is not None}
         idle = [text.pk for text in prints
                 if getattr(text, "pk", None) and text.pk not in produced]
-        if not rows and not idle:
+        extra = [dict(r) for r in extra_records or ()]
+        if not rows and not idle and not extra:
             return False
         self._fault_point("before_journal")
         operator = self._current_operator()
@@ -6309,11 +7346,14 @@ class LEMStationModule:
         # tail can only ever cut readings — never the note that a header line
         # was read, which would let it come back as one.
         records = [{"kind": "consumed", "pks": idle}] if idle else []
+        records += extra
+        lead = len(records)
         for row, src in zip(rows, sources):
             detail = run_log_detail(row)
             records.append({
                 "kind": "run",
-                "origin": "live" if src is not None else "manual",
+                "origin": (getattr(src, "origin", None) or "live")
+                if src is not None else "manual",
                 "src": getattr(src, "src", None) or machine.source_type,
                 "pk": getattr(src, "pk", None),
                 "lh": getattr(src, "lh", None),
@@ -6337,7 +7377,7 @@ class LEMStationModule:
         if counts is None:
             counts = self._journal_unprojected = {}
         lock = self._journal_lock_or_new()
-        for row, ref in zip(rows, refs[1:] if idle else refs):
+        for row, ref in zip(rows, refs[lead:]):
             row[JOURNAL_KEY] = ref
             args_list = logs.get(id(row), [])
             if args_list:
@@ -6354,6 +7394,101 @@ class LEMStationModule:
                     continue
                 self._pending_events.append(_log_entry(args, ref))
         return True
+
+    def _journal_verify_owed(self, machine, read_sql, messages) -> None:
+        """Re-deliver what a previous process left unprojected — except what
+        already landed.
+
+        A reading is marked PROJECTED only after LabCore accepted its rows, so
+        a process killed between the accept and the mark leaves rows the
+        journal still owes that LabCore already has. Sent again they are
+        duplicates (K2: a kill after the 2nd of 3 log batches cost 100). So
+        before re-queueing, ONE read asks LabCore for this bench's rows at the
+        owed rows' timestamps, and for each exact row (every column) the bench
+        sends only how many more the journal says should exist than LabCore
+        holds. Exact on every column, timestamp included, and counted rather
+        than "exists", so two genuine identical prints in one poll are still
+        two rows. The rows found already there are counted as landed, which
+        marks their readings projected.
+
+        A read that fails is not "none landed": the rows stay owed at the
+        bench, nothing is sent, and the next poll asks again."""
+        owed = list(getattr(self, "_journal_owed", None) or [])
+        if not owed:
+            return
+        journal = self._journal_for(machine) if machine is not None else None
+        stamps = sorted({str(e[1][1]) for e in owed})
+        uid = str(owed[0][1][0])
+
+        def key(args):
+            return tuple("" if v is None else str(v) for v in args[:7])
+        res = None
+        if callable(read_sql) and journal is not None:
+            rows: list = []
+            res = {"rows": rows}
+            step = max(1, int(OWED_CHECK_STAMPS))
+            for at in range(0, len(stamps), step):
+                part = stamps[at:at + step]
+                marks = ",".join("?" for _ in part)
+                try:
+                    got = read_sql(
+                        "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                        "detail FROM lem_machine_log WHERE machine_uid = ? AND ts "
+                        f"IN ({marks})", [uid] + part)
+                except Exception as exc:          # noqa: BLE001 — any failure
+                    got = {"error": str(exc) or exc.__class__.__name__}
+                if not isinstance(got, dict) or got.get("error"):
+                    res = got
+                    break
+                rows.extend(got.get("rows") or [])
+        if not isinstance(res, dict) or res.get("error") or journal is None:
+            why = (res or {}).get("error") if isinstance(res, dict) else "no answer"
+            messages.append(
+                f"{len(owed)} machine-log record(s) a previous run left owed "
+                f"are kept at the bench: LabCore could not be asked which of "
+                f"them already landed ({why or 'no journal'}); asking again "
+                "next poll.")
+            return
+        have: Dict[tuple, int] = {}
+        for r in res.get("rows") or []:
+            k = key([r.get("machine_uid"), r.get("ts"), r.get("kind"),
+                     r.get("lab_id"), r.get("test_name"), r.get("value"),
+                     r.get("detail")])
+            have[k] = have.get(k, 0) + 1
+        want: Dict[tuple, int] = {}
+        stamp_set = set(stamps)
+        try:
+            records = journal._scan()
+        except JournalError as exc:
+            messages.append(f"{len(owed)} owed machine-log record(s) are kept "
+                            f"at the bench: the journal could not be read "
+                            f"({exc}); asking again next poll.")
+            return
+        for rec in records:
+            if rec.get("kind") != "run":
+                continue
+            for args in rec.get("log") or ():
+                if isinstance(args, list) and len(args) >= 7 \
+                        and str(args[1]) in stamp_set:
+                    k = key(args)
+                    want[k] = want.get(k, 0) + 1
+        room = {k: want.get(k, 0) - have.get(k, 0) for k in want}
+        send, landed = [], []
+        for entry in owed:
+            k = key(entry[1])
+            if room.get(k, 1) > 0:
+                room[k] = room.get(k, 1) - 1
+                send.append(entry)
+            else:
+                landed.append(entry)
+        self._journal_owed = []
+        if send:
+            self._pending_events.extendleft(reversed(send))
+        if landed:
+            self._journal_landed(landed)
+            messages.append(f"{len(landed)} machine-log record(s) a previous "
+                            "run left owed were already in LabCore and were "
+                            "not sent again.")
 
     def _journal_landed(self, batch) -> None:
         """The drain got `batch` into lem_machine_log: a reading all of whose
@@ -6433,7 +7568,13 @@ class LEMStationModule:
     # ── Ingestion (thread-safe half: no widget access) ────────────────────
 
     def _ingest(self, machine: Machine):
-        """Collect new device prints. Returns (machine, prints, error)."""
+        """Collect new device prints. Returns (machine, prints, error).
+
+        A file source's read is not CONSUMED here: the cursor is saved, or the
+        files moved to processed/, only by `_commit_source` once the journal
+        holds what was read (§3.3 (a) then (b)). A read nobody committed —
+        the poll died, or raised — is simply read again next time."""
+        self._source_pending = None
         # The disk policy can pause FILE ingest (§3.4): the file keeps the
         # bytes and the offset does not move, so nothing is lost by waiting,
         # and the status line says why. Serial and manual are never held back
@@ -6459,29 +7600,81 @@ class LEMStationModule:
         return machine, [], None
 
     def _ingest_single(self, machine: Machine):
+        """A tailed file, through its `SingleCsvSource`: the append path when
+        the cursor still describes the file, the rewrite resolver once a
+        change it cannot explain has gone quiet. Where the bench is up to
+        comes from cursor.json in its journal folder — never from the
+        configuration's stored offset (§4.1)."""
+        source = self._source_for(machine)
+        now = getattr(self, "_poll_clock", None) or datetime.now()
         try:
-            lines, pos, identity = tail_new_lines(machine.csv_path,
-                                                  machine.last_position)
+            read = source.read(now)
         except OSError as exc:
             return machine, [], f"File error: {exc}"
-        if not lines:
-            return machine, [], None
-        src = ("file:" + os.path.normcase(os.path.abspath(machine.csv_path))
-               + "#" + identity)
-        prints = [_keyed(text, file_line_key(src, offset, part, line_hash),
-                         src=src, lh=line_hash)
-                  for offset, part, text, line_hash in lines]
-        # Advance only after a successful read so no print is ever lost.
-        machine.last_position = pos
+        except JournalError as exc:
+            return machine, [], f"Source cursor error: {exc}"
+        prints = list(read.prints)
+        self._source_pending = (prints, read, machine)
         return machine, prints, None
+
+    def _source_for(self, machine: Machine) -> "SingleCsvSource":
+        """This module's reader for the machine's file, created on first use.
+        Its cursor lives in the machine's journal folder; with no journal the
+        bench keeps it in memory only, as v3.9 did, and says so."""
+        sources = getattr(self, "_sources", None)
+        if sources is None:
+            sources = self._sources = {}
+        uid = str(getattr(machine, "uid", "") or "")
+        key = (uid, os.path.normcase(os.path.abspath(machine.csv_path or "")))
+        source = sources.get(key)
+        if source is None:
+            journal = self._journal_for(machine) if uid else None
+            store = CursorStore(journal.dir) if journal is not None else None
+            source = sources[key] = SingleCsvSource(machine.csv_path, store)
+        return source
+
+    def _commit_source(self, machine, prints, messages,
+                       pending=None) -> None:
+        """(b) of §3.3: the read this poll's prints came from is consumed —
+        cursor.json and snapshot.bin saved, or the files moved out of the
+        watched folder. Called after the journal append, and only for the very
+        prints `_ingest` returned (a typed reading's pipeline carries none)."""
+        if pending is None:
+            pending = self._take_source_pending(prints)
+        if pending is None:
+            return
+        _prints, read, src_machine = pending
+        for note in read.commit():
+            messages.append(note)
+        if read.offset is not None and src_machine is not None:
+            # Mirrored, never read: a bench rolled back to v3.9 takes its
+            # offset from the published configuration.
+            src_machine.last_position = read.offset
+        self._fault_point("after_cursor")
+
+    def _take_source_pending(self, prints):
+        pending = getattr(self, "_source_pending", None)
+        self._source_pending = None
+        if pending is None or pending[0] is not prints:
+            return None
+        return pending
 
     def _ingest_multi(self, machine: Machine):
         """Any file sitting in the watched folder is unprocessed — read it,
         then move it into the `processed` subfolder. No name or timestamp
         bookkeeping: presence in the folder IS the queue.
 
-        A file is only delivered once its move succeeds, so a locked file
-        can never be parsed twice."""
+        With a journal (§4.3) the move to processed/ happens only after the
+        journal holds the reading — v3.9 moved first, and a kill between the
+        move and the log write lost the reading (K7: 3 lost). The file is
+        first moved aside into `.lem_inflight/`: that move is still the proof
+        that the instrument has let go of it (a locked file is never read),
+        and a kill before the journal leaves it there for the next poll to
+        read again. Each reading is keyed on (name, size, mtime_ns, sha256),
+        so a re-read of a file the journal already holds is dropped.
+
+        Without a journal the bench does exactly what it did before: a file
+        is only delivered once its move to processed/ succeeds."""
         folder = machine.csv_path
         if not os.path.isdir(folder):
             return machine, [], f"Folder not found: {folder}"
@@ -6489,13 +7682,88 @@ class LEMStationModule:
             names = sorted(os.listdir(folder))
         except OSError as exc:
             return machine, [], f"Folder error: {exc}"
+        journal = self._journal_for(machine) \
+            if str(getattr(machine, "uid", "") or "") else None
+        if journal is None:
+            return self._ingest_multi_unjournaled(machine, folder, names)
 
+        prints, errors, moves = [], [], []
+        inflight = os.path.join(folder, INFLIGHT_DIRNAME)
+        candidates = []
+        try:
+            staged = sorted(os.listdir(inflight)) if os.path.isdir(inflight) else []
+        except OSError as exc:
+            return machine, [], f"Folder error: {exc}"
+        candidates += [(os.path.join(inflight, n), True) for n in staged]
+        candidates += [(os.path.join(folder, n), False) for n in names
+                       if not n.startswith(".")]
+        for path, is_staged in candidates:
+            if not os.path.isfile(path):
+                continue
+            if not is_staged:
+                try:
+                    os.makedirs(inflight, exist_ok=True)
+                    dest = _unique_path(inflight, os.path.basename(path))
+                    shutil.move(path, dest)
+                except OSError as exc:
+                    # Still being written / locked — leave it for the next
+                    # poll rather than read half a file.
+                    errors.append(f"{os.path.basename(path)}: {exc}")
+                    continue
+                path = dest
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+                    st = os.fstat(f.fileno())
+            except OSError as exc:
+                errors.append(f"{os.path.basename(path)}: {exc}")
+                continue
+            moves.append(path)
+            text = data.decode(_decode_block(data), errors="replace").strip()
+            if text:
+                pk = multi_file_key(machine.uid, os.path.basename(path),
+                                    st.st_size, st.st_mtime_ns, _sha(data))
+                prints.append(_keyed(text, pk, src="multi_csv:" + folder))
+        archive = os.path.join(folder, PROCESSED_DIRNAME)
+
+        def commit():
+            notes = []
+            for path in moves:
+                try:
+                    os.makedirs(archive, exist_ok=True)
+                    shutil.move(path, _unique_path(archive, os.path.basename(path)))
+                except OSError as exc:
+                    # It stays in .lem_inflight; the next poll reads it again,
+                    # the journal recognises it, and the move is retried.
+                    notes.append(f"{os.path.basename(path)} could not be moved "
+                                 f"to {PROCESSED_DIRNAME} ({exc}); it is "
+                                 "recorded and the move will be retried.")
+            return notes
+        error = ("Some files could not be archived: "
+                 + "; ".join(errors[:3])) if errors and not prints else None
+        out = list(prints)
+        self._source_pending = (out, _SourceRead(out, commit=commit), None)
+        return machine, out, error
+
+    def _ingest_multi_unjournaled(self, machine: Machine, folder: str, names):
+        """v3.9's multi_csv road, for a bench whose journal cannot be opened:
+        a file is only delivered once its move succeeds, so a locked file can
+        never be parsed twice."""
         prints = []
         errors = []
         archive = os.path.join(folder, PROCESSED_DIRNAME)
-        for name in names:
-            path = os.path.join(folder, name)
-            if not os.path.isfile(path) or name.startswith("."):
+        # A file a journaled run moved aside and never got to processed/ is
+        # still a reading: never stranded because the journal is gone now.
+        inflight = os.path.join(folder, INFLIGHT_DIRNAME)
+        try:
+            staged = sorted(os.listdir(inflight)) if os.path.isdir(inflight) else []
+        except OSError:
+            staged = []
+        paths = [(os.path.join(inflight, n), n) for n in staged]
+        paths += [(os.path.join(folder, n), n) for n in names
+                  if not n.startswith(".")]
+        for path, name in paths:
+            if not os.path.isfile(path):
                 continue
             try:
                 text, _ = tail_new_text(path, 0)
@@ -6978,6 +8246,10 @@ class LEMStationModule:
                          manual_rows: Optional[List[dict]] = None) -> dict:
         now = now or datetime.now()
         messages: List[str] = []
+        # The source read these prints came from, if any — taken before the
+        # store check below replaces the list. Consumed by `_commit_source`
+        # after the journal append.
+        source_pending = self._take_source_pending(prints)
         payload = {"machine": machine, "raw_prints": list(prints),
                    "rows": [], "now": now, "messages": messages,
                    "template_captured": False, "stored": False,
@@ -7052,7 +8324,17 @@ class LEMStationModule:
             if not error:
                 prints = self._journal_intake(journal, prints)
                 payload["raw_prints"] = list(prints)
-        payload["journal"] = self._journal_status(machine)
+        # What the resolver has to say about this read (an `ambiguity` record),
+        # kept only while a line it speaks of is still in this poll: a re-read
+        # the journal already holds must not journal the decision twice.
+        extra_records = []
+        if source_pending is not None:
+            live_pks = {getattr(t, "pk", None) for t in prints}
+            extra_records = [r for r in source_pending[1].records
+                             if not r.get("pks") or live_pks & set(r["pks"])]
+        payload["journal"] = " ".join(
+            part for part in (self._journal_status(machine),
+                              self._source_notes(machine)) if part)
 
         if error:
             evaluation = MachineEvaluation(status=STATUS_UNKNOWN, reason=error)
@@ -7075,7 +8357,8 @@ class LEMStationModule:
             # reading, and must not come back as one after a restart.
             if journal is not None:
                 self._journal_poll(machine, journal, prints, [], [], now,
-                                   messages)
+                                   messages, extra_records)
+            self._commit_source(machine, prints, messages, source_pending)
             payload["template_captured"] = True
             payload["evaluation"] = MachineEvaluation(
                 status=STATUS_UNKNOWN,
@@ -7090,7 +8373,10 @@ class LEMStationModule:
             result = parse_print(machine, text)
             if not result.lab_id and not result.values:
                 continue
-            rows.append(result.to_row(now))
+            row = result.to_row(now)
+            if getattr(text, "origin", "live") != "live":
+                row[ORIGIN_KEY] = text.origin
+            rows.append(row)
             sources.append(text)
         # THE point at which corrections are applied — every measurement on every
         # print, before anything else sees it. Downstream (QC verdict, the result
@@ -7103,7 +8389,11 @@ class LEMStationModule:
         # of them goes anywhere else. Only if that fails do they take today's
         # road with no copy kept at the bench — said, never silent.
         journaled = journal is not None and self._journal_poll(
-            machine, journal, prints, rows, sources, now, messages)
+            machine, journal, prints, rows, sources, now, messages,
+            extra_records)
+        # (b): only now is the read consumed — the cursor saved, the files
+        # moved. A kill before this re-reads, and the journal's keys drop it.
+        self._commit_source(machine, prints, messages, source_pending)
         payload["rows"] = rows
         combined = history_snapshot + rows
         if rows:
@@ -8761,6 +10051,7 @@ class LEMStationModule:
             # that click is waiting on these records and the next poll takes
             # them.
             if store:
+                self._journal_verify_owed(machine, read_sql, messages)
                 self._drain_events(run_sql, messages)
 
             # The results road. Runs even with no new prints: it is also where

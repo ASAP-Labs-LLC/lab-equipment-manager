@@ -32,7 +32,11 @@ MUTATIONS = {
     "offset_not_advanced": {
         "kind": "source", "owner": "P0",
         "what": "single_csv byte offset never advances (every poll re-reads the file)",
-        "pattern": r"new_position = f\.tell\(\)",
+        # v3.9 advances in `_read_tail`; v4 in SingleCsvSource._append (P2
+        # moved it there — the alternation follows the code, and still matches
+        # exactly once in each tree).
+        "pattern": r"new_position = f\.tell\(\)|"
+                   r"new_position = last_position \+ chunks\[-1\]\[1\]",
         "replace": "new_position = last_position"},
     "refusal_counted_as_filed": {
         "kind": "source", "owner": "P0",
@@ -71,11 +75,23 @@ MUTATIONS = {
         "pattern": r"journaled = journal is not None and self\._journal_poll\(",
         "replace": "journaled = False and self._journal_poll(",
         "what": "a poll's readings are not journaled before they go to LabCore"},
+    # ── the source readers (owner P2) ──
+    # Both lines of replay defence at once: the cursor a restarted bench loads
+    # (`cur = sources.get(self.key)` in SingleCsvSource.load) becomes None, so
+    # it reads its file from the top, AND the journal's store check
+    # (`journal.known(pk)` in _journal_intake) never recognises a key, so the
+    # re-read is logged again. One replacement serves both sites.
     "cursor_and_keys_off": {
-        "kind": "source", "owner": "P2", "pattern": None, "replace": None,
+        "kind": "source", "owner": "P2",
+        "pattern": r"sources\.get\(self\.key\)|journal\.known\(pk\)",
+        "replace": "None",
         "what": "persisted cursor and content keys ignored"},
+    # The one call site of the ordered diff, swapped for the count rule it
+    # replaced (kept in the module as `resolve_by_count` for exactly this).
     "count_matching": {
-        "kind": "source", "owner": "P2", "pattern": None, "replace": None,
+        "kind": "source", "owner": "P2",
+        "pattern": r"resolution = resolve_rewrite\(",
+        "replace": "resolution = resolve_by_count(",
         "what": "ordered diff replaced by count matching (X1/X2 must fail)"},
     "guard_off": {
         "kind": "source", "owner": "P3", "pattern": None, "replace": None,

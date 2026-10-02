@@ -326,9 +326,13 @@ def test_a_kill_before_the_log_write_is_redelivered_once_after_restart(qapp, tmp
 
 
 def test_a_clean_restart_does_not_replay_the_file(qapp, tmp_path, monkeypatch):
-    """K6: the bench restarts and its stored offset is the one from setup, so
-    it reads the whole file again. Every line the journal already holds is
-    the same line at the same offset — not a new reading."""
+    """K6: under v3.9 the bench restarted with the offset stored at setup and
+    read the whole file again (30 duplicate rows). The journal's keys made that
+    re-read harmless; since P2 the bench keeps its own cursor (cursor.json),
+    so it does not re-read at all — nothing logged twice, nothing even
+    suppressed. The keys still stand behind the cursor: see
+    test_source_readers.py, "without the cursor the keys still stop the
+    replay", where the same restart with cursor.json gone suppresses all 30."""
     b = Bench(tmp_path, monkeypatch)
     for _ in range(10):
         b.emit(3)
@@ -339,8 +343,7 @@ def test_a_clean_restart_does_not_replay_the_file(qapp, tmp_path, monkeypatch):
         b.poll()
     assert sorted(b.lab.log_runs()) == [lab_id(i) for i in range(30)]
     assert len(b.lab.cell_sends) == 30
-    # and the replay that did not happen is counted, so it can be seen
-    assert b.m._journal_suppressed == 30
+    assert b.m._journal_suppressed == 0      # the cursor: no re-read to suppress
 
 
 def test_a_genuine_reprint_is_still_a_new_reading(qapp, tmp_path, monkeypatch):
@@ -369,6 +372,9 @@ def test_a_new_file_under_the_same_name_is_not_the_old_one(qapp, tmp_path, monke
     os.replace(b.path, str(b.path) + ".1")
     with open(b.path, "w") as f:
         f.writelines(old)
+    # A rotation is resolved once the new file has been quiet for two polls
+    # (transfer v4 §4.1, quiescence) — the first look only notes it.
+    b.poll()
     b.poll()
     assert sorted(b.lab.log_runs()) == sorted(
         [lab_id(0), lab_id(1), lab_id(2), lab_id(0), lab_id(1)])
