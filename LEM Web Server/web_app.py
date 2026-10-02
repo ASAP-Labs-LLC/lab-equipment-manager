@@ -1608,6 +1608,11 @@ def create_app(gateway, labcore_gateway=None,
         summary = _ui_live.round_summary(_day_in_memory(_today()), _now())
         if summary and summary.get("slot") in ROUND_SLOTS:
             return summary["slot"]
+        if summary and summary.get("slot") is None:
+            # Known, and nothing is set up: the lab is setting up, and setup
+            # starts with the opening round. At 14:00 the clock would say
+            # Closing and send the first person to define the wrong one.
+            return "opening"
         return "opening" if _now().hour < 12 else "closing"
 
     @app.route("/checklists")
@@ -1635,6 +1640,189 @@ def create_app(gateway, labcore_gateway=None,
             "round.html", nav="checklists", slot=slot, round=mine, day=day,
             day_label=when.strftime("%A ") + str(when.day) + when.strftime(" %b"),
             title=slot.capitalize() + " round", bench=True)
+
+    # ── defining rounds (ia-final §3.4, piece 10) ──────────────────────
+    # `/checklists/edit` lists the rounds; `/checklists/edit/<uid>` and
+    # `/checklists/edit/new?slot=` are the editor. Every read here is LEM's
+    # own store (local), never LabCore, and every one that fails says so:
+    # a list that could not be read is a 503 with a sentence, never "No
+    # rounds are set up", which would send someone to define the lab's
+    # rounds a second time.
+    EDIT_SLOTS = ("opening", "closing", "other")
+
+    def _round_edits():
+        """{round uid or name: {at, by}} for the newest "checklist saved" line
+        per round, from the machine log. None when the log could not be read
+        (the column then says so; it never says "never edited")."""
+        try:
+            res = gateway.read_sql(
+                "SELECT ts, detail FROM lem_machine_log_effective "
+                "WHERE kind = 'config' AND test_name = 'checklist saved' "
+                "ORDER BY ts DESC LIMIT 2000", [])
+            rows = labcore_rows(res, missing_ok=True)
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("round edit history unreadable: %s", exc)
+            return None
+        out: dict = {}
+        for row in rows:
+            try:
+                d = json.loads(row.get("detail") or "{}")
+            except (TypeError, ValueError):
+                continue
+            stamp = {"at": str(row.get("ts") or ""), "by": str(d.get("by") or "")}
+            for key in (d.get("uid"), d.get("checklist")):
+                if key and key not in out:
+                    out[key] = stamp
+        return out
+
+    def _when_words(iso: str) -> str:
+        """"2026-09-30" -> "30 Sep 2026"; "2026-09-30T13:42:10" -> "30 Sep 13:42"."""
+        try:
+            when = datetime.fromisoformat(str(iso))
+        except (TypeError, ValueError):
+            return str(iso or "")
+        if "T" in str(iso):
+            if when.date() == _now().date():
+                return "Today " + when.strftime("%H:%M")
+            return "%d %s %s" % (when.day, when.strftime("%b"), when.strftime("%H:%M"))
+        return "%d %s %d" % (when.day, when.strftime("%b"), when.year)
+
+    def _archive(uid=None):
+        try:
+            a = checklist_store.archive_summary(uid)
+        except LabCoreError as exc:
+            logger.warning("checklist archive unreadable: %s", exc)
+            return None
+        a["first_words"] = _when_words(a["first"]) if a["first"] else ""
+        a["last_words"] = _when_words(a["last"]) if a["last"] else ""
+        return a
+
+    @app.route("/checklists/edit")
+    def checklist_rounds():
+        """The rounds, and the way to a new one."""
+        failed = ""
+        rows = []
+        try:
+            rounds = checklist_store.all()
+        except LabCoreError as exc:
+            rounds, failed = None, str(exc)
+        if rounds is not None:
+            edits = _round_edits()
+            for cl in rounds:
+                work = [i for i in cl.items if i.item_type != "header"]
+                edited = None if edits is None else (edits.get(cl.uid) or edits.get(cl.name))
+                rows.append({
+                    "uid": cl.uid, "name": cl.name, "slot": cl.slot, "due": cl.due_time,
+                    "items": len(work),
+                    "readings": sum(1 for i in work if i.entry_type == "number"),
+                    "edited": edited,
+                    "edited_words": _when_words(edited["at"]) if edited else "",
+                    "edits_unread": edits is None,
+                })
+            order = {"opening": 0, "closing": 1}
+            rows.sort(key=lambda r: (order.get(r["slot"], 2), r["name"].lower(), r["uid"]))
+        html = render_template(
+            "round_edit.html", nav="checklists", view="list", rows=rows,
+            failed=failed, archive=_archive() if rounds is not None else None)
+        # 200 with the failed state, as every page that works offline does
+        # (tests/test_navigation.py): the PAGE works; its one card says the
+        # rounds could not be read, which is not the same as "none".
+        return html
+
+    def _due_from_hours(slot: str):
+        """(due, why): the prefilled due time and the sentence that says where
+        it came from. An opening round is due half an hour after the lab
+        opens; a closing round when it closes. Hours that could not be read or
+        were never set leave it blank, and the sentence says which."""
+        from lab_schedule import parse_hhmm
+        try:
+            sched = schedule_store.load()
+        except LabCoreError:
+            return "", "Lab hours could not be read, so no due time is filled in. Type one, or leave it blank."
+        if slot == "opening" and sched.opens:
+            t = parse_hhmm(sched.opens)
+            mins = t.hour * 60 + t.minute + 30
+            if mins < 24 * 60:
+                return ("%02d:%02d" % divmod(mins, 60),
+                        "Half an hour after the lab opens at %s (Settings › Lab hours)." % sched.opens)
+        if slot == "closing" and sched.closes:
+            return sched.closes, "When the lab closes at %s (Settings › Lab hours)." % sched.closes
+        if slot in ("opening", "closing"):
+            return "", "Lab hours have no %s time set, so no due time is filled in (Settings › Lab hours)." % (
+                "opening" if slot == "opening" else "closing")
+        return "", "Blank means the round has no deadline."
+
+    def _editor(cl, *, new: bool, due_why: str = "", status: int = 200):
+        tracked = {}
+        tracked_failed = False
+        shared: dict = {}
+        if not new and any(i.track_uid for i in cl.items):
+            try:
+                tracked = {t.uid: t for t in tracked_store.all()}
+            except LabCoreError:
+                tracked_failed = True
+            try:
+                for other in checklist_store.all():
+                    if other.uid == cl.uid:
+                        continue
+                    for i in other.items:
+                        if i.track_uid:
+                            shared.setdefault(i.track_uid, [])
+                            if other.name not in shared[i.track_uid]:
+                                shared[i.track_uid].append(other.name)
+            except LabCoreError:
+                shared = {}
+        items = []
+        for i in cl.items:
+            d = i.to_dict()
+            d["track"] = bool(i.track_uid)
+            d["limits_unknown"] = False
+            d["days_words"] = ", ".join(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[int(x)]
+                                        for x in sorted(set(i.days_active)) if 0 <= int(x) <= 6)
+            if i.track_uid:
+                thing = tracked.get(i.track_uid)
+                if thing is not None:
+                    d["min"], d["max"] = thing.min_value, thing.max_value
+                    d["units"] = i.units or thing.units
+                elif tracked_failed:
+                    d["limits_unknown"] = True
+                d["shared_with"] = shared.get(i.track_uid, [])
+            items.append(d)
+        definition = {"uid": cl.uid, "name": cl.name, "slot": cl.slot,
+                      "due_time": cl.due_time, "items": items, "new": new}
+        html = render_template(
+            "round_edit.html", nav="checklists", view="edit", R=definition,
+            due_why=due_why, archive=None if new else _archive(cl.uid),
+            fmt=lambda v: "" if v is None else _plain(v))
+        return html, status
+
+    @app.route("/checklists/edit/new")
+    def checklist_round_new():
+        """A new round: name and due time already filled in, one empty item
+        with the caret in it (T4a types no name and no time)."""
+        slot = (request.args.get("slot") or "opening").strip().lower()
+        if slot not in EDIT_SLOTS:
+            slot = "opening"
+        due, why = _due_from_hours(slot)
+        name = {"opening": "Opening round", "closing": "Closing round"}.get(slot, "New round")
+        import uuid as _uuid
+        from checklists import Checklist as _Checklist, ChecklistItem as _Item
+        cl = _Checklist(uid=_uuid.uuid4().hex[:12], name=name, slot=slot, due_time=due,
+                        items=[_Item(uid=_uuid.uuid4().hex[:12])])
+        return _editor(cl, new=True, due_why=why)
+
+    @app.route("/checklists/edit/<uid>")
+    def checklist_round_edit(uid):
+        try:
+            cl = checklist_store.get(uid)
+        except LabCoreError as exc:
+            return render_template("round_edit.html", nav="checklists", view="failed",
+                                   failed=str(exc), uid=uid), 503
+        if cl is None:
+            return render_template("round_edit.html", nav="checklists", view="missing",
+                                   uid=uid), 404
+        return _editor(cl, new=False,
+                       due_why="Blank means the round has no deadline.")
 
     # ── the shell (ia-final §2) ───────────────────────────────────────
     # What the sidebar foot, the rail badges and the words strip say on first
@@ -2807,6 +2995,10 @@ def create_app(gateway, labcore_gateway=None,
     def _today() -> str:
         return _now().date().isoformat()
 
+    def _plain(v) -> str:
+        """3000.0 -> "3000", 0.5 -> "0.5": a limit as the person typed it."""
+        return ("%d" % v) if float(v).is_integer() else repr(float(v))
+
     @app.route("/api/checklists")
     def api_get_checklists():
         """Definitions scoped to the day, plus that day's ticks."""
@@ -2825,13 +3017,141 @@ def create_app(gateway, labcore_gateway=None,
             # remembered blank day for the life of the process.
             return _labcore_unreadable(exc, "today's round")
 
+    def _refuse_item(index: int, field: str, message: str):
+        """A save refused because of one item, said so the editor can put the
+        sentence on that row and that field."""
+        return jsonify({"error": message, "item": index, "field": field}), 400
+
     @app.route("/api/checklists", methods=["POST"])
     def api_save_checklist():
+        """Save a whole round in ONE request: name, slot, due time and every
+        item in `items[]` (ia-final §3.4, piece 10).
+
+        P2 was a round built one POST per item, each of which made a new
+        checklist. The editor posts once, with a uid it minted when the page
+        opened, so pressing Save twice upserts one round.
+
+        Each item may also carry, for a number:
+        * `min` / `max` — text or a number; blank is no limit, never 0.0.
+          Not a number, or reversed, is refused and NOTHING is written.
+        * `track` — the "Track this reading" switch. On: the item feeds the
+          tracked thing of the same name (case and spacing aside), created if
+          there is none, and the limits are written to that thing, once. Off:
+          the item keeps its own series and its own limits. Absent: whatever
+          `track_uid` was posted stands (the import and the convert tool).
+
+        Everything is checked before the first write. The tracked things are
+        written before the round, so a refusal part-way leaves at most a thing
+        no round points at yet — invisible, and reused by the next Save —
+        never a round pointing at a thing that is not there.
+        """
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
+        raw_items = body.get("items")
+        if not isinstance(raw_items, list):
+            raw_items = []
         try:
-            saved = checklist_store.save(Checklist.from_dict(body))
+            checklist = Checklist.from_dict(body)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        from checklists import parse_limit
+
+        seen: set = set()
+        wants_track: dict = {}       # item index -> True / False (switch sent)
+        limits_sent: dict = {}       # item index -> the post carried min/max
+        for n, (raw, item) in enumerate(zip(raw_items, checklist.items)):
+            raw = raw if isinstance(raw, dict) else {}
+            label = item.text.strip()
+            if not label:
+                return _refuse_item(n, "text", "Item %d has no label. Give it one, "
+                                               "or remove the row." % (n + 1))
+            item.text = label
+            if item.uid:
+                if item.uid in seen:
+                    return _refuse_item(n, "uid", "Two items share one id; reload "
+                                                  "the editor and save again.")
+                seen.add(item.uid)
+            if item.entry_type != "number" or item.item_type == "header":
+                # A tick or a note has no reading to judge, so a limit on it
+                # would be a number on the record that means nothing.
+                item.min_value = item.max_value = None
+                if "track" in raw:
+                    item.track_uid = ""
+                continue
+            limits = {}
+            for key in ("min", "max"):
+                try:
+                    limits[key] = parse_limit(raw.get(key))
+                except ValueError:
+                    return _refuse_item(
+                        n, key, "“%s”: the %s has to be a number, like 500, or "
+                                "left blank." % (label, "minimum" if key == "min" else "maximum"))
+            lo, hi = limits["min"], limits["max"]
+            if lo is not None and hi is not None and lo > hi:
+                return _refuse_item(
+                    n, "min", "“%s”: the minimum (%s) is above the maximum (%s). "
+                              "Every reading would be out of range." % (label, _plain(lo), _plain(hi)))
+            item.min_value, item.max_value = lo, hi
+            limits_sent[n] = "min" in raw or "max" in raw
+            if "track" in raw:
+                wants_track[n] = bool(raw.get("track"))
+        if not (checklist.name or "").strip():
+            return jsonify({"error": "A round needs a name.", "field": "name"}), 400
+
+        # Which thing each tracked item feeds is decided by a read. A failed
+        # read is not "no things yet": a second Nitrogen made out of it would
+        # split the very series the switch exists to join.
+        tracked_writes = []
+        if any(wants_track.values()):
+            try:
+                things = tracked_store.all()
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "the tracked readings")
+            by_uid = {t.uid: t for t in things}
+            by_name = {normalise_tracked_name(t.name): t for t in things}
+            for n, on in wants_track.items():
+                item = checklist.items[n]
+                if not on:
+                    item.track_uid = ""
+                    continue
+                thing = by_uid.get(item.track_uid) or by_name.get(
+                    normalise_tracked_name(item.text))
+                lo, hi = item.min_value, item.max_value
+                if thing is not None and not limits_sent.get(n):
+                    # The editor leaves the limits out when it could not read
+                    # them; a field it never showed must not blank them.
+                    lo, hi = thing.min_value, thing.max_value
+                fresh = Tracked(uid=thing.uid if thing else "",
+                                name=thing.name if thing else item.text,
+                                units=item.units or (thing.units if thing else ""),
+                                min_value=lo, max_value=hi)
+                if thing is None:
+                    # minted here so two items in this one Save that share a
+                    # name feed ONE new thing, not two
+                    import uuid as _uuid
+                    fresh.uid = _uuid.uuid4().hex[:12]
+                    by_name[normalise_tracked_name(item.text)] = fresh
+                    by_uid[fresh.uid] = fresh
+                    tracked_writes.append(fresh)
+                elif (thing.units, thing.min_value, thing.max_value) != (
+                        fresh.units, fresh.min_value, fresh.max_value):
+                    tracked_writes.append(fresh)
+                    by_uid[thing.uid] = by_name[normalise_tracked_name(thing.name)] = fresh
+                item.track_uid = fresh.uid
+                item.min_value = item.max_value = None     # said once: on the thing
+        else:
+            for n in wants_track:
+                checklist.items[n].track_uid = ""
+
+        try:
+            done = {}
+            for thing in tracked_writes:
+                if thing.uid in done:
+                    continue
+                done[thing.uid] = tracked_store.save(thing, who=session.get("user", ""))
+            saved = checklist_store.save(checklist)
         except (ValueError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
         except LabCoreError as exc:
@@ -2841,8 +3161,10 @@ def create_app(gateway, labcore_gateway=None,
             return _labcore_failed(exc, "that checklist")
         _page_drop("checklists:")      # the definition changed, so every day did
         _audit("checklist saved", "",
-               {"checklist": saved.name, "items": len(saved.items)})
-        return jsonify({"ok": True, "checklist": saved.to_dict()})
+               {"checklist": saved.name, "uid": saved.uid, "items": len(saved.items),
+                "tracked": sorted(done)})
+        return jsonify({"ok": True, "checklist": saved.to_dict(),
+                        "tracked": [t.to_dict() for t in done.values()]})
 
     @app.route("/api/checklists/<uid>", methods=["DELETE"])
     def api_delete_checklist(uid):
@@ -3197,14 +3519,19 @@ def create_app(gateway, labcore_gateway=None,
         exists to make.
         """
         try:
-            lists = checklist_store.all()
-            readings = checklist_store.all_values()
-            tracked = {t.uid: t for t in tracked_store.all()}
+            return jsonify(_trends_payload())
         except LabCoreError as exc:
             # A flat, empty trend is a claim about a cylinder nobody has been
             # reading. The per-item route already refuses rather than draw one;
             # the dashboard must not undo that.
             return _labcore_unreadable(exc, "the checklist readings")
+
+    def _trends_payload() -> dict:
+        """`/api/checklists/trends`'s answer; raises LabCoreError when the
+        store could not be read (the page and the API both refuse then)."""
+        lists = checklist_store.all()
+        readings = checklist_store.all_values()
+        tracked = {t.uid: t for t in tracked_store.all()}
 
         # ONE SERIES PER THING, not per line of a round.
         #
@@ -3222,7 +3549,12 @@ def create_app(gateway, labcore_gateway=None,
                 if thing is None:
                     continue           # deleted: falls back to its own series
                 slot = merged.setdefault(thing.uid, {
-                    "thing": thing, "points": [], "rounds": []})
+                    "thing": thing, "points": [], "rounds": [], "items": [],
+                    "edit": []})
+                # which items feed it: `/checklists/trends?item=<uid>` lands
+                # on this series for any of them
+                slot["items"].append(item.uid)
+                slot["edit"].append({"checklist_uid": cl.uid, "checklist": cl.name})
                 # WHICH ROUND a reading came from, carried on the point.
                 #
                 # A reading records a `day` and no time, so two readings on
@@ -3274,6 +3606,8 @@ def create_app(gateway, labcore_gateway=None,
                 "last_at": last["day"] if last else "",
                 "last_by": last["user"] if last else "",
                 "first_at": points[0]["day"] if points else "",
+                "item_uids": slot["items"],
+                "edit": slot["edit"],
             })
 
         for cl in lists:
@@ -3285,11 +3619,13 @@ def create_app(gateway, labcore_gateway=None,
                 points = readings.get((cl.uid, item.uid), [])
                 last = points[-1] if points else None
                 first = points[0] if points else None
-                out.append({
+                entry = {
                     "checklist_uid": cl.uid,
                     "checklist": cl.name,
                     "slot": cl.slot,
                     "item_uid": item.uid,
+                    "item_uids": [item.uid],
+                    "edit": [{"checklist_uid": cl.uid, "checklist": cl.name}],
                     "text": item.text,
                     "units": item.units or "",
                     "points": points,
@@ -3298,20 +3634,39 @@ def create_app(gateway, labcore_gateway=None,
                     "last_at": last["day"] if last else "",
                     "last_by": last["user"] if last else "",
                     "first_at": first["day"] if first else "",
-                })
+                }
+                if item.min_value is not None or item.max_value is not None:
+                    # Limits an operator typed into the editor: judged by the
+                    # same rule as a tracked thing's. Without them there is
+                    # still no verdict, and no `state` key at all.
+                    judge = Tracked(min_value=item.min_value,
+                                    max_value=item.max_value).judge
+                    entry.update({"min": item.min_value, "max": item.max_value,
+                                  "state": judge(last["value"]) if last else "NO READING"})
+                out.append(entry)
 
         # Never written comes first: it is the only thing on this page that is
         # a finding rather than a reading. After that, oldest reading first —
         # the one drifting out of anybody's attention.
         out.sort(key=lambda t: (1 if t["n"] else 0, t["last_at"], t["text"]))
-        return jsonify({"trends": out, "day": _today(),
-                        "counts": {"items": len(out),
-                                   "never_written": sum(1 for t in out
-                                                        if not t["n"])}})
+        return {"trends": out, "day": _today(),
+                "counts": {"items": len(out),
+                           "never_written": sum(1 for t in out if not t["n"])}}
 
     @app.route("/checklists/trends")
     def page_checklist_trends():
-        return render_template("checklist_trends.html")
+        """Readings (ia-final §1): every number the rounds record, one chart
+        each, tracked items merged at read time. `?item=<uid>` lands on one.
+        Drawn from the same answer the API gives, in the page, so there is no
+        "Loading…" on a page a supervisor leaves open; a failed read is a
+        sentence, never a page of flat lines."""
+        try:
+            data, failed = _trends_payload(), ""
+        except LabCoreError as exc:
+            data, failed = None, str(exc)
+        return render_template("checklist_trends.html", nav="checklists",
+                               data=data, failed=failed, when=_when_words,
+                               num=lambda v: "" if v is None else _plain(v))
 
     @app.route("/api/checklists/import-v4", methods=["POST"])
     def api_import_v4_checklists():
@@ -3423,9 +3778,18 @@ def create_app(gateway, labcore_gateway=None,
     def api_checklist_history():
         # A GROUP BY over every tick ever recorded (3094 rows and counting),
         # asked for again on every visit to the archive.
+        # `?checklist=<uid>`: one round's days (its editor's Archive). The
+        # archive sheet asks for up to ten years; the default stays 60 days
+        # for the callers that always had it.
+        one = (request.args.get("checklist") or "").strip()
         try:
-            return jsonify(_page("checklisthistory",
-                                 lambda: {"days": checklist_store.history()}))
+            limit = max(1, min(int(request.args.get("limit") or 60), 3660))
+        except ValueError:
+            limit = 60
+        key = "checklisthistory" + ((":" + one) if one else "") + ("" if limit == 60 else "@%d" % limit)
+        try:
+            return jsonify(_page(key, lambda: {"days": checklist_store.history(
+                limit, checklist_uid=one or None)}))
         except LabCoreError as exc:
             # This is the archive an auditor asks for. "No rounds recorded yet"
             # about three years of ticks is the worst answer this page can give.
@@ -7741,20 +8105,6 @@ def create_app(gateway, labcore_gateway=None,
     app.config["WARM"] = _warm
     app.config["PAGE"] = _page          # exercised directly by the cache tests
 
-    # ── the round editor, until piece 10 builds it ─────────────────────
-    # The round page links "Edit this round" and "Set it up →" to
-    # /checklists/edit…, the editor ia-final §3.4 describes. Until that page
-    # exists the old checklists page, which holds the editor dialog, answers
-    # there, so neither link is a dead end. Registered last and only when
-    # nothing else has claimed the URL, so the real editor replaces it by
-    # being registered at all.
-    if not any(r.rule == "/checklists/edit" for r in app.url_map.iter_rules()):
-        def checklist_editor_bridge(uid=None):
-            return render_template("checklists.html", active="/checklists")
-        app.add_url_rule("/checklists/edit", "checklist_editor_bridge",
-                         checklist_editor_bridge)
-        app.add_url_rule("/checklists/edit/<uid>", "checklist_editor_bridge_uid",
-                         checklist_editor_bridge)
     # The fake is LabCore's, not the store's: under --dev the store is
     # still a LocalStoreGateway, and it is LabCore that must be the fake.
     app.config["DEV_TOOLS"] = dev_tools_allowed(labcore_raw, dev_tools)

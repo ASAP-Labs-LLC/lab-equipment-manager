@@ -1,317 +1,93 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LEM — Checklist trends</title>
-<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
-<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
-{#
-  EVERY CHECKLIST READING ON ONE SCREEN.
+{% extends "_layout.html" %}
+{#- Readings (ia-final §1, piece 10): every number the rounds record, one
+    chart each. The URL is kept (/checklists/trends) so old links still land;
+    the page is called what it shows.
 
-  Ryan: "put a page of the checklists page with all the checklist 'trend' items
-  being visible as like a dashboard too."
+    What it may say, and what it may not:
+    * A verdict word only where an operator set limits, in the editor or on a
+      tracked thing. Without limits nothing is judged and no band is drawn:
+      that would be LEM inventing what a good nitrogen pressure is (A.6).
+    * A reading nobody has written leads the page. It is the one finding a
+      round exists to catch.
+    * A failed read is a sentence, never a page of flat lines.
 
-  The rounds already collect numbers — a nitrogen pressure, a bath temperature
-  — and each had a per-item trend behind a small link. One at a time answers
-  "what did this read"; nobody was able to ask "is anything drifting".
-
-  WHAT THIS PAGE MAY NOT DO. No checklist item has a spec band: nobody has told
-  LEM what a good nitrogen pressure is. So nothing here is coloured pass or
-  fail, and there is no band drawn behind any line — that would be LEM
-  inventing a limit and an operator reading it as one. The QC wall can colour
-  because a QC standard states its own band; this cannot, and the difference is
-  the point.
-
-  WHAT IT CAN SAY. Movement, and recency. The sparkline shows the shape, the
-  number shows where it is now, the delta shows which way it went, and an item
-  nobody has written down leads the page — that is the only finding a checklist
-  dashboard can honestly make, and it is exactly what a round exists to catch.
-#}
-<style>
-  .wrap{padding:16px 18px 32px;max-width:1500px}
-  .head{display:flex;align-items:baseline;gap:18px;flex-wrap:wrap;
-        margin-bottom:4px}
-  .head h2{margin:0;font:800 15px/1 var(--ui);letter-spacing:.28em;
-           text-transform:uppercase;color:var(--ink3)}
-  .thesis{font:700 20px/1.3 var(--ui);color:var(--ink);letter-spacing:-.01em}
-  .thesis b{color:var(--amber)}
-  .thesis.clear b{color:var(--green)}
-  .sub{color:var(--ink3);font-size:12px;margin:2px 0 14px}
-
-  .grid{display:grid;gap:10px;
-        grid-template-columns:repeat(auto-fill,minmax(270px,1fr))}
-  .t{background:#0c0e13;border:1px solid var(--edge);border-radius:10px;
-     padding:11px 13px 9px;display:flex;flex-direction:column;min-width:0}
-  /* The only state this page has: written, or never written. */
-  .t.blank{border-color:#3a3320;background:#12100b}
-
-  .t .nm{font:700 14px/1.25 var(--ui);color:var(--ink);
-         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .t .of{font:700 9px/1.4 var(--ui);letter-spacing:.16em;
-         text-transform:uppercase;color:var(--ink3);margin-top:1px;
-         overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .t .now{display:flex;align-items:baseline;gap:7px;margin-top:7px}
-  .t .val{font:700 24px/1 var(--mono,ui-monospace);color:var(--ink);
-          font-variant-numeric:tabular-nums}
-  .t .un{font-size:11px;color:var(--ink3)}
-  .t .dl{margin-left:auto;font:700 11px/1 var(--mono,ui-monospace)}
-  .t .dl.up{color:var(--brass)} .t .dl.dn{color:#7fb2ff}
-  .t .dl.flat{color:var(--ink3)}
-  .spark{height:44px;margin:8px 0 4px}
-  .spark svg{width:100%;height:100%;display:block}
-  .t .ft{display:flex;gap:8px;font:600 10px/1.3 var(--ui);color:var(--ink3);
-         letter-spacing:.05em}
-  .t .ft .who{margin-left:auto;overflow:hidden;text-overflow:ellipsis;
-              white-space:nowrap;max-width:45%}
-  .t .none{margin:10px 0 6px;font:600 12px/1.4 var(--ui);color:var(--brass)}
-
-  /* The state, only where limits exist to justify one. */
-  .t.s-ok{border-left:3px solid var(--green)}
-  .t.s-bad{border-left:3px solid var(--red);background:#140e0e}
-  .t .st{margin-top:5px;font:800 9.5px/1 var(--ui);letter-spacing:.16em;
-         text-transform:uppercase;color:var(--ink3)}
-  .t.s-ok .st{color:var(--green)}
-  .t.s-bad .st{color:var(--red)}
-  .t .miss{color:var(--brass);font-weight:700}
-  .empty{color:var(--ink2);padding:22px 0}
-  @media (max-width:520px){
-    .grid{grid-template-columns:1fr}
-    .wrap{padding:12px 12px 28px}
-  }
-</style>
-</head>
-<body>
-<div class="frame">
-{% include '_nav.html' %}
-<div class="pane">
-  <header class="bar">
-    <h1 class="sign">LEM <b>·</b> Checklist trends</h1>
-    <span class="spacer"></span>
-    <a class="tool" href="/checklists">Back to today's round</a>
-  </header>
-  <main class="wrap">
-    <div class="head">
-      <h2>Readings</h2>
-      <div class="thesis" id="thesis">Reading…</div>
+    `?item=<uid>` lands on that item's chart, which for a tracked item is its
+    thing's (every item feeding it names it). The per-item trend dialog the
+    old checklist page had is gone: this page is the one home of a reading.
+    Charts are drawn by static/js/readings.js from the data below; every
+    server string goes in through textContent. -#}
+{% block title %}Readings{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists">Checklists</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page">Readings</span></nav>
+  <span class="spacer"></span>
+  <a class="btn btn-ghost" href="/checklists/edit">Rounds</a>
+{% endblock %}
+{% block content %}
+{%- set T = (data.trends if data else []) -%}
+{%- set never = (data.counts.never_written if data else 0) -%}
+<main class="content readings" id="main" tabindex="-1" data-testid="readings"
+      data-state="{{ 'failed' if failed else ('ready' if T else 'empty') }}"
+      {%- if data %} data-trends='{{ data|tojson }}'{% endif %}>
+  <div class="page-head">
+    <h1>Readings</h1>
+    <div class="meta" id="rd-meta">
+      {%- if failed %}<span>Not read</span>
+      {%- else %}
+      <span>{{ T|length }} reading{{ '' if T|length == 1 else 's' }}</span>
+      {%- if never %}
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="pill held"><span class="glyph held" aria-hidden="true"></span>{{ never }} never written</span>
+      {%- endif %}
+      <span class="sep" aria-hidden="true">·</span>
+      <span>From the opening and closing rounds. A verdict appears only where someone set limits.</span>
+      {%- endif %}
     </div>
-    <p class="sub" id="sub"></p>
-    <div class="grid" id="grid"></div>
-  </main>
-</div>
-</div>
+  </div>
 
-<script>
-(function () {
-  const $ = s => document.querySelector(s);
-  const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g,
-    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-  /* A DAY APART, in days. Readings carry a `day` and no time, which is all
-   * the ordering there is — and it is enough to know a day was skipped. */
-  function dayGap(a, b) {
-    const t0 = Date.parse(a + 'T00:00:00'), t1 = Date.parse(b + 'T00:00:00');
-    if (isNaN(t0) || isNaN(t1)) return 0;
-    return Math.round((t1 - t0) / 86400000);
-  }
-
-  /* The sparkline.
-   *
-   * A BAND ONLY IF SOMEBODY SET ONE. Until these limits existed this page was
-   * forbidden to draw a band, because it would have been LEM inventing a limit
-   * and an operator reading it as one. An operator-entered minimum and maximum
-   * is not invented, so it is drawn — and where nobody has set limits, nothing
-   * is drawn, which is the same rule it always was.
-   *
-   * A SKIPPED DAY IS DOTTED. Ryan: "skipped days should also reflect on the
-   * graph with dotted lines." A solid line between Monday and Friday claims
-   * four readings that were never taken; the shape is a guess and it should
-   * look like one. Segments spanning more than a day are dashed, so the eye
-   * reads continuity where there was continuity and a bridge where there was
-   * a gap.
-   */
-  function spark(t) {
-    const points = t.points || [];
-    const W = 240, H = 44, pad = 5;
-    const vals = points.map(p => Number(p.value)).filter(Number.isFinite);
-    if (vals.length < 2) {
-      return `<svg viewBox="0 0 ${W} ${H}" role="img"
-        aria-label="${vals.length ? 'one reading' : 'no readings'}">
-        <text x="${W / 2}" y="${H / 2 + 3}" text-anchor="middle" font-size="10"
-              fill="#5d6675">${vals.length ? 'one reading so far'
-                                           : 'nothing recorded'}</text></svg>`;
-    }
-    const lo0 = Math.min(...vals), hi0 = Math.max(...vals);
-    // The band has to FIT, or a reading outside it would be drawn inside.
-    const lim = [];
-    if (t.min != null) lim.push(Number(t.min));
-    if (t.max != null) lim.push(Number(t.max));
-    const lo = Math.min(lo0, ...lim), hi = Math.max(hi0, ...lim);
-    const span = (hi - lo) || 1;
-    const x = i => pad + (i * (W - pad * 2)) / (vals.length - 1);
-    const y = v => H - pad - ((v - lo) / span) * (H - pad * 2);
-
-    let band = '';
-    if (t.min != null || t.max != null) {
-      const top = t.max != null ? y(Number(t.max)) : pad;
-      const bot = t.min != null ? y(Number(t.min)) : H - pad;
-      band = `<rect x="0" y="${top.toFixed(1)}" width="${W}"
-        height="${Math.max(0, bot - top).toFixed(1)}"
-        fill="rgba(33,192,113,.10)"/>`
-        + [t.max != null ? Number(t.max) : null,
-           t.min != null ? Number(t.min) : null].filter(v => v != null).map(v =>
-          `<line x1="0" y1="${y(v).toFixed(1)}" x2="${W}" y2="${y(v).toFixed(1)}"
-                 stroke="#21c071" stroke-width="1" stroke-dasharray="5 4"
-                 opacity=".55"/>`).join('');
-    }
-
-    /* One <path> per segment rather than one for the line, because a dashed
-     * stretch and a solid one cannot be the same path. */
-    let segs = '';
-    for (let i = 1; i < points.length; i++) {
-      const gap = dayGap(points[i - 1].day, points[i].day);
-      const dashed = gap > 1;
-      segs += `<path d="M ${x(i - 1).toFixed(1)} ${y(vals[i - 1]).toFixed(1)}
-        L ${x(i).toFixed(1)} ${y(vals[i]).toFixed(1)}" fill="none"
-        stroke="var(--amber)" stroke-width="1.6" stroke-linecap="round"
-        ${dashed ? 'stroke-dasharray="2 3" opacity=".6"' : ''}
-        vector-effect="non-scaling-stroke"/>`;
-    }
-    const dots = points.map((p, i) => {
-      const v = Number(p.value);
-      if (!Number.isFinite(v)) return '';
-      const out = (t.min != null && v < Number(t.min))
-               || (t.max != null && v > Number(t.max));
-      return `<circle cx="${x(i).toFixed(1)}" cy="${y(v).toFixed(1)}"
-        r="${i === points.length - 1 ? 2.8 : 1.8}"
-        fill="${out ? 'var(--red)' : 'var(--amber)'}"><title>${
-        esc(p.day)}${p.round ? ' · ' + esc(p.round) : ''} — ${esc(p.value)}
-        </title></circle>`;
-    }).join('');
-    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img"
-        aria-label="${vals.length} readings">${band}${segs}${dots}</svg>`;
-  }
-
-  /* How many days of this series had no reading at all. Said in words under
-   * the chart, because a dotted line shows THAT one happened and not how
-   * many. */
-  function skipped(points) {
-    let n = 0;
-    for (let i = 1; i < points.length; i++) {
-      const g = dayGap(points[i - 1].day, points[i].day);
-      if (g > 1) n += g - 1;
-    }
-    return n;
-  }
-
-  function delta(points) {
-    const v = points.map(p => Number(p.value)).filter(Number.isFinite);
-    if (v.length < 2) return null;
-    const d = v[v.length - 1] - v[v.length - 2];
-    if (!d) return {cls: 'flat', text: 'no change'};
-    const n = Math.abs(d) < 1 ? Math.abs(d).toFixed(2)
-                              : Math.abs(d).toFixed(1);
-    return {cls: d > 0 ? 'up' : 'dn', text: (d > 0 ? '▲ ' : '▼ ') + n};
-  }
-
-  /* THE SCALE, SAID OUT LOUD.
-   *
-   * A sparkline fits its own range to the box, which is what makes the shape
-   * readable — and means a bath temperature moving 0.15 °C draws exactly as
-   * dramatically as a cylinder draining 300 psi. On a lab screen that reads as
-   * instability, and nobody can tell the two apart without a number.
-   *
-   * So the footer says the span the line covers. Cheap, honest, and it makes
-   * the auto-scaling safe rather than removing it. */
-  function rangeOf(t) {
-    const v = (t.points || []).map(p => Number(p.value)).filter(Number.isFinite);
-    if (v.length < 2) return '';
-    const lo = Math.min(...v), hi = Math.max(...v);
-    if (lo === hi) return ' · unchanged at ' + lo;
-    const dp = (hi - lo) < 10 ? 2 : 0;
-    return ` · ${lo.toFixed(dp)}–${hi.toFixed(dp)}`;
-  }
-
-  function card(t) {
-    const d = delta(t.points || []);
-    if (!t.n) {
-      return `<div class="t blank">
-        <div class="nm">${esc(t.text)}</div>
-        <div class="of">${esc(t.checklist)} · ${esc(t.slot)}</div>
-        <p class="none">Nobody has written this down.</p>
-        <div class="ft"><span>no readings on record</span></div>
-      </div>`;
-    }
-    const ST = {'IN RANGE':'ok', 'BELOW MINIMUM':'bad', 'ABOVE MAXIMUM':'bad',
-                'NO LIMITS SET':'plain', 'NO READING':'plain'};
-    const cls = ST[t.state] || 'plain';
-    const miss = skipped(t.points || []);
-    const lim = (t.min != null || t.max != null)
-      ? `${t.min != null ? esc(t.min) : '—'} to ${t.max != null ? esc(t.max) : '—'}`
-      : '';
-    return `<div class="t s-${cls}">
-      <div class="nm">${esc(t.text)}</div>
-      <div class="of">${esc(t.checklist)}${lim ? ' · ' + esc(lim)
-        + (t.units ? ' ' + esc(t.units) : '') : ''}</div>
-      <div class="now"><span class="val">${esc(t.last_value)}</span>
-        ${t.units ? `<span class="un">${esc(t.units)}</span>` : ''}
-        ${d ? `<span class="dl ${d.cls}">${esc(d.text)}</span>` : ''}</div>
-      <div class="spark">${spark(t)}</div>
-      ${t.state && t.state !== 'NO LIMITS SET'
-        ? `<div class="st">${esc(t.state)}</div>` : ''}
-      <div class="ft"><span>${esc(t.n)} reading${t.n === 1 ? '' : 's'}
-        · last ${esc(t.last_at)}${rangeOf(t)}${miss
-          ? ` · <b class="miss">${miss} day${miss === 1 ? '' : 's'} skipped</b>`
-          : ''}</span>
-        ${t.last_by ? `<span class="who">${esc(t.last_by)}</span>` : ''}</div>
-    </div>`;
-  }
-
-  async function load() {
-    const r = await fetch('/api/checklists/trends').catch(() => null);
-    if (!r || !r.ok) {
-      const b = r ? await r.json().catch(() => ({})) : {};
-      $('#thesis').textContent = 'Readings could not be read';
-      $('#sub').textContent = (b.error || 'LabCore could not be reached.')
-        + ' This page is blank because the record could not be reached, not '
-        + 'because nothing has been recorded.';
-      $('#grid').innerHTML = '';
-      return;
-    }
-    const b = await r.json();
-    const trends = b.trends || [];
-    const blank = (b.counts || {}).never_written || 0;
-    const th = $('#thesis');
-    th.className = 'thesis' + (blank ? '' : ' clear');
-    th.innerHTML = !trends.length
-      ? 'No checklist item asks for a number yet'
-      : (blank
-          ? `<b>${blank} of ${trends.length}</b> readings have never been written down`
-          : `All <b>${trends.length}</b> readings are being kept`);
-    /* THE CAPTION HAS TO MATCH THE CARDS.
-     *
-     * It used to say "these have no specification band, so nothing here is a
-     * pass or a fail" — true when nothing had limits, and flatly contradicted
-     * by a card reading BELOW MINIMUM the moment somebody set some. A page
-     * that argues with itself is worse than one that says less, so it counts
-     * what actually has limits and says that. */
-    const withLimits = trends.filter(t => t.min != null || t.max != null).length;
-    $('#sub').textContent = !trends.length
-      ? 'Give a checklist item the type “number” and its readings will trend '
-        + 'here. Point two rounds at the same tracked item and they share one '
-        + 'series.'
-      : withLimits === 0
-        ? 'None of these has a minimum or a maximum set, so nothing here is a '
-          + 'pass or a fail — only what was written and when.'
-        : `${withLimits} of ${trends.length} have limits set and can be out of `
-          + 'range. The rest show only what was written and when. A dotted '
-          + 'line bridges days nobody recorded.';
-    $('#grid').innerHTML = trends.map(card).join('');
-  }
-
-  load();
-  setInterval(load, 60000);
-})();
-</script>
-</body>
-</html>
+  {%- if failed %}
+  <section class="card state-card" id="readings-failed" role="alert" data-testid="readings-failed">
+    <p><span class="glyph error" aria-hidden="true"></span> <b>The readings could not be read.</b> This is not a page of empty charts: the readings are on file, and LEM's store did not answer just now.</p>
+    <p class="caption">{{ failed }}</p>
+    <a class="btn" href="{{ request.full_path if request.query_string else '/checklists/trends' }}">Try again</a>
+  </section>
+  {%- elif not T %}
+  <section class="card state-card" id="readings-empty" data-testid="readings-empty">
+    <p><b>No round records a number yet.</b> A cylinder pressure, a bath temperature: in a round's editor, set an item to <b>Number</b> and it gets a chart here from its first reading.</p>
+    <a class="btn" href="/checklists/edit">Open the rounds</a>
+  </section>
+  {%- else %}
+  <p class="caption readings-note" id="rd-target-note" hidden></p>
+  <div class="readings-grid" id="readings-grid">
+    {%- for t in T %}
+    {%- set key = t.tracked_uid or t.item_uid %}
+    <section class="card rd-card" id="rd-{{ key }}" data-key="{{ key }}" data-items="{{ (t.item_uids or [])|join(' ') }}" aria-labelledby="rdh-{{ key }}">
+      <h2 id="rdh-{{ key }}">{{ t.text }}</h2>
+      <p class="rd-of">{{ t.checklist }}{% if t.tracked_uid %} · tracked{% endif %}</p>
+      {%- if t.n %}
+      <div class="rd-now">
+        <span class="rd-val">{{ num(t.last_value) }}</span><span class="rd-units">{{ t.units }}</span>
+        {%- if t.state %}
+        {%- set g = {'IN RANGE': 'final', 'BELOW MINIMUM': 'error', 'ABOVE MAXIMUM': 'error'}.get(t.state, 'never') %}
+        <span class="rd-verdict"><span class="glyph {{ g }}" aria-hidden="true"></span>{{ {'IN RANGE': 'In range', 'BELOW MINIMUM': 'Below the minimum', 'ABOVE MAXIMUM': 'Above the maximum', 'NO READING': 'No reading', 'NO LIMITS SET': ''}.get(t.state, '') }}</span>
+        {%- endif %}
+      </div>
+      <div class="rd-plot" data-chart="{{ key }}"></div>
+      {%- else %}
+      <p class="rd-blank"><span class="glyph held" aria-hidden="true"></span> Never written. Nobody has recorded this reading yet.</p>
+      {%- endif %}
+      <div class="rd-foot">
+        {%- if t.n %}<span>Last by {{ t.last_by or 'someone' }} · {{ when(t.last_at) }}</span><span aria-hidden="true">·</span><span>{{ t.n }} reading{{ '' if t.n == 1 else 's' }}</span>{% endif %}
+        <span class="spacer"></span>
+        {%- for e in (t.edit or [])[:2] %}
+        <a href="/checklists/edit/{{ e.checklist_uid }}#items">Edit in {{ e.checklist }}</a>
+        {%- endfor %}
+      </div>
+    </section>
+    {%- endfor %}
+  </div>
+  {%- endif %}
+</main>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/readings.js?v={{ v('js/readings.js') }}"></script>
+{% endblock %}
