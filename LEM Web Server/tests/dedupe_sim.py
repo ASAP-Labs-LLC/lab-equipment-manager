@@ -63,6 +63,10 @@ majority rule, and a Blank and a Solvent as a "stretch of two samples":
   with a run of standards and one sample between those extra copies — the
   standards' copies are copies.
 
+Added after the round-7 critic hid genuine re-tests of up to six lines
+(`fuzz3.py`, `minimal2.py`): see `critic_bench` and the end of this
+docstring.
+
 Added after the round-4 critic hid a genuine PAIR re-test (40005, 40006,
 identical results) inside a 26-row catch-up poll as a "stretch of two
 samples":
@@ -70,12 +74,31 @@ samples":
 * pair, triple and four-sample re-tests, identical numbers, at the head, in
   the middle and at the tail of catch-up polls, one of them between
   standards that repeat too — all genuine;
-* the restart that re-reads from a stale offset now re-reads six samples
-  (a copy, hidden), and the TWO-line re-read moved to its own pair of
+* the restart that re-reads from a stale offset now re-reads thirteen
+  samples (a copy, hidden; round 8 raised the floor to thirteen, see
+  below), and the TWO-line re-read moved to its own pair of
   benches beside a genuine re-test of the same two samples that writes the
   identical record. That copy's truth is `LISTED`: no rule can hide it
   without hiding the re-test, so it must be listed beside its original
   (`probable_duplicate`), visible, for a person.
+
+Added after the round-7 critic's `fuzz3.py` hid 2,756 genuine rows on 447
+of 3,000 benches (`critic_bench` is that generator, kept here so the suite
+runs it): re-tests of up to SIX lines, of the same day's lines too, right
+behind their originals; the AF26 check twice over; one to three benches
+interleaved; archive first ingests. Three things it showed, each now a
+rule and a named case in `test_dedupe_classifier.py`:
+
+* MULTIPLICITY: a reading a poll holds more often than the bench had
+  logged it holds a new copy (`minimal2.py`); the `stretch` bench above
+  now says so.
+* a re-test of six lines at the head of a catch-up poll, running to the
+  record's end, writes what a six-line re-read writes, and two six-line
+  re-tests back to back write twelve: the floor is thirteen samples,
+  over at least seven distinct ones (one set of six re-tested again and
+  again spans six) -- so the benches above re-read thirteen or more;
+* a re-read's alignment may not jump over rows the poll holds between two
+  of its twins.
 """
 
 from __future__ import annotations
@@ -165,8 +188,10 @@ def build() -> SimLab:
     era = "era"
     era_file: List[tuple] = []
     for day in range(6):
-        for k in range(8):                       # 8 genuine prints a day
-            line = SimLab.run_line("4%03d%d" % (day, k),
+        # 13 genuine prints a day: a whole-file re-read on day one carries
+        # the floor (thirteen samples) from the start
+        for k in range(13):
+            line = SimLab.run_line("4%03d%02d" % (day, k),
                                    {"API": "%d.%d" % (30 + k, day),
                                     "Density": str(840 + k)})
             era_file.append(line)
@@ -194,13 +219,13 @@ def build() -> SimLab:
         # The daily restart re-reads the whole file from its stale offset.
         lab.poll(era, list(era_file), [DUP] * len(era_file))
 
-    # ── SMALL: a file of 8 lines replayed whole (under the 20-row bar) ───
+    # ── SMALL: a file of 13 lines replayed whole (under the 20-row bar) ──
     small = "small"
-    small_file = [SimLab.run_line("5000%d" % k, {"S": "%d.1" % k})
-                  for k in range(8)]
+    small_file = [SimLab.run_line("500%02d" % k, {"S": "%d.1" % k})
+                  for k in range(13)]
     for line in small_file:
         lab.poll(small, [line], [GENUINE])
-    lab.poll(small, list(small_file), [DUP] * 8)     # 100 % twins, 8 rows
+    lab.poll(small, list(small_file), [DUP] * 13)    # 100 % twins, 13 rows
     # 6 rows, 5 new and one genuine identical re-test: 17 % twins, so the
     # poll is not a replay and the re-test stays visible.
     new5 = [SimLab.run_line("5100%d" % k, {"S": "9.%d" % k}) for k in range(5)]
@@ -212,7 +237,7 @@ def build() -> SimLab:
     # ── GC: QC prints, a QC repeat, replayed QC, and a re-integration ────
     gc = "gc"
     gc_file: List[tuple] = []
-    for k in range(12):
+    for k in range(13):
         line = SimLab.run_line("6%04d" % k, {"IBP": "1%02d.5" % k,
                                              "FBP": "3%02d.1" % k})
         gc_file.append(line)
@@ -234,11 +259,11 @@ def build() -> SimLab:
             line = (line[0], line[1], line[2], line[3], json.dumps(d))
         replay.append(line)
     lab.poll(gc, replay, [DUP] * len(replay))
-    # Re-integration: the same 12 samples re-processed, every number moved.
+    # Re-integration: the same 13 samples re-processed, every number moved.
     reint = [SimLab.run_line("6%04d" % k, {"IBP": "1%02d.9" % k,
                                            "FBP": "3%02d.4" % k})
-             for k in range(12)]
-    lab.poll(gc, reint, [GENUINE] * 12)
+             for k in range(13)]
+    lab.poll(gc, reint, [GENUINE] * 13)
     # ...and the next restart replays the file, re-integrated lines included.
     gc_file.extend(reint)
     lab.poll(gc, list(gc_file), [DUP] * len(gc_file))
@@ -324,7 +349,14 @@ def build() -> SimLab:
             for k in range(25)]
     for line in work:
         lab.poll(gc1, [line], [GENUINE])
-    lab.poll(gc1, work + work, [DUP] * 50)    # replay, the stretch twice
+    # replay, the stretch twice. The record holds `work` ONCE and the poll
+    # holds it twice, so one copy of each reading in this poll must stay
+    # visible (round-7 critic, `minimal2.py`: no re-read copies a line more
+    # often than the file held it, and the file held it no more often than
+    # the bench logged it -- a poll holding it more often holds a new
+    # copy, as far as the record can tell). The first block is the re-read
+    # and is proposed; the second is LISTED beside it, for a person.
+    lab.poll(gc1, work + work, [DUP] * 25 + [LISTED] * 25)
 
     storm = "storm"
     tail_lines = [SimLab.run_line("T1%03d" % k, {"v": "t%d" % k})
@@ -349,11 +381,12 @@ def build() -> SimLab:
              for k in range(30)]
     lab.poll(cu, [af] + night[:10] + [blank] + night[10:20] + [af, ao]
              + night[20:], [GENUINE] * 34)
-    # ...and the other side of the line: a restart re-reads the last two
-    # samples from a stale offset, then the next night's new rows follow.
+    # ...and the other side of the line: a restart re-reads the night's
+    # last thirteen samples from a stale offset (the floor since round 8),
+    # then the next night's new rows follow.
     more = [SimLab.run_line("C2%03d" % k, {"N": "%d.%d" % (60 + k, k)})
             for k in range(22)]
-    lab.poll(cu, night[-6:] + more, [DUP] * 6 + [GENUINE] * 22)
+    lab.poll(cu, night[-13:] + more, [DUP] * 13 + [GENUINE] * 22)
 
     # ── ROUND 4: a standard is not a sample ─────────────────────────────
     fl = "flashqc"
@@ -376,7 +409,9 @@ def build() -> SimLab:
         SimLab.run_line("40%03d" % (700 + k), {"N": "%d.%d" % (20 + k, k)})
         for k in range(30)], [GENUINE] * 32)
     g2 = "wholefile"
-    p = [SimLab.run_line("4000%d" % k, {"v": "p%d" % k}) for k in range(4)]
+    # twelve samples, so the re-read's twins carry thirteen with 40005: the
+    # floor
+    p = [SimLab.run_line("400%02d" % k, {"v": "p%d" % k}) for k in range(12)]
     q = [SimLab.run_line("AF26", {"v": "a1"}),
          SimLab.run_line("AF26", {"v": "a2"}),
          SimLab.run_line("40005", {"v": "q5"}),
@@ -386,7 +421,7 @@ def build() -> SimLab:
     back = p[::-1]
     lab.poll(g2, p + back + q + back + [
         SimLab.run_line("4100%d" % k, {"v": "n%d" % k}) for k in range(10)],
-        [DUP] * 4 + [GENUINE] * 4 + [DUP] * 4 + [GENUINE] * 14)
+        [DUP] * 12 + [GENUINE] * 12 + [DUP] * 4 + [GENUINE] * 22)
 
     # ── ROUND 5: a re-test of a few samples is not a re-read ────────────
     rt = "retests"
@@ -520,4 +555,96 @@ def file_bench(seed: int, retest: str = "lines") -> SimLab:
             lab.poll(uid, file[stale:], [DUP] * (logged - stale)
                      + [GENUINE] * (len(file) - logged))
         logged = len(file)
+    return lab
+
+
+def critic_bench(seed: int, qc: bool = True, retests: bool = True,
+                 archive: bool = True, whole_file: bool = True) -> SimLab:
+    """The round-7 critic's `fuzz3.py` generator, line for line in what it
+    writes (`critic-T-P10-7/fuzz3.py`, `run(seed)`): one to three benches,
+    interleaved poll by poll. Each bench keeps a FILE; 60 % of them start
+    with an archive first ingest of 20-400 lines (all genuine). Each line
+    of work is the AF26 check (one of two identical lines) or a Blank
+    (15 %), a re-test (15 %) of one to six lines -- a consecutive block of
+    the file or of the same day's lines (60 %), or a scattered pick -- or a
+    new sample, at a resolution of 2, 3, 10 or 1000 steps. Each day is
+    logged live, in one catch-up poll, or by a restart that re-reads from
+    5-80 lines back (or the whole file) and then sends the day's lines.
+
+    The switches are the critic's own isolation runs, each drawing from
+    the random stream exactly as its script does: `qc=False` is
+    `fuzz3e.py` with its QC branch cut (those draws fall through to the
+    re-test branch), `retests=False` is `fuzz3d.py` (to a new sample),
+    `archive=False` drops the first ingest and its draw (`fuzz3c/d/e`),
+    `whole_file=False` drops the whole-file restart (`fuzz3b-e`)."""
+    import random
+    rnd = random.Random(seed)
+    lab = SimLab()
+
+    def bench(uid):
+        res = rnd.choice([2, 3, 10, 1000])
+
+        def val():
+            return {"S": str(rnd.randint(1, res)) if res < 1000
+                    else "%.2f" % rnd.uniform(100, 400)}
+        stds = [SimLab.qc_line("AF26", "S", 2.0),
+                SimLab.qc_line("AF26", "S", 2.0),
+                SimLab.run_line("Blank", {"S": "0"})]
+        nxt = [rnd.randint(30000, 60000)]
+
+        def newline():
+            line = SimLab.run_line(str(nxt[0]), val())
+            nxt[0] += 1
+            return line
+
+        def work(n, file):
+            out = []
+            for _ in range(n):
+                r = rnd.random()
+                if qc and r < 0.15:
+                    out.append(rnd.choice(stds))
+                elif retests and r < 0.30 and (file or out):
+                    src = file + out
+                    k = rnd.randint(1, 6)
+                    if rnd.random() < 0.6:
+                        j = rnd.randint(0, max(0, len(src) - k))
+                        out.extend(src[j:j + k])
+                    else:
+                        out.extend(rnd.sample(src, min(k, len(src))))
+                else:
+                    out.append(newline())
+            return out
+        file: List[tuple] = []
+        if archive and rnd.random() < 0.6:
+            hist = work(rnd.randint(20, 400), file)
+            file.extend(hist)
+            yield (uid, hist, [GENUINE] * len(hist))
+        logged = len(file)
+        for _day in range(rnd.randint(2, 7)):
+            today = work(rnd.randint(3, 50), file)
+            file.extend(today)
+            m = rnd.choice(["live", "catchup", "restart"]
+                           + (["restart0"] if whole_file else []))
+            if m == "live":
+                for line in today:
+                    yield (uid, [line], [GENUINE])
+            elif m == "catchup":
+                yield (uid, today, [GENUINE] * len(today))
+            else:
+                stale = (0 if m == "restart0"
+                         else max(0, logged - rnd.randint(5, 80)))
+                if logged - stale < 5:
+                    stale = max(0, logged - 5)
+                yield (uid, file[stale:], [DUP] * (logged - stale)
+                       + [GENUINE] * (len(file) - logged))
+            logged = len(file)
+
+    alive = [bench("u%d" % i) for i in range(rnd.randint(1, 3))]
+    while alive:
+        g = rnd.choice(alive)
+        try:
+            uid, lines, truth = next(g)
+            lab.poll(uid, lines, truth)
+        except StopIteration:
+            alive.remove(g)
     return lab

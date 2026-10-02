@@ -65,27 +65,40 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
   a short day that poll has under twenty rows and is no less a re-read
   (rule `stretch`). A lone twin among new rows is what a genuine repeat in
   a catch-up poll looks like. On BOTH paths the twins must include
-  MIN_COPY_SAMPLES (5) SAMPLE readings over two or more samples
+  MIN_COPY_SAMPLES (13) SAMPLE readings over seven or more samples
   (`is_sample_id`: a Lab ID numbered the way LabCore numbers a sample). A
   lab reads its standards, blanks and solvents every day by design, and a
   repeat of only those is a QC repeat until a person says otherwise; and
   it re-tests one, two, a handful of samples, which, reading the same,
   write exactly the rows a short re-read writes. The record cannot tell
-  those apart, so below five samples a repeat is LISTED, never proposed.
+  those apart, so below thirteen samples a repeat is LISTED, never
+  proposed. Thirteen because a lab re-tests a run of up to six lines, and
+  two such re-tests back to back can copy twelve lines of the record in
+  their first order -- at the head of a catch-up poll, up to the record's
+  last row, which is row for row what a twelve-line re-read writes
+  (round-8 harsher fuzz, `fuzz3b.py` seed 1478: two re-tests, nine lines,
+  eight samples, the record's last nine, at the head of a catch-up poll).
   A run of twins counts only if ONE stretch of the record carries it, row
   by row (`_reread_runs`) -- stepping over rows of the record that are
   themselves copies of earlier rows, which an earlier restart wrote and
-  the file never held (`_bridge`) -- and five samples prove it only where
-  a restart puts its re-read: at the head of the poll, running to the
-  record's end
-  (or carrying on, a few rows later, from a re-read the poll already
-  proved). Anywhere else — in the middle of new work, or at the head but
-  stopping short — it takes MID_POLL_SAMPLES (9): two re-tests of four
-  samples back to back write eight such rows. The residual, stated: nine
-  or more samples re-tested in their first order mid-poll, or five or
-  more re-tested at the head up to the record's last row, every value
-  identical, are proposed — for Ryan to look at beside their originals
-  before anything hides.
+  the file never held (`_bridge`), and only between runs that touch in
+  the poll -- and it proves itself where a restart puts its re-read: at
+  the head of the poll, running to the record's end (or carrying on, a
+  few rows later, from a re-read the poll already proved). Anywhere else
+  — in the middle of new work, or at the head but stopping short — it
+  takes MID_POLL_SAMPLES (also 13 since round 8). The residual, stated:
+  thirteen or more samples re-tested in the order the record holds them,
+  every value identical, are proposed — for Ryan to look at beside their
+  originals before anything hides. Re-reads of fewer than thirteen
+  samples are LISTED (`short_reread`, the review list's first tier).
+
+MULTIPLICITY (round-7 critic). A reading a poll holds more often than the
+bench had logged it before holds at least one NEW copy: no re-read copies a
+line more often than the file held it, and the file held it no more often
+than it was logged. The twin rule keeps that by matching by count (below);
+a `resend` of the `stretch` kind keeps it by claiming only copies beyond
+what the record held (`_live_resends`). Nothing is hidden on a path that
+could leave a poll's reading with no visible copy it is owed.
 * `probable_duplicate` — a twin that is NOT in such a poll or stretch: a
   genuine identical re-test or a QC repeat looks exactly like this. Always
   visible; listed for review, in three tiers (`review_tier`). First the
@@ -132,12 +145,22 @@ MAJORITY_MIN_ROWS = 5
 #: read before, those rows are exactly what a short re-read writes, and the
 #: record cannot tell the two apart (round-4 critic: a pair re-test,
 #: identical results, inside a 26-row catch-up poll). Below the floor a
-#: repeat is LISTED, never proposed. Measured on the server's log-mirror
-#: copy of 2026-10-02, together with REREAD_GAP: 178 hide candidates move
+#: repeat is LISTED, never proposed. Round 8: THIRTEEN. The round-7
+#: critic's lab re-tests up to six lines at a time; a six-line re-test at
+#: the head of a catch-up poll, running to the record's end, is row for
+#: row a six-line re-read (`fuzz3.py` seed 106), and two re-tests back to
+#: back can line up the same way (`fuzz3b.py` seed 1478: nine lines, eight
+#: samples, hidden at a floor of seven). Twelve is the most two six-line
+#: re-tests write. Measured on the mirror copy (md5 74ef0005...), with
+#: every round-8 change: replay_duplicate 53,340 (round 7) -> 52,890;
+#: since 09-01 only Agilent GC 1 moves, 2,933 -> 2,931. On `file_bench`
+#: (stale offsets of 5-60 lines) it moves the short re-reads to the review
+#: list's first tier: see `TestTheRoundSixCriticsFuzz`.
+#: Round 5's measurement, with REREAD_GAP: 178 hide candidates move
 #: to review (86 of them on the 08-18 storm day) and 17 join, 63,869 ->
 #: 63,708; since 09-01 GC 1 2,927 -> 2,933, GC 2 395 -> 390, Eraspec 3,484
 #: and Eraspec NIR 24,961 unchanged.
-MIN_COPY_SAMPLES = 5
+MIN_COPY_SAMPLES = 13
 #: A re-read copies the FILE, so each copied sample came, somewhere in the
 #: bench's earlier record, right after the sample copied before it (right
 #: before, all along the run, for a file kept newest-first). A pair that
@@ -153,12 +176,34 @@ REREAD_GAP = 1
 #: every one of them in the middle of a poll, or at its head but short of
 #: the record's end). The fuzz re-tests up to four samples at a time, and
 #: two re-tests back to back can line up as one stretch of eight; nine
-#: cannot be written that way. On the server's mirror copy of 2026-10-02
+#: cannot be written that way. Round 8: thirteen, because the round-7
+#: critic's lab re-tests up to SIX lines, and two of those back to back
+#: line up as one stretch of twelve (`fuzz3.py` seeds 512 and 1308, ten
+#: samples mid-poll). Round 5, on the server's mirror copy of 2026-10-02
 #: it, with `_touches_end` and alignment-held runs, moves 286 hide
 #: candidates to review and lets 30 join (63,708 -> 63,452): 243 of the
 #: 286 on the Agilent's 08-18 storm day, which is its own approval unit;
 #: since 09-01 only Agilent GC 2 moves (390 -> 395).
-MID_POLL_SAMPLES = 9
+MID_POLL_SAMPLES = 13
+#: How many DISTINCT samples a run of copies must span, whatever its length.
+#: One re-test copies up to six lines, and a lab may re-test the same few
+#: lines again and again; the record then holds those lines over and over
+#: in the same alternation, and a later burst of the same re-tests lines up
+#: with it row for row (round-8 harsher fuzz, `fuzz3e.py` seed 3934: 41875
+#: and 41876 re-tested in turn, thirteen rows of two samples, proposed).
+#: Six distinct samples or fewer can always be one re-test, repeated; so a
+#: run must span seven. Before round 8 this was two.
+MIN_DISTINCT_SAMPLES = 7
+#: The floor for a block of samples repeated back to back INSIDE one poll
+#: with no sign of a second INSERT (`_live_resends`, why `stretch`). A lab
+#: re-tests a run of the lines it has just printed, and a re-test right
+#: behind its originals writes exactly such a block (round-7 critic's
+#: `fuzz3.py`: re-tests of up to six lines, seed 7 -- 39079 and 39111-
+#: 39114 re-tested at once, inside an archive first ingest, proposed as a
+#: resend). Two such re-tests back to back write twelve. Every stretch the
+#: rule finds on the server's log-mirror copy of 2026-10-02 holds 19 to 28
+#: samples (Agilent GC 1, 08-18 and 09-11), so the floor costs it nothing.
+RESEND_STRETCH_SAMPLES = 13
 #: How far on (in record rows, the same way round) a run may pick up from
 #: the poll's last proven run and still be the same re-read. Agilent GC 2's
 #: 09-18 10:58 poll reads its newest-first file in stretches that resume
@@ -210,14 +255,14 @@ REVIEW_LABELS = ("probable_duplicate",)
 #:   could not prove is here; so is a re-test of the record's last few
 #:   samples, which writes the same rows.
 #: * `short_run` -- a run of copies anywhere else (`short_stretch`,
-#:   `mid_poll_stretch`, `fewer_than_five_samples`,
+#:   `mid_poll_stretch`, `too_few_samples`,
 #:   `fewer_than_two_samples`): what a re-test of a few old samples, or the
 #:   day's standards read again together, looks like.
 #: * `single_repeat` -- a lone identical reading among new rows, or one
 #:   reading twice in a poll: what a QC check or a one-off re-test looks
 #:   like.
 LOOK_FIRST_RULES = frozenset(("short_reread",))
-SHORT_RUN_RULES = frozenset(("short_stretch", "fewer_than_five_samples",
+SHORT_RUN_RULES = frozenset(("short_stretch", "too_few_samples",
                              "fewer_than_two_samples", "mid_poll_stretch"))
 REVIEW_TIERS = ("look_first", "short_run", "single_repeat")
 
@@ -464,7 +509,9 @@ def _import_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
     return out
 
 
-def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
+def _live_resends(poll: List[LogRow],
+                  held: Optional[Dict[Tuple[str, ...], int]] = None
+                  ) -> Dict[int, Tuple[int, str]]:
     """Copies inside one poll of a bench, from its FULL id order (every
     kind: a status row is part of what the drain sent). Maps a copy's id to
     (the id it copies, why).
@@ -479,10 +526,13 @@ def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
       SEPARATE INSERT: another bench's row landed between the two (an id
       gap), or the block carries a status change (a bench cannot make the
       same transition twice running), or it is a full batch of 100.
-    * ``stretch``: the block holds MIN_COPY_SAMPLES or more sample readings
-      (two or more samples) in identical order. A person re-tests a sample,
-      or a few; five samples and more, every number the same, in the same
-      order, is the file or the transfer repeating itself.
+    * ``stretch``: the block holds RESEND_STRETCH_SAMPLES (13) or more
+      sample readings (seven or more samples) in identical order, and every
+      row of it, and of the block it repeats, is a copy beyond what the
+      record held (MULTIPLICITY, below). A person re-tests a run of up to
+      six lines, two runs back to back at most twelve; thirteen samples and
+      more, every number the same, in the same order, is the file or the
+      transfer repeating itself.
 
     Anything else — one sample's lines printed twice (adjacent ids, one
     INSERT), a QC repeat — is the file's content and is left to the twin
@@ -491,6 +541,22 @@ def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
     exact = [_exact(r) for r in poll]
     out: Dict[int, Tuple[int, str]] = {}
     n, p = len(poll), 0
+    # MULTIPLICITY (round-7 critic, `minimal2.py`). A reading the poll
+    # holds more often than the record held it before (`held`) must keep
+    # one new copy: no re-read can copy a line more often than the file
+    # held it, and the file held it no more often than it was logged. So
+    # a block proves a `stretch` only where every row of it, the copy AND
+    # the block it repeats, is such an excess copy -- the n-th copy of its
+    # reading in the poll, with n above what the record held. Below that,
+    # the copies are what a re-read writes, and the twin rule weighs them
+    # against the record by count.
+    held = held or {}
+    seen_n: Dict[Tuple[str, ...], int] = collections.Counter()
+    excess: List[bool] = []
+    for r in poll:
+        f = fingerprint(r)
+        seen_n[f] += 1
+        excess.append(seen_n[f] > held.get(f, 0))
     while p < n - 1:
         advanced = False
         for length in range(1, min(LOG_BATCH_ROWS, (n - p) // 2) + 1):
@@ -500,8 +566,9 @@ def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
             block = poll[p:q]
             # the same evidence floor as a re-read stretch: a block of a
             # few samples measured and at once measured again is a re-test
-            samples = (len(_samples(block)) >= 2
-                       and _sample_rows(block) >= MIN_COPY_SAMPLES)
+            samples = (len(_samples(block)) >= MIN_DISTINCT_SAMPLES
+                       and _sample_rows(block) >= RESEND_STRETCH_SAMPLES
+                       and all(excess[p:q]))
             status = any(r.kind not in CLASSIFIED_KINDS for r in block)
             on_boundary = p % LOG_BATCH_ROWS == 0
             copies = 0
@@ -509,7 +576,8 @@ def _live_resends(poll: List[LogRow]) -> Dict[int, Tuple[int, str]]:
                 gap = poll[q].id - poll[q - 1].id != 1
                 batch = on_boundary and (gap or status
                                          or length == LOG_BATCH_ROWS)
-                if not (batch or samples):
+                if not (batch or samples
+                        and all(excess[q:q + length])):
                     break
                 why = "batch" if batch else "stretch"
                 for k in range(length):
@@ -539,8 +607,10 @@ class _Order:
     re-sent), and a re-read of that place may copy any number of them.
     Every classified row of every poll joins it, copies included: a file
     re-read twice is copied in the same order both times. `copy` marks the
-    rows that are twins of earlier rows (copies the record holds, proposed
-    or listed), so a later re-read may step over them (`_bridge`)."""
+    rows that are copies of earlier rows -- proposed, or listed as a re-read
+    too short to prove (`short_reread`) -- so a later re-read may step over
+    them (`_bridge`). Other listed twins are not marked: they may be
+    re-tests the file holds."""
 
     __slots__ = ("at", "rows", "samples", "copy", "key")
 
@@ -549,8 +619,8 @@ class _Order:
             collections.defaultdict(list))
         self.rows = 0
         self.samples = 0
-        #: per record row: True when the row is itself a twin of an earlier
-        #: row (a copy the record holds, visible because nothing proved it)
+        #: per record row: True when the row is itself a copy of an earlier
+        #: row (proposed, or a listed `short_reread`; see `remember`)
         self.copy: List[bool] = []
         #: per record row: its reading
         self.key: List[int] = []
@@ -624,7 +694,15 @@ def _reread_runs(poll: List[LogRow], twins: List[int], keys: List[int],
         spans = order.at.get(keys[k], ())
         if keys[k] == keys[cur[-1]]:
             # the same reading again: only as often as the record held it
-            # running, one row on inside that stretch
+            # running, one row on inside that stretch -- and only straight
+            # after itself in the poll. The record's copies sit in adjacent
+            # rows, so the file's did too; rows between the two in the poll
+            # are rows the file never held there. (Round-7 critic's fuzz3,
+            # seed 3826: a re-read ending on the record's AF26, AF26, then a
+            # re-test of three samples and the day's own AF26 check, which
+            # was proposed as the second copy.)
+            if k - cur[-1] != 1:
+                return set()
             out = set()
             for p, r0, r1, q0, q1, way in align:
                 for d in ((1, -1) if way == 0 else (way,)):
@@ -686,8 +764,9 @@ def _continues(end: set, start: set) -> bool:
 def _proven(poll: List[LogRow], run: List[int],
             floor: int = MIN_COPY_SAMPLES) -> bool:
     """A run of copies carries what a re-test of a few samples cannot:
-    `floor` (MIN_COPY_SAMPLES) sample readings, over two or more samples."""
-    return (len(_samples(poll[j] for j in run)) >= 2
+    `floor` (MIN_COPY_SAMPLES) sample readings, over MIN_DISTINCT_SAMPLES
+    (7) or more distinct samples."""
+    return (len(_samples(poll[j] for j in run)) >= MIN_DISTINCT_SAMPLES
             and _sample_rows(poll[j] for j in run) >= floor)
 
 
@@ -704,7 +783,7 @@ def _replayed_stretches(poll: List[LogRow], rest: List[int],
     consecutive rows (in the poll's order, re-sent rows set aside), every
     one a reading the record already holds (`seen`). The twins in such a
     stretch are copies when the stretch carries at least MIN_COPY_SAMPLES
-    sample twins over two or more distinct samples. A twin outside one — a
+    sample twins over seven or more distinct samples. A twin outside one — a
     row among new ones (round-2 critic: a QC repeat in a 24-row catch-up;
     Multitek NS row 216039 on 08-31), a run of standards and blanks, which
     a lab measures every day by design (round-3 critic: a Blank and a
@@ -722,13 +801,16 @@ def _replayed_stretches(poll: List[LogRow], rest: List[int],
     run: List[int] = []
     head = True                 # nothing the record lacks came before
     ended: Optional[set] = None  # where the poll's last proven run ended
+    # the head re-read, while it is broken by rows the record lacks and has
+    # not yet reached the record's end (see `_prove_runs`)
+    chain: list = []
     for k in rest + [-1]:                  # -1 closes the last run
         if k >= 0 and k in seen:
             run.append(k)
             continue
         twins = [j for j in run if j in twin_of]
         proven, ended, parts = _prove_runs(poll, twins, keys, order, head,
-                                           ended, unanchored, placed)
+                                           ended, unanchored, placed, chain)
         out.update(proven)
         if len(run) >= 2:
             for part in parts:
@@ -736,6 +818,10 @@ def _replayed_stretches(poll: List[LogRow], rest: List[int],
                     short.update(part)
         run = []
         head = False
+    if chain:                   # a head re-read that never reached the end
+        for part in chain[0]:
+            unanchored.update(part)
+            short.difference_update(part)
     return out, short
 
 
@@ -790,7 +876,14 @@ def _bridge(parts: List[List[int]], bounds: list, order: _Order,
     out_b: list = [bounds[0]]
     for part, (start, end) in zip(parts[1:], bounds[1:]):
         read = {keys[j] for j in out_p[-1]}
-        if _bridged(out_b[-1][1], start, order, read):
+        # Only runs that touch in the poll: a re-read sends the lines on
+        # either side of the stepped-over copies one straight after the
+        # other. Rows between them in the poll are rows the file held
+        # there, so the second run is something else (round-7 critic's
+        # fuzz3, seed 3826: a re-test of three samples, then the day's
+        # AF26 check, bridged onto the re-read before them).
+        if part[0] == out_p[-1][-1] + 1 and _bridged(
+                out_b[-1][1], start, order, read):
             out_p[-1].extend(part)
             out_b[-1] = (out_b[-1][0], end)
         else:
@@ -801,7 +894,8 @@ def _bridge(parts: List[List[int]], bounds: list, order: _Order,
 
 def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
                 order: _Order, head: bool, ended: Optional[set],
-                unanchored: set, placed: Optional[set] = None
+                unanchored: set, placed: Optional[set] = None,
+                chain: Optional[list] = None
                 ) -> Tuple[set, Optional[set], List[List[int]]]:
     """The runs of `twins` that prove a re-read (positions in `poll`); where
     the last proven one ended; and every run. A run proves itself with
@@ -813,18 +907,45 @@ def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
     a re-test of a few samples, and two of them back to back, write the
     same rows as a short re-read, and print in the middle of new work.
     Runs that would have proved themselves at the head but are not there
-    go into `unanchored`, so the listing can say why."""
+    go into `unanchored`, so the listing can say why.
+
+    The head re-read may be broken by rows the record lacks (a result
+    re-processed since: the file holds its new numbers where the record
+    holds the old). Then its first run stops short of the record's end and
+    proves nothing yet; it waits in `chain` (`[parts, start, end]`) for the
+    runs after the break. Each that carries on where the chain ended
+    (`_continues`) and carries the floor itself joins it, and once the
+    chain reaches the record's end every run in it is the re-read. Until
+    then, nothing in it is proposed: the polls's head stopping short of
+    the end is what a re-test at the head writes (round 5)."""
     bounds: list = []
     parts = _reread_runs(poll, twins, keys, order, bounds)
     parts, bounds = _bridge(parts, bounds, order, keys)
     out: set = set()
+    chain = chain if chain is not None else []
     for n, (part, (start, end)) in enumerate(zip(parts, bounds)):
+        if chain and _continues(chain[2], start) and _proven(poll, part):
+            chain[0].append(part)
+            chain[2] = end
+            if _touches_end(order, chain[1], end):
+                for p in chain[0]:
+                    out.update(p)
+                ended = end
+                del chain[:]
+            continue
+        if chain:                          # the chain broke short of the end
+            for p in chain[0]:
+                if not (out & set(p)):
+                    unanchored.update(p)
+            del chain[:]
         at_head = head and n == 0 and _touches_end(order, start, end)
         anchored = at_head or (ended is not None and _continues(ended, start))
         if _proven(poll, part, MIN_COPY_SAMPLES if anchored
                    else MID_POLL_SAMPLES):
             out.update(part)
             ended = end
+        elif head and n == 0 and _proven(poll, part):
+            chain[:] = [[part], start, end]
         elif _proven(poll, part):
             unanchored.update(part)
         elif anchored and placed is not None:
@@ -887,7 +1008,8 @@ def classify(rows: Iterable[LogRow],
             in_order = sorted(sent[(uid, poll[0].ts)], key=lambda r: r.id)
             copies = _import_resends([r for r in poll if r.is_imported()])
             copies.update(_live_resends(
-                [r for r in in_order if not r.is_imported()]))
+                [r for r in in_order if not r.is_imported()],
+                {f: len(v) for f, v in kept.items() if v}))
             keys = [key_of.setdefault(fingerprint(r), len(key_of))
                     for r in poll]
             pos = {r.id: k for k, r in enumerate(poll)}
@@ -916,14 +1038,9 @@ def classify(rows: Iterable[LogRow],
             copied: set = set()
             unanchored: set = set()
             placed: set = set()
-            if majority:
-                copied = _prove_runs(poll, [k for k in rest if k in twin_of],
-                                     keys, order, True, None, unanchored,
-                                     placed)[0]
-            else:
-                copied, short = _replayed_stretches(poll, rest, twin_of, seen,
-                                                    keys, order, unanchored,
-                                                    placed)
+            copied, short = _replayed_stretches(poll, rest, twin_of, seen,
+                                                keys, order, unanchored,
+                                                placed)
             rule = ("burst" if n >= BURST_ROWS else "majority" if majority
                     else "stretch")
 
@@ -950,7 +1067,7 @@ def classify(rows: Iterable[LogRow],
                         else "fewer_than_two_samples"
                         if majority and standards_only
                         else "short_reread" if k in placed
-                        else "fewer_than_five_samples" if majority
+                        else "too_few_samples" if majority
                         else "short_stretch" if k in short
                         else "lone_twin_in_burst" if n >= BURST_ROWS
                         else "twin_not_in_burst", twin_of[k])
@@ -963,8 +1080,20 @@ def classify(rows: Iterable[LogRow],
                         kept[f][0] if kept[f] else in_poll[f])
                 in_poll.setdefault(f, r.id)
                 kept[f].append(r.id)
-            # only now does this poll's order join the record's
-            order.remember(poll, keys, set(twin_of) | set(resent))
+            # only now does this poll's order join the record's. A later
+            # re-read may step over (`_bridge`) the copies proposed here,
+            # and the listed ones that sit exactly where a restart puts its
+            # re-read (`short_reread`: the poll's head, running to the
+            # record's end) -- but not over any other twin. A twin listed
+            # anywhere else may be a genuine re-test the FILE holds, and
+            # stepping over it joined runs of re-tests of re-tests into
+            # one "re-read" (round-8 harsher fuzz, `fuzz3e.py` seeds 462
+            # and 768: 13 genuine rows each, proposed). Stepping over the
+            # short re-reads keeps a long re-read whole when an earlier,
+            # shorter restart copied part of the same lines (`file_bench`
+            # seed 21: 40026-40030 split off a twenty-sample re-read).
+            order.remember(poll, keys, set(copied) | set(resent)
+                           | (placed & set(twin_of)))
             for k in range(n):
                 r = poll[k]
                 if (r.lab_id in MISREAD_LAB_IDS and r.is_imported()
@@ -1848,17 +1977,19 @@ def summary_lines(rep: Dict[str, Any], names: Optional[Dict[str, str]] = None
     """The report as a person reads it at a terminal: totals, then a line
     per bench, then the series whose QC would change."""
     names = names or {}
+    tot = rep["totals"]
     out = ["read {0:,} run/qc rows (record up to id {1}); hide candidates "
-           "{2:,}: {3}".format(rep["rows_read"], rep["upto_id"],
-                               rep["hide_candidates"],
-                               ", ".join("{0} {1:,}".format(k, v)
-                                         for k, v in sorted(
-                                             rep["totals"].items())))]
+           "{2:,}: {3}; listed for review, never hidden: {4}".format(
+               rep["rows_read"], rep["upto_id"], rep["hide_candidates"],
+               ", ".join("{0} {1:,}".format(k, tot[k])
+                         for k in sorted(tot) if k in HIDE_CANDIDATE_LABELS),
+               ", ".join("{0} {1:,}".format(k, tot.get(k, 0))
+                         for k in REVIEW_LABELS))]
     rv = rep.get("review") or {}
     out.append("review list: look first {0:,}, short runs {1:,}, single "
                "repeats {2:,} (look first = re-reads too short to prove, "
                "at the head of a poll and running to the record's end: "
-               "every unproven replay is among them)".format(
+               "where a restart's unproven re-read sits)".format(
                    rv.get("look_first", 0), rv.get("short_run", 0),
                    rv.get("single_repeat", 0)))
     for b in sorted(rep["benches"], key=lambda b: -sum(

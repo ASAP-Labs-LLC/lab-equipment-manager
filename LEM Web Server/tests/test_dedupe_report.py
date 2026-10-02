@@ -94,17 +94,18 @@ class TestTheDryRun:
         Days like that are listed on their own, so they are reviewed as
         events rather than approved as part of a total."""
         lab = SimLab()
-        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(6)]
+        lines = [SimLab.run_line("L40%03d" % k, {"v": str(k)})
+                 for k in range(13)]
         for line in lines:
             lab.poll("s", [line], [GENUINE], ts="2026-08-17T09:00:00")
         for k in range(12):
-            lab.poll("s", lines, [DUP] * 6,
+            lab.poll("s", lines, [DUP] * 13,
                      ts="2026-08-18T09:%02d:00" % k)
         rep = _report(lab)
         storms = rep["benches"][0]["storms"]
         assert storms == [{"day": "2026-08-18", "polls": 12,
-                           "replay_polls": 12, "rows": 72,
-                           "hide_candidates": 72, "not_hidden": {},
+                           "replay_polls": 12, "rows": 156,
+                           "hide_candidates": 156, "not_hidden": {},
                            "unit_suffix": "@storm:2026-08-18"}]
 
     def test_a_storm_of_bursts_that_are_not_copies_is_listed_with_why(self):
@@ -584,7 +585,7 @@ class TestTheReviewListSaysWhereToLookFirst:
 
     * `look_first` -- it is part of a RUN of copies sitting where a re-read
       would sit, too short to prove itself (`short_stretch`,
-      `fewer_than_five_samples`, `fewer_than_two_samples`,
+      `too_few_samples`, `fewer_than_two_samples`,
       `mid_poll_stretch`). Every replay the rules could not prove is here.
     * `single_repeat` -- a lone identical reading among new rows, or the
       same reading twice in one poll: what a QC check or a one-off re-test
@@ -672,7 +673,14 @@ class TestLookFirstIsWhereARestartReReads:
     Measured on fuzz2 (`file_bench(seed)`, seeds 0-2,999): look_first is
     2,408 replays and 692 genuine rows (78 % copies; was 2,408 and
     28,115, 8 %); short_run 28,101 genuine and 0 replays; single_repeat
-    43,712 genuine and 0 replays."""
+    43,712 genuine and 0 replays.
+
+    Round 8 raised the floor to thirteen samples (over seven distinct
+    ones), the floor that place is held to as well (the five and nine
+    above are round 7's). More re-reads fall short of it, and every one
+    of them lands here: look_first is 13,651 replays and 687 genuine rows
+    (95 % copies); short_run 28,220 genuine and 0 replays; single_repeat
+    43,598 genuine and 0 replays."""
 
     def _lab(self):
         lab = SimLab()
