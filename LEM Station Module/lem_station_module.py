@@ -4131,7 +4131,11 @@ class SingleCsvSource:
 #              in the `adoption` record, no alarm.
 #
 # The key is RAW values, so a correction factor changed since logging cannot
-# unmatch a line (U3), and numbers are compared as numbers ("0.8000" in the
+# unmatch a line (U3). A QC verdict that kept no raw reading holds the reading
+# plus the factor OF ITS DAY; the bench reads every factor the record applied
+# back from the run rows' `detail.corrections` (`logged_factors`), so a factor
+# changed, set to 0 or deleted since cannot unmatch that print either. Numbers
+# are compared as numbers ("0.8000" in the
 # file, 0.8 in `detail.raw`). The server publishes the same recipe
 # (`bench_api.adoption_hash`); `test_adoption_plan.py` spells it out byte for
 # byte on both sides.
@@ -4237,6 +4241,54 @@ class LegacyRecord(NamedTuple):
     counts: Counter         # the multiset of adoption keys
     unreadable: set         # Lab IDs with a row that cannot be read
     qc: dict                # the qc verdicts, `qc_verdict_record`'s shape
+    factors: dict = {}      # the factors the record applied, `logged_factors`
+
+
+def logged_factors(rows) -> dict:
+    """The machine-level factors the record shows were applied when it was
+    written: {column: sorted distinct offsets}, from the `run` rows'
+    `detail.corrections` (v3.9's `run_log_detail` writes the offset it
+    actually added, per column, whenever it corrected a reading). A QC
+    standard's verdict that kept no raw reading is the reading plus the factor
+    OF THAT DAY; this is where the bench reads that factor back, so a factor
+    removed (or changed) since logging still explains the verdict. A zero, a
+    non-number or a row that cannot be read says nothing. Identical to the
+    server's `bench_api.adoption_logged_factors`."""
+    seen: dict = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "run":
+            continue
+        detail = _detail_dict(r.get("detail"))
+        applied = (detail or {}).get("corrections")
+        if not isinstance(applied, dict):
+            continue
+        for col, off in applied.items():
+            if isinstance(off, bool):
+                continue
+            n = _safe_float(off)
+            if n is None or n == 0 or n != n or n in (float("inf"), float("-inf")):
+                continue
+            seen.setdefault(str(col), set()).add(n)
+    return {col: sorted(offs) for col, offs in seen.items()}
+
+
+def logged_factors_from_digest(digest: dict) -> Optional[dict]:
+    """The digest's `factors` in `logged_factors`' shape: {} when the digest
+    has none (an older v4 server: the bench then knows today's factors only,
+    as before), None when it is misshapen."""
+    raw = (digest or {}).get("factors")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for col, offs in raw.items():
+        if not isinstance(offs, list) or not all(
+                isinstance(n, (int, float)) and not isinstance(n, bool)
+                for n in offs):
+            return None
+        out[str(col)] = sorted({float(n) for n in offs if n})
+    return out
 
 
 def qc_verdict_value(value) -> str:
@@ -4337,7 +4389,8 @@ def legacy_adoption_counts(rows) -> LegacyRecord:
             bad.add(str(r.get("lab_id") or "").strip())
             continue
         counts[k] += 1
-    return LegacyRecord(counts, bad, qc_verdict_record(rows))
+    return LegacyRecord(counts, bad, qc_verdict_record(rows),
+                        logged_factors(rows))
 
 
 @dataclass
@@ -4390,6 +4443,9 @@ class _QcMatch:
     this one (exact), or one whose VALUE is this reading under a factor the
     bench knows (none, or today's) — exact too, since the file holds every
     raw reading. Replays log a print again; the multiset absorbs that.
+    "A factor the bench knows" includes every factor the RECORD shows was
+    applied (`logged_factors`: the run rows' `detail.corrections`), so a
+    factor removed or changed since logging still explains its verdicts.
 
     What the bench cannot know is a factor that has changed since a
     verdict was logged. Such a verdict's value is explained by NO reading of
@@ -4410,8 +4466,10 @@ class _QcMatch:
     a person; a false match is a reading lost without a trace, so where the
     record cannot tell, the print is recovered."""
 
-    def __init__(self, qc: dict, corrections: dict, lines) -> None:
+    def __init__(self, qc: dict, corrections: dict, lines,
+                 logged: Optional[dict] = None) -> None:
         self.corrections = dict(corrections or {})
+        self.logged = dict(logged or {})
         self.pool = {lab: {t: {"raw": Counter(s.get("raw") or {}),
                                "value": Counter(s.get("value") or {})}
                            for t, s in tests.items()}
@@ -4443,9 +4501,19 @@ class _QcMatch:
                 out.append((t, raw, col))
         return out
 
+    def _today(self, t: str, col: str) -> bool:
+        """Has this test a factor today (stage B's condition)?"""
+        return bool(self.corrections.get(col) or self.corrections.get(t))
+
     def _offsets(self, t: str, col: str) -> list:
+        """None, today's factor, and every factor the record shows was
+        applied to this column when it was logged."""
         f = self.corrections.get(col) or self.corrections.get(t) or 0
-        return [0, f] if f else [0]
+        out = [0] + ([f] if f else [])
+        for off in self.logged.get(col) or self.logged.get(t) or ():
+            if off not in out:
+                out.append(off)
+        return out
 
     def _candidates(self, line, t, raw) -> set:
         col = dict(line.cols).get(t) or t
@@ -4481,7 +4549,7 @@ class _QcMatch:
             if not exact or len(exact) < len(wild) + miss or len(exact) <= miss:
                 return False
         elif miss or not wild or not all(
-                self._offsets(t, col) != [0] for t, _r, col in wild):
+                self._today(t, col) for t, _r, col in wild):
             return False
         for counter, k in exact:
             counter[k] -= 1
@@ -4500,14 +4568,15 @@ def plan_adoption(lines, boundary: int, counts, asked=None,
                   file_predates_history: bool = False,
                   fast_lines: int = ADOPTION_FAST_LINES,
                   unreadable=None, qc=None, corrections=None,
-                  reparse=None) -> AdoptionPlan:
+                  reparse=None, logged_factors=None) -> AdoptionPlan:
     """Classify the file's prints (in file order) against the recorded rows:
     `counts`, the multiset of run keys, and `qc`, the qc verdicts
     (`qc_verdict_record`). `asked`: the Lab IDs the record was asked about
     (None: all of them). `unreadable`: Lab IDs the record holds rows for that
     cannot be read — an unmatched line of one is not a print the record
     lacks, so it is counted as unreadable, never recovered. `corrections`:
-    today's machine-level factors. `reparse(line)`: parses a presumed line
+    today's machine-level factors; `logged_factors`, the ones the record
+    shows were applied (`logged_factors`). `reparse(line)`: parses a presumed line
     (before the boundary) that may be a QC standard's print, so that its
     verdicts are spent on it and not left over for a newer print. Pure;
     consumes copies."""
@@ -4532,7 +4601,7 @@ def plan_adoption(lines, boundary: int, counts, asked=None,
     unchecked = len(readings) - len(checked)
 
     def matcher():
-        m = _QcMatch(qc, corrections, before + checked)
+        m = _QcMatch(qc, corrections, before + checked, logged_factors)
         for line in before:        # presumed recorded: spend their verdicts
             if m.is_qc(line):
                 m.take(line, "A")
@@ -4671,6 +4740,7 @@ def adoption_state_from_digest(body: dict) -> dict:
     return {"road": "lem", "counts": Counter(body["counts"]),
             "unreadable": set(str(i) for i in body.get("unreadable_labs") or ()),
             "qc": qc_verdicts_from_digest(body),
+            "factors": logged_factors_from_digest(body) or {},
             "history": bool(body.get("rows")), "first": body.get("first_ts"),
             "recent": list(body.get("recent") or ())}
 
@@ -4689,6 +4759,8 @@ def adoption_digest_problem(doc) -> str:
         # Without them a QC standard's print could be told from no other:
         # an older server's digest is not adopted on.
         return "a digest without its qc verdicts"
+    if logged_factors_from_digest(doc) is None:
+        return "a digest whose logged factors cannot be read"
     return ""
 
 
@@ -10863,7 +10935,8 @@ class LEMStationModule:
             return plan_adoption(lines, boundary, state["counts"], None, older,
                                  unreadable=state.get("unreadable"),
                                  qc=state.get("qc"), corrections=corrections,
-                                 reparse=reparse)
+                                 reparse=reparse,
+                                 logged_factors=state.get("factors"))
         readings = [l for l in lines if l.run_key and l.offset >= boundary]
         # Newest first, each Lab ID once (dict keeps first-seen order).
         order = list(dict.fromkeys(l.lab_id for l in reversed(readings)))
@@ -10874,7 +10947,8 @@ class LEMStationModule:
         rec = legacy_adoption_counts(state["rows"])
         plan = plan_adoption(lines, boundary, rec.counts, state["asked"], older,
                              unreadable=rec.unreadable, qc=rec.qc,
-                             corrections=corrections, reparse=reparse)
+                             corrections=corrections, reparse=reparse,
+                             logged_factors=rec.factors)
         if plan.kind != "full":
             return plan
         if not self._adoption_ask(machine, state, order):
@@ -10882,7 +10956,8 @@ class LEMStationModule:
         rec = legacy_adoption_counts(state["rows"])
         return plan_adoption(lines, boundary, rec.counts, state["asked"], older,
                              unreadable=rec.unreadable, qc=rec.qc,
-                             corrections=corrections, reparse=reparse)
+                             corrections=corrections, reparse=reparse,
+                             logged_factors=rec.factors)
 
     def _adoption_ask(self, machine, state, lab_ids) -> bool:
         """Read the recorded rows of these Lab IDs (those not asked yet),

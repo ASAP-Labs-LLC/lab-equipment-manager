@@ -625,7 +625,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 
     def adoption_world(logged, unlogged=0, pre=0, factor_then=None,
                        factor_now=None, v2=True, qc_print=False, qc_replays=0,
-                       qc_downtime=False):
+                       qc_downtime=False, qc_factor=None):
         if not hasattr(mod, "plan_adoption"):
             raise Unsupported("U1–U5 need adoption at the first v4 start "
                               "(P4) — not present on this target")
@@ -674,9 +674,15 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         try:
             for k, text in enumerate(logged_texts):
                 at = at0 + timedelta(minutes=k)
+                # `qc_factor`: the standard was logged under a factor that
+                # was changed again before any sample ran under it, so no run
+                # row of the record shows it.
+                factors = dict(qc_factor) if (qc_factor is not None
+                                              and text == qc_text) \
+                    else machine.corrections
                 rows = mod.apply_row_corrections(
                     [mod.parse_print(machine, text.strip()).to_row(at)],
-                    machine.corrections)
+                    factors)
                 for row, kind, lab, test, value, detail in mod.run_log_events(
                         machine, rows, "analyst", None):
                     sql, args = mod.build_log_insert(c.uid, kind, at, lab_id=lab,
@@ -799,7 +805,8 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 
     @new("U3")
     def u3():
-        """Logged with +0.0100; the factor is +0.0200 at the v4 start. Every
+        """Logged with +0.0100; the factor is +0.0200 (and, separately, 0 or
+        deleted) at the v4 start. Every
         line was recorded, so every recovered row would be a false one. The
         30 readings AND a QC standard's print, whose v3.9 verdict row kept no
         raw (machine-level factor) — through LEM's digest and again through
@@ -810,6 +817,27 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         m = dict(worlds["v2"])
         m["false_recovered"] = sum(w["recovered_rows"] for w in worlds.values())
         m["legacy"] = worlds["legacy"]
+        # A factor change is also a factor REMOVED since logging: set to 0,
+        # or deleted, with the standard's print replayed by restarts (round-3
+        # critic, Z1/Z10/Z12: the logged QC print was falsely recovered on
+        # both roads). Counted into false_recovered, so the gate holds it.
+        for name, now in (("removed", {"Density": 0.0}), ("deleted", None)):
+            for road in ("v2", "legacy"):
+                w = adoption_measure(adoption_world(
+                    30, factor_then={"Density": 0.01}, factor_now=now,
+                    v2=(road == "v2"), qc_print=True, qc_replays=3))
+                m["false_recovered_%s_%s" % (name, road)] = w["recovered_rows"]
+                m["false_recovered"] += w["recovered_rows"]
+        # And a factor the record never shows: the standard logged under
+        # +0.01, changed to +0.02 before any sample ran, +0.02 today. Nothing
+        # explains its verdict, so only the one-test stand-in (`_QcMatch`
+        # stage B: a factor today) keeps its print from a false recovery.
+        for road in ("v2", "legacy"):
+            w = adoption_measure(adoption_world(
+                30, factor_then={"Density": 0.02}, factor_now={"Density": 0.02},
+                qc_factor={"Density": 0.01}, v2=(road == "v2"), qc_print=True))
+            m["false_recovered_unshown_" + road] = w["recovered_rows"]
+            m["false_recovered"] += w["recovered_rows"]
         return m
 
     @new("U4")

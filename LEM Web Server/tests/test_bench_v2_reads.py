@@ -306,6 +306,33 @@ class TestAdoptionDigest:
         assert body["qc_verdicts"] == {
             "QC-1": {"Flash": {"raw": {}, "value": {"41.5": 1}}}}
 
+    def test_it_says_which_factors_the_record_applied_when_it_was_logged(
+            self, client, token, store):
+        """A QC standard's verdict that kept no raw reading holds the reading
+        plus the machine-level factor of the day it was logged. If that factor
+        has since been removed, the bench cannot explain the verdict from
+        today's factors, and called the logged print recovered (round-3
+        critic, Z1/Z10/Z12). The run rows v3.9 logged around it carry the
+        offset it actually applied (`detail.corrections`), so the digest
+        lists them: every distinct non-zero offset per column."""
+        def row(lab_id, detail):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, '2026-09-30T10:00:00', "
+                "'run', ?, '', '', ?)", [UID, lab_id, detail])
+            assert "error" not in res
+        row("L-1", json.dumps({"values": {"Density": 0.71},
+                               "raw": {"Density": 0.70},
+                               "corrections": {"Density": 0.01}}))
+        row("L-2", json.dumps({"values": {"Density": 0.72},
+                               "raw": {"Density": 0.71},
+                               "corrections": {"Density": 0.01}}))
+        row("L-3", json.dumps({"values": {"Flash": 61.0}, "raw": {"Flash": 64},
+                               "corrections": {"Flash": -3, "Pour": 0}}))
+        row("L-4", json.dumps({"values": {"Density": 0.73}}))
+        body = _get(client, "/api/v2/bench/%s/adoption" % UID, token).get_json()
+        assert body["factors"] == {"Density": [0.01], "Flash": [-3.0]}
+
     def test_it_says_when_this_bench_was_first_recorded_and_nothing_is_empty(
             self, client, token, store):
         """The bench needs "has LEM EVER recorded me, and since when" (§10.2:

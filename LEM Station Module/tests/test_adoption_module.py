@@ -315,7 +315,12 @@ def test_U3_a_qc_standard_no_longer_assigned_is_still_matched_to_its_verdicts(qa
     write_file(b, texts)
     polls(b)
     (rec,) = journal_records("adoption")
-    assert (rec["recovered"], rec["matched"]) == (0, 31)
+    # Every line accounted for and none recovered. The newest twenty match
+    # exactly — the QC verdict too, on the +0.01 the run rows' corrections
+    # show it was logged under — so this is now the fast path (20 matched,
+    # 11 presumed) where it used to need the full match.
+    assert rec["recovered"] == 0
+    assert (rec["path_kind"], rec["matched"], rec["presumed"]) == ("fast", 20, 11)
     assert len(log_rows(b)) == 31 and b.lab.cell_sends == []
 
 

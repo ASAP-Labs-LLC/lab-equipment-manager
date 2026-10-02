@@ -265,6 +265,35 @@ def adoption_qc_verdicts(rows) -> dict:
     return out
 
 
+def adoption_logged_factors(rows) -> dict:
+    """The machine-level factors the record shows were applied when it was
+    written: {column: sorted distinct non-zero offsets}, from the `run`
+    rows' `detail.corrections` (the offset v3.9 actually added). A QC
+    verdict that kept no raw reading is the reading plus the factor of the
+    day it was logged; with these the bench can explain it even after that
+    factor was removed or changed. Identical to the module's
+    `logged_factors`."""
+    seen: Dict[str, set] = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "run":
+            continue
+        detail = _adoption_detail(r.get("detail"))
+        applied = (detail or {}).get("corrections")
+        if not isinstance(applied, dict):
+            continue
+        for col, off in applied.items():
+            if isinstance(off, bool):
+                continue
+            try:
+                n = float(str(off).strip())
+            except (TypeError, ValueError):
+                continue
+            if n == 0 or math.isnan(n) or math.isinf(n):
+                continue
+            seen.setdefault(str(col), set()).add(n)
+    return {col: sorted(offs) for col, offs in seen.items()}
+
+
 def adoption_digest(rows, now: datetime) -> dict:
     """§10.2's answer over a bench's recorded run/qc rows (pure, so the
     floor rehearsal runs the very code the endpoint does):
@@ -276,6 +305,9 @@ def adoption_digest(rows, now: datetime) -> dict:
       qc_verdicts      what each of those verdicts judged
                        (`adoption_qc_verdicts`), so a QC print matches its
                        own verdicts whatever today's QC assignment is;
+      factors          the factors the record applied when it was logged
+                       (`adoption_logged_factors`), so a verdict made under
+                       a factor removed since still explains its print;
       first_ts         when LEM first recorded a reading from the bench;
       recent           run rows of the last ADOPTION_LEDGER_DAYS with the
                        values v3.9 FILED, for the results guard's ledger."""
@@ -313,6 +345,7 @@ def adoption_digest(rows, now: datetime) -> dict:
             "unreadable_labs": sorted(unreadable),
             "qc_tests": {k: sorted(v) for k, v in qc_tests.items()},
             "qc_verdicts": adoption_qc_verdicts(rows),
+            "factors": adoption_logged_factors(rows),
             "first_ts": first, "recent": recent}
 
 

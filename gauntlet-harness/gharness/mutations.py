@@ -177,6 +177,16 @@ MUTATIONS = {
         "pattern": r"elif miss or not wild or not all\(",
         "replace": "elif True or miss or not wild or not all(",
         "what": "a no-raw QC verdict under a since-changed factor never stands in (U3 must fail)"},
+    # Round 3's hole: the bench forgets the factors the record shows were
+    # applied (run rows' detail.corrections) and knows only today's. A QC
+    # standard logged under a factor that has since been removed is then
+    # explained by nothing and falsely recovered (U3's removed/deleted
+    # worlds must fail).
+    "adoption_logged_factors_off": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"self\.logged = dict\(logged or \{\}\)",
+        "replace": "self.logged = {}",
+        "what": "factors applied at logging ignored (U3 removed-factor must fail)"},
     # A recovered reading stays on the results road like any other: filed
     # automatically, without the person §10.2 says must decide (U2).
     "recovered_filed": {

@@ -402,11 +402,15 @@ class TestAdoptionThroughLEM:
         machine = world.bench.machine()
         machine.tests = [spec]
         lines = [_line(world, i) for i in range(30)] + ["QC-D,0.8500"]
-        _legacy(world, lines[:7] + lines[8:], corrections={"Density": 0.01})
+        # The unreadable row is one of the newest twenty lines', so the fast
+        # path cannot take the file and the full match must name it. (The QC
+        # verdict alone no longer forces the full match: it is explained by
+        # the +0.01 the run rows' detail.corrections show it was logged under.)
+        _legacy(world, lines[:20] + lines[21:], corrections={"Density": 0.01})
         res = world.store.sql(
             "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
             "test_name, value, detail) VALUES (?, '2026-09-30 09:00:00', 'run', "
-            "?, '', '', '{not json')", [UID, world.labs[7]])
+            "?, '', '', '{not json')", [UID, world.labs[20]])
         assert "error" not in res, res
         machine.corrections = {"Density": 0.02}
         # Today's factor is LEM's configuration (the import copied

@@ -276,7 +276,8 @@ def test_a_subprocess_whose_status_contradicts_its_results_is_exit_2(monkeypatch
 
 
 P4_SOURCE = ["adoption_off", "adoption_on_corrected", "recovered_filed",
-             "adoption_qc_on_value", "adoption_qc_by_count"]
+             "adoption_qc_on_value", "adoption_qc_by_count",
+             "adoption_logged_factors_off"]
 
 
 @pytest.mark.parametrize("name", P4_SOURCE)

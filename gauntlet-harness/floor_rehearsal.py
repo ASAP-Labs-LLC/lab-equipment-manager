@@ -51,6 +51,17 @@ in two worlds per bench:
   reprocessed-qc (Agilent GC 1) the same re-process for an AF26 injection
             -> exactly 1: the record lacks the new numbers. (Round 2 reported
             0 here and called it a known limit; it was the same hole.)
+  factor-removed (Agilent GC 1) as-is, but every machine-level factor was
+            removed in LEM before the v4 start. AF26's T10 verdicts were
+            logged under +0.4 and kept no raw reading; the bench reads that
+            +0.4 back from the run rows' detail.corrections -> 0. On this
+            bench the four never-factored tests pin each AF26 print on their
+            own, so this world holds with or without that (measured: the
+            `adoption_logged_factors_off` mutation still gives 0 here). The
+            one-test standard, where nothing else pins the print, is the
+            gate's U3 removed/deleted worlds (round-3 critic, Z1/Z10/Z12).
+  factor-removed-downtime-qc (Agilent GC 1) the factors removed AND an AF26
+            standard injected while LabStation was down -> exactly 1
 
 It reads the source files and writes only under --tmp.
 """
@@ -254,7 +265,8 @@ def benches():
             today=dict(corrections={"D86 T50": 1.5, D2887 + "10% Recovery": 0.7},
                        tests=af26_tests()),
             extra_worlds=("downtime-qc", "no-qc-lib", "reprocessed",
-                          "reprocessed-qc"),
+                          "reprocessed-qc", "factor-removed",
+                          "factor-removed-downtime-qc"),
             reprocess_row=80, reprocess_qc_row=75)
     if os.path.exists(GC_DATA):
         out["Agilent GC 2 (distill_results.csv, gc-data copy)"] = dict(
@@ -303,7 +315,8 @@ def downtime_qc_print(data):
 
 
 EXPECT = {"as-is": 0, "downtime": 1, "downtime-qc": 1, "no-qc-lib": 0,
-          "reprocessed": 1, "reprocessed-qc": 1}
+          "reprocessed": 1, "reprocessed-qc": 1, "factor-removed": 0,
+          "factor-removed-downtime-qc": 1}
 
 
 def reprocess_row(data, index):
@@ -334,7 +347,7 @@ def run_bench(name, spec, code_root, tmp, world):
                             history_steps(data, **spec["history"]), work)
     if world == "downtime":
         final = downtime_print(data, spec["config"])
-    elif world == "downtime-qc":
+    elif world in ("downtime-qc", "factor-removed-downtime-qc"):
         final = downtime_qc_print(data)
     elif world == "reprocessed":
         final = reprocess_row(data, spec["reprocess_row"])
@@ -347,7 +360,8 @@ def run_bench(name, spec, code_root, tmp, world):
         f.write(final)
     machine = mod.Machine.from_dict(dict(spec["config"], csv_path=path))
     today = spec.get("today") or {}
-    machine.corrections = dict(today.get("corrections") or {})
+    machine.corrections = {} if world.startswith("factor-removed") else \
+        dict(today.get("corrections") or {})
     machine.tests = [] if world == "no-qc-lib" else \
         [mod.TestSpec.from_dict(t) for t in today.get("tests") or ()]
     rows = R.load_rows(db, machine.uid)

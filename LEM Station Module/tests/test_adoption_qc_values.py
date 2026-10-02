@@ -244,3 +244,139 @@ def test_both_sides_describe_the_verdicts_identically():
     digest = bench_api.adoption_digest(rows, datetime(2026, 10, 2))
     assert mod.qc_verdicts_from_digest(digest) == \
         mod.legacy_adoption_counts(rows).qc
+
+
+# ── A factor REMOVED since logging (round-3 critic, probes Z1, Z10, Z12) ─────
+#
+# The rule above lets an unexplained verdict stand in for a single-test print
+# only when the test has a factor TODAY. A factor that has been set to 0, or
+# deleted, since the print was logged leaves no factor today, so the logged
+# print of a QC standard was called recovered: a false alarm on exactly the
+# Agilent-style record whose verdicts keep no raw reading.
+#
+# The record itself says which factors applied when it was written. v3.9
+# logs every corrected `run` row with `detail.corrections` — the offset it
+# actually added, per column (`run_log_detail`). So the bench does not have
+# to guess a past factor: it reads them from the run rows, and a verdict
+# whose value is a reading of the file under one of those factors is
+# EXPLAINED, and matched exactly, like one under today's factor. Nothing is
+# loosened for a print whose numbers are new: its readings under every
+# recorded factor still hit no verdict, and it is recovered.
+
+def run_row(lab, raw, factor, ts="r"):
+    """A v3.9 `run` row of a sample printed under a machine-level factor on
+    Density: values corrected, raw and the applied offset kept."""
+    corrected = mod.corrected_value(raw, factor)
+    return {"ts": ts, "kind": "run", "lab_id": lab, "test_name": "",
+            "value": "", "detail": json.dumps({
+                "values": {"Density": corrected},
+                "raw": {"Density": float(raw)},
+                "corrections": {"Density": factor}})}
+
+
+def qc_d_verdict(value, ts="q"):
+    return {"ts": ts, "kind": "qc", "lab_id": "QC-D", "test_name": "Density",
+            "value": value, "detail": "{}"}
+
+
+def qc_d_line(i, raw):
+    return mod.AdoptionLine(offset=i * 20, part=0, pk="q%d" % i, lab_id="QC-D",
+                            run_key=mod.adoption_key("QC-D", {"Density": raw}),
+                            values=(("Density", raw),))
+
+
+def factor_plan(lines, rows, corrections, fast_lines=0):
+    rec = mod.legacy_adoption_counts(rows)
+    return mod.plan_adoption(lines, 0, rec.counts, fast_lines=fast_lines,
+                             unreadable=rec.unreadable, qc=rec.qc,
+                             corrections=corrections,
+                             logged_factors=rec.factors)
+
+
+def test_the_record_says_which_factors_applied_when_it_was_logged():
+    """The run rows' `detail.corrections`, per column, every distinct offset
+    once. A zero is no factor (v3.9 never writes one), and a row without
+    corrections says nothing."""
+    rows = [run_row("S1", "0.7000", 0.01), run_row("S2", "0.7100", 0.01),
+            run_row("S3", "0.7200", -0.02),
+            {"ts": "x", "kind": "run", "lab_id": "S4", "test_name": "",
+             "value": "", "detail": json.dumps({"values": {"Density": 0.73}})}]
+    assert mod.legacy_adoption_counts(rows).factors == {"Density": [-0.02, 0.01]}
+
+
+def test_a_standard_logged_under_a_factor_since_removed_is_matched():
+    """Z1 and Z10: QC-D printed 0.8500 under +0.01 (verdict 0.86), samples
+    around it logged with corrections {Density: 0.01}; the factor is 0 or gone
+    today. The verdict is explained by the factor the record shows, so the
+    print is matched, not falsely recovered."""
+    rows = [run_row("S1", "0.7000", 0.01), qc_d_verdict("0.86"),
+            run_row("S2", "0.7100", 0.01)]
+    for today in ({}, {"Density": 0.0}):
+        got = factor_plan([qc_d_line(0, "0.8500")], rows, today)
+        assert (got.matched, got.recovered) == (1, []), today
+        # And on the fast path, where stage B never runs.
+        got = factor_plan([qc_d_line(0, "0.8500")], rows, today, fast_lines=20)
+        assert (got.kind, got.matched) == ("fast", 1), today
+
+
+def test_replays_under_a_removed_factor_still_vouch_for_one_print_only():
+    """Z12 with a downtime print: the logged print replayed three times
+    (four verdicts of 0.86), the factor removed, and QC-D printed again at
+    0.8420 while LabStation was down. The logged print matches; the new one
+    reads 0.842 or 0.852 under every factor the record shows, matches no
+    verdict, and is the one recovered."""
+    rows = [run_row("S1", "0.7000", 0.01)] + \
+        [qc_d_verdict("0.86", "q%d" % k) for k in range(4)]
+    got = factor_plan([qc_d_line(0, "0.8500"), qc_d_line(1, "0.8420")], rows, {})
+    assert got.matched == 1 and [l.pk for l in got.recovered] == ["q1"]
+    got = factor_plan([qc_d_line(0, "0.8500")], rows, {})
+    assert (got.matched, got.recovered) == (1, [])
+
+
+def test_a_removed_factor_the_record_never_shows_is_still_recovered():
+    """The limit, stated: with no run row carrying the old factor, nothing
+    explains 0.86, and no factor today lets it stand in. The print is shown
+    to a person (recovered) rather than matched on a guess: a false match
+    would lose a reading without trace."""
+    got = factor_plan([qc_d_line(0, "0.8500")], [qc_d_verdict("0.86")], {})
+    assert got.matched == 0 and [l.pk for l in got.recovered] == ["q0"]
+
+
+def test_the_digest_carries_the_same_logged_factors():
+    """Under a v4 server the bench reads the factors from LEM's digest; both
+    roads must read the same factors from the same rows."""
+    import importlib
+    import os
+    import sys
+    web = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "LEM Web Server")
+    sys.path.insert(0, web)
+    try:
+        bench_api = importlib.import_module("bench_api")
+    finally:
+        sys.path.remove(web)
+    from datetime import datetime
+    rows = [run_row("S1", "0.7000", 0.01), run_row("S3", "0.7200", -0.02),
+            qc_d_verdict("0.86"),
+            {"ts": "x", "kind": "run", "lab_id": "S9", "test_name": "",
+             "value": "", "detail": "not json"}]
+    digest = json.loads(json.dumps(bench_api.adoption_digest(
+        rows, datetime(2026, 10, 2))))
+    state = mod.adoption_state_from_digest(digest)
+    assert state["factors"] == mod.legacy_adoption_counts(rows).factors \
+        == {"Density": [-0.02, 0.01]}
+
+
+def test_a_digest_without_logged_factors_falls_back_to_today_s_factors():
+    """An older v4 digest has no `factors`: the bench knows only today's
+    factors, as before (the safe direction: a print it cannot explain is
+    recovered). A `factors` field of the wrong shape is a digest that cannot
+    be adopted on, never an empty one."""
+    base = {"counts": {}, "qc_verdicts": {}}
+    assert mod.adoption_digest_problem(base) == ""
+    assert mod.adoption_state_from_digest(base)["factors"] == {}
+    assert mod.adoption_digest_problem(dict(base, factors=[0.01])) != ""
+    assert mod.adoption_digest_problem(
+        dict(base, factors={"Density": ["x"]})) != ""
+    assert mod.adoption_digest_problem(
+        dict(base, factors={"Density": [0.01]})) == ""
