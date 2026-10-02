@@ -48,9 +48,9 @@ const data = {
     row('b', 'ok_but', { cause: { key: 'ok_but-qc' }, level_uid: 'L2', problems: [{ key: 'ok_but-qc', words: 'QC due' }] }),
     row('c', 'cant_tell', { cause: { key: 'cant_tell-stopped' }, bench: { state: 'stopped' },
                             problems: [{ key: 'cant_tell-stopped', words: 'Bench stopped' }] }),
-    row('d', 'no_qc', { maintenance: 2 }),
+    row('d', 'no_qc', { maintenance: 2, last_qc: { word: 'No QC assigned', assigned: false } }),
     row('e', 'ok', { level_uid: 'L2' }),
-    row('f', 'off_line', { bench: { state: 'never' } }),
+    row('f', 'off_line', { bench: { state: 'never' }, last_qc: { word: 'No QC assigned', assigned: false } }),
   ],
   levels: [{ uid: 'L1', name: 'Ground Floor' }, { uid: 'L2', name: 'Upper Lab' }],
   has_maintenance: true,
@@ -62,12 +62,33 @@ check('parse: nothing', L.parseView(''), { filter: '', level: '', cause: '' });
 check('parse: all three', L.parseView('?filter=needs&level=L2&cause=ok_but-qc'),
   { filter: 'needs', level: 'L2', cause: 'ok_but-qc' });
 check('parse: junk filter is ignored, not obeyed', L.parseView('?filter=drop%20table').filter, '');
+// Round 2's critic: "?filter=offline silently shows All with the All chip
+// pressed, and says nothing". A view the page does not know is said, in
+// words, so nobody reads the whole list as the answer to what they asked.
+check('an unknown view is named, so the page can say it does not have it',
+      L.unknownView('?filter=bogus'), 'bogus');
+check('a known view is not unknown', L.unknownView('?filter=needs'), '');
+check('no view is not unknown', L.unknownView(''), '');
+check('an unknown view is clipped, never a paragraph', L.unknownView('?filter=' + 'x'.repeat(200)).length <= 41, true);
+check('the sentence for it', L.unknownViewText('bogus'), 'There is no “bogus” view, so this is every instrument.');
 check('round trip', L.viewQuery({ filter: 'noqc', level: 'L1', cause: '' }), '?filter=noqc&level=L1');
 check('round trip: all', L.viewQuery({ filter: '', level: '', cause: '' }), '');
 
 check('all', uids(L.filterRows(data.instruments, L.parseView(''))), ['a', 'a2', 'b', 'c', 'd', 'e', 'f']);
 check('needs you = the card (not_ok, ok_but, cant_tell)', uids(L.filterRows(data.instruments, { filter: 'needs' })), ['a', 'a2', 'b', 'c']);
-check('no QC assigned', uids(L.filterRows(data.instruments, { filter: 'noqc' })), ['d']);
+// Round 2's critic: "No QC assigned" showed "No instrument matches this
+// view" while three rows said "No QC assigned" in their Last QC column. The
+// filter keyed on the readiness STATE, which is the worst thing about an
+// instrument: an off-line instrument, or one whose bench never checked in,
+// has no QC assigned too, but its state says Off line / Can't tell. A chip
+// is a fact, and its view is every row of which the fact is true, the same
+// fact the Last QC column draws (last_qc.assigned).
+check('no QC assigned: every row whose Last QC says so, whatever its verdict',
+      uids(L.filterRows(data.instruments, { filter: 'noqc' })), ['d', 'f']);
+check('an older answer without last_qc.assigned falls back to the state',
+      uids(L.filterRows([row('y', 'no_qc'), row('x', 'ok')], { filter: 'noqc' })), ['y']);
+check('off line: its own view (an address the bell and people type)',
+      uids(L.filterRows(data.instruments, { filter: 'offline' })), ['f']);
 check('maintenance: instruments with a schedule', uids(L.filterRows(data.instruments, { filter: 'maintenance' })), ['d']);
 check('quiet: the fleet line\'s link, benches not checking in', uids(L.filterRows(data.instruments, { filter: 'quiet' })), ['c', 'f']);
 check('a merged tile\'s link shows exactly its members', uids(L.filterRows(data.instruments, { cause: 'ok_but-qc' })), ['b']);
@@ -95,6 +116,9 @@ check('Maintenance only when a task exists',
   L.chips(Object.assign({}, data, { has_maintenance: false }), {}).map(c => c.label).includes('Maintenance'), false);
 check('levels only when the server sent more than one',
   L.chips(Object.assign({}, data, { levels: [] }), {}).map(c => c.group), ['view', 'view', 'view', 'view']);
+const off = L.chips(data, { filter: 'offline', level: '', cause: '' });
+check('the off-line view shows as a chip that clears',
+  off.filter(c => c.pressed).map(c => [c.label, c.clears]), [['Off line', true]]);
 const quiet = L.chips(data, { filter: 'quiet', level: '', cause: '' });
 check('a filter with no chip of its own still shows, and can be cleared',
   quiet.filter(c => c.pressed).map(c => [c.label, c.clears]), [['Not checking in', true]]);
@@ -224,17 +248,31 @@ check('a failed refresh is said, not hidden',
 // Last QC column becomes "Next due": the next task that is NOT overdue. The
 // overdue ones are on the row's Can it run? line already; saying them again
 // here is the "repeats problems" defect.
+//
+// Round 2's critic: the view was sorted by a HIDDEN key (the earliest due
+// date of any task, overdue ones included), so the one column a reader can
+// see, Next due, read "16 Oct, 5 Oct, Nothing else due, 1 Oct, ... 22 Jul
+// 2027, 21 Oct". A list that looks shuffled is a list nobody trusts. The
+// view now sorts by exactly what it shows: Next due, soonest first, by the
+// ISO day the server sends beside the words (`on`); rows with nothing else
+// due go last, in the server's worst-first order. The overdue tasks are not
+// lost: each row's Can it run? line says them.
 {
-  const sch = (order, next, tasks) => ({ schedule: { tasks: tasks || 2, next, order }, maintenance: tasks || 2 });
+  const sch = (next, tasks) => ({ schedule: { tasks: tasks || 2, next }, maintenance: tasks || 2 });
   const rows = [
-    row('m1', 'ok', sch('2026-11-07', { name: 'Annual calibration', due: '7 Nov', soon: false })),
-    row('m2', 'not_ok', sch('2026-08-08', { name: 'Monthly PM', due: '26 Oct', soon: false })),
-    row('m3', 'ok_but', sch('2026-06-17', null)),
-    row('m4', 'ok_but', sch('2026-10-01', { name: 'Monthly PM', due: '1 Oct', soon: true })),
+    row('m1', 'ok', sch({ name: 'Annual calibration', due: '7 Nov', on: '2026-11-07', soon: false })),
+    row('m2', 'not_ok', sch({ name: 'Monthly PM', due: '26 Oct', on: '2026-10-26', soon: false })),
+    row('m3', 'ok_but', sch(null)),
+    row('m4', 'ok_but', sch({ name: 'Monthly PM', due: '1 Oct', on: '2026-10-01', soon: true })),
     row('m5', 'ok', { maintenance: 0 }),
+    row('m6', 'ok', sch({ name: 'Annual calibration', due: '22 Jul 2027', on: '2027-07-22', soon: false })),
+    row('m7', 'not_ok', sch(null)),
   ];
-  check('maintenance view: earliest due first', uids(L.filterRows(rows, { filter: 'maintenance' })), ['m3', 'm2', 'm4', 'm1']);
-  check('every other view keeps the server\'s worst-first order', uids(L.filterRows(rows, {})), ['m1', 'm2', 'm3', 'm4', 'm5']);
+  check('maintenance view: in the order of the Next due column it shows',
+        uids(L.filterRows(rows, { filter: 'maintenance' })), ['m4', 'm2', 'm1', 'm6', 'm3', 'm7']);
+  check('every other view keeps the server\'s worst-first order', uids(L.filterRows(rows, {})), ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7']);
+  check('the Next due header says the view is sorted by it', L.sortedBy({ filter: 'maintenance' }), 'third');
+  check('elsewhere the order is worst first, not by a column', L.sortedBy({ filter: '' }), '');
   check('the column is Last QC elsewhere', L.thirdColumn({ filter: '' }), 'Last QC');
   check('the column is Next due in the maintenance view', L.thirdColumn({ filter: 'maintenance' }), 'Next due');
   check('next due: the task and its day', L.nextDue(rows[0]), { main: 'Annual calibration', sub: '7 Nov', soon: false });

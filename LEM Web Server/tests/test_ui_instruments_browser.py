@@ -215,7 +215,8 @@ def test_a_pm_behind_a_calibration_is_on_its_row(drv, server):
     _open(drv, server.base)
     text = drv.execute_script(
         "return document.querySelector('tr[data-uid=\"optimpp-2\"] .c-run').innerText")
-    assert "Calibration overdue" in text and "PM overdue too" in text, text
+    # and the PM says since when, as the calibration does (round 2's critic)
+    assert "Calibration overdue since" in text and re.search(r"PM overdue since \d+ \w{3} too", text), text
 
 
 def test_no_tile_looks_chosen_on_the_whole_list(drv, server):
@@ -235,22 +236,73 @@ def test_a_tiles_view_shows_everyone_with_the_problem(drv, server, path, want):
 @pytest.mark.parametrize("size", [(1440, 900), (390, 844)], ids=lambda s: "%dx%d" % s)
 def test_the_maintenance_view_is_not_the_whole_list_again(drv, server, size):
     """/maintenance became this view. With every seeded instrument scheduled
-    it was the All list, in the All order, with the All columns. Now it is
-    ordered by what falls due (OptiMPP 2's PM overdue since 19 Sep is above
-    Koehler's next PM on 29 Oct), its third column is Next due, and that
-    column never says "overdue": the row's Can it run? line already does.
-    On a phone the Next due line stays (the other columns fold away)."""
+    it was the All list, in the All order, with the All columns. Now its
+    third column is Next due, and that column never says "overdue": the
+    row's Can it run? line already does. On a phone the Next due line stays
+    (the other columns fold away).
+
+    Round 2's critic: the view was sorted by a hidden key, so the column
+    read "16 Oct, 5 Oct, Nothing else due, 1 Oct, ... 22 Jul 2027, 21 Oct".
+    It is sorted by what it shows: the dated rows soonest first, then the
+    rows with nothing else due, and the header says which way."""
     _open(drv, server.base, "/maintenance", size=size)
     got = drv.execute_script("""
         const rows = [...document.querySelectorAll('tr.irow')];
-        return {head: document.getElementById('col-third').textContent,
+        const th = document.getElementById('col-third');
+        return {head: th.firstChild.textContent, sort: th.getAttribute('aria-sort'),
                 order: rows.map(r => r.dataset.uid),
                 due: rows.map(r => r.querySelector('.c-due').innerText),
                 shown: rows.map(r => r.querySelector('.c-due').getBoundingClientRect().height > 0)};""")
-    assert got["head"] == "Next due"
-    assert got["order"].index("optimpp-2") < got["order"].index("koehler-visc"), got["order"]
+    assert got["head"] == "Next due" and got["sort"] == "ascending", got
+    import json as _json
+    from urllib.request import urlopen
+    data = _json.loads(urlopen(server.base + "/api/ui/instruments").read())
+    on = {r["uid"]: (r["schedule"]["next"] or {}).get("on") for r in data["instruments"]}
+    days = [on[u] for u in got["order"]]
+    dated = [d for d in days if d]
+    assert dated == sorted(dated), list(zip(got["order"], days))
+    assert days == dated + [None] * (len(days) - len(dated)), "nothing-else-due rows go last"
+    assert len(dated) >= 5, "the seed should give the view dates to order"
     assert all("overdue" not in t.lower() for t in got["due"]), got["due"]
     assert all(got["shown"]), "the Next due line is drawn at every width"
+
+
+def test_the_no_qc_view_is_every_row_whose_last_qc_says_so(drv, server):
+    """Round 2's critic: "No QC assigned" showed "No instrument matches this
+    view" while GC-1, Karl Fischer V20 and OptiMPP 2 said "No QC assigned"
+    in Last QC on the All view. The chip and the column are one fact."""
+    _open(drv, server.base, "/")
+    said = drv.execute_script("""
+        return [...document.querySelectorAll('tr.irow')]
+          .filter(r => r.querySelector('.c-qc').innerText.trim() === 'No QC assigned')
+          .map(r => r.dataset.uid).sort();""")
+    assert said, "the seed should have instruments with no QC assigned"
+    _open(drv, server.base, "/?filter=noqc")
+    shown = sorted(drv.execute_script(
+        "return [...document.querySelectorAll('tr.irow')].map(r => r.dataset.uid)"))
+    assert shown == said
+    pressed = drv.execute_script(
+        "return [...document.querySelectorAll('#inst-chips .chip[aria-pressed=true]')].map(c => c.textContent)")
+    assert pressed == ["No QC assigned"], pressed
+
+
+def test_a_view_the_page_does_not_have_is_said(drv, server):
+    """Round 2's critic: ?filter=bogus silently showed All with All pressed.
+    The page says it has no such view; choosing a chip clears the sentence."""
+    _open(drv, server.base, "/?filter=bogus")
+    note = drv.find_element("css selector", "[data-testid=view-unknown]")
+    assert note.is_displayed() and "There is no “bogus” view" in note.text, note.text
+    drv.execute_script("[...document.querySelectorAll('#inst-chips .chip')].find(c => c.textContent === 'Needs you').click()")
+    assert not note.is_displayed()
+
+
+def test_off_line_is_a_view(drv, server):
+    _open(drv, server.base, "/?filter=offline")
+    states = drv.execute_script("return [...document.querySelectorAll('tr.irow')].map(r => r.dataset.state)")
+    none = drv.find_element("id", "inst-none")
+    assert all(s == "off_line" for s in states), states
+    assert states or none.is_displayed(), "an empty view says so"
+    assert not drv.find_element("css selector", "[data-testid=view-unknown]").is_displayed()
 
 
 def test_on_a_phone_every_chip_is_on_screen(drv, server):

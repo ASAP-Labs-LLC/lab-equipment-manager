@@ -24,6 +24,7 @@
 
     let data = null;
     let view = L.parseView(location.search);
+    let unknown = L.unknownView(location.search);   // a ?filter= with no view: said, not obeyed
     let refreshFailedAt = null;
     const page = $('main');
     const hasQuality = page && page.dataset.hasQuality === 'true';
@@ -214,7 +215,17 @@
             none.replaceChildren('LabCore answered with no instruments. They are added in LabStation › LEM module › New machine…');
         }
         $('maint-note').hidden = view.filter !== 'maintenance';
-        $('col-third').textContent = L.thirdColumn(view);
+        const un = $('view-unknown');
+        if (un) {
+            un.hidden = !unknown;
+            $('view-unknown-text').textContent = unknown ? L.unknownViewText(unknown) : '';
+        }
+        // the Maintenance view is sorted by the column it shows, and says so
+        const th = $('col-third');
+        const sorted = L.sortedBy(view) === 'third';
+        th.replaceChildren(L.thirdColumn(view));
+        if (sorted) th.appendChild(h('span', { className: 'sort-ind', 'aria-hidden': 'true', title: 'Soonest first' }, '↑'));
+        if (sorted) th.setAttribute('aria-sort', 'ascending'); else th.removeAttribute('aria-sort');
         $('inst-shown').textContent = (rows.length !== all) ? 'Showing ' + rows.length + ' of ' + all : '';
     }
 
@@ -231,13 +242,14 @@
     // ── the address bar is the view ───────────────────────────────────────
     function go(next) {
         view = Object.assign({ filter: '', level: '', cause: '' }, next || {});
+        unknown = '';
         const url = '/' + L.viewQuery(view);
         if (location.pathname + location.search !== url) history.pushState(view, '', url);
         renderNeeds();
         renderChips();
         renderTable();
     }
-    window.addEventListener('popstate', () => { view = L.parseView(location.search); renderNeeds(); renderChips(); renderTable(); });
+    window.addEventListener('popstate', () => { view = L.parseView(location.search); unknown = L.unknownView(location.search); renderNeeds(); renderChips(); renderTable(); });
     // a link to this same list with another view (a merged tile, "+N more",
     // "Show all") changes the view in place instead of reloading the page
     document.addEventListener('click', (ev) => {

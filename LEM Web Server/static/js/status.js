@@ -80,7 +80,7 @@
             }
         }
         const q = p.qc_out;
-        if (Number.isInteger(q) && q > 0) out.qc = { text: q + ' out of spec', badge: String(q) };
+        if (Number.isInteger(q) && q > 0) out.qc = { text: q + ' ' + plural(q, 'check', 'checks') + ' out of spec', badge: String(q) };
         return out;
     }
 

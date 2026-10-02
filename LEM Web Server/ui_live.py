@@ -590,7 +590,9 @@ def nav_meta(p: dict) -> dict:
             out["checklists"] = {"text": "%s %s" % (r["slot"].capitalize(), frac), "badge": frac}
     q = p.get("qc_out")
     if isinstance(q, int) and q > 0:
-        out["qc"] = {"text": "%d out of spec" % q, "badge": str(q)}
+        # its unit, said: "3 checks", beside Instruments' "2 not OK to run"
+        out["qc"] = {"text": "%d %s out of spec" % (q, "check" if q == 1 else "checks"),
+                     "badge": str(q)}
     return out
 
 

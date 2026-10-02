@@ -312,6 +312,8 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 /* the Maintenance view's Next due cell: due soon is a half glyph + words */
 .tbl.inst .fold-label { display: none; }
 .tbl.inst .c-due .due-soon { display: inline-flex; align-items: center; gap: var(--s2); }
+/* the one column a view is sorted by says so (Maintenance: Next due, soonest first) */
+.tbl.inst th .sort-ind { margin-left: 4px; font-weight: 600; color: var(--text); }
 .view-note { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s3) var(--s4);
     border-bottom: 1px solid var(--border-light); font-size: var(--fs-sm); color: var(--text-muted); }
 .view-note a { color: var(--text); }

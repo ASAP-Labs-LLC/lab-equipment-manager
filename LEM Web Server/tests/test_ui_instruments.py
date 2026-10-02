@@ -196,9 +196,16 @@ class TestEachInstrumentSaysWhetherItCanRun:
         p = build([machine("g", specs=[spec("Flash Point", False)], maint=[task("calibration", "RED")]),
                    machine("b", specs=[spec("Flash Point", None)], maint=[task("calibration", "RED")]),
                    machine("a", specs=[spec("Flash Point", True)], maint=[task("calibration", "RED")])])
-        assert row(p, "g")["readiness"]["detail"] == "Flash Point out of spec · calibration overdue too"
-        assert row(p, "b")["readiness"]["detail"] == "QC due on Flash Point · calibration overdue too"
+        assert row(p, "g")["readiness"]["detail"] == "Flash Point out of spec · calibration overdue since 1 Sep too"
+        assert row(p, "b")["readiness"]["detail"] == "QC due on Flash Point · calibration overdue since 1 Sep too"
         assert row(p, "a")["readiness"]["detail"] == "Calibration overdue since 1 Sep"
+
+    def test_an_overdue_pm_says_since_when_as_a_calibration_does(self):
+        """Round 2's critic: "Calibration overdue since 24 Jul" gave a date,
+        "PM overdue" never did, nor did "calibration overdue too". Overdue is
+        a question of how long; every overdue clause says since when."""
+        p = build([machine("a", specs=[spec("X", True)], maint=[task("pm", "RED")])])
+        assert row(p, "a")["readiness"]["detail"] == "PM overdue since 1 Sep"
 
     def test_an_ok_instrument_has_no_next_step(self):
         p = build([machine("f", specs=[spec("X", True)])])
@@ -236,6 +243,28 @@ class TestNoVerdictYetIsNotNoQcAssigned:
         p = build([machine("kf")])
         assert row(p, "kf")["last_qc"]["word"] == "No QC assigned"
 
+    def test_the_fact_is_a_field_not_a_word_to_match(self):
+        """Round 2's critic: the "No QC assigned" view was empty while three
+        rows said "No QC assigned" in Last QC, because the view keyed on the
+        readiness state (the WORST fact: Off line, Can't tell) instead of the
+        fact the chip names. `last_qc.assigned` is that fact, the same one
+        the column's words come from, so the view and the column agree."""
+        p = build([machine("kf"), machine("gc1", running=False, module_state="unknown", last_poll=""),
+                   machine("o2", maint=[task("calibration", "RED")]),
+                   machine("off"), machine("a", specs=[spec("X", True)]),
+                   machine("e", targets=[{"sample": "P", "test": "RVP"}])],
+                  overrides={"off": "SERVICE"})
+        got = {u: row(p, u)["last_qc"]["assigned"] for u in ("kf", "gc1", "o2", "off", "a", "e")}
+        assert got == {"kf": False, "gc1": False, "o2": False, "off": False, "a": True, "e": True}
+        assert row(p, "gc1")["readiness"]["state"] != "no_qc", \
+            "the case the critic found: not assigned, yet its verdict is about something worse"
+
+    def test_in_the_seed_the_column_and_the_fact_agree(self, tmp_path):
+        app, _ = _seeded(tmp_path)
+        p = app.test_client().get("/api/ui/instruments").get_json()
+        for r in p["instruments"]:
+            assert (r["last_qc"]["word"] == "No QC assigned") == (r["last_qc"]["assigned"] is False), r["uid"]
+
     def test_a_run_check_names_its_newest_result(self):
         p = build([machine("a", specs=[spec("Flash Point", True, "2026-10-01T09:00:00"),
                                        spec("Density", True, "2026-10-01T11:00:00")])])
@@ -271,14 +300,15 @@ class TestEveryProblemIsOnItsRow:
         p = build([machine("o2", "OptiMPP 2", specs=[spec("X", True)],
                            maint=[task("calibration", "RED"), task("pm", "RED")])])
         r = row(p, "o2")
-        assert r["readiness"]["detail"] == "Calibration overdue since 1 Sep · PM overdue too"
+        assert r["readiness"]["detail"] == "Calibration overdue since 1 Sep · PM overdue since 1 Sep too"
         assert [x["key"] for x in r["problems"]] == ["ok_but-cal", "ok_but-pm"]
 
-    def test_several_behind_one_cause_read_as_one_clause(self):
+    def test_several_behind_one_cause_each_say_since_when(self):
         p = build([machine("g", specs=[spec("Flash Point", False), spec("Density", None)],
                            maint=[task("calibration", "RED"), task("pm", "RED")])])
         assert row(p, "g")["readiness"]["detail"] == (
-            "Flash Point out of spec · QC due on Density too · calibration and PM overdue too")
+            "Flash Point out of spec · QC due on Density too"
+            " · calibration overdue since 1 Sep too · PM overdue since 1 Sep too")
         assert [x["key"] for x in row(p, "g")["problems"]] == [
             "not_ok-qc", "ok_but-qc", "ok_but-cal", "ok_but-pm"]
 
@@ -299,7 +329,7 @@ class TestEveryProblemIsOnItsRow:
         r = row(p, "kf")
         assert r["readiness"]["state"] == "off_line"
         assert [x["key"] for x in r["problems"]] == ["ok_but-cal"]
-        assert r["readiness"]["detail"] == "Taken off line (SERVICE) · calibration overdue too"
+        assert r["readiness"]["detail"] == "Taken off line (SERVICE) · calibration overdue since 1 Sep too"
 
     def test_a_tile_is_about_everyone_with_the_problem(self):
         p = build([machine("alpha", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
@@ -595,13 +625,13 @@ class TestTheMaintenanceViewSaysWhatComesNext:
                                        self._t("calibration", "RED", "2026-07-24", "Annual calibration")])])
         s = row(p, "a")["schedule"]
         assert s["tasks"] == 2
-        assert s["next"] == {"name": "Monthly PM", "due": "26 Oct", "soon": False}
-        assert s["order"] == "2026-07-24", "the overdue task sorts the row to the top"
+        assert s["next"] == {"name": "Monthly PM", "due": "26 Oct", "on": "2026-10-26", "soon": False}
 
     def test_due_soon_is_marked(self):
         p = build([machine("a", maint=[self._t("pm", "YELLOW", "2026-10-01", "Monthly PM"),
                                        self._t("calibration", "GREEN", "2027-01-01", "Annual calibration")])])
-        assert row(p, "a")["schedule"]["next"] == {"name": "Monthly PM", "due": "1 Oct", "soon": True}
+        assert row(p, "a")["schedule"]["next"] == {"name": "Monthly PM", "due": "1 Oct", "on": "2026-10-01",
+                                                   "soon": True}
 
     def test_a_day_in_another_year_says_its_year(self):
         """GC-1's next annual calibration is next July: "22 Jul" alone read
@@ -614,16 +644,26 @@ class TestTheMaintenanceViewSaysWhatComesNext:
         p = build([machine("a", maint=[self._t("pm", "RED", "2026-09-19", "Monthly PM"),
                                        self._t("calibration", "RED", "2026-06-17", "Annual calibration")])])
         s = row(p, "a")["schedule"]
-        assert s["next"] is None and s["tasks"] == 2 and s["order"] == "2026-06-17"
+        assert s["next"] is None and s["tasks"] == 2
 
     def test_no_schedule(self):
-        assert row(build([machine("a")]), "a")["schedule"] == {"tasks": 0, "next": None, "order": ""}
+        assert row(build([machine("a")]), "a")["schedule"] == {"tasks": 0, "next": None}
+
+    def test_the_view_has_no_hidden_sort_key(self):
+        """Round 2's critic: the view sorted by `order` (the earliest due
+        date of ANY task, overdue included), which no column shows, so Next
+        due read "16 Oct, 5 Oct, -, 1 Oct, ... 22 Jul 2027, 21 Oct". The
+        schedule now carries only what is drawn, plus `on`, the ISO day of
+        the drawn date, which is what the view sorts by."""
+        p = build([machine("a", maint=[self._t("pm", "GREEN", "2026-10-26", "Monthly PM"),
+                                       self._t("calibration", "RED", "2026-07-24", "Annual calibration")])])
+        assert "order" not in row(p, "a")["schedule"]
+        assert row(p, "a")["schedule"]["next"]["on"] == "2026-10-26"
 
     def test_the_seed_view_is_ordered_by_what_falls_due(self, tmp_path):
         app, gw = _seeded(tmp_path)
         data = app.test_client().get("/api/ui/instruments").get_json()
-        orders = [r["schedule"]["order"] for r in data["instruments"] if r["schedule"]["tasks"]]
-        assert orders, "the seed schedules PM and calibration"
+        assert any(r["schedule"]["tasks"] for r in data["instruments"]), "the seed schedules PM and calibration"
         # every 'next' is a task that is not overdue (the row says those)
         for r in data["instruments"]:
             nxt = r["schedule"]["next"]

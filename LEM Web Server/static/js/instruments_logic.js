@@ -16,7 +16,7 @@
 (function (root) {
     'use strict';
 
-    const FILTERS = ['needs', 'noqc', 'maintenance', 'quiet'];
+    const FILTERS = ['needs', 'noqc', 'maintenance', 'quiet', 'offline'];
     const SAFE_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 
     function parseView(search) {
@@ -32,6 +32,29 @@
         };
     }
 
+    /** A ?filter= this page has no view for, as typed (clipped), or ''.
+        The page says it has no such view rather than silently showing All
+        with the All chip pressed as if that were the answer. */
+    function unknownView(search) {
+        let p;
+        try { p = new URLSearchParams(search || ''); } catch (_e) { return ''; }
+        const f = (p.get('filter') || '').trim();
+        if (!f || FILTERS.includes(f)) return '';
+        return f.length > 40 ? f.slice(0, 40) + '…' : f;
+    }
+    function unknownViewText(name) {
+        return 'There is no “' + name + '” view, so this is every instrument.';
+    }
+
+    /** "No QC assigned" is a FACT about the row, the one its Last QC column
+        draws; never the readiness state, which is the worst fact and says
+        Off line or Can't tell over an instrument nobody assigned QC to. */
+    function noQc(r) {
+        const lq = r && r.last_qc;
+        if (lq && typeof lq.assigned === 'boolean') return !lq.assigned;
+        return !!(r && r.readiness && r.readiness.state === 'no_qc');   // an older answer
+    }
+
     function viewQuery(view) {
         const p = new URLSearchParams();
         if (view && view.filter) p.set('filter', view.filter);
@@ -45,7 +68,8 @@
         const st = r.readiness && r.readiness.state;
         switch (view.filter) {
             case 'needs': if (!r.needs_you) return false; break;
-            case 'noqc': if (st !== 'no_qc') return false; break;
+            case 'noqc': if (!noQc(r)) return false; break;
+            case 'offline': if (st !== 'off_line') return false; break;
             case 'maintenance': if (!(r.maintenance > 0)) return false; break;
             case 'quiet': if (!r.bench || r.bench.state === 'in') return false; break;
             default: break;
@@ -83,12 +107,21 @@
         const v = Object.assign({ filter: '', level: '', cause: '' }, view || {});
         const out = (rows || []).filter(r => _matches(r, v));
         if (v.filter !== 'maintenance') return out;          // the server's worst-first order
-        // the Maintenance view: what falls due first is on top (overdue is
-        // earliest); a stable sort keeps worst-first among equal dates
-        const key = (r) => (r.schedule && r.schedule.order) || '9999';
+        // the Maintenance view sorts by the column it shows, Next due, soonest
+        // first; "Nothing else due" goes last. A stable sort keeps the
+        // server's worst-first order among equal days. (Round 2: it sorted by
+        // a hidden key, so the visible column read shuffled.)
+        const key = (r) => {
+            const n = r.schedule && r.schedule.next;
+            return n ? (n.on || '9999') : '~';
+        };
         return out.map((r, i) => [key(r), i, r])
             .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])).map(x => x[2]);
     }
+
+    /** Which column the rows are sorted by: 'third' (Next due) in the
+        Maintenance view; '' elsewhere, where the order is worst first. */
+    function sortedBy(view) { return view && view.filter === 'maintenance' ? 'third' : ''; }
 
     /** The table's third column: Last QC, or Next due in the Maintenance view. */
     function thirdColumn(view) {
@@ -104,7 +137,7 @@
     }
 
     const VIEW_LABELS = { '': 'All', needs: 'Needs you', noqc: 'No QC assigned', maintenance: 'Maintenance' };
-    const HIDDEN_LABELS = { quiet: 'Not checking in' };
+    const HIDDEN_LABELS = { quiet: 'Not checking in', offline: 'Off line' };
 
     /** The chip row. Each: {group, label, pressed, next (the view a click
         goes to), clears (a removable view with no chip of its own)}.
@@ -262,7 +295,7 @@
             String(ev.key || '').toLowerCase() === 'k';
     }
 
-    const api = { parseView, viewQuery, filterRows, thirdColumn, nextDue, hasProblem, problemWords, currentTile, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
+    const api = { parseView, unknownView, unknownViewText, noQc, sortedBy, viewQuery, filterRows, thirdColumn, nextDue, hasProblem, problemWords, currentTile, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
                   searchRows, showLoading, isFindKey, LOADING_AFTER_MS };
     root.LEMInstruments = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;

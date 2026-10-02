@@ -148,10 +148,13 @@ def last_qc(m: dict) -> dict:
     new = _newest(specs)
     if new:
         return {"word": None, "at": new.get("last_qc_at"), "test": new.get("test_name"),
-                "checks": len(specs)}
+                "checks": len(specs), "assigned": True}
     assigned = bool(specs or m.get("qc_targets"))
+    # `assigned` is the fact the "No QC assigned" view filters on: the same
+    # fact these words come from, never the readiness state (which is the
+    # WORST fact, and says Off line or Can't tell over an unassigned bench)
     return {"word": "No verdict yet" if assigned else "No QC assigned", "at": None,
-            "test": None, "checks": len(specs)}
+            "test": None, "checks": len(specs), "assigned": assigned}
 
 
 def bench(m: dict) -> dict:
@@ -185,17 +188,28 @@ def _cause(m: dict, ready: dict) -> tuple:
     return ("", "", "")
 
 
+def _since(m: dict, kind: str) -> str:
+    """" since 24 Jul": the day the oldest overdue task of `kind` fell due,
+    or "" when the schedule gives no day."""
+    due = min((str(t.get("next_due") or "") for t in m.get("maintenance") or []
+               if str(t.get("kind") or "").lower() == kind and t.get("status") == "RED"
+               and t.get("next_due")), default="")
+    return " since %s" % _day(due) if _day(due) else ""
+
+
 def _too(m: dict, keys: List[str]) -> str:
     """The problems behind the verdict's own, said on the row once each:
-    " · QC due on Density too · calibration and PM overdue too". The bench
-    is not among them: the row's Bench column says it."""
+    " · QC due on Density too · calibration overdue since 24 Jul too". An
+    overdue task says since when wherever it is said (round 2's critic: the
+    calibration gave a date, the PM and every "too" did not). The bench is
+    not among them: the row's Bench column says it."""
     out = []
     if "ok_but-qc" in keys:
         due = [s for s in _specs(m) if s.get("last_qc_in_spec") is None]
         out.append("QC due on %s too" % _tests(due))
-    tasks = [w for k, w in (("ok_but-cal", "calibration"), ("ok_but-pm", "PM")) if k in keys]
-    if tasks:
-        out.append("%s overdue too" % _and(tasks))
+    for k, w, kind in (("ok_but-cal", "calibration", "calibration"), ("ok_but-pm", "PM", "pm")):
+        if k in keys:
+            out.append("%s overdue%s too" % (w, _since(m, kind)))
     return "".join(" · " + x for x in out)
 
 
@@ -207,15 +221,12 @@ def _primary(m: dict, ready: dict) -> str:
         bad = [s for s in specs if s.get("last_qc_in_spec") is False]
         return "%s out of spec" % _tests(bad)
     if state == OK_BUT and reason.startswith("Calibration"):
-        cal = [t for t in m.get("maintenance") or []
-               if str(t.get("kind") or "").lower() == "calibration" and t.get("status") == "RED"]
-        due = min((str(t.get("next_due") or "") for t in cal if t.get("next_due")), default="")
-        return "Calibration overdue" + (" since %s" % _day(due) if _day(due) else "")
+        return "Calibration overdue" + _since(m, "calibration")
     if state == OK_BUT and reason.startswith("QC due"):
         due = [s for s in specs if s.get("last_qc_in_spec") is None]
         return "QC due on %s" % _tests(due)
     if state == OK_BUT:
-        return "PM overdue"
+        return "PM overdue" + _since(m, "pm")
     if state == OFF_LINE:
         return reason
     if state == CANT_TELL:
@@ -329,12 +340,13 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
 def schedule(m: dict) -> dict:
     """What the Maintenance view draws for a row: the next task that is NOT
     overdue (the row's Can it run? line already says the overdue ones, and
-    saying them twice is the defect this page was rebuilt to remove), and
-    `order`, the earliest due date of any task, which only sorts the view so
-    what falls due first is on top."""
+    saying them twice is the defect this page was rebuilt to remove).
+
+    `next.on` is the ISO day of the drawn date: the view sorts by exactly the
+    column it shows. Round 2's critic found it sorted by a hidden key (the
+    earliest due date of any task, overdue included), so the visible Next due
+    column read "16 Oct, 5 Oct, -, 1 Oct, ... 22 Jul 2027, 21 Oct"."""
     tasks = [t for t in (m.get("maintenance") or []) if isinstance(t, dict)]
-    due = sorted((str(t.get("next_due") or ""), str(t.get("name") or "")) for t in tasks
-                 if t.get("next_due"))
     ahead = sorted(((str(t.get("next_due") or "9999"), t) for t in tasks
                     if t.get("status") != "RED"), key=lambda x: (x[0], str(x[1].get("name") or "")))
     nxt = None
@@ -342,8 +354,9 @@ def schedule(m: dict) -> dict:
         t = ahead[0][1]
         nxt = {"name": str(t.get("name") or t.get("kind") or "Task"),
                "due": _day_in_year(str(t.get("next_due") or "")),
+               "on": str(t.get("next_due") or "")[:10],
                "soon": t.get("status") == "YELLOW"}
-    return {"tasks": len(tasks), "next": nxt, "order": due[0][0] if due else ""}
+    return {"tasks": len(tasks), "next": nxt}
 
 
 def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: Href) -> dict:

@@ -317,9 +317,14 @@ class TestTheStatusWordsComeFromMemory:
         page = html(c, "/settings")
         assert text(by_id(page, "rs-fleet")) == "%d of %d benches checking in" % (running, total)
         qc = re.search(r'data-nav="qc"[^>]*aria-label="([^"]+)"[^>]*>(.*?)</a>', page, re.S)
-        assert qc.group(1) == "QC, %d out of spec" % out
+        # "checks", said: round 2's critic read "QC 3 out of spec" beside the
+        # Instruments pill "2 not OK to run" as two counts of one problem.
+        # They count different things (checks vs instruments); the nav says
+        # its unit so the two numbers cannot read as a disagreement.
+        unit = "check" if out == 1 else "checks"
+        assert qc.group(1) == "QC, %d %s out of spec" % (out, unit)
         assert text(re.search(r'<span class="rail-badge"[^>]*>(.*?)</span>', qc.group(2)).group(1)) == str(out)
-        assert text(re.search(r'<span class="nav-meta"[^>]*>(.*?)</span>', qc.group(2)).group(1)) == "%d out of spec" % out
+        assert text(re.search(r'<span class="nav-meta"[^>]*>(.*?)</span>', qc.group(2)).group(1)) == "%d %s out of spec" % (out, unit)
         rec = re.search(r'id="rs-record"[^>]*data-at="([^"]+)"', page)
         assert rec and rec.group(1) == snap["built_at"]
 
