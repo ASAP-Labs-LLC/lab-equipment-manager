@@ -217,17 +217,32 @@ def world(tmp_path, monkeypatch):
     w.m, w.bench, w.lab, w.store, w.roads, w.path, w.labs = \
         m, bench, lab, store, roads, path, labs
     w.n = 0
+    w.app = app
+
+    def settle_now():
+        assert w.bench._uploader_wait_idle(30.0), "the uploader never went idle"
+        up = w.bench._uploader
+        assert up is None or up.errors == 0, up.last_error
 
     def poll(k, prints=1):
         with open(path, "a") as f:
             for _ in range(prints):
                 f.write("%s,0.%04d\n" % (labs[w.n], 8000 + w.n))
                 w.n += 1
-        bench.process_now(T0 + timedelta(seconds=30 * k))
-        settle()
-    w.poll, w.settle = poll, settle
+        w.bench.process_now(T0 + timedelta(seconds=30 * k))
+        settle_now()
+
+    def restart():
+        """LabStation starts the module again: a new process, the same
+        journal folder and the same machine (as it is now)."""
+        machine = m.Machine.from_dict(w.bench.machine().to_dict())
+        w.bench.shutdown()
+        w.bench = qt.make_module()
+        w.bench.set_machine(machine, publish=True)
+        settle_now()
+    w.poll, w.settle, w.restart = poll, settle_now, restart
     yield w
-    bench.shutdown()
+    w.bench.shutdown()
     store.close()
 
 
@@ -336,6 +351,10 @@ class TestAdoptionThroughLEM:
         _legacy(world, lines)
         with open(world.path, "a") as f:
             f.write("\n".join(lines + [_line(world, 30)]) + "\n")
+        # The v4 module starts on a record that already holds the import:
+        # LEM answers no v2 request until the import is verified (§10.1), so
+        # the digest the uploader asks for at the bind is the imported record.
+        world.restart()
         mark = world.lab.mark()
         for k in range(4):
             world.poll(k, prints=0)
@@ -361,6 +380,10 @@ class TestAdoptionThroughLEM:
         world.bench.machine().corrections = {"Density": 0.02}
         with open(world.path, "a") as f:
             f.write("\n".join(lines) + "\n")
+        # The v4 module starts on a record that already holds the import:
+        # LEM answers no v2 request until the import is verified (§10.1), so
+        # the digest the uploader asks for at the bind is the imported record.
+        world.restart()
         for k in range(4):
             world.poll(k, prints=0)
         assert len(_bench_log_rows(world.store)) == 30
@@ -369,8 +392,9 @@ class TestAdoptionThroughLEM:
             self, world):
         """The same hole on the v2 road: a QC standard logged under a
         machine-level factor kept no raw; the factor has changed. Through the
-        digest (no-raw verdicts keyed on standard and test, matched by count)
-        no line is recovered — and a row LEM cannot read is named
+        digest (no-raw verdicts matched on the values they judged, and one
+        logged under a since-changed factor standing in for its own
+        standard's print) no line is recovered — and a row LEM cannot read is named
         (`unreadable_labs`), so its line is not recovered either."""
         m = world.m
         spec = m.TestSpec(name="Density", value_col="Density", expected=0.85,
@@ -385,8 +409,20 @@ class TestAdoptionThroughLEM:
             "?, '', '', '{not json')", [UID, world.labs[7]])
         assert "error" not in res, res
         machine.corrections = {"Density": 0.02}
+        # Today's factor is LEM's configuration (the import copied
+        # lem_correction_factors): the bench judges the record on it, and
+        # LEM's config would set it back to none if only this PC held it.
+        res = world.store.sql("INSERT OR REPLACE INTO lem_correction_factors "
+                              "(machine_uid, test_name, correction) VALUES "
+                              "(?, 'Density', 0.02)", [UID])
+        assert "error" not in res, res
+        world.app.config["SNAPSHOTS"].refresh()
         with open(world.path, "a") as f:
             f.write("\n".join(lines) + "\n")
+        # The v4 module starts on a record that already holds the import:
+        # LEM answers no v2 request until the import is verified (§10.1), so
+        # the digest the uploader asks for at the bind is the imported record.
+        world.restart()
         for k in range(4):
             world.poll(k, prints=0)
         journal = m.BenchJournal(m.journal_dir(UID), UID)

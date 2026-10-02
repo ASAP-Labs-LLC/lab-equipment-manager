@@ -387,14 +387,8 @@ class TestV2Mode:
         lab = LabCore()
         m = world.bench(lab)
         world.poll(m, 0)
-        # The first v4 start holds its file until LEM's adoption digest has
-        # come back (§10.2: the uploader asks, the poll never waits), so the
-        # first print is read — and acked — one poll later.
-        world.poll(m, 1, prints=0)
-        assert LABS[0] in world.lem.runs(), (
-            "the premise: LEM acked the first reading before the outage")
         world.lem.set_modes(lan="down", public="down")
-        world.poll(m, 2, prints=2)                     # journaled, not acked
+        world.poll(m, 1, prints=2)                     # journaled, not acked
         world.lem.set_modes(lan="404", public="404")
         for k in range(12, 16):                        # past the backoff
             world.poll(m, k, prints=1)

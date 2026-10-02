@@ -156,17 +156,27 @@ MUTATIONS = {
         "kind": "source", "owner": "P4",
         "pattern": r"return AdoptionLine\(offset, part, pk, lab, adoption_key\(lab, values\),",
         "replace": "return AdoptionLine(offset, part, pk, lab, adoption_key(lab, "
-                   "{k: v for k, v in corrected.items() if k not in RESERVED_ROW_KEYS}),",
+                   "{k: v for k, v in apply_row_corrections([dict(values)], "
+                   "getattr(machine, 'corrections', None) or {})[0].items() "
+                   "if k not in RESERVED_ROW_KEYS}),",
         "what": "adoption matches corrected values, not raw (U3 must fail)"},
-    # Round 1's hole: a QC verdict that kept no raw (v3.9, machine-level
-    # factor) keyed on the corrected value it holds. Once the factor has
-    # changed, the standard's print looks unrecorded (U3 must fail — on the
-    # legacy road, where the bench keys LabCore's rows itself).
+    # Round 2's hole: a QC verdict that kept no raw reading matched by a
+    # count per (standard, test), whatever value it judged. Every restart's
+    # replay leaves a spare verdict, so a standard printed during the
+    # upgrade matched one and was lost (U2's QC-downtime world must fail).
+    "adoption_qc_by_count": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"hit = next\(\(v for v in sorted\(self\._candidates\(line, t, raw\)\)",
+        "replace": 'hit = next((v for v in sorted(slot["value"])',
+        "what": "a no-raw QC verdict matched by count, not value (U2 must fail)"},
+    # Round 1's hole: a no-raw verdict logged under a factor that has changed
+    # since may not stand in for its print (no stage B). The standard's print
+    # looks unrecorded: U3's one-test standard is falsely recovered.
     "adoption_qc_on_value": {
         "kind": "source", "owner": "P4",
-        "pattern": r"return \{test: ADOPTION_NO_RAW\}",
-        "replace": 'return {test: row.get("value")}',
-        "what": "a no-raw QC verdict keyed on its corrected value (U3 must fail)"},
+        "pattern": r"elif miss or not wild or not all\(",
+        "replace": "elif True or miss or not wild or not all(",
+        "what": "a no-raw QC verdict under a since-changed factor never stands in (U3 must fail)"},
     # A recovered reading stays on the results road like any other: filed
     # automatically, without the person §10.2 says must decide (U2).
     "recovered_filed": {

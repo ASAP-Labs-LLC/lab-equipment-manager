@@ -4119,7 +4119,11 @@ class SingleCsvSource:
 #   fast path  the newest ADOPTION_FAST_LINES readings after the boundary all
 #              match → adopt at the end of the file (one lookup).
 #   full match every reading after the boundary, against the uid's recorded
-#              run/qc rows, on (lab_id, RAW values) by multiset.
+#              run rows on (lab_id, RAW values) by multiset; a QC standard's
+#              print against its qc verdicts, on the raw reading where the
+#              verdict kept one and on the VALUE it judged where it did not
+#              (`_QcMatch`: a count per standard would be inflated by every
+#              restart's replay and match a print made during the upgrade).
 #   outcome    matched → the seen-set, never journaled; unmatched after the
 #              first match (or after the boundary) → journaled as a `run` with
 #              origin 'recovered', never QC-evaluated, never auto-filed;
@@ -4141,11 +4145,12 @@ ADOPTION_MAX_READS = 15
 # The results guard's ledger is seeded from matched legacy rows this recent.
 ADOPTION_LEDGER_DAYS = 30
 V2_ADOPTION_PATH = "/api/v2/bench/{uid}/adoption"
-# What a QC verdict row that kept no raw reading is keyed on in place of a
-# value. v3.9 wrote `raw_value` only for a SPEC correction: under a
-# machine-level factor the row holds the corrected number alone (and `value`
-# at %g, six significant digits), so it cannot say which reading it was —
-# only that the standard was run for that test. Matched by count.
+# How the run-key multiset spells a qc verdict row that kept no raw reading
+# (v3.9 wrote `raw_value` only for a SPEC correction), byte for byte with the
+# server. QC prints are not matched on these keys: a count per (standard,
+# test) is inflated by every restart's replay, and matched a print made while
+# LabStation was down (round-2 critic, Agilent GC 1). They are matched on the
+# verdicts' VALUES instead — `qc_verdict_record`, `_QcMatch`.
 ADOPTION_NO_RAW = "(no raw)"
 
 
@@ -4231,65 +4236,128 @@ def legacy_row_adoption_key(row: dict) -> Optional[str]:
 class LegacyRecord(NamedTuple):
     counts: Counter         # the multiset of adoption keys
     unreadable: set         # Lab IDs with a row that cannot be read
-    qc_tests: dict          # Lab ID -> the tests it holds qc verdicts of
+    qc: dict                # the qc verdicts, `qc_verdict_record`'s shape
+
+
+def qc_verdict_value(value) -> str:
+    """A verdict's `value` as v3.9 spelled it (f"{value:g}"), so that a v4
+    row with more digits reads the same. Text that is not a number stays
+    text, and matches no reading. Identical to the server's
+    `bench_api._qc_number_text`."""
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, "g")
+
+
+def qc_value_under(raw, offset) -> Optional[str]:
+    """The `value` v3.9 wrote on the verdict of this raw reading under this
+    machine-level factor: the corrected number (`corrected_value`, as the
+    parse applies it), at %g. With no factor, or one that cannot be applied,
+    it is the raw reading itself. None when the reading is not a number."""
+    n = corrected_value(raw, offset) if offset else None
+    if n is None:
+        n = _safe_float(raw)
+    return format(n, "g") if n is not None else None
+
+
+def qc_verdict_record(rows) -> dict:
+    """The recorded `qc` verdicts, for adoption: {Lab ID: {test: {"raw":
+    {adoption_value: n}, "value": {qc_verdict_value: n}}}}. "raw" holds the
+    verdicts that kept their raw reading (a spec correction). "value" holds
+    the ones that did not, by the value they judged. Rows whose detail cannot
+    be read are left out here; `legacy_adoption_counts` reports them as
+    unreadable. The server's `bench_api.adoption_qc_verdicts` builds the same
+    record."""
+    out: dict = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "qc":
+            continue
+        detail = _detail_dict(r.get("detail"))
+        test = str(r.get("test_name") or "")
+        if detail is None or not test:
+            continue
+        slot = out.setdefault(str(r.get("lab_id") or "").strip(), {}) \
+            .setdefault(test, {"raw": {}, "value": {}})
+        raw = None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test)
+            if raw not in (None, ""):
+                break
+            raw = None
+        if raw is not None:
+            k, side = adoption_value(raw), slot["raw"]
+        else:
+            k, side = qc_verdict_value(r.get("value")), slot["value"]
+        side[k] = side.get(k, 0) + 1
+    return out
+
+
+def qc_verdicts_from_digest(digest: dict) -> Optional[dict]:
+    """The `qc_verdicts` of LEM's adoption digest in `qc_verdict_record`'s
+    shape, or None when it is missing or misshapen. A missing record is not
+    an empty one."""
+    raw = (digest or {}).get("qc_verdicts")
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    for lab, tests in raw.items():
+        if not isinstance(tests, dict):
+            return None
+        for test, sides in tests.items():
+            if not isinstance(sides, dict):
+                return None
+            slot = {}
+            for side in ("raw", "value"):
+                got = sides.get(side) or {}
+                if not isinstance(got, dict) or not all(
+                        isinstance(n, int) and not isinstance(n, bool)
+                        for n in got.values()):
+                    return None
+                slot[side] = {str(k): n for k, n in got.items()}
+            out.setdefault(str(lab), {})[str(test)] = slot
+    return out
 
 
 def legacy_adoption_counts(rows) -> LegacyRecord:
     """What the recorded rows say, for adoption. `unreadable` is a statement
     too: the record holds something for that Lab ID, so it is never "no
-    row". `qc_tests` lets a QC print be matched on what v3.9 judged THEN,
-    whatever today's QC assignment is."""
-    counts, bad, qc = Counter(), set(), {}
+    row". `qc` is what v3.9 judged THEN, verdict by verdict, whatever
+    today's QC assignment is."""
+    counts, bad = Counter(), set()
     for r in rows:
         k = legacy_row_adoption_key(r)
-        lab = str(r.get("lab_id") or "").strip()
         if not k:
-            bad.add(lab)
+            bad.add(str(r.get("lab_id") or "").strip())
             continue
         counts[k] += 1
-        if str(r.get("kind") or "") == "qc":
-            qc.setdefault(lab, set()).add(str(r.get("test_name") or ""))
-    return LegacyRecord(counts, bad, qc)
+    return LegacyRecord(counts, bad, qc_verdict_record(rows))
 
 
 @dataclass
 class AdoptionLine:
     """One print of the file as adoption sees it. `run_key` None: not a
-    reading (a header). `qc_keys`: per QC spec this line is a standard for,
-    the keys its verdict row may carry (raw, or the value under today's
-    factor when the row kept no raw)."""
+    reading (a header); "presumed": before the boundary and not parsed."""
     offset: int
     part: int
     pk: str
     lab_id: str
     run_key: Optional[str]
-    qc_keys: tuple = ()
     text: str = ""
     lh: str = ""
-    # Per QC spec, the key of a verdict row that kept no raw (ADOPTION_NO_RAW):
-    # a match by count only, tried after every exact key of every line.
-    loose_keys: tuple = ()
-    # The print's raw readings, (column, value) — for the record's own QC
-    # tests (`plan_adoption(qc_tests=…)`).
+    # The print's RAW readings, (column, value): what a qc verdict of it is
+    # matched on.
     values: tuple = ()
-
-
-def _with_record_qc(line: "AdoptionLine", tests) -> "AdoptionLine":
-    """The line with keys for the QC tests the record holds verdicts of for
-    its Lab ID, beside those of today's specs: per test, every reading the
-    print holds (a verdict that kept its raw) and, by count, the test alone
-    (one that did not)."""
-    have_loose = set(line.loose_keys)
-    qc, loose = list(line.qc_keys), list(line.loose_keys)
-    for test in sorted(tests):
-        nr = adoption_key(line.lab_id, {test: ADOPTION_NO_RAW})
-        if nr in have_loose:
-            continue                    # today's spec already covers it
-        qc.append(tuple(dict.fromkeys(
-            adoption_key(line.lab_id, {test: v}) for _c, v in line.values)))
-        loose.append(nr)
-    return replace(line, qc_keys=tuple(q for q in qc if q),
-                   loose_keys=tuple(loose))
+    # (test, column) for today's QC specs of this Lab ID: which reading a
+    # verdict of that test judged. A test the record holds and today's specs
+    # do not is looked up by its own name.
+    cols: tuple = ()
 
 
 @dataclass
@@ -4305,77 +4373,191 @@ class AdoptionPlan:
     matched_lines: list = field(default_factory=list)
 
 
-def _adoption_take_loose(counts: Counter, line: "AdoptionLine") -> bool:
-    hit = False
-    for k in line.loose_keys or ():
-        if counts.get(k, 0) > 0:
-            counts[k] -= 1
-            hit = True
-    return hit
-
-
 def _adoption_take(counts: Counter, line: "AdoptionLine") -> bool:
-    """Match one line against the multiset on its EXACT keys, consuming
-    what it matched."""
-    hit = False
-    for alternatives in line.qc_keys or ():
-        for k in alternatives:
-            if counts.get(k, 0) > 0:
-                counts[k] -= 1
-                hit = True
-                break
-    if hit:
-        return True
+    """Match one reading line against the multiset of run keys on its exact
+    raw values, consuming what it matched."""
     if line.run_key and counts.get(line.run_key, 0) > 0:
         counts[line.run_key] -= 1
         return True
     return False
 
 
+class _QcMatch:
+    """A QC standard's prints against the verdicts v3.9 logged of them.
+
+    A print is one verdict per test, so a print is recorded when its
+    verdicts are: per test, a verdict that kept its raw reading and holds
+    this one (exact), or one whose VALUE is this reading under a factor the
+    bench knows (none, or today's) — exact too, since the file holds every
+    raw reading. Replays log a print again; the multiset absorbs that.
+
+    What the bench cannot know is a factor that has changed since a
+    verdict was logged. Such a verdict's value is explained by NO reading of
+    the file under any known factor (`unexplained`, per test: distinct
+    values only, because a replay of the same print repeats the value and is
+    not another print). It may stand in for a test of a print only:
+
+      pinned   at least as many of the print's tests match exactly as stand
+               in this way, and at least one does (stage "A", any path); or
+      factored every test that stands in has a factor today (stage "B",
+               after every line has had stage A, oldest print first; never on
+               the fast path). That is U3: a one-test standard whose factor
+               moved after it was logged.
+
+    So a print whose numbers are new (a downtime print, a re-processed
+    injection) matches nothing on an unfactored test and is recovered,
+    however many spare verdicts the replays left. A false recovery is shown to
+    a person; a false match is a reading lost without a trace, so where the
+    record cannot tell, the print is recovered."""
+
+    def __init__(self, qc: dict, corrections: dict, lines) -> None:
+        self.corrections = dict(corrections or {})
+        self.pool = {lab: {t: {"raw": Counter(s.get("raw") or {}),
+                               "value": Counter(s.get("value") or {})}
+                           for t, s in tests.items()}
+                     for lab, tests in (qc or {}).items()}
+        explained: dict = {}
+        for line in lines:
+            for t, raw, _col in self._tests(line):
+                explained.setdefault((line.lab_id, t), set()).update(
+                    self._candidates(line, t, raw))
+        self.unexplained = {
+            (lab, t): set(s["value"]) - explained.get((lab, t), set())
+            for lab, tests in self.pool.items() for t, s in tests.items()}
+
+    def is_qc(self, line) -> bool:
+        return bool(line.run_key) and bool(self._tests(line))
+
+    def _tests(self, line) -> list:
+        """(test, raw, column) for each test the record holds verdicts of for
+        this Lab ID and the print holds a number for."""
+        tests = self.pool.get(line.lab_id)
+        if not tests or not line.run_key or line.run_key == "presumed":
+            return []
+        values, cols = dict(line.values), dict(line.cols)
+        out = []
+        for t in tests:
+            col = cols.get(t) or t
+            raw = _ci_lookup(values, col)
+            if raw is not None and _safe_float(raw) is not None:
+                out.append((t, raw, col))
+        return out
+
+    def _offsets(self, t: str, col: str) -> list:
+        f = self.corrections.get(col) or self.corrections.get(t) or 0
+        return [0, f] if f else [0]
+
+    def _candidates(self, line, t, raw) -> set:
+        col = dict(line.cols).get(t) or t
+        return {v for v in (qc_value_under(raw, f)
+                            for f in self._offsets(t, col)) if v is not None}
+
+    def take(self, line, stage: str) -> bool:
+        """Match the print, consuming the verdicts it matched; False (and
+        nothing consumed) when it is not recorded at this stage."""
+        exact, wild = [], []
+        for t, raw, col in self._tests(line):
+            slot = self.pool[line.lab_id][t]
+            rk = adoption_value(raw)
+            if slot["raw"].get(rk, 0) > 0:
+                exact.append((slot["raw"], rk))
+                continue
+            hit = next((v for v in sorted(self._candidates(line, t, raw))
+                        if slot["value"].get(v, 0) > 0), None)
+            if hit is not None:
+                exact.append((slot["value"], hit))
+            else:
+                wild.append((t, raw, col))
+        # A test with no verdict for this reading and no unexplained value
+        # left is a MISS: the record lacks it (or the test was not assigned
+        # when the print was logged). One with an unexplained value left may
+        # stand in (`wild`).
+        spare_of = {t: self.unexplained.get((line.lab_id, t)) for t, _r, _c in wild}
+        miss = sum(1 for t, _r, _c in wild if not spare_of[t])
+        wild = [w for w in wild if spare_of[w[0]]]
+        if stage == "A":
+            # Pinned: most of the print's tests match exactly, strictly more
+            # than miss outright.
+            if not exact or len(exact) < len(wild) + miss or len(exact) <= miss:
+                return False
+        elif miss or not wild or not all(
+                self._offsets(t, col) != [0] for t, _r, col in wild):
+            return False
+        for counter, k in exact:
+            counter[k] -= 1
+        for t, raw, _col in wild:
+            left = spare_of[t]
+            # The value nearest the reading: a factor is a small offset.
+            r = _safe_float(raw)
+            v = min(sorted(left), key=lambda x: abs((_safe_float(x) or 0) - r))
+            left.discard(v)
+            values = self.pool[line.lab_id][t]["value"]
+            values[v] = max(0, values.get(v, 0) - 1)
+        return True
+
+
 def plan_adoption(lines, boundary: int, counts, asked=None,
                   file_predates_history: bool = False,
                   fast_lines: int = ADOPTION_FAST_LINES,
-                  unreadable=None, qc_tests=None) -> AdoptionPlan:
-    """Classify the file's prints (in file order) against the recorded rows
-    (`counts`, a multiset of adoption keys). `asked`: the Lab IDs the record
-    was asked about (None: all of them). `unreadable`: Lab IDs the record
-    holds rows for that cannot be read — an unmatched line of one is not a
-    print the record lacks, so it is counted as unreadable, never recovered.
-    `qc_tests`: Lab ID -> the tests the record holds qc verdicts of.
-    Pure; consumes a copy of counts."""
+                  unreadable=None, qc=None, corrections=None,
+                  reparse=None) -> AdoptionPlan:
+    """Classify the file's prints (in file order) against the recorded rows:
+    `counts`, the multiset of run keys, and `qc`, the qc verdicts
+    (`qc_verdict_record`). `asked`: the Lab IDs the record was asked about
+    (None: all of them). `unreadable`: Lab IDs the record holds rows for that
+    cannot be read — an unmatched line of one is not a print the record
+    lacks, so it is counted as unreadable, never recovered. `corrections`:
+    today's machine-level factors. `reparse(line)`: parses a presumed line
+    (before the boundary) that may be a QC standard's print, so that its
+    verdicts are spent on it and not left over for a newer print. Pure;
+    consumes copies."""
     unreadable = {str(i).strip() for i in (unreadable or ())}
-    if qc_tests:
-        lines = [_with_record_qc(l, qc_tests[l.lab_id])
-                 if l.run_key and qc_tests.get(l.lab_id) else l for l in lines]
-    readings, before, other = [], 0, 0
+    qc = qc or {}
+    if reparse is not None and qc:
+        labs = [l.lower() for l in qc if l]
+        lines = [reparse(l) if l.run_key == "presumed" and any(
+                     lab in l.text.lower() for lab in labs) else l
+                 for l in lines]
+    readings, before, other = [], [], 0
     for line in lines:
         if not line.run_key:
             other += 1
         elif line.offset < boundary:
-            before += 1
+            before.append(line)
         else:
             readings.append(line)
     if not readings:
-        return AdoptionPlan("empty", presumed=before, other=other)
+        return AdoptionPlan("empty", presumed=len(before), other=other)
     checked = [l for l in readings if asked is None or l.lab_id in asked]
     unchecked = len(readings) - len(checked)
+
+    def matcher():
+        m = _QcMatch(qc, corrections, before + checked)
+        for line in before:        # presumed recorded: spend their verdicts
+            if m.is_qc(line):
+                m.take(line, "A")
+        return m
+
+    def take(pool, m, line, stage="A"):
+        if m.is_qc(line) and m.take(line, stage):
+            return True
+        return stage == "A" and _adoption_take(pool, line)
+
     # The fast path: the newest readings of the file, every one of them asked
     # about and in the record. What lies before them is not looked at.
     tail = readings[-fast_lines:] if fast_lines else []
-    pool = Counter(counts)
+    pool, m = Counter(counts), matcher()
     if tail and all(asked is None or l.lab_id in asked for l in tail) \
-            and all(_adoption_take(pool, l) for l in tail):
+            and all(take(pool, m, l) for l in tail):
         return AdoptionPlan("fast", matched=len(tail),
-                            presumed=before + len(readings) - len(tail),
+                            presumed=len(before) + len(readings) - len(tail),
                             other=other, matched_lines=list(tail))
-    pool = Counter(counts)
-    hits = [_adoption_take(pool, l) for l in checked]
-    # Then the no-raw verdicts, by count, oldest print first: a standard
-    # printed while LabStation was down is the newest print of it, and is
-    # the one left over. (Never on the fast path: a match by count alone
-    # cannot vouch that the older prints of the standard are recorded.)
-    hits = [h or _adoption_take_loose(pool, l) for l, h in zip(checked, hits)]
-    plan = AdoptionPlan("full", presumed=before, unchecked=unchecked,
+    pool, m = Counter(counts), matcher()
+    hits = [take(pool, m, l) for l in checked]
+    # Then stage B, oldest print first: a standard printed while LabStation
+    # was down is the newest print of it, and is the one left over.
+    hits = [h or take(pool, m, l, "B") for l, h in zip(checked, hits)]
+    plan = AdoptionPlan("full", presumed=len(before), unchecked=unchecked,
                         other=other)
     plan.matched = sum(hits)
     plan.matched_lines = [l for l, h in zip(checked, hits) if h]
@@ -4397,7 +4579,6 @@ def plan_adoption(lines, boundary: int, counts, asked=None,
         else:
             plan.recovered.append(line)
     return plan
-
 
 
 def adoption_boundary(data: bytes, last_position) -> int:
@@ -4422,34 +4603,35 @@ def adoption_boundary(data: bytes, last_position) -> int:
 def adoption_line(machine: "Machine", offset: int, part: int, text: str,
                   lh: str, pk: str) -> AdoptionLine:
     """One print of the file, keyed for adoption: parsed exactly as the poll
-    would parse it, on its RAW values. A QC standard's print also carries one
-    set of keys per spec it is a standard for — the verdict row v3.9 logged
-    instead of a `run` — the raw reading, and the value under today's factor
-    for a row that kept no raw."""
+    would parse it, on its RAW values (a run row is matched on them; a QC
+    standard's verdicts on the values they judged, see `_QcMatch`)."""
     result = parse_print(machine, text)
     lab = str(result.lab_id or "").strip()
     if not lab and not result.values:
-        return AdoptionLine(offset, part, pk, "", None, (), text, lh)
+        return AdoptionLine(offset, part, pk, "", None, text, lh)
     values = {k: v for k, v in result.values.items() if k not in RESERVED_ROW_KEYS}
-    corrected = apply_row_corrections([dict(values)],
-                                      getattr(machine, "corrections", None) or {})[0]
-    qc, loose = [], []
-    for spec in getattr(machine, "tests", None) or ():
-        if not spec.sample_id or lab.lower() != spec.sample_id.strip().lower():
-            continue
-        raw = _safe_float(_ci_lookup(values, spec.value_col))
-        if raw is None:
-            continue
-        alts = [adoption_key(lab, {spec.name: raw})]
-        now_value = _safe_float(_ci_lookup(corrected, spec.value_col))
-        if now_value is not None:
-            alts.append(adoption_key(lab, {spec.name: now_value}))
-        qc.append(tuple(dict.fromkeys(alts)))
-        # A verdict row that kept no raw (machine-level factor): by count.
-        loose.append(adoption_key(lab, {spec.name: ADOPTION_NO_RAW}))
+    cols = tuple((spec.name, spec.value_col)
+                 for spec in getattr(machine, "tests", None) or ()
+                 if spec.sample_id and lab.lower() == spec.sample_id.strip().lower())
     return AdoptionLine(offset, part, pk, lab, adoption_key(lab, values),
-                        tuple(qc), text, lh, tuple(loose),
-                        tuple((str(k), v) for k, v in values.items()))
+                        text, lh, tuple((str(k), v) for k, v in values.items()),
+                        cols)
+
+
+def adoption_lines(machine: "Machine", scan_lines, boundary: int) -> list:
+    """Every line of a scan as adoption sees it. Lines before the boundary
+    are presumed recorded and not parsed (the Agilent's boundary is 10.5 MB
+    in); `plan_adoption` re-parses only the few that may be a QC standard's
+    print (`reparse`)."""
+    return [adoption_line(machine, start, part, text, lh, pk)
+            if start >= boundary else
+            AdoptionLine(start, part, pk, "", "presumed", text, lh)
+            for start, part, text, lh, pk in scan_lines]
+
+
+def adoption_reparse(machine: "Machine"):
+    """`plan_adoption`'s `reparse` for this machine."""
+    return lambda l: adoption_line(machine, l.offset, l.part, l.text, l.lh, l.pk)
 
 
 def _ts_naive(text) -> Optional[datetime]:
@@ -4483,6 +4665,16 @@ def build_first_ingest_query(machine_uid: str) -> tuple:
             [machine_uid, machine_uid])
 
 
+def adoption_state_from_digest(body: dict) -> dict:
+    """What `_adopt` keeps of LEM's digest (one that passed
+    `adoption_digest_problem`)."""
+    return {"road": "lem", "counts": Counter(body["counts"]),
+            "unreadable": set(str(i) for i in body.get("unreadable_labs") or ()),
+            "qc": qc_verdicts_from_digest(body),
+            "history": bool(body.get("rows")), "first": body.get("first_ts"),
+            "recent": list(body.get("recent") or ())}
+
+
 def adoption_digest_problem(doc) -> str:
     """Why LEM's adoption answer cannot be adopted on, or "" when it can. A
     digest with a field missing or misshapen is not an empty record."""
@@ -4493,6 +4685,10 @@ def adoption_digest_problem(doc) -> str:
             isinstance(v, int) and not isinstance(v, bool)
             for v in counts.values()):
         return "a digest without its counts"
+    if qc_verdicts_from_digest(doc) is None:
+        # Without them a QC standard's print could be told from no other:
+        # an older server's digest is not adopted on.
+        return "a digest without its qc verdicts"
     return ""
 
 
@@ -10102,18 +10298,26 @@ class LEMStationModule:
         return True
 
     def _upl_adoption(self, now: datetime, t: float, journal) -> None:
-        """§10.2: the digest of what LEM already holds for this bench, when
-        the poll has asked for it (`_adoption_history`) and has no answer
-        yet. Kept in the transfer state for the poll; never decided here. A
+        """§10.2: the digest of what LEM already holds for this bench, once
+        the journal says adoption is due (from the bind on, before the first
+        poll needs it) or the poll has asked (`_adoption_history`), and only
+        until it has an answer. Kept in the transfer state for the poll; never decided here. A
         404 is an old server (the bench adopts through LabCore instead); any
         other answer that is not a whole digest is said and asked again."""
         st = self._transfer_state()
         with st.lock:
             want = dict(st.adoption_want) if st.adoption_want else None
             have = st.adoption_answer
-        if want is None or (have is not None and have.get("want") == want):
+        if have is not None:
             return
-        query = urllib.parse.urlencode(want)
+        if want is None:
+            # Not asked yet: ask ahead only for a tailed file (the only
+            # source adoption reads) whose journal still has it due.
+            machine = getattr(self, "_machine", None)
+            if getattr(machine, "source_type", "") != "single_csv" or \
+                    not journal.adoption_due():
+                return
+        query = urllib.parse.urlencode(want or {"src": "", "boundary": ""})
         ans = self._lem("GET", V2_ADOPTION_PATH.format(uid=urllib.parse.quote(
             self._uploader_uid, safe="")) + "?" + query, now)
         if ans is None:
@@ -10573,10 +10777,7 @@ class LEMStationModule:
             scan = whole
         # Lines before the boundary are presumed recorded and never matched,
         # so they are not parsed (the Agilent's boundary is 10.5 MB in).
-        lines = [adoption_line(machine, start, part, text, lh, pk)
-                 if start >= boundary else
-                 AdoptionLine(start, part, pk, "", "presumed", (), text, lh)
-                 for start, part, text, lh, pk in scan["lines"]]
+        lines = adoption_lines(machine, scan["lines"], boundary)
         plan = self._adoption_plan(machine, state, lines, boundary, scan)
         if plan is None:
             source._wait_note(
@@ -10598,15 +10799,15 @@ class LEMStationModule:
             # The poll never waits on a road (§6.3): it leaves the question
             # for the uploader thread (`_upl_adoption`) and takes the answer
             # on a later poll. Until then the file keeps its bytes.
+            # The digest is the whole uid's record, whatever file or boundary
+            # asked for it, so an answer the uploader fetched at bind (it
+            # asks as soon as the journal says adoption is due) serves the
+            # first poll: no poll's worth of lag in which the file could move.
             st = self._transfer_state()
-            want = {"src": name, "boundary": int(boundary)}
             with st.lock:
                 answer = st.adoption_answer
                 why = st.adoption_error
-                if answer is None or answer.get("want") != want:
-                    st.adoption_answer = None
-                    st.adoption_want = want
-                    answer = None
+                st.adoption_want = {"src": name, "boundary": int(boundary)}
             if answer is None:
                 source._wait_note(
                     f"Adopting history: waiting for LEM to say which lines of "
@@ -10614,19 +10815,7 @@ class LEMStationModule:
                     + (f" ({why})" if why else "")
                     + "; the file is read once it does.")
                 return False       # the poll's own wake carries the question
-            body = answer["doc"]
-            state.update(road="lem", counts=Counter(body["counts"]),
-                         unreadable=set(str(i) for i in
-                                        body.get("unreadable_labs") or ()),
-                         qc_tests={str(k): set(v) for k, v in
-                                   (body.get("qc_tests") or {}).items()
-                                   if isinstance(v, list)},
-                         qc_values={str(k): Counter(v) for k, v in
-                                    (body.get("qc_values") or {}).items()
-                                    if isinstance(v, dict)},
-                         history=bool(body.get("rows")),
-                         first=body.get("first_ts"),
-                         recent=list(body.get("recent") or ()))
+            state.update(adoption_state_from_digest(answer["doc"]))
             return True
         read_sql = globals().get("labcore_read_sql")
         if not callable(read_sql):
@@ -10668,10 +10857,13 @@ class LEMStationModule:
         first = _ts_naive(state.get("first"))
         mtime = datetime.fromtimestamp(scan["mtime"])
         older = first is not None and mtime < first
+        corrections = getattr(machine, "corrections", None) or {}
+        reparse = adoption_reparse(machine)
         if state["road"] == "lem":
             return plan_adoption(lines, boundary, state["counts"], None, older,
                                  unreadable=state.get("unreadable"),
-                                 qc_tests=state.get("qc_tests"))
+                                 qc=state.get("qc"), corrections=corrections,
+                                 reparse=reparse)
         readings = [l for l in lines if l.run_key and l.offset >= boundary]
         # Newest first, each Lab ID once (dict keeps first-seen order).
         order = list(dict.fromkeys(l.lab_id for l in reversed(readings)))
@@ -10681,14 +10873,16 @@ class LEMStationModule:
             return None
         rec = legacy_adoption_counts(state["rows"])
         plan = plan_adoption(lines, boundary, rec.counts, state["asked"], older,
-                             unreadable=rec.unreadable, qc_tests=rec.qc_tests)
+                             unreadable=rec.unreadable, qc=rec.qc,
+                             corrections=corrections, reparse=reparse)
         if plan.kind != "full":
             return plan
         if not self._adoption_ask(machine, state, order):
             return None
         rec = legacy_adoption_counts(state["rows"])
         return plan_adoption(lines, boundary, rec.counts, state["asked"], older,
-                             unreadable=rec.unreadable, qc_tests=rec.qc_tests)
+                             unreadable=rec.unreadable, qc=rec.qc,
+                             corrections=corrections, reparse=reparse)
 
     def _adoption_ask(self, machine, state, lab_ids) -> bool:
         """Read the recorded rows of these Lab IDs (those not asked yet),
@@ -10722,14 +10916,18 @@ class LEMStationModule:
                      now, messages):
         """No reading was ever recorded from this bench: there is no history
         to adopt, and every line in the file is a reading nobody has — read
-        from the top, exactly as a v4 bench with no cursor does."""
-        try:
-            read = source.read(now)
-        except (OSError, JournalError) as exc:
-            source._wait_note(f"Adopting history: the instrument's file "
-                              f"{os.path.basename(source.path)} cannot be read "
-                              f"({exc}); nothing is read until it can.")
-            return None
+        from the top, exactly as a v4 bench with no cursor does.
+
+        The `adoption` record is journaled HERE, before the read, and not
+        with the poll's own records: it says nothing about any line, so it
+        needs no line to be journaled first, and a poll whose readings fail
+        to reach the journal then re-reads them as an ordinary bench does —
+        it does not adopt the whole file again on every poll. (Riding on the
+        poll's records, a bench whose journaling failed re-read and
+        re-logged its whole file each poll: 4,800 prints a poll in D1 under
+        `journal_poll_off`, until the gate's uploader wait gave up.) A kill
+        after the record and before the read leaves a journal with no cursor:
+        the next start reads from the top, which is this same outcome."""
         record = {"kind": "adoption", "src": "file:" + source.key,
                   "path": os.path.basename(source.path), "boundary": boundary,
                   "history": False, "matched": 0, "recovered": 0,
@@ -10737,20 +10935,25 @@ class LEMStationModule:
                   "unreadable": 0,
                   "file_sha256": _sha(scan["data"][:scan["end"]]),
                   "road": state.get("road"), "labcore_reads": state["reads"]}
-        read.records.append(record)
-        inner = read._commit
-        src = record["src"]
-
-        def commit():
-            if not journal.adopted(src):
-                return ["The adoption of this bench's file was not recorded in "
-                        "the bench journal; it runs again next poll."]
-            journal.mark_adopted(src, _adoption_summary(record))
-            self._adoption = None
-            source.waiting = ""
-            return inner() if inner else []
-        read._commit = commit
-        return read
+        try:
+            journal.append([record], ts=_poll_ts(now))
+            journal.mark_adopted(record["src"], _adoption_summary(record))
+        except JournalError as exc:
+            source._wait_note(f"Adopting history: the bench journal could not "
+                              f"record the adoption ({exc}); trying again "
+                              "next poll.")
+            return None
+        self._adoption = None
+        source.waiting = ""
+        try:
+            return source.read(now)
+        except (OSError, JournalError) as exc:
+            # Adopted; the read itself is retried by the next poll's ordinary
+            # read, as any failed read is.
+            source._wait_note(f"The instrument's file "
+                              f"{os.path.basename(source.path)} cannot be read "
+                              f"({exc}); nothing is read until it can.")
+            return None
 
     def _adopt_plan(self, machine, journal, source, state, scan, boundary,
                     plan, now, messages):

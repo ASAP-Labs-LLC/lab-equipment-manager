@@ -43,12 +43,13 @@ def run_line(i, lab, value, offset=None):
     """A reading line as adoption sees it: where it is, and its keys."""
     return mod.AdoptionLine(offset=i * 20 if offset is None else offset,
                             part=0, pk="pk%d" % i, lab_id=lab,
-                            run_key=key(lab, {"Density": value}), qc_keys=())
+                            run_key=key(lab, {"Density": value}),
+                            values=(("Density", value),))
 
 
 def header(i):
     return mod.AdoptionLine(offset=i * 20, part=0, pk="pk%d" % i, lab_id="",
-                            run_key=None, qc_keys=())
+                            run_key=None)
 
 
 def recorded(*pairs):
@@ -269,35 +270,42 @@ def test_a_line_whose_lab_id_was_not_asked_about_is_unchecked_not_recovered():
     assert plan.unchecked == 3 and plan.recovered == []
 
 
+def qc_row(lab, test, value, detail=None):
+    return {"kind": "qc", "lab_id": lab, "test_name": test, "value": value,
+            "detail": json.dumps(detail or {"in_spec": True})}
+
+
 def test_a_qc_line_matches_its_qc_rows():
-    """A QC standard's line carries one key per spec it is a standard for.
-    It is recorded when its verdict rows are."""
+    """A QC standard's print is logged as verdicts, not a run. A verdict
+    whose spec corrected it kept `raw_value`: matched on it exactly."""
     qc = mod.AdoptionLine(offset=0, part=0, pk="q", lab_id="QC-1",
                           run_key=key("QC-1", {"Density": "0.8"}),
-                          qc_keys=((key("QC-1", {"Density": "0.8"}),),))
-    plan = mod.plan_adoption([qc], 0, Counter([key("QC-1", {"Density": "0.8"})]))
+                          values=(("Density", "0.8"),))
+    rec = mod.legacy_adoption_counts([qc_row("QC-1", "Density", "0.81", {
+        "raw_value": 0.8, "correction": 0.01})])
+    plan = mod.plan_adoption([qc], 0, rec.counts, qc=rec.qc)
     assert plan.matched == 1 and plan.recovered == []
 
 
-def test_a_qc_line_matches_a_verdict_that_kept_no_raw_one_for_one():
-    """Two prints of the standard, one no-raw verdict recorded: one match,
-    and the other print — the newer, file order — is the one recovered."""
+def test_a_qc_line_matches_a_verdict_that_kept_no_raw_on_its_value():
+    """Two prints of the standard, one verdict recorded, no raw kept (no
+    factor): it is matched on its value, and the print whose value the record
+    lacks is the one recovered — on the fast path too."""
     def qc(i, value):
         return mod.AdoptionLine(
             offset=i * 20, part=0, pk="q%d" % i, lab_id="QC-1",
             run_key=key("QC-1", {"Density": value}),
-            qc_keys=((key("QC-1", {"Density": value}),),),
-            loose_keys=(key("QC-1", {"Density": mod.ADOPTION_NO_RAW}),))
+            values=(("Density", value),))
     lines = [qc(0, "0.85"), run_line(1, "L-1", "0.8"), qc(2, "0.84")]
-    rec = Counter([key("QC-1", {"Density": mod.ADOPTION_NO_RAW}),
-                   key("L-1", {"Density": "0.8"})])
-    plan = mod.plan_adoption(lines, 0, rec, fast_lines=0)
-    assert plan.matched == 2
-    assert [l.pk for l in plan.recovered] == ["q2"]
-    # With the fast path on, the newest print alone would match the one
-    # verdict by count and vouch for nothing older: no fast path on it.
-    plan = mod.plan_adoption(lines, 0, rec, fast_lines=2)
-    assert plan.kind == "full" and [l.pk for l in plan.recovered] == ["q2"]
+    rows = [qc_row("QC-1", "Density", "0.85"),
+            {"kind": "run", "lab_id": "L-1",
+             "detail": json.dumps({"values": {"Density": "0.8"}})}]
+    rec = mod.legacy_adoption_counts(rows)
+    for fast in (0, 2):
+        plan = mod.plan_adoption(lines, 0, rec.counts, fast_lines=fast,
+                                 qc=rec.qc)
+        assert plan.matched == 2
+        assert [l.pk for l in plan.recovered] == ["q2"]
 
 
 def test_a_line_whose_record_cannot_be_read_is_unreadable_not_recovered():
@@ -318,38 +326,43 @@ def test_a_line_whose_record_cannot_be_read_is_unreadable_not_recovered():
 def test_a_qc_print_matches_its_verdicts_whatever_today_s_qc_assignment_is():
     """Which standards a bench is checked against is today's configuration;
     the verdict rows are what v3.9 did THEN. A standard since unassigned (or
-    a QC library that has not loaded yet) leaves the print with no QC keys of
-    its own, and keyed as a `run` it matched nothing: a false recovery. So
-    the record says which tests it holds verdicts of for each Lab ID
-    (`qc_tests`), and the line is matched on those — exactly where the row
-    kept a raw reading, by count where it did not."""
+    a QC library that has not loaded yet) leaves the line with no QC spec of
+    its own, and keyed as a `run` it matched nothing: a false recovery. The
+    record's verdicts are matched whatever today's specs are, on the reading
+    of the column named by the test when no spec names one."""
     line = mod.AdoptionLine(offset=40, part=0, pk="q", lab_id="QC-D",
                             run_key=key("QC-D", {"Density": "0.85"}),
                             values=(("Density", "0.8500"),))
     tail = run_line(1, "L-1", "0.8")
-    exact = Counter([key("QC-D", {"Density (QC)": 0.85}),
-                     key("L-1", {"Density": "0.8"})])
-    plan = mod.plan_adoption([tail, line], 0, exact, fast_lines=0,
-                             qc_tests={"QC-D": {"Density (QC)"}})
+    run = {"kind": "run", "lab_id": "L-1",
+           "detail": json.dumps({"values": {"Density": "0.8"}})}
+    rec = mod.legacy_adoption_counts([qc_row("QC-D", "Density", "0.85"), run])
+    plan = mod.plan_adoption([tail, line], 0, rec.counts, fast_lines=0,
+                             qc=rec.qc)
     assert (plan.matched, plan.recovered) == (2, [])
-    loose = Counter([key("QC-D", {"Density (QC)": mod.ADOPTION_NO_RAW}),
-                     key("L-1", {"Density": "0.8"})])
-    plan = mod.plan_adoption([tail, line], 0, loose, fast_lines=0,
-                             qc_tests={"QC-D": {"Density (QC)"}})
+    # A test named apart from its column, named by today's spec.
+    named = mod.AdoptionLine(offset=40, part=0, pk="q", lab_id="QC-D",
+                             run_key=key("QC-D", {"Density": "0.85"}),
+                             values=(("Density", "0.8500"),),
+                             cols=(("Density (QC)", "Density"),))
+    rec = mod.legacy_adoption_counts([qc_row("QC-D", "Density (QC)", "0.85"),
+                                      run])
+    plan = mod.plan_adoption([tail, named], 0, rec.counts, fast_lines=0,
+                             qc=rec.qc)
     assert (plan.matched, plan.recovered) == (2, [])
-    # Without the record's statement the print looked unrecorded.
-    plan = mod.plan_adoption([tail, line], 0, loose, fast_lines=0)
+    # Without the record's verdicts the print looked unrecorded.
+    plan = mod.plan_adoption([tail, line], 0, rec.counts, fast_lines=0)
     assert [l.pk for l in plan.recovered] == ["q"]
 
 
-def test_legacy_rows_say_which_qc_tests_and_which_lab_ids_they_hold():
-    rows = [{"kind": "qc", "lab_id": "QC-D", "test_name": "Density (QC)",
-             "value": "0.86", "detail": "{}"},
+def test_legacy_rows_say_which_qc_verdicts_and_which_lab_ids_they_hold():
+    rows = [qc_row("QC-D", "Density (QC)", "0.8600"),
             {"kind": "run", "lab_id": "L-1", "test_name": "", "value": "",
              "detail": json.dumps({"values": {"Density": "0.8"}})},
             {"kind": "run", "lab_id": "L-2", "test_name": "", "value": "",
              "detail": "{not json"}]
     got = mod.legacy_adoption_counts(rows)
     assert got.unreadable == {"L-2"}
-    assert got.qc_tests == {"QC-D": {"Density (QC)"}}
+    # The value as v3.9 spelled it (%g), however the row wrote it.
+    assert got.qc == {"QC-D": {"Density (QC)": {"raw": {}, "value": {"0.86": 1}}}}
     assert sum(got.counts.values()) == 2

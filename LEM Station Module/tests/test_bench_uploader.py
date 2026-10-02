@@ -915,3 +915,40 @@ class TestALongOutageLosesNoResult:
         lem.modes = {"lan": "up", "public": "up"}
         b2.poll(30)
         assert sorted(k[0] for k in lab.cells) == labs
+
+
+# ── adoption's question goes by the uploader too (§10.2) ─────────────────────
+
+class TestAdoptionDigest:
+    def test_the_digest_is_asked_at_the_bind_so_the_first_poll_reads(
+            self, bench, lem):
+        """The first v4 start holds its file until LEM has said what it
+        already holds. The uploader asks as soon as the bench binds, so the
+        first poll already has the answer and reads its file: no poll's worth
+        of lag in which an instrument could rewrite it (X1 lost 2 readings
+        when the question waited for the poll)."""
+        b = bench()
+        asked = [r for r in lem.requests if r["path"].endswith("/adoption")]
+        assert len(asked) == 1 and asked[0]["thread"] != threading.get_ident()
+        b.print_lines(("L-1", "0.8000"))
+        b.poll(1)
+        assert [r["lab_id"] for r in lem.runs()] == ["L-1"]
+        b.poll(3)
+        assert len([r for r in lem.requests
+                    if r["path"].endswith("/adoption")]) == 1
+
+    def test_a_digest_without_its_qc_verdicts_is_not_adopted_on(
+            self, bench, lem):
+        """An answer missing the verdicts could not tell a QC standard's new
+        print from a replayed one. It is not an empty record: the file waits,
+        the card says why, and nothing is read."""
+        lem.adoption_body = {"machine_uid": UID, "counts": {}, "rows": 5,
+                             "first_ts": None, "recent": []}
+        b = bench()
+        b.print_lines(("L-1", "0.8000"))
+        b.poll(2)
+        assert lem.runs() == []
+        assert "qc verdicts" in b.m._transfer.adoption_error
+        lem.adoption_body = None              # LEM upgraded: asked again
+        b.poll(2)
+        assert [r["lab_id"] for r in lem.runs()] == ["L-1"]

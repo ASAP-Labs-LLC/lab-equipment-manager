@@ -218,6 +218,53 @@ def adoption_raw_values(kind: str, test_name: str, value, detail: dict):
     return None
 
 
+def _qc_number_text(value) -> str:
+    """A verdict's `value` as v3.9 spelled it (f"{value:g}") — the module's
+    `qc_verdict_value`."""
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, "g")
+
+
+def adoption_qc_verdicts(rows) -> dict:
+    """The recorded qc verdicts, as the module's `qc_verdict_record` builds
+    them from LabCore's rows: {Lab ID: {test: {"raw": {raw: n}, "value":
+    {value: n}}}}. "raw" holds the verdicts that kept their raw reading (a spec
+    correction). "value" holds the ones that did not, by the value they
+    judged: the raw reading, or the reading plus the factor of the day. The
+    bench matches its file against those values. A count alone cannot tell a
+    replayed verdict from a new print."""
+    out: Dict[str, dict] = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "qc":
+            continue
+        detail = _adoption_detail(r.get("detail"))
+        test = str(r.get("test_name") or "")
+        if not isinstance(detail, dict) or not test:
+            continue
+        slot = out.setdefault(str(r.get("lab_id") or "").strip(), {}) \
+            .setdefault(test, {"raw": {}, "value": {}})
+        raw = None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test)
+            if raw not in (None, ""):
+                break
+            raw = None
+        if raw is not None:
+            k, side = adoption_value(raw), slot["raw"]
+        else:
+            k, side = _qc_number_text(r.get("value")), slot["value"]
+        side[k] = side.get(k, 0) + 1
+    return out
+
+
 def adoption_digest(rows, now: datetime) -> dict:
     """§10.2's answer over a bench's recorded run/qc rows (pure, so the
     floor rehearsal runs the very code the endpoint does):
@@ -225,8 +272,10 @@ def adoption_digest(rows, now: datetime) -> dict:
       counts           the multiset of H(lab_id, raw);
       unreadable_labs  Lab IDs with a row whose detail cannot be read — not
                        "no row": the bench never recovers their lines;
-      qc_tests         Lab ID -> the tests it holds qc verdicts of, so a QC
-                       print matches whatever today's QC assignment is;
+      qc_tests         Lab ID -> the tests it holds qc verdicts of;
+      qc_verdicts      what each of those verdicts judged
+                       (`adoption_qc_verdicts`), so a QC print matches its
+                       own verdicts whatever today's QC assignment is;
       first_ts         when LEM first recorded a reading from the bench;
       recent           run rows of the last ADOPTION_LEDGER_DAYS with the
                        values v3.9 FILED, for the results guard's ledger."""
@@ -263,6 +312,7 @@ def adoption_digest(rows, now: datetime) -> dict:
     return {"rows": len(rows), "counts": counts,
             "unreadable_labs": sorted(unreadable),
             "qc_tests": {k: sorted(v) for k, v in qc_tests.items()},
+            "qc_verdicts": adoption_qc_verdicts(rows),
             "first_ts": first, "recent": recent}
 
 

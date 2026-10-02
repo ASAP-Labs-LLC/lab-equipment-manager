@@ -241,6 +241,14 @@ def _machine_factor_world(b, texts, then, now):
     machine = b.m.machine()
     machine.tests = [spec]
     machine.corrections = dict(now)
+    # Where today's factor lives on a v3.9 floor, and where the poll reads it
+    # from: the bench must judge the record on the factor it actually has.
+    b.lab.con.execute(mod.CORRECTIONS_DDL)
+    for test, value in now.items():
+        b.lab.con.execute("INSERT OR REPLACE INTO lem_correction_factors "
+                          "(machine_uid, test_name, correction) VALUES (?, ?, ?)",
+                          [machine.uid, test, value])
+    b.lab.con.commit()
 
 
 def test_U3_a_qc_standard_logged_under_a_machine_factor_since_changed_is_not_recovered(qapp, tmp_path, monkeypatch):
@@ -268,21 +276,30 @@ def test_U3_a_qc_standard_logged_under_a_machine_factor_since_changed_is_not_rec
 
 
 def test_U2_of_two_qc_prints_the_one_the_record_lacks_is_the_one_recovered(qapp, tmp_path, monkeypatch):
-    """Matching a no-raw verdict on (standard, test) is a count, not a free
-    pass: the standard was printed twice, the record holds one verdict, so
-    exactly one print is recovered — the newer, the one made while
-    LabStation was down — and the factor change does not hide it."""
+    """A verdict that kept no raw, logged under a factor that has changed
+    since, is no free pass: the standard was printed twice, the record holds
+    one verdict, so exactly one print is recovered — the newer, the one made
+    while LabStation was down — and the factor change does not hide it.
+
+    (0.8300, not 0.8400: 0.8400 under today's +0.02 IS 0.86, the old
+    verdict's value, and a one-test standard cannot tell those two prints
+    apart — the newer one then matches exactly and the older is the one left.
+    One reading in common is the limit of a one-test standard; a standard of
+    several tests is pinned by the others, test_adoption_qc_values.)"""
     b = Bench(tmp_path, monkeypatch)
     logged = [line(i) for i in range(10)] + ["QC-D,0.8500"] + \
         [line(i) for i in range(10, 30)]
     _machine_factor_world(b, logged, {"Density": 0.01}, {"Density": 0.02})
-    write_file(b, logged + ["QC-D,0.8400"])
+    write_file(b, logged + ["QC-D,0.8300"])
     polls(b)
     (rec,) = journal_records("adoption")
     assert rec["recovered"] == 1
     tail = log_rows(b)[len(logged) - 1 + 1:]
     assert [(r["kind"], r["lab_id"]) for r in tail] == [("run", "QC-D")]
-    assert json.loads(tail[0]["detail"])["values"]["Density"] in ("0.8400", 0.84)
+    # Recorded as v3.9 records a corrected run: today's factor applied, the
+    # raw reading kept beside it.
+    detail = json.loads(tail[0]["detail"])
+    assert detail["raw"]["Density"] in ("0.8300", 0.83)
 
 
 def test_U3_a_qc_standard_no_longer_assigned_is_still_matched_to_its_verdicts(qapp, tmp_path, monkeypatch):
@@ -532,6 +549,29 @@ def test_a_bench_with_no_record_reads_its_file_from_the_top(qapp, tmp_path, monk
     assert len(adoption_reads(seen)) == 1
     (rec,) = journal_records("adoption")
     assert rec["history"] is False
+
+
+def test_a_fresh_adoption_is_recorded_even_when_the_poll_s_journaling_fails(qapp, tmp_path, monkeypatch):
+    """The `adoption` record of a bench with no history says nothing about
+    any line, so it is journaled on its own, before the read. It used to ride
+    on the poll's records. A poll whose readings then failed to reach the
+    journal adopted again on every poll and re-read the whole file each time:
+    in the gate (D1 under `journal_poll_off`) 4,800 prints per poll, until the
+    harness gave up waiting. Now the readings are retried as any failed read
+    is, and adoption happens once."""
+    b = Bench(tmp_path, monkeypatch)
+    b.lab.con.execute(mod.LOG_TABLE_DDL)
+    write_file(b, [line(i) for i in range(3)])
+    calls = []
+    monkeypatch.setattr(mod.LEMStationModule, "_journal_poll",
+                        lambda self, *a, **k: calls.append(1) or False,
+                        raising=True)
+    seen = counting(b, monkeypatch)
+    polls(b, 3)
+    (rec,) = journal_records("adoption")
+    assert rec["history"] is False
+    assert b.journal().adoption_due() is False
+    assert len(adoption_reads(seen)) == 1          # asked once, not per poll
 
 
 def test_a_serial_bench_has_nothing_to_adopt(qapp, tmp_path, monkeypatch):

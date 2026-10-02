@@ -624,7 +624,8 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
     # v3.9 server), where the bench must ask LabCore itself.
 
     def adoption_world(logged, unlogged=0, pre=0, factor_then=None,
-                       factor_now=None, v2=True, qc_print=False):
+                       factor_now=None, v2=True, qc_print=False, qc_replays=0,
+                       qc_downtime=False):
         if not hasattr(mod, "plan_adoption"):
             raise Unsupported("U1–U5 need adoption at the first v4 start "
                               "(P4) — not present on this target")
@@ -655,6 +656,15 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
             texts.append(c.emit_line(lab, val))
             if i < logged:
                 logged_texts.append(texts[-1])
+        # Each morning restart v3.9 re-read everything after its stored
+        # marker and logged it again: the standard's verdict, once more per
+        # restart (Agilent GC 1: 27 verdicts per AF26 test, ~12 prints).
+        logged_texts += [qc_text] * qc_replays
+        if qc_downtime:
+            # The standard run again while LabStation was down for the
+            # upgrade: new numbers, never logged. Round 2 matched it to a
+            # spare replayed verdict by count and lost it (critic, round 2).
+            c._write_lines(["QC-D,0.8420\n"])
         saved = machine.corrections, machine.tests
         if qc_print:
             machine.tests = [mod.TestSpec(name="Density", value_col="Density",
@@ -745,6 +755,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         return {"new_rows": len(rows) - c.seeded_rows,
                 "cell_sends": sum(c.gw.cell_sends.values()),
                 "recovered_rows": len(recovered),
+                "recovered_lab_values": [list(r) for r in recovered],
                 "lost": led["lost"], "dup": led["dup"],
                 "auto_filed": sum(n for (lab, _t, _v), n in c.gw.cell_sends.items()
                                   if lab in recovered_labs),
@@ -770,7 +781,21 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
     @new("U2")
     def u2():
         """30 logged and 1 printed while LabStation was down for the upgrade."""
-        return adoption_measure(adoption_world(30, unlogged=1))
+        m = adoption_measure(adoption_world(30, unlogged=1))
+        # And a QC standard printed during the downtime, on both roads: the
+        # standard's one earlier print was logged as a verdict that kept no
+        # raw reading and replayed by three restarts, so four verdicts stand
+        # for one print. Exactly the new print is recovered.
+        for road in ("v2", "legacy"):
+            w = adoption_measure(adoption_world(
+                30, v2=(road == "v2"), qc_print=True, qc_replays=3,
+                qc_downtime=True))
+            qc = [v for lab, v in w["recovered_lab_values"] if lab == "QC-D"]
+            m["qc_downtime_recovered_" + road] = len(qc)
+            m["qc_downtime_other_recovered_" + road] = \
+                w["recovered_rows"] - len(qc)
+            m["qc_downtime_" + road] = w
+        return m
 
     @new("U3")
     def u3():

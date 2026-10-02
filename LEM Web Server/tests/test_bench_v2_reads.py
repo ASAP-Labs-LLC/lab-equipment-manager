@@ -299,6 +299,12 @@ class TestAdoptionDigest:
         # Which tests each Lab ID holds verdicts of: a QC print is matched on
         # what was judged THEN, whatever today's QC assignment is.
         assert body["qc_tests"] == {"QC-1": ["Flash"]}
+        # And what each verdict judged. A verdict that kept no raw is matched
+        # on its VALUE: a count per (standard, test) is inflated by every
+        # restart's replay and matched a standard printed during the upgrade
+        # (round-2 critic, Agilent GC 1).
+        assert body["qc_verdicts"] == {
+            "QC-1": {"Flash": {"raw": {}, "value": {"41.5": 1}}}}
 
     def test_it_says_when_this_bench_was_first_recorded_and_nothing_is_empty(
             self, client, token, store):

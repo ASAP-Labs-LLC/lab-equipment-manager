@@ -98,6 +98,8 @@ class FakeLem:
         self.corrections = []       # rows: machine_uid, test_name, correction
         self.override = ""
         self.retired = False
+        # §10.2's digest; a test may replace it (an older server's shape).
+        self.adoption_body = None
         self.sources = {}           # src -> {"cursor":..., "snapshot": bytes}
         self.snapshot_uploads = 0
         self.lost_responses = 0     # next N syncs execute, then time out
@@ -201,8 +203,10 @@ class FakeLem:
                                      for s, v in self.sources.items()],
                          "result_ledger": [], "last_qc": []}
         if path == base + "adoption":
-            # §10.2's digest: this fake LEM has recorded nothing from the
-            # bench before its first v4 start, so there is no history.
+            # §10.2's digest: unless a test says otherwise, this fake LEM has
+            # recorded nothing from the bench before its first v4 start.
+            if self.adoption_body is not None:
+                return 200, self.adoption_body
             return 200, {"machine_uid": self.uid, "counts": {}, "rows": 0,
                          "qc_verdicts": {}, "first_ts": None, "recent": []}
         if path == base + "source-snapshot":

@@ -40,11 +40,17 @@ in two worlds per bench:
             Blank) after the last restart and rewrote its row in place
             (distill.py does exactly that); v3.9's tail never saw the new
             numbers, so the record genuinely lacks them -> exactly 1, not 0
-  reprocessed-qc (Agilent GC 1) the same for an AF26 injection -> 0, and
-            this is a KNOWN LIMIT, not a pass: v3.9 kept no raw reading on a
-            verdict under a machine-level factor, so such verdicts are matched
-            by count per (standard, test), and the original's verdict
-            vouches for the re-processed print
+  downtime-qc (Agilent GC 1; GC 2's file holds no AF26) one more AF26 standard injected while LabStation
+            was down: the last AF26 row's numbers moved as a new injection's
+            do (a few tenths), never logged -> exactly 1. On Agilent GC 1 v3.9
+            logged AF26 as QC verdicts that kept no raw reading, and the
+            morning replays left about twice as many verdicts per test as
+            AF26 prints after the marker. Round 2 matched them by a count per
+            (standard, test) and lost this print (round-2 critic: 0
+            recovered on both roads); they are matched on their VALUES now
+  reprocessed-qc (Agilent GC 1) the same re-process for an AF26 injection
+            -> exactly 1: the record lacks the new numbers. (Round 2 reported
+            0 here and called it a known limit; it was the same hole.)
 
 It reads the source files and writes only under --tmp.
 """
@@ -247,7 +253,8 @@ def benches():
                                         D2887 + "10% Recovery": 0.4})]),
             today=dict(corrections={"D86 T50": 1.5, D2887 + "10% Recovery": 0.7},
                        tests=af26_tests()),
-            extra_worlds=("no-qc-lib", "reprocessed", "reprocessed-qc"),
+            extra_worlds=("downtime-qc", "no-qc-lib", "reprocessed",
+                          "reprocessed-qc"),
             reprocess_row=80, reprocess_qc_row=75)
     if os.path.exists(GC_DATA):
         out["Agilent GC 2 (distill_results.csv, gc-data copy)"] = dict(
@@ -275,8 +282,28 @@ def downtime_print(data, config):
     raise ValueError("no reading in the file to copy")
 
 
-EXPECT = {"as-is": 0, "downtime": 1, "no-qc-lib": 0, "reprocessed": 1,
-          "reprocessed-qc": 0}
+def downtime_qc_print(data):
+    """One more AF26 standard injected while LabStation was down: the file's
+    last AF26 row, a later injection time, and every reading moved by a few
+    hundredths to a few tenths, as two injections of one standard differ
+    (rows 78-80 of the share copy differ by 0.1-0.8). Appended (CRLF)."""
+    lines = data.split(b"\r\n")
+    idx = max(i for i, l in enumerate(lines) if l.startswith(b"AF26,"))
+    cells = lines[idx].split(b",")
+    cells[1] = b"2026-09-25 07:12:00"
+    for k in range(2, len(cells)):
+        try:
+            v = float(cells[k])
+        except ValueError:
+            continue
+        step = 0.07 * (k % 5 + 1) * (1 if k % 2 else -1)
+        cells[k] = b"%.2f" % (v + step)
+    tail = data if data.endswith(b"\r\n") else data + b"\r\n"
+    return tail + b",".join(cells) + b"\r\n"
+
+
+EXPECT = {"as-is": 0, "downtime": 1, "downtime-qc": 1, "no-qc-lib": 0,
+          "reprocessed": 1, "reprocessed-qc": 1}
 
 
 def reprocess_row(data, index):
@@ -307,6 +334,8 @@ def run_bench(name, spec, code_root, tmp, world):
                             history_steps(data, **spec["history"]), work)
     if world == "downtime":
         final = downtime_print(data, spec["config"])
+    elif world == "downtime-qc":
+        final = downtime_qc_print(data)
     elif world == "reprocessed":
         final = reprocess_row(data, spec["reprocess_row"])
     elif world == "reprocessed-qc":

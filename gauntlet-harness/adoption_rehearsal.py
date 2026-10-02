@@ -38,7 +38,6 @@ import os
 import sqlite3
 import sys
 import types
-from collections import Counter
 from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -103,8 +102,10 @@ def rehearse(file_path, machine, rows, last_position=0, mtime=None):
     if mtime is not None:
         scan["mtime"] = mtime.timestamp()
     boundary = mod.adoption_boundary(data, last_position)
-    lines = [mod.adoption_line(machine, s, p, t, lh, pk)
-             for s, p, t, lh, pk in scan["lines"]]
+    # As the bench sees them: parsed after the boundary, presumed before it
+    # (`plan_adoption` re-parses the few presumed lines that may be a QC
+    # standard's print).
+    lines = mod.adoption_lines(machine, scan["lines"], boundary)
     readings = [l for l in lines if l.run_key]
     firsts = sorted(str(r["ts"]) for r in rows if r.get("ts"))
     first = firsts[0] if firsts else None
@@ -151,14 +152,15 @@ def rehearse(file_path, machine, rows, last_position=0, mtime=None):
 
     # ── v2: the SERVER's digest (bench_api.adoption_digest, the endpoint's
     # own code), read by the bench exactly as `_adoption_history` reads it ──
-    digest = load_server().adoption_digest(rows, datetime.now())
-    first_dt = mod._ts_naive(digest["first_ts"])
-    older = first_dt is not None and datetime.fromtimestamp(scan["mtime"]) < first_dt
-    out["v2"] = _plan_out(mod.plan_adoption(
-        lines, boundary, Counter(digest["counts"]), None, older,
-        unreadable=set(digest["unreadable_labs"]),
-        qc_tests={k: set(v) for k, v in digest["qc_tests"].items()}),
-        labcore_reads=0)
+    digest = json.loads(json.dumps(load_server().adoption_digest(
+        rows, datetime.now())))          # as it crosses the wire
+    problem = mod.adoption_digest_problem(digest)
+    if problem:
+        raise ValueError("the server's digest would not be adopted on: " + problem)
+    state = dict(mod.adoption_state_from_digest(digest), key=source.key,
+                 reads=0)
+    out["v2"] = _plan_out(mod.LEMStationModule._adoption_plan(
+        bench, machine, state, lines, boundary, scan), labcore_reads=0)
     out["unreadable_rows"] = sum(1 for r in rows
                                  if mod.legacy_row_adoption_key(r) is None)
     out["unreadable_labs"] = len(digest["unreadable_labs"])

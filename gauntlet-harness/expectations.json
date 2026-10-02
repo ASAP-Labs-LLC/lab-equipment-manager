@@ -2532,9 +2532,13 @@
     "recovered_rows": 1,
     "lost": 0,
     "dup": 0,
-    "auto_filed": 0
+    "auto_filed": 0,
+    "qc_downtime_recovered_v2": 1,
+    "qc_downtime_recovered_legacy": 1,
+    "qc_downtime_other_recovered_v2": 0,
+    "qc_downtime_other_recovered_legacy": 0
    },
-   "v4_spec": "1 recovered row, 0 lost, 0 dup; not auto-filed"
+   "v4_spec": "1 recovered row, 0 lost, 0 dup; not auto-filed. And a QC standard printed while LabStation was down, whose one earlier print v3.9 logged as a no-raw verdict replayed by 3 restarts: exactly that print recovered, on both roads (round-2 critic: 0, lost)"
   },
   "U3": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
