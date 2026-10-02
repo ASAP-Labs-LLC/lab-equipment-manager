@@ -5699,27 +5699,35 @@ def create_app(gateway, labcore_gateway=None,
     # result lands, minutes apart, so it is read at most once a minute and
     # held here. A read that fails is remembered as a failure (the cards say
     # the history is missing), never as "no history".
-    _wall_qc_memo: dict = {"at": 0.0, "rows": None, "ok": False}
+    _wall_qc_memo: dict = {"at": 0.0, "rows": None, "ok": False, "missing": "unread"}
     WALL_QC_HISTORY_SECONDS = 60.0
     WALL_QC_HISTORY_DAYS = 180
 
     def _wall_qc_rows():
+        """(rows, missing): the QC rows, or None and why they are missing.
+        "filling" is a log copy that has never filled (empty, no fill
+        stamp): nothing failed, there is just nothing local yet. "unread"
+        is a read that failed, or no local record at all."""
         import time as _time
         mirror = app.config.get("LOG_MIRROR")
         now = _time.monotonic()
-        if _wall_qc_memo["at"] and now - _wall_qc_memo["at"] < WALL_QC_HISTORY_SECONDS:
-            return _wall_qc_memo["rows"] if _wall_qc_memo["ok"] else None
-        rows, ok = None, False
+        m = _wall_qc_memo
+        if m["at"] and now - m["at"] < WALL_QC_HISTORY_SECONDS:
+            return (m["rows"] if m["ok"] else None), m["missing"]
+        rows, ok, missing = None, False, "unread"
         try:
-            if mirror is not None and (isinstance(mirror, StoreLogMirror)
-                                       or mirror.state()["rows"]):
-                since = (_now() - timedelta(days=WALL_QC_HISTORY_DAYS)).isoformat(timespec="seconds")
-                rows = mirror.query(kind="qc", since=since, limit=20000)
-                ok = True
+            if mirror is not None:
+                st = None if isinstance(mirror, StoreLogMirror) else mirror.state()
+                if st is not None and not st["rows"] and not st.get("filled_at"):
+                    missing = "filling"
+                else:
+                    since = (_now() - timedelta(days=WALL_QC_HISTORY_DAYS)).isoformat(timespec="seconds")
+                    rows = mirror.query(kind="qc", since=since, limit=20000)
+                    ok = True
         except Exception:                                   # noqa: BLE001
-            rows, ok = None, False
-        _wall_qc_memo.update(at=now, rows=rows, ok=ok)
-        return rows if ok else None
+            rows, ok, missing = None, False, "unread"
+        m.update(at=now, rows=rows, ok=ok, missing=missing)
+        return (rows if ok else None), missing
 
     def _wall_qc_payload() -> dict:
         import ui_wall
@@ -5731,7 +5739,8 @@ def create_app(gateway, labcore_gateway=None,
                              error=(str(err)[:200] if err else None))
         else:
             merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
-            out = ui_wall.qc(merged, rows=_wall_qc_rows(), href=_record_href, now=_now())
+            rows, missing = _wall_qc_rows()
+            out = ui_wall.qc(merged, rows=rows, href=_record_href, now=_now(), missing=missing)
             out["built_at"] = snap.get("built_at") or None
             out["stale"] = bool(snap.get("stale"))
         out["lab_tz"] = ui_live.lab_tz()

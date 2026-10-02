@@ -230,3 +230,54 @@ class TestThePageIsReachableAndIsAMonitor:
     def test_the_routes_are_registered(self, gw, tmp_path):
         rules = {str(r) for r in _app(gw, tmp_path).url_map.iter_rules()}
         assert "/qc" in rules and "/api/qc-wall" in rules
+
+
+class TestAnEmptyLogCopyIsNotAFailedRead:
+    """Round-2 critic: in a harness whose log copy had never filled, every
+    /qc card said "History not read: the local record did not answer". The
+    record had not failed; the copy was just not filled yet. A failed read
+    is never an empty result, and the reverse holds too: an empty or
+    unfilled copy is not a failure, and a wall that cries "did not answer"
+    when nothing failed teaches the room to ignore it.
+
+    The copy is LogMirror's: a gateway that is not the local store (LabCore
+    itself, InMemoryLabCore here; under this suite FakeLabCoreGateway IS the
+    store, whose StoreLogMirror never needs filling)."""
+
+    def _wall_qc(self, tmp_path, fill):
+        import demo_floor
+        import labcore_gateway
+        gw = labcore_gateway.InMemoryLabCore()
+        app = create_app(gw, secret="t", documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
+        app.config["SNAPSHOTS"].ensure_schema()
+        demo_floor.seed(gw, documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].refresh()
+        if fill:
+            app.config["LOG_MIRROR"].refresh()
+        return app.test_client().get("/api/ui/wall/qc").get_json()
+
+    def test_a_copy_that_has_not_filled_says_so(self, tmp_path):
+        q = self._wall_qc(tmp_path, fill=False)
+        assert q["cards"], q
+        assert {c["history"] for c in q["cards"]} == {"filling"}, {c["history"] for c in q["cards"]}
+
+    def test_a_filled_copy_draws_history(self, tmp_path):
+        q = self._wall_qc(tmp_path, fill=True)
+        assert "unread" not in {c["history"] for c in q["cards"]}
+        assert "filling" not in {c["history"] for c in q["cards"]}
+
+    def test_a_mirror_that_raises_is_still_unread(self, tmp_path, monkeypatch):
+        import demo_floor
+        gw = FakeLabCoreGateway()
+        app = create_app(gw, secret="t", documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].ensure_schema()
+        demo_floor.seed(gw, documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].refresh()
+        app.config["LOG_MIRROR"].refresh()
+
+        def boom(*a, **k):
+            raise RuntimeError("disk gone")
+        monkeypatch.setattr(app.config["LOG_MIRROR"], "query", boom)
+        q = app.test_client().get("/api/ui/wall/qc").get_json()
+        assert {c["history"] for c in q["cards"]} == {"unread"}

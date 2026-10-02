@@ -323,6 +323,7 @@
             }
             host.replaceChildren(...kids);
             host.classList.toggle('fullwords', !!opts.fullWords);
+            host.classList.toggle('shortwords', !!opts.fullWords && opts.words === 'short');
             host.classList.toggle('roomy', (opts.cellH || 0) >= 140 && (opts.cellH || 0) < 200);
             host.classList.toggle('grand', (opts.cellH || 0) >= 200);
             fit(host);
@@ -355,18 +356,32 @@
             if (over(box, tall)) el.textContent = '…';
         }
         function fit(host) {
-            // fullwords (the wall): the verdict is the app's whole word on up
-            // to two lines, never "Not OK" beside a count that says "Not OK
-            // to run"; when a bay is too short for all three lines, the
-            // detail steps aside first (the bay's title keeps it).
+            // fullwords (the wall): the verdict is one line, always. The
+            // app's whole word when it fits; when it does not, the bay is
+            // marked (data-word-cut) and says the short form, and the wall
+            // redraws every bay short (words: 'short') so the floor speaks
+            // one vocabulary. A word broken over two lines ("Not OK to /
+            // run") reads as two words from across the room (round 3). When
+            // a bay is too short for all three lines, the detail steps aside
+            // last of all (the bay's title keeps it).
             const full = host.classList.contains('fullwords');
+            const short = host.classList.contains('shortwords');
             for (const bay of host.querySelectorAll('.bay')) {
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
                 const det = bay.querySelector('.b-detail');
                 const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
                 if (name) fitText(name, name.textContent, '', true);
-                if (word) fitText(word, word.textContent, full ? '' : shortWord(state), full, full ? word.parentElement : word);
+                if (word && full) {
+                    const whole = word.textContent;
+                    bay.removeAttribute('data-word-cut');
+                    if (short) fitText(word, shortWord(state) || whole, '', false);
+                    else {
+                        word.textContent = whole;
+                        if (over(word, false)) bay.setAttribute('data-word-cut', '1');
+                        fitText(word, whole, shortWord(state), false);
+                    }
+                } else if (word) fitText(word, word.textContent, shortWord(state), false, word);
                 if (det) det.hidden = false;
                 if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);
                 if (full && det && bay.scrollHeight > bay.clientHeight + 1) det.hidden = true;

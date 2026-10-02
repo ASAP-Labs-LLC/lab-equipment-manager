@@ -51,6 +51,7 @@
         if (!pts.length) {
             box.replaceChildren(h('span', { className: 'qc-nochart', text:
                 card.history === 'unread' ? 'History not read: the local record did not answer'
+                : card.history === 'filling' ? 'No history here yet: LEM’s log copy has not filled'
                 : (card.points || []).length ? 'No pass band recorded for these results'
                 : card.last && card.last.at ? 'No chart history in LEM’s log yet'
                 : 'No results in the last 180 days' }));
@@ -97,6 +98,7 @@
         // the wall's own data must be answering too (see wall_floor.js)
         let dataOkMs = Date.now();
         let dataFailing = false;
+        let asked = 0, askedAt = null, ctl = null;
         let per = 9;
         const rot = L.rotator({ count: 1, every: PAGE_MS, now: Date.now(), enabled: kiosk.rotate && !reduced });
 
@@ -188,15 +190,33 @@
             if (inFlight || !window.LEMLive) return;
             inFlight = true;
             lastRefresh = Date.now();
-            window.LEMLive.bgFetch('/api/ui/wall/qc', { cache: 'no-store', headers: { Accept: 'application/json' } })
-                .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-                .then(d => { data = d; dataOkMs = Date.now(); dataFailing = false; if (d.lab_tz) tz = d.lab_tz; render(); })
+            // a deadline: a request that never answers is a failed read
+            // (tick → abandon), not a wall that says "Live" on frozen data
+            const ticket = ++asked;
+            askedAt = Date.now();
+            ctl = typeof AbortController === 'function' ? new AbortController() : null;
+            window.LEMLive.bgFetch('/api/ui/wall/qc', { cache: 'no-store', headers: { Accept: 'application/json' },
+                                                     signal: ctl ? ctl.signal : undefined })
+                .then(r => { if (ticket !== asked) throw new Error('abandoned'); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(d => { if (ticket !== asked) return; data = d; dataOkMs = Date.now(); dataFailing = false; if (d.lab_tz) tz = d.lab_tz; render(); })
                 .catch(() => {
+                    if (ticket !== asked) return;
                     // the last answer stays; again in 10 s; 90 s without one is stale
                     dataFailing = true;
                     lastRefresh = Date.now() - REFRESH_MS + 10000;
                 })
-                .then(() => { inFlight = false; });
+                .then(() => { if (ticket === asked) { inFlight = false; askedAt = null; } });
+        }
+        // the deadline, on the same clock as the stale rule
+        function abandonOverdue(now) {
+            if (!inFlight || !L.overdue(askedAt, now)) return;
+            asked++;
+            if (ctl) { try { ctl.abort(); } catch (_e) { /* already settled */ } }
+            ctl = null;
+            inFlight = false;
+            askedAt = null;
+            dataFailing = true;
+            lastRefresh = now - REFRESH_MS + 10000;
         }
 
         function render() {
@@ -217,6 +237,7 @@
             else $('wq-live').textContent = live.footer;
             if (rot.index !== before) drawGrid();
             $('wq-rot').textContent = rotText(now);
+            abandonOverdue(now);
             if (now - lastRefresh > REFRESH_MS) refresh();
         }
 

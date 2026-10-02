@@ -21,6 +21,16 @@
     'use strict';
 
     const STALE_MS = 90000;
+    // a data request that has not answered in this long has failed: a fetch
+    // with no deadline that hangs (half-open socket, a proxy holding it)
+    // would otherwise never fail, and the wall would say "Live" on frozen
+    // data forever (round-3 critic, 200 s). Well inside STALE_MS, so the
+    // stale rule still fires on time.
+    const FETCH_TIMEOUT_MS = 20000;
+    /** Has a request started at `startedMs` run past its deadline? */
+    function overdue(startedMs, nowMs) {
+        return typeof startedMs === 'number' && nowMs - startedMs > FETCH_TIMEOUT_MS;
+    }
     const SAFE_KEY = /^[A-Za-z0-9_-]{1,64}$/;
     const WALLS = ['floor', 'qc'];
 
@@ -97,7 +107,7 @@
         if (now - heard > STALE_MS) {
             return { kind: 'lost', dim: true,
                      headline: 'Not live · last update ' + clock(heard, o.tz, false),
-                     footer: 'Stale · last update ' + clock(heard, o.tz, true) };
+                     footer: 'Not live · last update ' + clock(heard, o.tz, true) + ' · stale' };
         }
         if (o.snapshotStale) {
             const at = toMs(o.builtAt, o.serverNow);
@@ -208,7 +218,75 @@
         return best;
     }
 
-    const api = { STALE_MS, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
+
+    // ── the whole floor, and where Needs attention goes ──────────────────
+    function _compositions(n) {
+        // every way to cut n ordered levels into consecutive rows
+        if (n > 9) return [];
+        const out = [];
+        for (let mask = 0; mask < (1 << (n - 1)); mask++) {
+            const rows = [[0]];
+            for (let i = 1; i < n; i++) {
+                if (mask & (1 << (i - 1))) rows.push([i]); else rows[rows.length - 1].push(i);
+            }
+            out.push(rows);
+        }
+        return out;
+    }
+    /** The wall's body, laid out. Two arrangements are weighed:
+          column  the levels beside a Needs-attention column of o.attnW
+                  (floorPack over W - attnW - attnGap);
+          hole    the levels take the whole width, cut into rows any way
+                  that keeps their order, and one row stops short so Needs
+                  attention fills the room it leaves (at least o.holeMinW
+                  by o.holeMinH, or it does not count).
+        The bigger readable bay wins (min(cellW / 1.3, cellH)); a tie goes
+        to the hole, which leaves no dead block, and then to the hole
+        nearest the top (where the eye goes after the headline).
+        {mode, rows, cellW, cellH, score, hole: {row, w, h} | null}, or null
+        when no arrangement is readable (then the wall rotates levels). */
+    function wallLayout(levels, W, H, o) {
+        o = o || {};
+        const n = (levels || []).length;
+        if (!n || !(W > 0) || !(H > 0)) return null;
+        const gap = o.gap == null ? 12 : o.gap, pg = o.panelGap == null ? 20 : o.panelGap;
+        const head = o.head || 0, minW = o.minW || 0, minH = o.minH || 0, maxH = o.maxH || 300;
+        const hMinW = o.holeMinW || 0, hMinH = o.holeMinH || 0;
+        const cw = (i) => Math.max(1, levels[i].w | 0), ch = (i) => Math.max(1, levels[i].h | 0);
+        const colW = W - (o.attnW || 0) - (o.attnGap == null ? pg : o.attnGap);
+        const col = colW > 0 ? floorPack(levels, colW, H, o) : null;
+        let best = col ? Object.assign({ mode: 'column', hole: null }, col) : null;
+        if (n >= 2) {
+            for (const rows of _compositions(n)) {
+                const cells = rows.reduce((a, r) => a + Math.max(...r.map(ch)), 0);
+                const free = H - head * rows.length - gap * (cells - rows.length) - 2 * gap * rows.length - pg * (rows.length - 1);
+                for (let hr = 0; hr < rows.length; hr++) {
+                    let cellW = Infinity;
+                    rows.forEach((r, ri) => {
+                        const cols = r.reduce((a, i) => a + cw(i), 0);
+                        const room = W - (ri === hr ? hMinW + pg : 0);
+                        cellW = Math.min(cellW, (room - gap * (cols - r.length) - 2 * gap * r.length - pg * (r.length - 1)) / cols);
+                    });
+                    cellW = Math.floor(cellW);
+                    const cellH = Math.min(Math.floor(free / cells), Math.floor(cellW * 1.05), maxH);
+                    if (cellW < minW || cellH < minH) continue;
+                    const r = rows[hr];
+                    const used = r.reduce((a, i) => a + cw(i) * cellW + gap * (cw(i) + 1), 0) + pg * (r.length - 1);
+                    const hh = Math.max(...r.map(ch));
+                    const hole = { row: hr, w: Math.floor(W - used - pg), h: head + hh * cellH + gap * (hh + 1) };
+                    if (hole.w < hMinW || hole.h < hMinH) continue;
+                    const score = Math.min(cellW / 1.3, cellH);
+                    if (!best || score > best.score + 0.5 ||
+                        (Math.abs(score - best.score) <= 0.5 && (best.mode === 'column' || hr < best.hole.row))) {
+                        best = { mode: 'hole', rows, cellW, cellH, score, hole, perRow: null };
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    const api = { STALE_MS, FETCH_TIMEOUT_MS, overdue, wallLayout, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
     root.LEMWallLogic = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

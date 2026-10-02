@@ -429,12 +429,14 @@ def _key(test) -> str:
 
 def qc(machines: Optional[List[dict]], *, rows: Optional[List[dict]],
        href: Callable[[str, str], str], now: Optional[datetime] = None,
-       error: Optional[str] = None) -> dict:
+       error: Optional[str] = None, missing: str = "unread") -> dict:
     """``/qc``'s cards and headline.
 
     `machines` are the snapshot's merged machines (None: not read), `rows`
-    the QC rows of the local record (None: could not be read; the cards
-    keep their verdicts and say the history is missing)."""
+    the QC rows of the local record (None: not there; the cards keep their
+    verdicts and say why the history is missing: `missing` is "unread" when
+    the read failed, "filling" when the log copy has not filled yet, which
+    is not a failure)."""
     if machines is None:
         if error:
             return {"state": "unreadable", "headline": "Can't read QC", "tone": "unknown",
@@ -475,7 +477,7 @@ def qc(machines: Optional[List[dict]], *, rows: Optional[List[dict]],
             test = str(sp.get("test_name") or "")
             lims = (sp.get("low"), sp.get("expected"), sp.get("high"))
             series = qc_series.current_series(by_key, uid, test) if by_key else None
-            points, history, control = [], ("unread" if rows is None else "none"), None
+            points, history, control = [], (missing if rows is None else "none"), None
             if series is not None and series.points:
                 pts = series.points[-HISTORY_POINTS:]
                 band = series.pass_band

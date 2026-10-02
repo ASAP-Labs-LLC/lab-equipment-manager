@@ -52,6 +52,7 @@
         // otherwise leave a frozen wall saying "Live"
         let dataOkMs = Date.now();
         let dataFailing = false;
+        let asked = 0, askedAt = null, ctl = null;
 
         // ── levels ───────────────────────────────────────────────────────
         function levels() { return (data && data.levels) || []; }
@@ -132,18 +133,30 @@
         let emptyLevels = [];
         function px(v) { return parseFloat(v) || 0; }
         function sizes() {
-            const vh = window.innerHeight / 100;
+            const vw = window.innerWidth / 100, vh = window.innerHeight / 100;
             const name = Math.max(18, 2.04 * vh), word = Math.max(16, 1.86 * vh), det = Math.max(14, 1.49 * vh);
-            const pad = Math.min(16, Math.max(10, 1.3 * vh));
-            // must fit: a two-line name and the whole verdict word on up to
-            // two lines ("Not OK / to run"); the detail is the line that
-            // steps aside in a short bay (plan.js fit). Wide enough for a
-            // name's longest word ("Pensky-Martens") at the name size.
-            const hpad = Math.min(16, Math.max(10, 0.75 * window.innerWidth / 100));
-            return { minH: Math.ceil(2 * pad + 2.4 * name + 2.6 * word + 4),
-                     minW: Math.ceil(word * 7 + 2 * hpad),
-                     head: Math.ceil(Math.max(16, 1.75 * vh) * 1.9) };
+            const pad = Math.min(14, Math.max(8, 1.1 * vh));
+            const hpad = Math.min(16, Math.max(10, 0.75 * vw));
+            return {
+                // a two-line name, the verdict on one line, and the detail:
+                // the bay keeps all three (round 3: Pensky-Martens 1 lost
+                // "QC out of spec" in a bay too short for it)
+                minH: Math.ceil(2 * pad + 2.4 * name + 4 + 1.3 * word + 1.3 * det + 3 + 2),
+                // the short verdict ("OK, but…") on one line
+                minW: Math.ceil(word * 6 + 2 * hpad),
+                head: Math.ceil(Math.max(16, 1.75 * vh) * 1.9),
+                // the Needs-attention column (CSS: clamp(320px, 23vw, 460px))
+                attnW: Math.min(460, Math.max(320, 23 * vw)),
+                attnGap: Math.min(36, Math.max(16, 1.8 * vw)),
+            };
         }
+        // `noHole`: Needs attention did not fit the hole last time it was
+        // tried at this size, so the column it is (measured, not wished)
+        let noHole = '';
+        // held, not looked up: in the hole the column lives inside a level
+        // row, and a redraw replaces the rows
+        const mainEl = section.querySelector('.wall-main');
+        const attnEl = section.querySelector('.wall-attn');
         function packAll(W, H) {
             const lv = levels();
             emptyLevels = [];
@@ -156,26 +169,64 @@
             }
             if (parts.length < 2) return null;
             const sz = sizes();
-            const p = L.floorPack(parts, W, H, { gap: 12, panelGap: 20, head: sz.head, minW: sz.minW, minH: sz.minH });
-            return p ? Object.assign(p, { parts, head: sz.head }) : null;
+            const key = W + 'x' + H;
+            const o = { gap: 12, panelGap: 20, head: sz.head, minW: sz.minW, minH: sz.minH,
+                        attnW: sz.attnW, attnGap: sz.attnGap,
+                        holeMinW: noHole === key ? Infinity : sz.attnW, holeMinH: 260 };
+            const p = L.wallLayout(parts, W, H, o);
+            return p ? Object.assign(p, { parts, head: sz.head, key }) : null;
         }
-        function bayOpts(cellH, gap) {
-            return { cellH, gap, fullWords: true, details: data.details || {}, detailsShort: data.details_short || {} };
+        function bayOpts(cellH, gap, words) {
+            return { cellH, gap, fullWords: true, words: words || 'full',
+                     details: data.details || {}, detailsShort: data.details_short || {} };
         }
-        function drawWhole(plan, p) {
+        // Needs attention lives beside the plan, or in the hole the levels
+        // leave (wall_logic.wallLayout); the element moves, nothing is redrawn
+        function placeAttn(hole, row) {
+            const main = mainEl, aside = attnEl;
+            if (hole && row) {
+                main.dataset.layout = 'hole';
+                aside.classList.remove('tight', 'tighter');
+                aside.classList.add('in-hole');
+                aside.style.width = hole.w + 'px';
+                aside.style.height = hole.h + 'px';
+                aside.style.setProperty('--wl-head', whole.head + 'px');
+                row.append(aside);
+            } else {
+                main.dataset.layout = 'column';
+                aside.classList.remove('in-hole', 'tight', 'tighter');
+                aside.style.width = aside.style.height = '';
+                if (aside.parentElement !== main) main.append(aside);
+            }
+        }
+        function attnFits() {
+            const aside = attnEl;
+            const box = aside.getBoundingClientRect();
+            return [...aside.querySelectorAll('.wa-item, .wa-more, .wa-none')].every(e =>
+                e.hidden || e.getBoundingClientRect().bottom <= box.bottom + 0.5);
+        }
+        function drawWhole(plan, p, words) {
             plan.className = 'wall-levels';
             plan.style.setProperty('--wl-head', p.head + 'px');
             const hosts = [];
-            plan.replaceChildren(...p.rows.map(r => h('div', { className: 'wl-row' }, ...r.map(i => {
+            const rows = p.rows.map(r => h('div', { className: 'wl-row' }, ...r.map(i => {
                 const part = p.parts[i];
                 const host = h('div', { className: 'plan wallplan', 'data-level': part.uid });
                 hosts.push([host, part]);
                 return h('section', { className: 'wl-panel', 'aria-label': part.name,
                                       style: 'width:' + (part.w * p.cellW + 12 * (part.w + 1)) + 'px' },
                     h('h3', { className: 'wl-name', text: part.name }), host);
-            }))));
+            })));
+            plan.replaceChildren(...rows);
+            placeAttn(p.mode === 'hole' ? p.hole : null, p.mode === 'hole' ? rows[p.hole.row] : null);
             // drawn once the panels are in the page, so plan.js can measure
-            for (const [host, part] of hosts) P.draw(host, part.lay, bayOpts(p.cellH, 12));
+            for (const [host, part] of hosts) P.draw(host, part.lay, bayOpts(p.cellH, 12, words));
+            return hosts.map(x => x[0]);
+        }
+        /** One vocabulary per floor: if any bay could not say the whole
+            word on one line, every bay says the short form. */
+        function oneVocabulary(hosts, redraw) {
+            if (hosts.some(x => x.querySelector('.bay[data-word-cut]'))) redraw('short');
         }
         function drawPlan() {
             const plan = $('wf-plan');
@@ -183,7 +234,15 @@
             const unplaced = $('wf-unplaced');
             const ready = data && data.state === 'ready' && Array.isArray(data.instruments);
             const wrap = $('wf-plan-wrap');
-            whole = ready && data.instruments.length ? packAll(wrap.clientWidth, wrap.clientHeight) : null;
+            const main = mainEl;
+            // the whole floor needs no level bar (the footer says "All 3
+            // levels shown"), and its 38px go to the bays and the hole
+            const card = section.querySelector('.wall-plan-card');
+            const tryWhole = !!(ready && data.instruments.length && levels().length >= 2 && !pinned());
+            card.classList.toggle('whole', tryWhole);
+            whole = tryWhole ? packAll(main.clientWidth, wrap.clientHeight) : null;
+            if (!whole) card.classList.remove('whole');
+            if (!whole || whole.mode !== 'hole') placeAttn(null);
             const level = ready && !whole ? levelNow() : '';
             lastLevel = level;
             $('wf-level').textContent = !ready ? 'The floor'
@@ -201,7 +260,19 @@
             if (whole) {
                 empty.hidden = true;
                 plan.hidden = false;
-                drawWhole(plan, whole);
+                oneVocabulary(drawWhole(plan, whole, 'full'), (w) => drawWhole(plan, whole, w));
+                if (whole.mode === 'hole' && !attnFits()) {
+                    // first the details go to one line, then the names
+                    const aside = attnEl;
+                    aside.classList.add('tight');
+                    if (!attnFits()) aside.classList.add('tighter');
+                    if (!attnFits()) {
+                        // the hole cannot hold the worst five: the column, at this size
+                        aside.classList.remove('tight', 'tighter');
+                        noHole = whole.key;
+                        return drawPlan();
+                    }
+                }
                 const placed = new Set(whole.parts.flatMap(pt => pt.lay.bays.map(b => b.uid)));
                 lost = data.instruments.filter(r => !placed.has(r.uid));
             } else {
@@ -223,7 +294,8 @@
                     const cellW = (W - 2 * gap - gap * (lay.w - 1)) / lay.w;
                     const fill = Math.floor((H - 2 * gap - gap * (lay.h - 1)) / lay.h);
                     const cellH = Math.max(40, Math.min(fill, Math.floor(cellW * 1.05), 300));
-                    P.draw(plan, lay, bayOpts(cellH, gap));
+                    P.draw(plan, lay, bayOpts(cellH, gap, 'full'));
+                    oneVocabulary([plan], (w) => P.draw(plan, lay, bayOpts(cellH, gap, w)));
                 }
             }
             if (lost.length) {
@@ -261,9 +333,16 @@
             if (inFlight || !window.LEMLive) return;
             inFlight = true;
             lastRefresh = Date.now();
-            window.LEMLive.bgFetch('/api/ui/wall/floor', { cache: 'no-store', headers: { Accept: 'application/json' } })
-                .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            // a deadline: a request that never answers is a failed read
+            // (tick → abandon), not a wall that says "Live" on frozen data
+            const ticket = ++asked;
+            askedAt = Date.now();
+            ctl = typeof AbortController === 'function' ? new AbortController() : null;
+            window.LEMLive.bgFetch('/api/ui/wall/floor', { cache: 'no-store', headers: { Accept: 'application/json' },
+                                                     signal: ctl ? ctl.signal : undefined })
+                .then(r => { if (ticket !== asked) throw new Error('abandoned'); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
                 .then(d => {
+                    if (ticket !== asked) return;
                     data = d;
                     dataOkMs = Date.now();
                     dataFailing = false;
@@ -272,12 +351,24 @@
                     render();
                 })
                 .catch(() => {
+                    if (ticket !== asked) return;
                     // the last answer stays; try again in 10 s, and after 90 s
                     // without one the stale rule says so (liveNow)
                     dataFailing = true;
                     lastRefresh = Date.now() - REFRESH_MS + 10000;
                 })
-                .then(() => { inFlight = false; });
+                .then(() => { if (ticket === asked) { inFlight = false; askedAt = null; } });
+        }
+        // the deadline, on the same clock as the stale rule
+        function abandonOverdue(now) {
+            if (!inFlight || !L.overdue(askedAt, now)) return;
+            asked++;
+            if (ctl) { try { ctl.abort(); } catch (_e) { /* already settled */ } }
+            ctl = null;
+            inFlight = false;
+            askedAt = null;
+            dataFailing = true;
+            lastRefresh = now - REFRESH_MS + 10000;
         }
 
         function render() {
@@ -301,6 +392,7 @@
             else $('wf-live').textContent = live.footer;
             if (rot.index !== before) drawPlan();
             $('wf-rot').textContent = rotText(now);
+            abandonOverdue(now);
             if (now - lastRefresh > REFRESH_MS) refresh();
         }
 

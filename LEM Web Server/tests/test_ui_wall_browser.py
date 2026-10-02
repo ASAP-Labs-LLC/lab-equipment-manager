@@ -226,11 +226,20 @@ def test_the_stale_rule(server, drv, path):
     head = _wait(lambda: (lambda t: t if t.startswith("Not live") else None)(drv.execute_script(
         "return document.getElementById(arguments[0]).textContent", view + "-headline-text")), timeout=4)
     assert head and re.fullmatch(r"Not live · last update \d\d:\d\d", head), head
-    assert drv.execute_script("return document.getElementById(arguments[0]).textContent",
-                              view + "-live").startswith("Stale · last update ")
+    # the footer says what the headline says (round 3: it said "Stale" while
+    # the headline said "Not live", two words for one state)
+    foot = drv.execute_script("return document.getElementById(arguments[0]).textContent", view + "-live")
+    assert re.fullmatch(r"Not live · last update \d\d:\d\d:\d\d \S+ · stale", foot), foot
     dimmed = ".wall-plan-wrap" if path == "/floor" else ".wq-grid"
     assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).opacity",
                               dimmed) == "0.5"
+    if path == "/floor":
+        # Needs attention dims to half too, once: in the hole it sits inside
+        # the plan, and dimming it again would leave it at a quarter
+        eff = drv.execute_script("""
+          let o = 1; for (let e = document.querySelector('#wf-attn'); e; e = e.parentElement)
+            o *= parseFloat(getComputedStyle(e).opacity); return o;""")
+        assert abs(eff - 0.5) < 1e-6, eff
     # LEM answers again: live again, at full strength
     drv.execute_cdp_cmd("Network.setBlockedURLs", {"urls": []})
     drv.execute_script("window.__skew = 0")
@@ -371,14 +380,163 @@ def test_the_whole_demo_floor_is_on_the_wall_at_once(server, drv, size, theme):
                      "Can't tell", "No QC assigned"}, words
 
 
+# ── round 3: one-line words, every detail, no dead block ──────────────────
+#
+# The round-2 critic, at 1440x900 on the demo floor: the state word broke
+# onto two lines in 9 of 13 bays ("OK to run, / but…", "Not OK to / run"),
+# Pensky-Martens 1, a Not-OK bay, lost its reason ("QC out of spec") because
+# a short bay hid its detail line, and a 520x360 block under Mezzanine was
+# empty (J1's dead area). On production's shape 7 of 12 words broke and 4
+# details went. A wall is read from across the room in one glance: a word
+# in two pieces reads as two words, and a missing reason is a question
+# nobody at the TV can ask.
+
+BAY_LINES = r"""
+const lh = e => parseFloat(getComputedStyle(e).lineHeight);
+const bays = [...document.querySelectorAll('#wf-plan .bay')];
+return {
+  n: bays.length,
+  broken: bays.filter(b => { const w = b.querySelector('.b-word');
+                             return w.getBoundingClientRect().height > lh(w) * 1.4; })
+              .map(b => b.querySelector('.b-name').textContent + ': ' + b.querySelector('.b-wtext').textContent),
+  nodetail: bays.filter(b => { const d = b.querySelector('.b-detail');
+                               return !d || d.hidden || !d.textContent.trim() || d.getBoundingClientRect().height < 1; })
+                .map(b => b.querySelector('.b-name').textContent),
+};
+"""
+
+COVER = r"""
+const main = document.querySelector('.wall-main').getBoundingClientRect();
+const area = r => r.width * r.height;
+const parts = [...document.querySelectorAll('#wf-plan .wl-panel')].map(e => area(e.getBoundingClientRect()));
+const attn = document.querySelector('.wall-attn').getBoundingClientRect();
+return { mode: document.querySelector('.wall-main').dataset.layout,
+         cover: (parts.reduce((a, b) => a + b, 0) + area(attn)) / area(main),
+         attnInPlan: !!document.querySelector('#wf-plan .wall-attn') };
+"""
+
+
+@pytest.mark.parametrize("kind", ["demo", "prod"])
 @pytest.mark.parametrize("size", list(SIZES))
-def test_production_bays_say_whole_words(server, drv, size):
-    shape(server, "prod")
+def test_every_bay_says_its_word_on_one_line_and_keeps_its_reason(server, drv, kind, size):
+    shape(server, kind)
     _open(drv, server.base, "/floor", size, "light")
+    m = drv.execute_script(BAY_LINES)
+    assert m["n"] > 0
+    assert m["broken"] == [], m["broken"]
+    assert m["nodetail"] == [], m["nodetail"]
     assert drv.execute_script(NAMES_CUT) == []
     words = set(drv.execute_script(
         "return [...document.querySelectorAll('#wf-plan .b-wtext')].map(e => e.textContent)"))
-    assert not words & {"Not OK", "No QC", "OK", "OK, but…"}, words
+    # whole words where they fit on one line; where a bay is too narrow
+    # for that (production's seven columns), every bay says the same short
+    # form, which is the start of the count's word beside it
+    assert words <= {"OK to run", "OK to run, but…", "Not OK to run", "Off line", "No QC assigned"} or \
+        words <= {"OK", "OK, but…", "Not OK", "Off line", "No QC"}, words
+    if kind == "demo":
+        assert "Not OK to run" in words, words
+
+
+@pytest.mark.parametrize("size", list(SIZES))
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_needs_attention_fills_the_room_the_levels_leave(server, drv, size, theme):
+    """Three 3x2 levels two to a row leave a level-sized hole. Needs
+    attention goes there, the levels get the whole width, and nothing on
+    the wall's body is a dead block."""
+    shape(server, "demo")
+    _open(drv, server.base, "/floor", size, theme)
+    c = drv.execute_script(COVER)
+    assert c["mode"] == "hole" and c["attnInPlan"], c
+    assert c["cover"] >= 0.85, c
+    m = drv.execute_script(MEASURE)
+    assert m["bad"] == [] and (m["scrollW"], m["scrollH"]) == (m["w"], m["h"]), m
+    # all five worst are there, none cut off the bottom of the hole
+    vis = drv.execute_script(r"""
+      const l = document.getElementById('wf-attn').getBoundingClientRect();
+      const a = document.querySelector('.wall-attn').getBoundingClientRect();
+      return [...document.querySelectorAll('#wf-attn .wa-item')].filter(e => {
+        const r = e.getBoundingClientRect(); return r.bottom <= a.bottom + 0.5 && r.height > 0; }).length""")
+    assert vis == 5, vis
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+def test_not_ok_reads_as_alarm_in_the_word_not_the_box(server, drv, theme):
+    """Both blind judges read round 2's 3px ink border on Not-OK bays as
+    "selected", not "alarming". The alarm is now the word itself, set as
+    the app's error pill (.pill.error: --bad-soft under --pill-error-fg),
+    which is status colour as glyph + word (§0.1). The bay keeps the spec's
+    ink border and its card background: no red fill, no red border. The
+    border is 2px because a TV runs at device-pixel-ratio 1, where Chrome
+    snaps the spec's 1.5px to a 1px hairline (computed: "1px")."""
+    shape(server, "demo")
+    _open(drv, server.base, "/floor", (1440, 900), theme)
+    r = drv.execute_script(r"""
+      const b = document.querySelector('#wf-plan .bay.stop');
+      const w = b.querySelector('.b-word'); const bs = getComputedStyle(b), ws = getComputedStyle(w);
+      const card = getComputedStyle(document.querySelector('#wf-plan .bay:not(.stop)')).backgroundColor;
+      const a = getComputedStyle(document.querySelector('#wf-attn .wa-item.stop .wa-word'));
+      const ab = getComputedStyle(document.querySelector('#wf-attn .wa-item.stop a'));
+      return { wordBg: ws.backgroundColor, bayBg: bs.backgroundColor, card, border: bs.borderTopWidth,
+               borderColor: bs.borderTopColor, attnWordBg: a.backgroundColor, attnBorder: ab.borderTopWidth };""")
+    clear = ("rgba(0, 0, 0, 0)", "transparent")
+    assert r["wordBg"] not in clear and r["attnWordBg"] not in clear, r
+    assert r["bayBg"] == r["card"], r
+    assert r["border"] == "2px" and r["attnBorder"] == "2px", r
+    rgb = [int(x) for x in re.findall(r"\d+", r["borderColor"])[:3]]
+    assert not (rgb[0] > 150 and rgb[1] < 120 and rgb[2] < 120), r   # never a red border
+
+
+# a request the server accepted and never answers: the wall's data fetches
+# get a promise that never settles (what a half-open socket or a proxy
+# holding the request looks like from the page)
+HOLD = r"""
+window.__realFetch = window.__realFetch || window.fetch;
+window.fetch = function (url, o) {
+  if (String(url).includes('/api/ui/wall/')) {
+    window.__held = (window.__held || 0) + 1;
+    return new Promise((_, reject) => { if (o && o.signal) o.signal.addEventListener('abort', () => reject(new Error('aborted'))); });
+  }
+  return window.__realFetch.apply(this, arguments);
+};
+"""
+
+
+@pytest.mark.parametrize("path", ["/floor", "/qc"])
+def test_a_data_request_that_never_answers_goes_stale(server, drv, path):
+    """The round-2 critic held /api/ui/wall/floor open forever (CDP Fetch)
+    while /api/ui/live kept answering: the wall said "Live" for 200 s on
+    frozen data, because a fetch with no deadline never fails. Every data
+    request now has one (wall_logic.FETCH_TIMEOUT_MS, read off the same
+    clock as the stale rule), and a request past it is a failed read."""
+    shape(server, "demo")
+    _open(drv, server.base, path, (1440, 900), "light")
+    view = "wf" if path == "/floor" else "wq"
+    assert _wait(lambda: drv.execute_script(
+        "return document.getElementById(arguments[0]).textContent.startsWith('Live')", view + "-live"))
+    drv.execute_script(HOLD)
+    try:
+        # a minute on: the wall asks for fresh data, and the request hangs
+        drv.execute_script("window.__skew = 65000")
+        assert _wait(lambda: drv.execute_script("return window.__held"), timeout=5)
+        assert drv.execute_script("return document.getElementById(arguments[0]).textContent",
+                                  view + "-live").startswith("Live")
+        # past the deadline and past 90 s since the data last answered
+        drv.execute_script("window.__skew = 95000 + window.LEMWallLogic.FETCH_TIMEOUT_MS")
+        # the live feed answers on the moved clock, so "heard from LEM" is
+        # fresh: only the wall's own data is frozen
+        assert _wait(lambda: drv.execute_script(
+            "return Date.now() - window.LEMLive.status().last_ok_at < 4000"), timeout=8)
+        time.sleep(2.5)
+        for _ in range(3):
+            head = drv.execute_script("return document.getElementById(arguments[0]).textContent",
+                                      view + "-headline-text")
+            assert re.fullmatch(r"Not live · last update \d\d:\d\d", head), head
+            time.sleep(1)
+        dimmed = ".wall-plan-wrap" if path == "/floor" else ".wq-grid"
+        assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).opacity",
+                                  dimmed) == "0.5"
+    finally:
+        drv.execute_script("window.fetch = window.__realFetch; window.__skew = 0")
 
 
 @pytest.mark.parametrize("path", ["/floor", "/qc"])
