@@ -34,6 +34,7 @@ verdict. On --target v4, the v3.9 drift check runs first, in a subprocess,
 because one process cannot import two versions of the module.
 """
 import argparse
+import functools
 import json
 import os
 import subprocess

@@ -6426,6 +6426,10 @@ class _TransferState:
         self.enrol = ""                 # why there is no token yet, or ""
         self.shared_token = ""
         self.shared_token_read_at: Optional[float] = None
+        #: lem_meta was READ (successfully) and holds no shared token: no v4
+        #: server has published itself to this LabCore. Never set by a read
+        #: that failed — a failed read is not an empty one.
+        self.shared_token_absent = False
         self.next_attempt: Optional[float] = None
         self.last_attempt: Optional[float] = None
         self.backoff_i = 0
@@ -9200,7 +9204,8 @@ class LEMStationModule:
             st.next_attempt = t + float(seconds)
         self._upl_log(t, outcome, why)
 
-    def _upl_legacy(self, t: float, journal) -> None:
+    def _upl_legacy(self, t: float, journal,
+                    why: str = "LEM answered 404: no v2 on this server") -> None:
         """A 404: this LEM server has no v2 (§6.1, §10.3). The bench keeps
         its journal and goes on the old road; v2 is asked again later."""
         st = self._transfer_state()
@@ -9215,7 +9220,7 @@ class LEMStationModule:
                 journal.update_meta(checkpoint="none: LEM has no v2")
         except JournalError:
             pass
-        self._upl_log(t, "legacy", "LEM answered 404: no v2 on this server")
+        self._upl_log(t, "legacy", why)
 
     def _upl_shared_token(self, t: float) -> str:
         """The shared token that proves a known bench's FIRST enrolment
@@ -9242,11 +9247,13 @@ class LEMStationModule:
             result = read_sql(*build_live_config_query())
         except Exception:                             # noqa: BLE001
             return ""
-        if not isinstance(result, dict) or result.get("error"):
+        if not isinstance(result, dict) or result.get("error") \
+                or not isinstance(result.get("rows"), list):
             return ""
-        _url, token = parse_live_config(result.get("rows") or [])
+        _url, token = parse_live_config(result["rows"])
         with st.lock:
             st.shared_token = token
+            st.shared_token_absent = not token
         return token
 
     def _upl_enrol(self, now: datetime, t: float, journal) -> bool:
@@ -9270,6 +9277,17 @@ class LEMStationModule:
             st.down_since = None
         shared = self._upl_shared_token(t)
         if not shared:
+            with st.lock:
+                absent = st.shared_token_absent
+            if absent:
+                # LEM answered, and LabCore's lem_meta — read, not failed —
+                # holds no shared token: no v4 server has ever published
+                # itself here, and with no bench.key this bench cannot prove
+                # who it is. That is today's fleet: the old road, re-asked
+                # every V2_REPROBE_SECONDS rather than knocked every poll.
+                self._upl_legacy(t, journal, "lem_meta holds no shared token: "
+                                 "this bench cannot enrol")
+                return False
             with st.lock:
                 st.enrol = ("waiting for LEM's shared token (lem_meta in "
                             "LabCore) to enrol this bench")

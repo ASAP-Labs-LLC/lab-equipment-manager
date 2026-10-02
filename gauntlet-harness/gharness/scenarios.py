@@ -284,6 +284,28 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         c.settle()
         return c.tally("A1 single_csv", "analyst corrects 5 filed cells; clean restart")
 
+    @new("A1j")
+    def a1j():
+        """A1 with the bench journal LOST before the restart: the guard read,
+        alone, has to protect the analyst. Not a spec row — the spec's A1w
+        also demands 0 re-sent records, which needs /checkpoint (P8) — but
+        the half of it that is the results road's: with the journal (and so
+        LEM's ledger of what it filed) gone, the cell holding a value LEM
+        cannot vouch for must be a conflict, never overwritten. A1 alone can
+        not show this: there the journal suppresses the re-read before the
+        guard is ever asked, so `guard_off` leaves A1 green."""
+        import shutil
+        c = W()
+        c.emit(5); c.poll()
+        for k in range(5):
+            c.analyst_edit(lab_id(k), "0.7%03d" % k)
+        c.before_next_restart(
+            lambda: shutil.rmtree(c.journal_dir(), ignore_errors=True))
+        c.restart()
+        c.settle()
+        return c.tally("A1j single_csv",
+                       "analyst corrects 5 filed cells; journal lost; restart")
+
     @new("A3")
     def a3():
         c = W("serial")
@@ -371,7 +393,9 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         return {"labcore_ops_per_filing_poll": round(r["steady_ops"] / polls, 4),
                 "extra_ops_per_filing_poll": round((r["steady_ops"] - idle["steady_ops"]) / polls, 4),
                 "results_road_ops_per_filing_poll": round(road / polls, 4),
-                "v2_syncs": r["v2_syncs"]}
+                "v2_syncs": r["v2_syncs"],
+                "prints": r["prints"], "lem_run_rows": r["lem_run_rows"],
+                "cells_filed": r["cells_filed"]}
 
     @new("E2")
     def e2():
@@ -884,7 +908,26 @@ def _economy_run(GateGateway, server_factory, mod, lh, source_type, prints, road
     """`run_economy.run`, line for line (that file runs itself at import and
     writes ../economy.json relative to the cwd, so it cannot be imported).
     The only differences: fresh temp dirs, an HServer on the roads (whose
-    mode `roads` can set), and two extra totals at the end."""
+    mode `roads` can set), the v2 world below, and two extra totals at the
+    end.
+
+    THE V2 WORLD (E0–E2 say "v2 mode"; E3 says "legacy projection", i.e. the
+    same world with the server answering 404). What production holds before a
+    v4 bench's first poll, and nothing more:
+      * LabCore's `lem_meta.live_token` — the shared token the server's boot
+        step publishes, which a first enrolment proves itself with (§6.4).
+        `live_url` is NOT published here: a v3.9 bench with an address pushes
+        to it and, on failure, re-reads `lem_meta` every few polls, which would
+        move the phase-1 numbers (economy.json) this run must reproduce on
+        v3.9. A bench with no address finds LEM on its compiled-in roads
+        (§6.2), which is what a v4 bench does.
+      * the server started with that token (`LEM_LIVE_TOKEN`, as the service
+        is), and in its store the bench's configuration row — copied from
+        LabCore's `lem_machine_config` exactly as the import tool copies it
+        (P9), and only when the bench first calls, so a bench that never calls
+        (v3.9) builds no server at all — then one snapshot build, which the
+        server's 12-second poller does in production.
+    Nothing here is counted: the counts are the bench's LabCore ops."""
     import tempfile
     from types import SimpleNamespace
     from datetime import datetime
@@ -955,4 +998,27 @@ def _economy_run(GateGateway, server_factory, mod, lh, source_type, prints, road
             "steady_by_cat": dict(steady),
             "steady_polls": steps - int(warm_minutes * 60 / POLL),
             "v2_syncs": server.v2_syncs(),
-            "lem_requests_on_poll_thread": server.poll_thread_requests}
+            "lem_requests_on_poll_thread": server.poll_thread_requests,
+            # Where the readings went, so a low op count can never be bought
+            # by not delivering them: run rows in LEM's store (v2) and cells
+            # in LabCore's results.
+            "lem_run_rows": _store_run_rows(server, "b1"),
+            "cells_filed": len([v for v in gw.results("Density").values()
+                                if v not in (None, "")])}
+
+
+def _store_run_rows(server, uid):
+    """Run rows LEM's store holds for `uid`; 0 when no v4 server was built."""
+    app = server._app
+    path = getattr(app, "config", {}).get("LEM_STORE") if app is not None else None
+    if not path:
+        return 0
+    import sqlite3
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        return con.execute("SELECT COUNT(*) FROM lem_machine_log WHERE "
+                           "machine_uid = ? AND kind = 'run'", [uid]).fetchone()[0]
+    except sqlite3.Error as exc:
+        raise RuntimeError("store run-row count failed: %s" % exc)
+    finally:
+        con.close()
