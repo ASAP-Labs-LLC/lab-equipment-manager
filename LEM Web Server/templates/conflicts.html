@@ -1,0 +1,110 @@
+{% extends "_layout.html" %}
+{#- /results/conflicts (transfer §8.4, §14; D1). GC hub's record anatomy: one
+    h1 and its meta line, then sections with a title and one sentence on the
+    left and hairline rows on the right.
+
+    A bench held these results back because LabCore already had a value a
+    PERSON entered. LEM never overwrites a person: someone decides here, and
+    the bench files the decision. The server records who decided what; it
+    writes no result. So the page has exactly two acts per row, and neither
+    is the page's primary: "Keep LabCore value" and "Send instrument value".
+
+    Every state is drawn by the server first (static/js/conflicts.js keeps it
+    current with a GET every 15 s while visible, and never POSTs on a timer):
+    the rows; "Nothing needs a decision." (a fact about the lab); "could not
+    read" (a fact about LEM, with Try again); signed out (the buttons open
+    the sign-in sheet and the decision goes ahead after it). -#}
+{% block title %}Results to decide{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Instruments</a>
+    {%- if machine %}<span class="sep" aria-hidden="true">›</span><a href="/instruments/{{ machine|urlencode }}#transfer">{{ machine_title }}</a>{% endif %}
+    <span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page">Results to decide</span></nav>
+  <span class="spacer"></span>
+  {%- if machine %}<a class="btn btn-ghost btn-sm" href="/results/conflicts">Every instrument</a>{% endif %}
+{% endblock %}
+{%- macro conflict_row(c) -%}
+<li class="cf-row" data-ref="{{ c.ref }}" data-theirs="{{ c.theirs }}" data-testid="conflict">
+  <div class="cf-what">
+    <p class="cf-title"><b>{{ c.lab_id }}</b><span class="sep" aria-hidden="true">·</span>{{ c.test_name }}<span class="sep" aria-hidden="true">·</span><a class="link" href="/instruments/{{ c.machine_uid|urlencode }}#transfer">{{ c.title }}</a></p>
+    <dl class="cf-vals">
+      <dt>In LabCore</dt><dd><b class="num">{{ c.theirs }}</b> <span class="caption">entered by {{ c.their_operator or "someone" }}{% if c.their_at %}, {{ c.their_at }}{% endif %}</span></dd>
+      <dt>From the instrument</dt><dd><b class="num">{{ c.ours }}</b> <span class="caption">{% if c.print_at %}the print of {{ c.print_at }}{% else %}held {{ c.opened_at }}{% endif %}</span></dd>
+    </dl>
+  </div>
+  <div class="cf-acts" role="group" aria-label="Decide {{ c.lab_id }} {{ c.test_name }}">
+    <button type="button" class="btn btn-sm" data-choice="keep" data-gated="decide this result">Keep LabCore value</button>
+    <button type="button" class="btn btn-sm" data-choice="send" data-gated="decide this result">Send instrument value</button>
+  </div>
+  <p class="msg cf-msg" role="status"></p>
+</li>
+{%- endmacro %}
+{% block content %}
+<main class="content record cf-page" id="main" tabindex="-1" data-testid="conflicts-page" data-machine="{{ machine }}">
+  <header class="page-head">
+    <h1>Results to decide</h1>
+    <div class="meta" id="cf-meta" data-testid="conflicts-meta">
+      {%- if view %}
+      {%- set n = view.open | length %}
+      <span class="pill {{ 'held' if n else 'final' }}" id="cf-pill"><span class="glyph {{ 'error' if n else 'final' }}" aria-hidden="true"></span><span id="cf-pill-text">{{ (n ~ (" result needs" if n == 1 else " results need") ~ " a decision") if n else "Nothing waiting" }}</span></span>
+      <span class="sep" aria-hidden="true">·</span><span id="cf-read">Read {{ view.read_hm }}</span>
+      {%- else %}
+      <span class="pill error"><span class="glyph error" aria-hidden="true"></span>Could not be read</span>
+      {%- endif %}
+    </div>
+  </header>
+
+  <p class="load-state" id="cf-error" data-state="error" role="alert"{% if view %} hidden{% endif %}>
+    <span class="glyph error" aria-hidden="true"></span><span id="cf-error-text">LEM could not read the held results from its store{% if error %} ({{ error }}){% endif %}. This is not "nothing to decide": nothing on this page is known until it reads.</span>
+    <button type="button" class="btn btn-sm" id="cf-retry">Try again</button>
+  </p>
+
+  <section class="sec" id="open" aria-labelledby="open-h" data-testid="section-open">
+    <div class="about"><h2 id="open-h"><span class="sec-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M5 8h14M5 8l-2.5 6h5zM19 8l-2.5 6h5z"/></svg></span>Needs a decision</h2>
+      <p>A bench held these back: LabCore already had a value a person entered, and LEM never overwrites a person. Choose one; the bench files it on its next sync.</p></div>
+    <div class="body">
+      <ul class="cf-list" id="cf-open" aria-live="polite">
+        {%- for c in (view.open if view else []) %}{{ conflict_row(c) }}{% endfor %}
+      </ul>
+      <p class="load-state" id="cf-empty" data-state="empty"{% if not view or view.open %} hidden{% endif %}>Nothing needs a decision. When a bench's value differs from one a person entered in LabCore, it waits here instead of overwriting it.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="decided" aria-labelledby="decided-h" data-testid="section-decided">
+    <div class="about"><h2 id="decided-h"><span class="sec-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>Decided</h2>
+      <p>Each decision reaches its bench on the next sync, usually within a minute. Shown here for {{ 7 }} days; the record keeps them for good.</p></div>
+    <div class="body">
+      <div class="kv cf-kv" id="cf-decided">
+        {%- for c in (view.decided if view else []) %}
+        <div class="k">{{ c.lab_id }} · {{ c.test_name }}<span class="caption">{{ c.title }}</span></div>
+        <div class="v"><span class="tr-line"><span class="glyph {{ 'final' if c.delivered else 'working' }}" aria-hidden="true"></span><span class="val">{{ "Kept LabCore's " ~ c.theirs if c.choice == "keep" else "Sent the instrument's " ~ c.ours }}</span></span><span class="caption">{{ c.by }}, {{ c.decided_at }} · {{ ("taken by the bench " ~ c.delivered_at) if c.delivered else "waiting for the bench to take it" }}</span></div>
+        {%- endfor %}
+      </div>
+      <p class="load-state" id="cf-decided-empty" data-state="empty"{% if not view or view.decided %} hidden{% endif %}>No decisions in the last 7 days.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="rejected" aria-labelledby="rejected-h" data-testid="section-rejected">
+    <div class="about"><h2 id="rejected-h"><span class="sec-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8"/><path d="M8.5 8.5l7 7"/></svg></span>Rejected by LabCore</h2>
+      <p>LabCore refused these three times, so they are not in LabCore. The bench keeps each one. Correct the sample or test in LabCore, or enter the value by hand.</p></div>
+    <div class="body">
+      <div class="kv cf-kv" id="cf-rejected">
+        {%- for b in (view.rejected if view else []) %}
+        {%- for c in b.cells %}
+        <div class="k">{{ c.lab_id }} · {{ c.test_name }}<span class="caption"><a class="link" href="{{ b.href }}">{{ b.title }}</a></span></div>
+        <div class="v"><span class="tr-line"><span class="glyph error" aria-hidden="true"></span><span class="val">{{ c.value }} not filed</span></span><span class="caption">LabCore said: {{ c.error or "no reason given" }}{% if c.at %} · {{ c.at }}{% endif %}</span></div>
+        {%- else %}
+        <div class="k">{{ b.title }}</div>
+        <div class="v"><span class="tr-line"><span class="glyph error" aria-hidden="true"></span><span class="val">{{ b.count }} rejected</span></span><span class="caption">The bench reported them; their details have not reached LEM yet.</span></div>
+        {%- endfor %}
+        {%- endfor %}
+      </div>
+      <p class="load-state" id="cf-rejected-empty" data-state="empty"{% if not view or view.rejected %} hidden{% endif %}>LabCore has refused nothing a bench sent.</p>
+    </div>
+  </section>
+</main>
+<script type="application/json" id="cf-data">{{ (view or {})|json_island }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
+<script src="/static/js/conflicts.js?v={{ v('js/conflicts.js') }}"></script>
+{% endblock %}

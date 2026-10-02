@@ -226,10 +226,37 @@
         }
     }
 
+    /** The Data line (transfer §14): foot and rail strip, same words. */
+    function setData(t) {
+        const T = root.LEMTransfer;
+        const line = T ? T.footLine(t) : (t && typeof t.text === 'string' ? t : null);
+        const a = $('data-line');
+        if (a) {
+            a.hidden = !line;
+            if (line) {
+                $('data-text').textContent = line.text;
+                $('data-glyph').className = 'glyph ' + (line.glyph || 'never');
+                a.setAttribute('href', line.href || '/settings#transfer');
+                if (line.full) {
+                    a.setAttribute('aria-label', line.full + ' Open Settings, Transfer.');
+                    a.title = line.full;
+                }
+            }
+        }
+        const rs = $('rs-data');
+        if (rs) {
+            rs.hidden = !line;
+            if (line && rs.textContent !== line.text) rs.textContent = line.text;
+            const sep = rs.previousElementSibling;
+            if (sep && sep.classList.contains('rs-sep')) sep.hidden = !line;
+        }
+    }
+
     function onUpdate(u) {
         last = u;
         const S = root.LEMShell;
         if (S && S.setNavMeta) counts(u, S.setNavMeta, setPage);
+        if ('transfer' in u) setData(u.transfer);
         const f = fleet(u);
         if (S && S.setStatus) S.setStatus({ fleet: f });
         if (lastVersion && u.version && u.version !== lastVersion && S && S.toast) {

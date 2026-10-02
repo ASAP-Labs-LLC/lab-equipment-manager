@@ -1063,6 +1063,10 @@ class Custody:
         #: server, so only a real deployment schedules it.
         self.schedule_drill = False
         self.active = False
+        #: The bench half of the bridge-off rule (§12.1 step 5: every bench
+        #: on v2 for 7 days, no reading pulled from LabCore for 7 days), set by
+        #: transfer_routes. Custody owns the switch; the fleet owns its facts.
+        self.extra_refusals: Optional[Callable[[], List[str]]] = None
         self._lock = threading.RLock()
         self._run_lock = threading.Lock()
         self._stop = threading.Event()
@@ -1496,21 +1500,33 @@ class Custody:
         if not raw:
             return ["No off-host copy of the LEM store has ever completed. "
                     "Until one has, the record is less protected in the store "
-                    "than inside LabCore's backup."]
+                    "than inside LabCore's backup."] + self._fleet_refusals()
         at = _parse(raw)
         if at is None:
             return ["The time of the last off-host copy (%r) cannot be read, "
-                    "so its age is unknown." % raw]
+                    "so its age is unknown." % raw] + self._fleet_refusals()
         age = now - at
         if age < -OFFSITE_FUTURE_SLACK:
             return ["The last off-host copy is recorded at %s, which is in the "
                     "future by this server's clock. A clock set wrong, or an "
-                    "edited value, cannot vouch for a copy made now." % raw]
+                    "edited value, cannot vouch for a copy made now." % raw] \
+                + self._fleet_refusals()
         if age > OFFSITE_MAX:
             return ["The last off-host copy is %s old, more than 26 h. The "
                     "bridge can be turned off once a newer copy completes."
-                    % _age_text(age)]
-        return []
+                    % _age_text(age)] + self._fleet_refusals()
+        return self._fleet_refusals()
+
+    def _fleet_refusals(self) -> List[str]:
+        fn = self.extra_refusals
+        if fn is None:
+            return []
+        try:
+            return [str(x) for x in (fn(self.clock()) or [])]
+        except Exception as exc:                        # noqa: BLE001
+            # unknown is a refusal: the switch freezes LabCore's copy
+            return ["Whether every bench has moved off LabCore could not be "
+                    "checked (%s)." % exc]
 
     def status_items(self) -> List[dict]:
         """Global-status lines, most urgent first: {key, level, message,
@@ -1772,6 +1788,8 @@ def attach(app, cust: Custody) -> None:
     Routes read the service from `app.config` at request time, so a test (or
     the server's boot) can swap it."""
     app.config["CUSTODY"] = cust
+    if app.config.get("BRIDGE_FLEET_REFUSALS") is not None:
+        cust.extra_refusals = app.config["BRIDGE_FLEET_REFUSALS"]
     if app.config.get("_CUSTODY_ROUTES"):
         return
     app.config["_CUSTODY_ROUTES"] = True

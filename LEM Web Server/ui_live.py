@@ -819,8 +819,13 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
             certificates: Optional[List[dict]], mirror: Optional[dict],
             jobs: List[dict], version: str, href: Callable[[str, str], str],
             now: Optional[datetime] = None, tz: Optional[str] = None,
-            custody: Optional[List[dict]] = None) -> dict:
-    """``GET /api/ui/live``'s answer. Pure over what it is handed."""
+            custody: Optional[List[dict]] = None,
+            transfer: Optional[dict] = None) -> dict:
+    """``GET /api/ui/live``'s answer. Pure over what it is handed.
+
+    `transfer` is ``ui_transfer.foot``'s ``{line, items}`` (None: nothing to
+    say yet). Its line rides as ``transfer``; its items join the bell, each
+    linking to the page that resolves it (transfer §14)."""
     now = now or datetime.now()
     ready_snap = bool(snap.get("ready"))
     machines = merged if (ready_snap and merged is not None) else None
@@ -844,6 +849,7 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
     # Backup and custody (transfer §11): already {key, level, message, href,
     # link}, most urgent first, from the custody service's memory.
     items = list(items) + [dict(i) for i in custody or []]
+    items = items + [dict(i) for i in ((transfer or {}).get("items") or [])]
     titles = {m["machine_uid"]: m.get("title") or m["machine_uid"] for m in machines or []}
     notices.remember_links({u: href(u, "") for u in titles})
     watched = None
@@ -859,7 +865,9 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
              "mirror": json.dumps({k: (mirror or {}).get(k) for k in ("state", "complete_to")},
                                   default=str),
              "snapshot": str(snap.get("built_at") or ""),
-             "labcore": str(snap.get("labcore_online"))}
+             "labcore": str(snap.get("labcore_online")),
+             "transfer": json.dumps((transfer or {}).get("line"), sort_keys=True,
+                                    default=str)}
     feed.observe({m["machine_uid"]: machine_signature(m, ready[m["machine_uid"]])
                   for m in machines or []}, parts)
     s = feed.since(cursor)
@@ -876,6 +884,7 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
         "jobs": jobs, "version": version,
         "server_now": now.astimezone().isoformat(timespec="seconds"),
         "lab_tz": tz,
+        "transfer": (transfer or {}).get("line"),
     }
     # the items ride along only when they changed for this client (or on a reset)
     if s["reset"] or "notifications" in s["kinds"]:
