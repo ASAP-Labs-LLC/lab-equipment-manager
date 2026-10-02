@@ -506,6 +506,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
             c.emit(3); c.poll()
         c.settle(polls=2)
         ops_before = _results_ops(c)
+        all_before = dict(c.gw.counts)
         c.before_next_restart(c.wipe_journal)
         if dark_polls:
             c.server.set_roads("down")
@@ -529,6 +530,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         t["approved"] = approved
         t["blind_while_dark"] = all(blind_reads) if blind_reads else None
         t["blind_after"] = c.m._transfer_blind()
+        t["_all_ops"] = _ops_since(c, all_before)
         return t, c, ops_before
 
     def _twin_ops(dark_polls):
@@ -539,6 +541,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
             c.emit(3); c.poll()
         c.settle(polls=2)
         before = _results_ops(c)
+        all_before = dict(c.gw.counts)
         if dark_polls:
             c.server.set_roads("down")
         c.restart()
@@ -550,18 +553,35 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         for _ in range(4):
             c.emit(3); c.poll()
         c.settle()
-        return _results_ops(c) - before
+        return _results_ops(c) - before, _ops_since(c, all_before)
+
+    def _extra_ops(t, twin_all):
+        """EVERY LabCore op the wiped bench spent beyond its twin, by kind —
+        not only the results road's (round-1 critic: a narrowed metric hid a
+        wiped bench's legacy-road heartbeat, DDL, status and log writes).
+        The one exception is §6.4's: the re-enrolment proves itself with the
+        shared token, one read of lem_meta, reported on its own."""
+        mine = t.pop("_all_ops")
+        extra = {k: n - twin_all.get(k, 0) for k, n in mine.items()
+                 if n - twin_all.get(k, 0) > 0}
+        t["enrol_token_reads"] = extra.pop("read:lem_meta", 0)
+        t["extra_labcore_ops"] = sum(extra.values())
+        t["extra_labcore_kinds"] = sorted(extra)
 
     @new("T4")
     def t4():
         t, c, before = _wiped("T4", 0)
-        t["extra_guard_ops"] = (_results_ops(c) - before) - _twin_ops(0)
+        twin, twin_all = _twin_ops(0)
+        t["extra_guard_ops"] = (_results_ops(c) - before) - twin
+        _extra_ops(t, twin_all)
         return t
 
     @new("T4b")
     def t4b():
         t, c, before = _wiped("T4b", 3)
-        t["extra_guard_ops"] = (_results_ops(c) - before) - _twin_ops(3)
+        twin, twin_all = _twin_ops(3)
+        t["extra_guard_ops"] = (_results_ops(c) - before) - twin
+        _extra_ops(t, twin_all)
         return t
 
     # ── the 60 s factor rule, confirmed by the sync (§6.6; D2: no replica) ──
@@ -635,6 +655,83 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         t["filed_while_dark"] = filed_dark
         return t
 
+    # ── round 2 (T-P8): the critic's two gaps, kept in the gate ─────────────
+    @new("CF2r")
+    def cf2r():
+        """CF2 with one LabStation restart while both roads are still dark.
+        The restart brings the held readings back from the journal carrying
+        the correction they were PARSED with (the old one); every one of the
+        12 made after the change must still be filed with the NEW factor.
+        Round 1 filed the 6 journaled before the restart with the old one."""
+        need_v2("CF2r", "the 60 s factor rule across a restart (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        c.server.set_roads("down")
+        for _ in range(4):
+            c.poll()
+        c.set_lem_factor("Density", 0.001)
+        after = {}
+        for i in range(6):
+            for _i, lab in _labs(c.emit(2)):
+                after[lab] = c.printed[lab]
+            if i == 3:
+                c.restart()
+            c.poll()
+        filed_dark = cells_for(c, list(after))
+        c.server.set_roads("up")
+        c.settle(polls=12)
+        t = c.tally("CF2r single_csv", "factor changed while dark; one "
+                    "restart while still dark")
+        res = c.gw.results("Density")
+        wrong = stale = 0
+        for lab, raw in after.items():
+            got = res.get(lab)
+            if got in (None, ""):
+                continue
+            if abs(float(got) - (float(raw) + 0.001)) > 1e-9:
+                wrong += 1
+            if abs(float(got) - float(raw)) <= 1e-12:
+                stale += 1
+        t["res_wrong"] = wrong
+        t["filed_with_stale_factor"] = stale
+        t["filed_after_change"] = sum(1 for lab in after
+                                      if res.get(lab) not in (None, ""))
+        t["filed_while_dark"] = filed_dark
+        return t
+
+    def _unknown_bench(sid, mode):
+        """A bench that binds while LEM cannot answer v2 (`mode`), prints for
+        10 polls, then LEM comes up. Only a 404 means "old server" (§6.1,
+        §12.2): until LEM answers, the bench must spend NOTHING in LabCore —
+        no heartbeat, status, DDL, log rows — and afterwards its records are
+        in LEM once, never also in LabCore's machine log."""
+        need_v2(sid, "only a 404 means an old server (P8)")
+        c = W(road_modes={"A": mode, "B": mode})
+        before = dict(c.gw.counts)
+        for _ in range(10):
+            c.emit(2); c.poll()
+        dark = _ops_since(c, before)
+        c.server.set_roads("up")
+        c.settle(polls=15)
+        t = c.tally("%s single_csv" % sid, "binds with LEM %s; up after 10 "
+                    "polls" % mode)
+        t["labcore_ops_while_unknown"] = sum(dark.values())
+        t["labcore_kinds_while_unknown"] = sorted(dark)
+        everything = _ops_since(c, before)
+        t["legacy_road_ops"] = sum(
+            n for k, n in everything.items()
+            if k not in ("read:identity", "write:batch", "read:lem_meta"))
+        t["went_legacy"] = c.m._transfer.mode == "legacy"
+        return t
+
+    @new("N404")
+    def n404():
+        return _unknown_bench("N404", "down")
+
+    @new("N503")
+    def n503():
+        return _unknown_bench("N503", "503")
+
     # ── needs a v4 capability with no code yet ─────────────────────────────
     for sid, needs in V4_ONLY.items():
         reg.add(sid, (lambda s, n: lambda: _unsupported(s, n))(sid, needs), "new")
@@ -706,6 +803,12 @@ def _res_lost(c):
 
 def _filed(c):
     return _res_lost(c) == 0
+
+
+def _ops_since(c, before):
+    """Every LabCore op kind's count since `before` (a copy of gw.counts)."""
+    return {k: n - before.get(k, 0) for k, n in c.gw.counts.items()
+            if n - before.get(k, 0)}
 
 
 def _results_ops(c):

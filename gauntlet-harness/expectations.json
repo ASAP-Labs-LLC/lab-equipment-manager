@@ -2334,9 +2334,13 @@
     "approved": 200,
     "blind_after": false,
     "lem_requests_on_poll_thread": 0,
-    "uploader_errors": 0
+    "uploader_errors": 0,
+    "extra_labcore_ops": 0,
+    "enrol_token_reads": {
+     "le": 1
+    }
    },
-   "v4_spec": "0/0; 0 records re-sent; 0 results-road LabCore ops beyond an unwiped twin. The wipe takes bench.key with it, so re-enrolment needs a person (§6.4) — the scenario approves through Settings › Transfer's endpoint; extra_guard_ops ≤ 0 against the twin (never more results-road ops)"
+   "v4_spec": "0/0; 0 records re-sent; 0 results-road LabCore ops beyond an unwiped twin. The wipe takes bench.key with it, so re-enrolment needs a person (§6.4) — the scenario approves through Settings › Transfer's endpoint; extra_guard_ops ≤ 0 against the twin (never more results-road ops); and 0 LabCore ops of ANY kind beyond the twin (extra_labcore_ops, round 2): while its re-enrolment waits for a person the wiped bench holds on the v2 side, never the legacy road (§6.3; only a 404 is an old server) — except the one shared-token read of lem_meta §6.4 allows (enrol_token_reads ≤ 1)"
   },
   "T4b": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2356,9 +2360,13 @@
     "blind_after": false,
     "approved": 200,
     "lem_requests_on_poll_thread": 0,
-    "uploader_errors": 0
+    "uploader_errors": 0,
+    "extra_labcore_ops": 0,
+    "enrol_token_reads": {
+     "le": 1
+    }
    },
-   "v4_spec": "0/0 (blind; the file source waits while both roads are down, then resumes at LEM's mirrored cursor); 0 re-sent; extra_guard_ops ≤ 0 against an unwiped twin (the blind bench reads what waited in one poll after it resumes, so it may file in fewer batches than the twin — never more)"
+   "v4_spec": "0/0 (blind; the file source waits while both roads are down, then resumes at LEM's mirrored cursor); 0 re-sent; extra_guard_ops ≤ 0 against an unwiped twin (the blind bench reads what waited in one poll after it resumes, so it may file in fewer batches than the twin — never more); and 0 LabCore ops of ANY kind beyond the twin (extra_labcore_ops, round 2): while its re-enrolment waits for a person the wiped bench holds on the v2 side, never the legacy road (§6.3; only a 404 is an old server) — except the one shared-token read of lem_meta §6.4 allows (enrol_token_reads ≤ 1)"
   },
   "T5": {
    "v3.9_source": "none: the scenario needs a v4 capability (kill_not_reached)",
@@ -2796,6 +2804,61 @@
     "cell_dup_lands": 0
    },
    "v4_spec": "N2 on the legacy road (a v4 bench meeting an old server, D8): the LabCore log drain still loses nothing. 0"
+  },
+  "CF2r": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_wrong": 0,
+    "filed_with_stale_factor": 0,
+    "filed_after_change": 12,
+    "filed_while_dark": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 2 (critic, T-P8 round 1): CF2 plus one LabStation restart while both roads are still dark. All 12 readings made after the factor change are held, then filed with the NEW factor — including the ones journaled before the restart, which come back from the journal carrying the old correction (round 1 filed 6 of 12 stale). D2: held, not filed, while dark."
+  },
+  "N404": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "log_rows": 0,
+    "labcore_ops_while_unknown": 0,
+    "legacy_road_ops": 0,
+    "went_legacy": false,
+    "v2_syncs": {
+     "ge": 1
+    },
+    "records_resent": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 2 (critic, T-P8 round 1): a bench that binds while LEM's roads are down. §6.1/§12.2: only a 404 means 'old server' — timeouts and 5xx never cause a fallback to LabCore. So 0 LabCore ops while LEM is unknown (round 1: the legacy road, 311 ops an idle hour, and 20 machine_log rows written to LabCore that were later also synced to LEM); once LEM answers, the records reach LEM only (log_rows 0 in LabCore) and the held results are filed (res_lost 0). legacy_road_ops counts every op but the results road and §6.4's one shared-token read."
+  },
+  "N503": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "log_rows": 0,
+    "labcore_ops_while_unknown": 0,
+    "legacy_road_ops": 0,
+    "went_legacy": false,
+    "v2_syncs": {
+     "ge": 1
+    },
+    "records_resent": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 2 (critic, T-P8 round 1): a bench that binds while LEM's roads are answering 503. §6.1/§12.2: only a 404 means 'old server' — timeouts and 5xx never cause a fallback to LabCore. So 0 LabCore ops while LEM is unknown (round 1: the legacy road, 311 ops an idle hour, and 20 machine_log rows written to LabCore that were later also synced to LEM); once LEM answers, the records reach LEM only (log_rows 0 in LabCore) and the held results are filed (res_lost 0). legacy_road_ops counts every op but the results road and §6.4's one shared-token read."
   }
  }
 }

@@ -54,6 +54,7 @@ class CountingLabCore:
         self.cells = {}              # (lab_id, test) -> value
         self.shared = shared
         self.configs = {}            # uid -> lem_machine_config.config JSON
+        self.log_args = []           # args of every lem_machine_log insert
 
     def _note(self, kind, what):
         self.ops.append((kind, str(what), threading.get_ident()))
@@ -67,6 +68,10 @@ class CountingLabCore:
 
     def sql(self, sql, args=None, source=""):
         self._note("sql", sql)
+        if str(sql).startswith("INSERT INTO lem_machine_log"):
+            args = list(args or ())         # one or many 7-column rows
+            for i in range(0, len(args), 7):
+                self.log_args.append(tuple(args[i:i + 7]))
         return {"ok": True, "rows_affected": 1}
 
     def read_sql(self, sql, args=None, **kw):
@@ -354,7 +359,11 @@ class TestEnrolment:
         b.poll(2)
         assert not (journal_dir / UID / mod.JOURNAL_KEY_NAME).exists()
         assert "person" in b.m._transfer.enrol or "know" in b.m._transfer.enrol
-        assert not b.m._v2_active()
+        # Waiting is not "old server": the bench holds on the v2 side (it
+        # journals; nothing of LEM's goes to LabCore) until the approval.
+        assert b.m._v2_active()
+        assert b.m._transfer.mode != "legacy"
+        assert not b.m._transfer.token
         lem.approved = True
         b.poll(12)
         assert (journal_dir / UID / mod.JOURNAL_KEY_NAME).exists()
@@ -600,3 +609,247 @@ class TestConfigCacheAndRetirement:
         b.poll(2)
         assert b.m.machine() is None
         assert "retired" in b.m._status_label.text().lower()
+
+
+# ── round 2: a restart during the outage, and "unknown" is not "legacy" ─────
+
+class TestARestartDuringTheOutage:
+    def test_readings_journaled_before_a_restart_file_with_the_new_factor(
+            self, bench, lab, lem):
+        """CF2 with one LabStation restart while both roads are still dark.
+
+        The readings made after the factor moved on the server are HELD
+        (D2). The restart brings them back from the journal — and they come
+        back carrying the correction they were PARSED with, the old one. If
+        the recovered queue is filed as it stands, half the readings (the
+        ones journaled before the restart) reach LabCore with a factor LEM
+        had already replaced: a wrong result, silently. Every held reading
+        must be re-corrected from its raw value with the factor LEM confirms
+        when the road returns, whichever process journaled it."""
+        b = bench()
+        lab.samples.update("L-%d" % i for i in range(12))
+        b.poll()
+        lem.modes = {"lan": "down", "public": "down"}
+        b.poll(3)
+        lem.corrections = [{"machine_uid": UID, "test_name": "Density",
+                            "correction": 0.001}]
+        lem.config_rev = "rev-2"
+        for i in range(6):                      # before the restart
+            b.print_lines(("L-%d" % i, "0.8003"))
+            b.poll()
+        state = b.m.serialize_state()
+        k = b.k
+        b.close()
+        b2 = bench(state=state)
+        b2.k = k
+        for i in range(6, 12):                  # after it
+            b2.print_lines(("L-%d" % i, "0.8003"))
+            b2.poll()
+        assert lab.cells == {}, "filed while both roads were dark"
+        lem.modes = {"lan": "up", "public": "up"}
+        b2.poll(12)
+        got = {k[0]: v for k, v in lab.cells.items()}
+        stale = sorted(lab_id for lab_id, v in got.items()
+                       if abs(float(v) - 0.8003) < 1e-9)
+        assert stale == [], "filed with the OLD factor: %s" % stale
+        assert got == {"L-%d" % i: "0.8013" for i in range(12)}
+
+
+class TestUnknownIsNotLegacy:
+    """§6.1 / §12.2: only a 404 means "old server". A bench whose v2 state
+    is merely UNKNOWN — it bound while both roads were down, or LEM answered
+    503, or its journal was wiped and it is waiting for a person to approve
+    its re-enrolment — has not been told it talks to an old server, so it
+    must not start doing an old server's bookkeeping in LabCore (heartbeat,
+    status, DDL, log rows, config reads). It journals and holds, exactly as
+    a v2 bench does in an outage; the first 404 is what sends it the old
+    way, and then it projects what it journaled, losing nothing."""
+
+    LEM_ONLY = ("lem_", "create table", "create index", "alter table")
+
+    def _lem_ops(self, ops):
+        """LEM's bookkeeping in LabCore — minus the ONE read §6.4 allows: the
+        shared token in lem_meta that proves a known bench's first enrolment
+        (made on the uploader thread, once, when LEM first answers)."""
+        out = [o for o in ops if any(w in o[1].lower() for w in self.LEM_ONLY)]
+        enrol = [o for o in out if o[0] == "read" and "lem_meta" in o[1].lower()]
+        assert len(enrol) <= 1, enrol
+        return [o for o in out if o not in enrol]
+
+    @pytest.mark.parametrize("mode", ["down", "503", "timeout"])
+    def test_a_bench_that_binds_with_lem_unreachable_writes_nothing(
+            self, bench, lab, lem, mode):
+        lem.modes = {"lan": mode, "public": mode}
+        lab.samples.update("L-%d" % i for i in range(10))
+        b = bench()
+        since = lab.count()
+        for i in range(10):
+            b.print_lines(("L-%d" % i, "0.8000"))
+            b.poll()
+        assert b.m._transfer.mode != "legacy"
+        assert lab.ops[since:] == [], lab.ops[since:]
+        lem.modes = {"lan": "up", "public": "up"}
+        b.poll(12)
+        assert b.m._transfer.mode == "v2"
+        assert self._lem_ops(lab.ops[since:]) == []
+        assert sorted(r["lab_id"] for r in lem.runs()) == sorted(
+            "L-%d" % i for i in range(10))
+        assert {k[0] for k in lab.cells} == {"L-%d" % i for i in range(10)}
+
+    def test_a_bench_waiting_for_approval_writes_nothing(self, bench, lab,
+                                                         lem, journal_dir):
+        """T4's wiped bench while its re-enrolment waits for a person: LEM
+        answered (202), so it is certainly not an old server."""
+        lem.known = False
+        lab.samples.update(["L-1", "L-2"])
+        b = bench()
+        since = lab.count()
+        b.print_lines(("L-1", "0.8000"), ("L-2", "0.8100"))
+        b.poll(8)
+        assert b.m._transfer.enrol
+        assert lab.ops[since:] == [], lab.ops[since:]
+        lem.approved = True
+        b.poll(12)
+        assert self._lem_ops(lab.ops[since:]) == []
+        assert sorted(r["lab_id"] for r in lem.runs()) == ["L-1", "L-2"]
+        assert {k[0] for k in lab.cells} == {"L-1", "L-2"}
+
+    def test_the_first_404_sends_what_was_journaled_the_old_way(
+            self, bench, lab, lem):
+        """The other half of the rule: an unknown bench that then hears a 404
+        goes legacy and projects every log row it journaled meanwhile —
+        holding while unknown never loses a row on an old server."""
+        lem.modes = {"lan": "down", "public": "down"}
+        lab.samples.update(["L-1", "L-2"])
+        b = bench()
+        b.print_lines(("L-1", "0.8000"), ("L-2", "0.8100"))
+        b.poll(3)
+        lem.modes = {"lan": "404", "public": "404"}
+        b.poll(12)
+        assert b.m._transfer.mode == "legacy"
+        logged = [o for o in lab.ops if "lem_machine_log" in o[1].lower()
+                  and o[0] in ("sql", "write")
+                  and "insert" in o[1].lower()]
+        assert logged, "the journaled rows never reached LabCore"
+        assert {k[0] for k in lab.cells} == {"L-1", "L-2"}
+
+    def test_what_the_operator_did_while_unknown_reaches_an_old_server(
+            self, bench, lab, lem):
+        """Holding while unknown is only safe if a later 404 sends EVERYTHING
+        the old way — not just the parsed runs. While LEM was unreachable the
+        operator wrote a note, set an override and saved the machine's setup;
+        on the v2 side those are journal records. When LEM turns out to be
+        v3.9 they must reach LabCore as v3.9 would have written them: the log
+        rows, the configuration row, and the status and specs the legacy sync
+        publishes (the v2 side had already "published" those to its journal,
+        so the legacy side must not think they are done). Exactly once: a
+        second fall-back must not write them again."""
+        lem.modes = {"lan": "down", "public": "down"}
+        b = bench()
+        b.poll()
+        b.m._log_event("comment", detail={"note": "lamp replaced"})
+        b.m._log_event("override", detail={"status": "SERVICE",
+                                           "comment": "lamp out"})
+        b.machine.title = "Bench, renamed"
+        b.m._publish_config(b.machine)
+        b.settle()
+        b.poll(2)
+        assert [o for o in lab.ops if "lem_machine_log" in o[1].lower()] == []
+        lem.modes = {"lan": "404", "public": "404"}
+        b.poll(12)
+        assert b.m._transfer.mode == "legacy"
+        args = [a for a in lab.log_args if a[2] in ("comment", "override")]
+        assert sorted(a[2] for a in args) == ["comment", "override"], lab.log_args
+        assert any("lem_machine_config" in o[1] and "INSERT" in o[1].upper()
+                   for o in lab.ops)
+        assert any("lem_machine_status" in o[1] and "INSERT" in o[1].upper()
+                   for o in lab.ops)
+        assert any("lem_machine_specs" in o[1] for o in lab.ops)
+        # a second fall-back (v2 found, then rolled back) sends nothing again
+        n = len(args)
+        b.m._v2_fell_back(b.m.machine(), b.m._upl_journal, [])
+        b.poll(2)
+        assert len([a for a in lab.log_args
+                    if a[2] in ("comment", "override")]) == n
+
+
+class TestTheLegacyRoadNamesItselfToo:
+    """§6.1 / spec row 96: EVERY module request to LEM sets the User-Agent —
+    not only the v2 uploader's. A bench on the legacy road (an old server)
+    still pushes /api/live and reads /api/bench/<uid>/config, and through the
+    public road Cloudflare answers urllib's default agent with 1010; an
+    unnamed request there is a request that never arrives."""
+
+    def _capture(self, monkeypatch):
+        seen = []
+
+        def urlopen(req, timeout=None, **kw):
+            seen.append(req.get_header("User-agent") or "")
+            raise OSError("captured, not sent")
+        monkeypatch.setattr("urllib.request.urlopen", urlopen)
+        return seen
+
+    def test_the_live_push_names_itself(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        mod.post_live("https://lem.asaplabs.net", "t", {"machine_uid": "m9"})
+        assert seen == [mod.lem_user_agent("m9")]
+
+    def test_the_floor_config_read_names_itself(self, monkeypatch):
+        seen = self._capture(monkeypatch)
+        mod.fetch_floor_config("https://lem.asaplabs.net", "t", "m9")
+        assert seen == [mod.lem_user_agent("m9")]
+
+
+class TestALongOutageLosesNoResult:
+    def test_more_held_results_than_the_backlog_cap_all_file(
+            self, bench, lab, lem, monkeypatch):
+        """D2 holds results for as long as LEM is dark — an outage over a long
+        weekend holds more than IDENTITY_BACKLOG_LIMIT (5,000) of them. The
+        identity backlog drops its OLDEST past that cap ("they stay in the
+        machine log"), which is a defensible answer for a backlog the bench
+        made itself and a silent loss for results D2 promised to file. So the
+        held results must enter the results road no faster than it drains,
+        the rest waiting in the uncapped, journal-backed factor queue. Scaled
+        down: a cap of 20 and 60 held results; all 60 file, none is lost."""
+        monkeypatch.setattr(mod, "IDENTITY_BACKLOG_LIMIT", 20)
+        monkeypatch.setattr(mod, "IDENTITY_LOOKUP_CHUNK", 5)
+        b = bench()
+        labs = ["L-%02d" % i for i in range(60)]
+        lab.samples.update(labs)
+        b.poll()
+        lem.modes = {"lan": "down", "public": "down"}
+        b.poll(3)
+        for i in range(0, 60, 6):
+            b.print_lines(*[(x, "0.8000") for x in labs[i:i + 6]])
+            b.poll()
+        assert lab.cells == {}
+        lem.modes = {"lan": "up", "public": "up"}
+        b.poll(30)
+        assert sorted(k[0] for k in lab.cells) == labs
+
+    def test_and_a_restart_in_the_middle_of_it_loses_none_either(
+            self, bench, lab, lem, monkeypatch):
+        """The same, with LabStation restarted while still dark: the held
+        results come back from the journal, and must come back into the
+        uncapped queue they were waiting in — not straight into the capped
+        backlog, which would drop all but the newest 20 here."""
+        monkeypatch.setattr(mod, "IDENTITY_BACKLOG_LIMIT", 20)
+        monkeypatch.setattr(mod, "IDENTITY_LOOKUP_CHUNK", 5)
+        b = bench()
+        labs = ["L-%02d" % i for i in range(60)]
+        lab.samples.update(labs)
+        b.poll()
+        lem.modes = {"lan": "down", "public": "down"}
+        b.poll(3)
+        for i in range(0, 60, 6):
+            b.print_lines(*[(x, "0.8000") for x in labs[i:i + 6]])
+            b.poll()
+        state, k = b.m.serialize_state(), b.k
+        b.close()
+        b2 = bench(state=state)
+        b2.k = k
+        b2.poll(2)
+        assert lab.cells == {}
+        lem.modes = {"lan": "up", "public": "up"}
+        b2.poll(30)
+        assert sorted(k[0] for k in lab.cells) == labs
