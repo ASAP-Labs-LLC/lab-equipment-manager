@@ -110,6 +110,10 @@ SPEC_NUMBERS = ("expected", "std_dev", "k", "low", "high", "last_qc_value",
 #: and 48 specs at their bounds still leave the real fleet inside GC hub's
 #: 1 MB cap (test_bench_state_bounds pins the arithmetic).
 MAX_SPECS = 48
+#: The largest machine configuration a bench's `config` record may set.
+MAX_MACHINE_CONFIG_BYTES = 128 * 1024
+#: What a bench may set its override to ("" clears it); the floor's values.
+BENCH_OVERRIDES = ("", "SERVICE", "DEAD-LINE")
 #: Encoded-size bounds for a spec's text, shared with the floor builder.
 SPEC_TEXT_BYTES = {k: FLOOR_FIELD_BYTES[k]
                    for k in ("test_name", "sample_id", "units")}
@@ -706,6 +710,10 @@ class Ingest:
         self.epoch = epoch
         self.now = now
         self.notes: List[dict] = []
+        #: A record changed the bench's configuration (config, factors, the
+        #: override): the snapshot is refreshed after the commit, so the next
+        #: config_rev says so.
+        self.config_changed = False
 
     def x(self, sql: str, args: list) -> dict:
         res = self.store.sql(sql, args)
@@ -914,6 +922,79 @@ class Ingest:
                    "bench_seq_ref = excluded.bench_seq_ref",
                    [self.uid, c["lab_id"], c["test_name"], c["value"],
                     wall_ts(body.get("ts"), _now_wall()), "%s:%d" % (self.epoch, seq)])
+
+    # ── edits made AT THE BENCH (transfer §2: "module setup dialog (`config`
+    # record)") — a v2 bench writes none of these into LabCore any more, so
+    # this is where they become LEM's current state. Applied only when the
+    # bench's change is not older than what the store holds: a record held
+    # back by an outage must not undo a newer edit made on the floor.
+    def _newer_than(self, table: str, where: str, args: list, ts: str) -> bool:
+        rows = self.q("SELECT updated_at FROM %s WHERE %s" % (table, where),
+                      args)
+        held = str((rows[0] if rows else {}).get("updated_at") or "")
+        return not held or ts >= wall_ts(held, held)
+
+    def _state_config(self, seq: int, body: dict) -> None:
+        ts = wall_ts(body.get("ts"), _now_wall())
+        detail = body.get("detail") if isinstance(body.get("detail"), dict) else {}
+        by = clip_text(_text(detail.get("by") or "bench"), 64)
+        machine = body.get("machine")
+        if isinstance(machine, dict) and str(machine.get("uid") or "") == self.uid:
+            text = json.dumps(machine, sort_keys=True, default=str)
+            title = clip_text(_text(machine.get("title")).strip(), 200) or self.uid
+            if len(text) <= MAX_MACHINE_CONFIG_BYTES and self._newer_than(
+                    "lem_machine_config", "machine_uid = ?", [self.uid], ts):
+                self.x("INSERT INTO lem_machine_config (machine_uid, title, "
+                       "config, updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
+                       "ON CONFLICT(machine_uid) DO UPDATE SET title = "
+                       "excluded.title, config = excluded.config, updated_at = "
+                       "excluded.updated_at, updated_by = excluded.updated_by",
+                       [self.uid, title, text, ts, "bench: " + by])
+                self.config_changed = True
+        changes = body.get("corrections")
+        if isinstance(changes, dict):
+            for test, value in list(changes.items())[:MAX_SPECS]:
+                test = _text(test).strip()
+                if not test or clip_text(test, SPEC_TEXT_BYTES["test_name"]) != test:
+                    continue
+                if not self._newer_than("lem_correction_factors",
+                                        "machine_uid = ? AND test_name = ?",
+                                        [self.uid, test], ts):
+                    continue
+                if value in (None, 0, 0.0, "", "0"):
+                    self.x("DELETE FROM lem_correction_factors WHERE "
+                           "machine_uid = ? AND test_name = ?", [self.uid, test])
+                    self.config_changed = True
+                    continue
+                number = _finite(value)
+                if number is None:
+                    continue       # logged as sent; never stored as a factor
+                self.x("INSERT INTO lem_correction_factors (machine_uid, "
+                       "test_name, correction, updated_at, updated_by) VALUES "
+                       "(?, ?, ?, ?, ?) ON CONFLICT(machine_uid, test_name) DO "
+                       "UPDATE SET correction = excluded.correction, updated_at "
+                       "= excluded.updated_at, updated_by = excluded.updated_by",
+                       [self.uid, test, number, ts, by])
+                self.config_changed = True
+
+    def _state_override(self, seq: int, body: dict) -> None:
+        detail = body.get("detail") if isinstance(body.get("detail"), dict) else {}
+        status = _text(detail.get("status")).strip()
+        status = "" if status in ("", "cleared") else status
+        if status not in BENCH_OVERRIDES:
+            return                 # in the log as sent; not a state
+        ts = wall_ts(body.get("ts"), _now_wall())
+        if not self._newer_than("lem_machine_control", "machine_uid = ?",
+                                [self.uid], ts):
+            return
+        self.x("INSERT INTO lem_machine_control (machine_uid, manual_override, "
+               "comment, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT("
+               "machine_uid) DO UPDATE SET manual_override = "
+               "excluded.manual_override, comment = excluded.comment, "
+               "updated_at = excluded.updated_at",
+               [self.uid, status, clip_text(_text(detail.get("comment")), 2000),
+                ts])
+        self.config_changed = True
 
     def _state_resolution(self, seq: int, body: dict) -> None:
         ref = str(body.get("conflict_seq") or "")
@@ -1517,6 +1598,13 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
                                           "Hold and retry." % type(exc).__name__},
                            RETRY_BUSY_S)
 
+        if conflict is None and ing.config_changed:
+            # The bench changed its own configuration: the next config_rev
+            # must say so (inline without a poller, a wake with one).
+            try:
+                snapshots.refresh_soon()
+            except Exception:                          # noqa: BLE001
+                pass
         if doc.get("live") and doc["live"].get("status"):
             live.record(uid, doc["live"])
         # The other benches, from the store, before this one is noted: once
