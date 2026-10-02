@@ -143,6 +143,7 @@
         function shapeOf(ls) {
             return JSON.stringify(ls.map(cl => [cl.uid, cl.name, (cl.items || []).map(i =>
                 [i.uid, i.text, i.item_type, i.entry_type, i.units || '', i.parent_uid || '', i.track_uid || '',
+                 i.min == null ? '' : i.min, i.max == null ? '' : i.max,
                  (i.days_active || []).join('')])]));
         }
 
@@ -166,6 +167,10 @@
                         uid: String(i.uid), cl: String(cl.uid), kind: kindOf(i), text: String(i.text || ''),
                         units: String(i.units || ''), sub: i.item_type === 'subtask', parent: i.parent_uid || '',
                         track: String(i.track_uid || ''), days: i.days_active || [],
+                        // limits the editor put on this item itself (piece 10);
+                        // a tracked item's limits are its thing's
+                        lim: (i.min !== null && i.min !== undefined) || (i.max !== null && i.max !== undefined)
+                            ? { min: i.min, max: i.max } : null,
                         st: _st(((state[cl.uid] || {})[i.uid])), saving: false, error: '', unsaved: false, stamp: 0,
                     };
                     rows.push(r);
@@ -353,7 +358,7 @@
 
     function caption(r) {
         const parts = [];
-        const tr = r.track && tracked && tracked !== 'failed' ? tracked[r.track] : null;
+        const tr = r.track ? (tracked && tracked !== 'failed' ? tracked[r.track] : null) : r.lim;
         const units = r.units || (tr && tr.units) || '';
         if (r.kind === 'number') {
             if (r.track && tracked === 'failed') parts.push('Limits could not be read');

@@ -30,15 +30,15 @@ from web_app import create_app
 
 # Every page that includes the shared nav. The stamp lives there so it cannot
 # be on some pages and not others.
-# (the round, /checklists/<slot>, is a shell page: its #app-version is
-# checked with the others in tests/test_ui_shell_pages.py)
+# (the round, /checklists/<slot>, and the round editor, /checklists/edit, are
+# shell pages: their #app-version is checked in tests/test_ui_shell_pages.py)
 # "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
 # covers it); "/maintenance" redirects to its filter, and the old PM page
 # lives at /maintenance/classic until the record and Settings › Imports take
 # over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
-# round (a new shell page, tests/test_round_page.py); the old checklists
-# page, with the editor, answers at /checklists/edit.
-PAGES = ("/floor", "/maintenance/classic", "/checklists/edit", "/logs")
+# round, and /checklists/edit is the round editor and /checklists/trends is
+# Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
+PAGES = ("/floor", "/maintenance/classic", "/logs")
 
 
 @pytest.fixture

@@ -1,0 +1,311 @@
+{% extends "_layout.html" %}
+{#- Defining rounds (ia-final §3.4, piece 10). Doing a round is round.html;
+    this is where one is written.
+
+    Four views of one template, chosen by the route:
+    * list    /checklists/edit: the rounds, "Archived (n)", New round.
+    * edit    /checklists/edit/<uid> and /checklists/edit/new?slot=: record
+              anatomy from GC hub's /instruments/<id>. Crumbs, one h1 that
+              is the round's name, a meta line, then sections with a left
+              title and one sentence: Round · Items · Archive.
+    * missing a uid nobody has (404), with the way back.
+    * failed  the store did not answer (503). Never "No such round" and
+              never an empty list: a read that failed is not a statement
+              about the lab.
+
+    P2 by construction: Enter adds a row HERE, in the page; nothing is sent
+    until the one Save, which posts the whole round with items[] and a uid
+    minted when the page was drawn, so a second press upserts the same round.
+    Every dialog is a dialog.sheet (P8). Page code: static/js/round_edit.js;
+    every server string goes in through textContent or Jinja's escaping. -#}
+{%- macro slot_word(s) -%}{{ {'opening': 'Opening', 'closing': 'Closing'}.get(s, 'Other') }}{%- endmacro -%}
+{%- macro kind_seg(kind, label, head=False) -%}
+<div class="seg ed-kinds" role="radiogroup" aria-label="What {{ label or 'this item' }} records"{% if head %} hidden{% endif %}>
+  <button type="button" role="radio" data-kind="none" aria-checked="{{ 'true' if kind not in ('number', 'text') else 'false' }}">Tick</button>
+  <button type="button" role="radio" data-kind="number" aria-checked="{{ 'true' if kind == 'number' else 'false' }}">Number</button>
+  <button type="button" role="radio" data-kind="text" aria-checked="{{ 'true' if kind == 'text' else 'false' }}">Text</button>
+</div>
+{%- endmacro -%}
+{%- macro item_row(i, n, autofocus=False) -%}
+{%- set kind = i.entry_type if i.entry_type in ('number', 'text') else 'none' -%}
+{%- set head = i.item_type == 'header' -%}
+<li class="ed-item" data-uid="{{ i.uid }}" data-type="{{ i.item_type or 'item' }}" data-kind="{{ kind }}" data-parent="{{ i.parent_uid or '' }}" data-days="{{ (i.days_active or [])|tojson|forceescape }}" data-track-uid="{{ i.track_uid or '' }}" data-shared="{{ (i.shared_with or [])|join(' and ') }}"{% if i.limits_unknown %} data-limits-unknown="1"{% endif %}>
+  <div class="ed-line">
+    <span class="ed-n" draggable="true" title="Drag to move" aria-hidden="true">{{ n }}</span>
+    <input type="text" class="ed-label" value="{{ i.text }}" aria-label="{{ 'Heading' if head else 'Item' }} {{ n }}" placeholder="{{ 'Heading' if head else 'What to do, e.g. Check the nitrogen generator' }}" autocomplete="off" enterkeyhint="next"{% if autofocus %} autofocus{% endif %}>
+    <span class="ed-tag"{% if not head %} hidden{% endif %}>Heading</span>
+    {{ kind_seg(kind, i.text, head) }}
+    <span class="ed-tools">
+      <button type="button" class="icon-btn ed-up" aria-label="Move up" title="Move up"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg></button>
+      <button type="button" class="icon-btn ed-down" aria-label="Move down" title="Move down"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 10 6 6 6-6"/></svg></button>
+      <button type="button" class="icon-btn ed-more" aria-label="Options: heading, subtask, days" title="Heading, subtask, days" aria-haspopup="dialog"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg></button>
+      <button type="button" class="icon-btn ed-remove" aria-label="Remove this item" title="Remove"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </span>
+  </div>
+  <div class="ed-number"{% if kind != 'number' or head %} hidden{% endif %}>
+    <label class="ed-f"><span>Units</span><input type="text" class="ed-units" value="{{ i.units or '' }}" placeholder="PSI" autocomplete="off" enterkeyhint="next"></label>
+    <label class="ed-f"><span>Minimum</span><input type="text" class="ed-min" inputmode="decimal" value="{{ fmt(i.min) if fmt else '' }}" placeholder="none" autocomplete="off" enterkeyhint="next"{% if i.limits_unknown %} disabled{% endif %}></label>
+    <label class="ed-f"><span>Maximum</span><input type="text" class="ed-max" inputmode="decimal" value="{{ fmt(i.max) if fmt else '' }}" placeholder="none" autocomplete="off" enterkeyhint="next"{% if i.limits_unknown %} disabled{% endif %}></label>
+    <label class="switch ed-trackw"><input type="checkbox" class="ed-track"{% if i.track %} checked{% endif %}><span class="track" aria-hidden="true"></span><span>Track this reading</span></label>
+  </div>
+  <p class="caption ed-cap">
+    {%- if i.limits_unknown %}The limits this reading shares could not be read, so they are left as they are.{% endif -%}
+    {%- if i.shared_with %}{{ ' ' if i.limits_unknown }}One series with {{ i.shared_with|join(' and ') }}; the limits are shared.{% endif -%}
+    {%- if i.item_type == 'subtask' %} Under the item above.{% endif -%}
+    {%- if i.days_words %} Only on {{ i.days_words }}.{% endif -%}
+  </p>
+  <p class="errline ed-err" role="alert" hidden></p>
+</li>
+{%- endmacro -%}
+
+{% block title %}{% if view == 'edit' %}{{ R.name or 'New round' }}{% elif view == 'list' %}Rounds{% else %}Checklists{% endif %}{% endblock %}
+
+{% block topbar %}
+  {%- if view == 'list' %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists">Checklists</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page">Rounds</span></nav>
+  <span class="spacer"></span>
+  <a class="btn btn-ghost" href="/checklists/trends">Readings</a>
+  <a class="btn" href="/checklists/edit/new" id="new-round"><span class="ico ico-plus" aria-hidden="true"></span>New round</a>
+  {%- elif view == 'edit' %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists/edit">Rounds</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page" id="crumb-name">{{ R.name if not R.new else 'New round' }}</span></nav>
+  <span class="spacer"></span>
+  {%- if R.slot in ('opening', 'closing') %}
+  <a class="btn btn-ghost" id="open-round" href="/checklists/{{ R.slot }}"{% if R.new %} hidden{% endif %}>Open the round</a>
+  {%- endif %}
+  {%- else %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists/edit">Rounds</a></nav>
+  <span class="spacer"></span>
+  {%- endif %}
+{% endblock %}
+
+{% block content %}
+{%- if view == 'list' %}
+<main class="content rounds" id="main" tabindex="-1" data-testid="rounds">
+  <div class="page-head">
+    <h1>Rounds</h1>
+    <div class="meta">
+      {%- if failed %}<span>Not read</span>
+      {%- else %}
+      <span>What the lab ticks through at opening and at closing. Doing a round is on its own page, under Checklists.</span>
+      {%- endif %}
+    </div>
+  </div>
+
+  {%- if failed %}
+  <section class="card state-card" id="rounds-failed" role="alert" data-testid="rounds-failed">
+    <p><span class="glyph error" aria-hidden="true"></span> <b>The rounds could not be read.</b> LEM's store did not answer. This is not an empty list: nothing was changed, and the rounds are where they were.</p>
+    <p class="caption">{{ failed }}</p>
+    <a class="btn" href="/checklists/edit">Try again</a>
+  </section>
+  {%- elif not rows %}
+  <section class="card state-card" id="rounds-empty" data-testid="rounds-empty">
+    <p><b>No rounds are set up.</b> A round is the list someone ticks through at the bench: lights, gases, a cylinder reading. Start with the one the lab does first.</p>
+    <div class="row">
+      <a class="btn btn-primary" href="/checklists/edit/new?slot=opening">Set up the opening round</a>
+      <a class="btn" href="/checklists/edit/new?slot=closing">Set up the closing round</a>
+    </div>
+    <p class="caption">Rounds from the old LEM come across in <a class="link" href="/settings#imports">Settings › Imports</a>, with their history.</p>
+  </section>
+  {%- else %}
+  <section class="card table-card" aria-labelledby="rounds-title">
+    <div class="tc-bar">
+      <h2 id="rounds-title">{{ rows|length }} round{{ '' if rows|length == 1 else 's' }}</h2>
+      <span class="spacer"></span>
+      {%- if archive is none %}
+      <button type="button" class="chip" id="archive-chip" aria-haspopup="dialog" data-archive-failed="1">Archived</button>
+      {%- else %}
+      <button type="button" class="chip" id="archive-chip" aria-haspopup="dialog" aria-label="Archived rounds: {{ archive.days }} day{{ '' if archive.days == 1 else 's' }} recorded">Archived ({{ archive.days }})</button>
+      {%- endif %}
+    </div>
+    <div class="tablewrap">
+    <table class="tbl rounds-tbl">
+      <thead><tr><th scope="col">Round</th><th scope="col">Slot</th><th scope="col">Due</th><th scope="col">Items</th><th scope="col">Last edited</th></tr></thead>
+      <tbody>
+      {%- for r in rows %}
+        <tr class="can" data-uid="{{ r.uid }}">
+          <td><a class="rlink" href="/checklists/edit/{{ r.uid }}">{{ r.name }}</a><span class="caption rfold">{{ slot_word(r.slot) }} · {{ ('Due ' ~ r.due) if r.due else 'No due time' }}</span></td>
+          <td>{{ slot_word(r.slot) }}</td>
+          <td>{{ r.due or 'No due time' }}</td>
+          <td>{{ r['items'] }} item{{ '' if r['items'] == 1 else 's' }}{% if r.readings %} <span class="muted">· {{ r.readings }} reading{{ '' if r.readings == 1 else 's' }}</span>{% endif %}</td>
+          <td>{%- if r.edited %}{{ r.edited.by or 'Someone' }} <span class="muted">· {{ r.edited_words }}</span>{% elif r.edits_unread %}<span class="muted">Could not be read</span>{% else %}<span class="muted">Before LEM kept edits</span>{% endif %}</td>
+        </tr>
+      {%- endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+  <p class="caption list-foot">Rounds from the old LEM come across in <a class="link" href="/settings#imports">Settings › Imports</a>.</p>
+  {%- endif %}
+  {% include "_round_archive.html" %}
+</main>
+
+{%- elif view == 'edit' %}
+{%- set work = R['items']|rejectattr('item_type', 'equalto', 'header')|list -%}
+{%- set nread = work|selectattr('entry_type', 'equalto', 'number')|list|length -%}
+<main class="content ed-page" id="main" tabindex="-1" data-testid="round-editor"
+      data-uid="{{ R.uid }}" data-new="{{ '1' if R.new else '' }}" data-round='{{ R|tojson }}'>
+  <div class="page-head">
+    <h1 id="ed-title">{{ R.name or 'New round' }}</h1>
+    <div class="meta" id="ed-meta">
+      <span id="ed-meta-slot">{{ slot_word(R.slot) }}</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="ed-meta-due">{{ ('Due ' ~ R.due_time) if R.due_time else 'No due time' }}</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span id="ed-meta-items">{{ work|length }} item{{ '' if work|length == 1 else 's' }}{% if nread %} · {{ nread }} reading{{ '' if nread == 1 else 's' }}{% endif %}</span>
+      {%- if R.new %}
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="pill" id="ed-meta-new"><span class="glyph never" aria-hidden="true"></span>Not saved yet</span>
+      {%- endif %}
+    </div>
+  </div>
+
+  {#- ── Round ───────────────────────────────────────────────────────── -#}
+  <section class="sec" id="round" aria-labelledby="round-h">
+    <div class="about"><h2 id="round-h">Round</h2>
+      <p>The name on the tablet, which round it is, and when it should be done by.</p></div>
+    <div class="body">
+      <div class="kv ed-kv">
+        <div class="k"><label for="ed-name">Name</label></div>
+        <div><input type="text" id="ed-name" class="ed-wide" value="{{ R.name }}" autocomplete="off" required></div>
+        <div class="k" id="ed-slot-label">Slot</div>
+        <div>
+          <div class="seg seg-lg" role="radiogroup" aria-labelledby="ed-slot-label" id="ed-slot">
+            {%- for s in ('opening', 'closing', 'other') %}
+            <button type="button" role="radio" data-slot="{{ s }}" aria-checked="{{ 'true' if R.slot == s else 'false' }}">{{ slot_word(s) }}</button>
+            {%- endfor %}
+          </div>
+        </div>
+        <div class="k"><label for="ed-due">Due</label></div>
+        <div>
+          <input type="text" id="ed-due" class="ed-time" value="{{ R.due_time }}" inputmode="numeric" placeholder="HH:MM" autocomplete="off" aria-describedby="ed-due-why">
+          <p class="caption" id="ed-due-why">{{ due_why }}</p>
+          <p class="errline" id="ed-due-err" role="alert" hidden></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  {#- ── Items ───────────────────────────────────────────────────────── -#}
+  <section class="sec" id="items" aria-labelledby="items-h">
+    <div class="about"><h2 id="items-h">Items</h2>
+      <p>What is ticked, read or noted, in order. Enter adds the next item. A Number can have limits, and tracking it puts it on Readings with every round that reads the same thing.</p></div>
+    <div class="body">
+      <ol class="ed-items" id="ed-items" data-testid="ed-items">
+        {%- for i in R['items'] %}
+        {{ item_row(i, loop.index, autofocus=(R.new and loop.first)) }}
+        {%- endfor %}
+      </ol>
+      <div class="ed-add-row">
+        <button type="button" class="btn btn-ghost btn-sm" id="ed-add"><span class="ico ico-plus" aria-hidden="true"></span>Add an item</button>
+      </div>
+      <div class="ed-save" id="ed-save-row">
+        <button type="button" class="btn btn-primary" id="ed-save" data-gated="save the round">Save</button>
+        <span class="ed-state" id="ed-state" role="status">{{ 'Not saved yet' if R.new else 'Saved' }}</span>
+        <p class="errline" id="ed-error" role="alert" hidden></p>
+      </div>
+      <p class="caption">Saving changes the round for every day from now on. Days already recorded keep what was ticked and read on them.</p>
+    </div>
+  </section>
+
+  {#- ── Archive ─────────────────────────────────────────────────────── -#}
+  <section class="sec" id="archive" aria-labelledby="archive-h">
+    <div class="about"><h2 id="archive-h">Archive</h2>
+      <p>Every day this round was done stays on file, with who ticked what and when.</p></div>
+    <div class="body">
+      {%- if R.new %}
+      <p class="empty-note" id="archive-new">Nothing recorded yet: this round has not been saved.</p>
+      {%- elif archive is none %}
+      <p class="warnline" id="archive-failed"><span class="glyph held" aria-hidden="true"></span>The archive could not be read. This is not an empty archive; open this page again in a moment.</p>
+      {%- else %}
+      <div class="kv">
+        <div class="k">Recorded</div>
+        <div id="archive-days">{% if archive.days %}{{ archive.days }} day{{ '' if archive.days == 1 else 's' }} · {{ archive.first_words }}{% if archive.days > 1 %} to {{ archive.last_words }}{% endif %}{% else %}No days yet. The first tick starts it.{% endif %}</div>
+      </div>
+      {%- if archive.days %}
+      <div class="row"><button type="button" class="btn btn-sm" id="archive-chip" aria-haspopup="dialog" data-round="{{ R.uid }}">Open the archive</button></div>
+      {%- endif %}
+      {%- endif %}
+      {%- if not R.new %}
+      <div class="row ed-delete-row">
+        <button type="button" class="btn btn-sm btn-ghost btn-danger" id="ed-delete" data-gated="delete the round">Delete this round…</button>
+        <span class="caption">Removes the round and its recorded days.</span>
+      </div>
+      {%- endif %}
+    </div>
+  </section>
+
+  {%- if not R.new %}
+  <dialog class="sheet" id="delete-sheet" aria-labelledby="delete-title">
+    <h2 id="delete-title">Delete {{ R.name }}?</h2>
+    <p>It goes from the tablet, and {% if archive and archive.days %}its {{ archive.days }} recorded day{{ '' if archive.days == 1 else 's' }} of ticks and readings go with it{% else %}anything recorded on it goes with it{% endif %}. This cannot be undone. To change what is on it, edit it instead.</p>
+    <p class="errline" id="delete-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" id="delete-cancel" autofocus>Keep it</button>
+      <button type="button" class="btn btn-danger" id="delete-go">Delete the round</button>
+    </div>
+  </dialog>
+  {%- endif %}
+  {% include "_round_archive.html" %}
+
+  <dialog class="sheet" id="item-sheet" aria-labelledby="item-sheet-title" data-testid="item-sheet">
+    <h2 id="item-sheet-title">Item options</h2>
+    <p id="item-sheet-label" class="item-sheet-label"></p>
+    <div class="form">
+      <div class="field"><span id="opt-type-label">This row is</span>
+        <div class="seg seg-lg" role="radiogroup" aria-labelledby="opt-type-label" id="opt-type">
+          <button type="button" role="radio" data-type="item" aria-checked="true">An item</button>
+          <button type="button" role="radio" data-type="header" aria-checked="false">A heading</button>
+          <button type="button" role="radio" data-type="subtask" aria-checked="false">A subtask</button>
+        </div>
+      </div>
+      <label class="field" id="opt-parent-row" hidden><span>Under</span>
+        <select id="opt-parent"></select>
+        <span class="caption">Ticking that item ticks this one too.</span>
+      </label>
+      <div class="field" id="opt-days-row"><span id="opt-days-label">Days</span>
+        <div class="chips" role="group" aria-labelledby="opt-days-label" id="opt-days">
+          {%- for d in ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun') %}
+          <button type="button" class="chip opt-day" data-day="{{ loop.index0 }}" aria-pressed="false">{{ d }}</button>
+          {%- endfor %}
+        </div>
+        <span class="caption">None chosen means every day.</span>
+      </div>
+    </div>
+    <p class="caption">Applied to the row now; Save keeps it.</p>
+    <div class="actions">
+      <button type="button" class="btn" id="item-sheet-cancel">Cancel</button>
+      <button type="button" class="btn" id="item-sheet-done">Apply</button>
+    </div>
+  </dialog>
+
+  <template id="ed-item-tpl">{{ item_row({'uid': '', 'text': '', 'item_type': 'item', 'entry_type': 'none', 'units': '', 'parent_uid': '', 'days_active': [], 'track_uid': '', 'min': None, 'max': None, 'track': False}, 0) }}</template>
+</main>
+
+{%- elif view == 'missing' %}
+<main class="content narrow" id="main" tabindex="-1" data-testid="round-missing">
+  <div class="page-head"><h1>No such round</h1></div>
+  <section class="card state-card">
+    <p>There is no round with the id <span class="mono">{{ uid }}</span>. It may have been deleted, or the link was copied short.</p>
+    <a class="btn" href="/checklists/edit">See all rounds</a>
+  </section>
+</main>
+
+{%- else %}
+<main class="content narrow" id="main" tabindex="-1" data-testid="round-failed">
+  <div class="page-head"><h1>This round could not be read</h1></div>
+  <section class="card state-card" role="alert">
+    <p><span class="glyph error" aria-hidden="true"></span> LEM's store did not answer, so it is not known what this round holds. Nothing was changed.</p>
+    <p class="caption">{{ failed }}</p>
+    <div class="row"><a class="btn" href="/checklists/edit/{{ uid }}">Try again</a><a class="btn btn-ghost" href="/checklists/edit">All rounds</a></div>
+  </section>
+</main>
+{%- endif %}
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<script src="/static/js/round_archive.js?v={{ v('js/round_archive.js') }}"></script>
+{%- if view == 'edit' %}
+<script src="/static/js/round_edit.js?v={{ v('js/round_edit.js') }}"></script>
+{%- endif %}
+{% endblock %}
