@@ -420,3 +420,66 @@ def build() -> SimLab:
             lab.poll(uid, [line], [GENUINE])
         lab.poll(uid, s[-2:] + fresh(47, 22), [truth] * 2 + [GENUINE] * 22)
     return lab
+
+
+def file_bench(seed: int) -> SimLab:
+    """One random single_csv bench, the round-5 critic's harness
+    (`bigfuzz.py`), kept here so the suite runs what the critic ran.
+
+    The bench keeps a FILE: each day appends 5-40 lines — new samples
+    (values at a resolution of 3, 10 or 1000 steps, so identical numbers
+    are common), the AF26 check and the Blank, and re-tests of 1-4 earlier
+    lines (a consecutive block or a scattered pick) that read exactly what
+    they read before. Then it logs the day live (a poll per line), catches
+    up (the day in one poll), or restarts and re-reads the file from a
+    stale offset 5-60 lines back: those lines are copies (`DUP`), the rest
+    of the poll is the day's new work (`GENUINE`)."""
+    import random
+    rnd = random.Random(seed)
+    lab = SimLab()
+    uid = "u"
+    res = rnd.choice([3, 10, 1000])
+
+    def val():
+        return {"S": str(rnd.randint(1, res)) if res < 1000
+                else "%.2f" % rnd.uniform(100, 400)}
+    stds = [SimLab.qc_line("AF26", "S", 2.0),
+            SimLab.run_line("Blank", {"S": "0"})]
+    file: List[tuple] = []
+    nxt = [40000]
+
+    def newline():
+        line = SimLab.run_line(str(nxt[0]), val())
+        nxt[0] += 1
+        return line
+    logged = 0
+    for _day in range(rnd.randint(2, 6)):
+        today: List[tuple] = []
+        for _ in range(rnd.randint(5, 40)):
+            r = rnd.random()
+            if r < 0.1:
+                today.append(rnd.choice(stds))
+            elif r < 0.2 and file:
+                k = rnd.randint(1, 4)
+                if rnd.random() < 0.5:
+                    j = rnd.randint(0, max(0, len(file) - k))
+                    today.extend(file[j:j + k])
+                else:
+                    today.extend(rnd.sample(file, min(k, len(file))))
+            else:
+                today.append(newline())
+        file.extend(today)
+        mode = rnd.choice(["live", "catchup", "restart"])
+        if mode == "live":
+            for line in today:
+                lab.poll(uid, [line], [GENUINE])
+        elif mode == "catchup":
+            lab.poll(uid, today, [GENUINE] * len(today))
+        else:
+            stale = rnd.randint(max(0, logged - rnd.randint(5, 60)), logged)
+            if logged - stale < 5:
+                stale = max(0, logged - 5)
+            lab.poll(uid, file[stale:], [DUP] * (logged - stale)
+                     + [GENUINE] * (len(file) - logged))
+        logged = len(file)
+    return lab

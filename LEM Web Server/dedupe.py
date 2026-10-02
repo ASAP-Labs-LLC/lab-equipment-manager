@@ -69,9 +69,17 @@ import's provenance (`imported`, `source_file`) taken out of `detail`.
   it re-tests one, two, a handful of samples, which, reading the same,
   write exactly the rows a short re-read writes. The record cannot tell
   those apart, so below five samples a repeat is LISTED, never proposed.
-  The residual, stated: five or more samples re-tested in their first
-  order, every value identical, in one poll, are proposed — for Ryan to
-  look at beside their originals before anything hides.
+  A run of twins counts only if ONE stretch of the record carries it, row
+  by row (`_reread_runs`), and five samples prove it only where a restart
+  puts its re-read: at the head of the poll, running to the record's end
+  (or carrying on, a few rows later, from a re-read the poll already
+  proved). Anywhere else — in the middle of new work, or at the head but
+  stopping short — it takes MID_POLL_SAMPLES (9): two re-tests of four
+  samples back to back write eight such rows. The residual, stated: nine
+  or more samples re-tested in their first order mid-poll, or five or
+  more re-tested at the head up to the record's last row, every value
+  identical, are proposed — for Ryan to look at beside their originals
+  before anything hides.
 * `probable_duplicate` — a twin that is NOT in such a poll or stretch: a
   genuine identical re-test or a QC repeat looks exactly like this. Always
   visible; listed for review.
@@ -129,6 +137,25 @@ MIN_COPY_SAMPLES = 5
 #: hid genuine rows on 17 benches (all the stated residuals), 2 on more,
 #: 5 on 20 of 2,000; on the mirror 1 also proposes the most (63,708).
 REREAD_GAP = 1
+#: The floor away from where a restart puts its re-read (round-5 critic's
+#: fuzz: genuine re-tests of 5-6 samples hidden on 17 of 4,000 benches,
+#: every one of them in the middle of a poll, or at its head but short of
+#: the record's end). The fuzz re-tests up to four samples at a time, and
+#: two re-tests back to back can line up as one stretch of eight; nine
+#: cannot be written that way. On the server's mirror copy of 2026-10-02
+#: it, with `_touches_end` and alignment-held runs, moves 286 hide
+#: candidates to review and lets 30 join (63,708 -> 63,452): 243 of the
+#: 286 on the Agilent's 08-18 storm day, which is its own approval unit;
+#: since 09-01 only Agilent GC 2 moves (390 -> 395).
+MID_POLL_SAMPLES = 9
+#: How far on (in record rows, the same way round) a run may pick up from
+#: the poll's last proven run and still be the same re-read. Agilent GC 2's
+#: 09-18 10:58 poll reads its newest-first file in stretches that resume
+#: up to 7 rows on, past results re-processed in between. (That poll's
+#: first stretch starts one row short of the record's end, so on the
+#: mirror its 30 twins are LISTED, not proposed; their 09-23 copies are
+#: proposed instead.)
+CONTINUE_ROWS = 10
 #: How far back inside one poll a re-sent block is looked for. The module
 #: sends at most 100 rows per INSERT; the import's re-inserted batches were
 #: 100 rows. Generous, and bounded so a 12,000-row first ingest stays linear.
@@ -473,86 +500,161 @@ def _is_sample(row: LogRow) -> bool:
     return row.kind == "run" and is_sample_id(row.lab_id)
 
 
+class _Order:
+    """Where every reading sat in the bench's record so far: for each
+    reading (a small int key), the record stretches its earlier copies
+    occupy — `[r0, r1, s0, s1]`, rows r0..r1, and, for a SAMPLE, sample
+    positions s0..s1 (counting sample rows only; None for a standard or a
+    blank). Copies of one reading in consecutive rows are ONE stretch: the
+    file held it so many times running (a result printed twice, a block
+    re-sent), and a re-read of that place may copy any number of them.
+    Every classified row of every poll joins it, copies included: a file
+    re-read twice is copied in the same order both times."""
+
+    __slots__ = ("at", "rows", "samples")
+
+    def __init__(self) -> None:
+        self.at: Dict[int, List[List[Optional[int]]]] = (
+            collections.defaultdict(list))
+        self.rows = 0
+        self.samples = 0
+
+    def remember(self, poll: List[LogRow], keys: List[int]) -> None:
+        for k, key in enumerate(keys):
+            sp = None
+            if _is_sample(poll[k]):
+                sp = self.samples
+                self.samples += 1
+            spans = self.at[key]
+            if spans and spans[-1][1] == self.rows - 1:
+                spans[-1][1] = self.rows
+                if sp is not None:
+                    spans[-1][3] = sp
+            else:
+                spans.append([self.rows, self.rows, sp, sp])
+            self.rows += 1
+
+
+#: One alignment of a run: the record row its last row is a copy of (p),
+#: inside the stretch of that reading's copies (r0..r1); the sample
+#: positions its last SAMPLE's stretch spans (s0..s1, or None before the
+#: run has a sample); and which way the run reads the record (1 forwards,
+#: -1 backwards, 0 not known yet).
+_Align = Tuple[int, int, int, Optional[int], Optional[int], int]
+
+
 def _reread_runs(poll: List[LogRow], twins: List[int], keys: List[int],
-                 near: set) -> List[List[int]]:
+                 order: _Order, bounds: Optional[list] = None
+                 ) -> List[List[int]]:
     """Split twins (positions in a poll, in its order) into runs that copy
-    the record's own order, which is what a re-read of the file reproduces
-    and what a re-test printed after it does not. A twin continues the run
-    before it when, somewhere in the bench's earlier record, it came right
-    after it (or, for a run read backwards — a file kept newest-first —
-    right before it, the same way all along the run):
+    ONE stretch of the record, which is what a re-read of the file
+    reproduces and what a re-test printed after it does not.
 
-    * a SAMPLE, right after the run's last sample, counting samples only
-      (`("s", a, b)` in `near`; REREAD_GAP samples apart at most), so a
-      standard between them neither helps nor hurts;
-    * a standard or a blank, in the very next row after the row before it
-      (`("r", a, b)`).
+    A run carries its alignments (`_Align`): where in the record its last
+    row could be a copy of, and which way it reads (forwards, or backwards
+    for a file kept newest-first). A twin continues the run when one of its
+    own earlier copies sits at the NEXT place of one of those alignments:
 
-    A standard can therefore never carry a run across to a sample: the
-    Blank that ended a re-read sat before half the samples in the record.
+    * a SAMPLE, at the next sample position after the run's last sample
+      (REREAD_GAP samples on, counting samples only), so a standard
+      between them in the record neither helps nor hurts;
+    * a standard or a blank, in the very next row after the row before it;
+    * the same reading again, where the record holds it more than once
+      running.
+
+    Alignments, not "which readings ever sat side by side" (rounds 3-5):
+    a re-test of 40010-40013 followed by a re-test of 40100-40103 was one
+    run of eight because ANOTHER copy of 40013 once came right before
+    40100 (round-5 fuzz, seed 3371); and a re-read that ended on the
+    record's last Blank ran on into the new day's Blank because the file
+    once held Blank, Blank (seeds 268, 1284). Neither is one stretch of
+    the record. A standard still cannot carry a run across to a sample.
     """
     runs: List[List[int]] = []
     cur: List[int] = []
-    way = 0
-    last = None                       # the run's last sample (a key)
+    align: set = set()
+    first: set = set()
 
-    def link(a, b, kind):
-        nonlocal way
-        if (kind, a, b) in near and way >= 0:
-            way = 1
-            return True
-        if (kind, b, a) in near and way <= 0:
-            way = -1
-            return True
-        return False
+    def start(k: int) -> set:
+        return {(r0, r0, r1, q0, q1, 0)
+                for r0, r1, q0, q1 in order.at.get(keys[k], ())}
+
+    def step(k: int) -> set:
+        sample = _is_sample(poll[k])
+        spans = order.at.get(keys[k], ())
+        if keys[k] == keys[cur[-1]]:
+            # the same reading again: only as often as the record held it
+            # running, one row on inside that stretch
+            out = set()
+            for p, r0, r1, q0, q1, way in align:
+                for d in ((1, -1) if way == 0 else (way,)):
+                    if r0 <= p + d <= r1:
+                        out.add((p + d, r0, r1, q0, q1, d))
+            return out
+        r_from = {sp[0]: sp for sp in spans}
+        r_to = {sp[1]: sp for sp in spans}
+        s_from = {sp[2]: sp for sp in spans if sp[2] is not None}
+        s_to = {sp[3]: sp for sp in spans if sp[3] is not None}
+        out = set()
+        for _p, r0, r1, q0, q1, way in align:
+            for d in ((1, -1) if way == 0 else (way,)):
+                if sample and q0 is not None:
+                    hit = (s_from.get(q1 + REREAD_GAP) if d > 0
+                           else s_to.get(q0 - REREAD_GAP))
+                else:
+                    hit = r_from.get(r1 + 1) if d > 0 else r_to.get(r0 - 1)
+                if hit is not None:
+                    enter = hit[0] if d > 0 else hit[1]
+                    if sample:
+                        out.add((enter, hit[0], hit[1], hit[2], hit[3], d))
+                    else:
+                        out.add((enter, hit[0], hit[1], q0, q1, d))
+        return out
 
     for k in twins:
-        sample = _is_sample(poll[k])
-        if cur:
-            if sample and last is not None:
-                ok = link(last, keys[k], "s")
-            elif sample:
-                ok = link(keys[cur[-1]], keys[k], "r")
-            else:
-                ok = link(keys[cur[-1]], keys[k], "r")
-            if not ok:
+        nxt = step(k) if cur else set()
+        if not nxt:
+            if cur:
                 runs.append(cur)
-                cur, way, last = [], 0, None
+                if bounds is not None:
+                    bounds.append((first, align))
+            cur = []
+            nxt = first = start(k)
         cur.append(k)
-        if sample:
-            last = keys[k]
+        align = nxt
     if cur:
         runs.append(cur)
+        if bounds is not None:
+            bounds.append((first, align))
     return runs
 
 
-def _remember_order(poll: List[LogRow], keys: List[int], near: set,
-                    recent: "collections.deque", prev: List[Optional[int]]
-                    ) -> None:
-    """Add a poll's order to the record's: each sample after each of the
-    REREAD_GAP samples before it (`("s", earlier, later)`), and each row
-    after the row before it (`("r", earlier, later)`)."""
-    for k, key in enumerate(keys):
-        if prev[0] is not None:
-            near.add(("r", prev[0], key))
-        prev[0] = key
-        if not _is_sample(poll[k]):
-            continue
-        for other in recent:
-            near.add(("s", other, key))
-        recent.append(key)
+def _continues(end: set, start: set) -> bool:
+    """True when a run that starts at `start` picks up, a few rows on and
+    the same way round, where a proven run of the same poll ended (`end`):
+    one re-read of the file, broken by rows the record does not hold (a
+    re-processed result) or holds elsewhere."""
+    for _p, r0, r1, _q0, _q1, way in end:
+        for _s, s0, s1, _p0, _p1, _w in start:
+            if way > 0 and 1 <= s0 - r1 <= CONTINUE_ROWS:
+                return True
+            if way < 0 and 1 <= r0 - s1 <= CONTINUE_ROWS:
+                return True
+    return False
 
 
-def _proven(poll: List[LogRow], run: List[int]) -> bool:
+def _proven(poll: List[LogRow], run: List[int],
+            floor: int = MIN_COPY_SAMPLES) -> bool:
     """A run of copies carries what a re-test of a few samples cannot:
-    MIN_COPY_SAMPLES sample readings, over two or more samples."""
+    `floor` (MIN_COPY_SAMPLES) sample readings, over two or more samples."""
     return (len(_samples(poll[j] for j in run)) >= 2
-            and _sample_rows(poll[j] for j in run) >= MIN_COPY_SAMPLES)
+            and _sample_rows(poll[j] for j in run) >= floor)
 
 
 def _replayed_stretches(poll: List[LogRow], rest: List[int],
                         twin_of: Dict[int, int], seen: set,
-                        keys: List[int], near: set) -> Tuple[set, set]:
+                        keys: List[int], order: _Order,
+                        unanchored: set) -> Tuple[set, set]:
     """The twins of a big poll that a re-read put there (positions in
     `poll`), for a poll that is NOT mostly twins; and, apart, the twins
     that sit in a run too short to prove it.
@@ -577,18 +679,64 @@ def _replayed_stretches(poll: List[LogRow], rest: List[int],
     out: set = set()
     short: set = set()
     run: List[int] = []
+    head = True                 # nothing the record lacks came before
+    ended: Optional[set] = None  # where the poll's last proven run ended
     for k in rest + [-1]:                  # -1 closes the last run
         if k >= 0 and k in seen:
             run.append(k)
             continue
         twins = [j for j in run if j in twin_of]
-        for part in _reread_runs(poll, twins, keys, near):
-            if _proven(poll, part):
-                out.update(part)
-            elif len(run) >= 2:
-                short.update(part)
+        proven, ended, parts = _prove_runs(poll, twins, keys, order, head,
+                                           ended, unanchored)
+        out.update(proven)
+        if len(run) >= 2:
+            for part in parts:
+                if part[0] not in proven:
+                    short.update(part)
         run = []
+        head = False
     return out, short
+
+
+def _touches_end(order: _Order, start: set, end: set) -> bool:
+    """True when a run reaches the record's last row: read forwards it ends
+    there, read backwards (a newest-first file) it starts there. A stale
+    offset re-reads from the offset to the END of the file, so a restart's
+    re-read does; a re-test of a few old samples at the head of a poll
+    generally does not."""
+    rows = order.rows - 1
+    return (any(a[2] == rows and a[5] >= 0 for a in end)
+            or any(a[2] == rows for a in start)
+            and any(a[5] < 0 for a in end))
+
+
+def _prove_runs(poll: List[LogRow], twins: List[int], keys: List[int],
+                order: _Order, head: bool, ended: Optional[set],
+                unanchored: set) -> Tuple[set, Optional[set], List[List[int]]]:
+    """The runs of `twins` that prove a re-read (positions in `poll`); where
+    the last proven one ended; and every run. A run proves itself with
+    MIN_COPY_SAMPLES sample twins where a restart puts its re-read — at the
+    head of the poll (`head`, and only the first run) AND running to the
+    record's end (a stale offset re-reads to the end of the file; read
+    backwards, from it) — or where it carries on from a re-read this poll
+    already proved (`_continues`). Anywhere else it needs MID_POLL_SAMPLES:
+    a re-test of a few samples, and two of them back to back, write the
+    same rows as a short re-read, and print in the middle of new work.
+    Runs that would have proved themselves at the head but are not there
+    go into `unanchored`, so the listing can say why."""
+    bounds: list = []
+    parts = _reread_runs(poll, twins, keys, order, bounds)
+    out: set = set()
+    for n, (part, (start, end)) in enumerate(zip(parts, bounds)):
+        at_head = head and n == 0 and _touches_end(order, start, end)
+        anchored = at_head or (ended is not None and _continues(ended, start))
+        if _proven(poll, part, MIN_COPY_SAMPLES if anchored
+                   else MID_POLL_SAMPLES):
+            out.update(part)
+            ended = end
+        elif _proven(poll, part):
+            unanchored.update(part)
+    return out, ended, parts
 
 
 def _storm_days(polls: Sequence[PollStat]) -> List[str]:
@@ -630,9 +778,7 @@ def classify(rows: Iterable[LogRow],
         # readings as small ints, and every pair of SAMPLE readings that
         # sat within REREAD_GAP samples of each other in the record so far
         key_of: Dict[Tuple[str, ...], int] = {}
-        near: set = set()
-        recent: collections.deque = collections.deque(maxlen=REREAD_GAP)
-        prev: List[Optional[int]] = [None]
+        order = _Order()
         polls_seen: List[PollStat] = []
         # the newest row so far per (kind, lab_id): imported or not
         last_lab: Dict[Tuple[str, str], bool] = {}
@@ -675,15 +821,13 @@ def classify(rows: Iterable[LogRow],
             standards_only = len(_samples(poll[k] for k in twin_of)) < 2
             short: set = set()
             copied: set = set()
+            unanchored: set = set()
             if majority:
-                for part in _reread_runs(poll,
-                                         [k for k in rest if k in twin_of],
-                                         keys, near):
-                    if _proven(poll, part):
-                        copied.update(part)
+                copied = _prove_runs(poll, [k for k in rest if k in twin_of],
+                                     keys, order, True, None, unanchored)[0]
             elif n >= BURST_ROWS:
                 copied, short = _replayed_stretches(poll, rest, twin_of, seen,
-                                                    keys, near)
+                                                    keys, order, unanchored)
             rule = "burst" if n >= BURST_ROWS else "majority"
 
             def put(k, label, why, dup_of):
@@ -705,7 +849,8 @@ def classify(rows: Iterable[LogRow],
                         in_poll.setdefault(f, r.id)
                         continue
                     put(k, "probable_duplicate",
-                        "fewer_than_two_samples"
+                        "mid_poll_stretch" if k in unanchored
+                        else "fewer_than_two_samples"
                         if majority and standards_only
                         else "fewer_than_five_samples" if majority
                         else "short_stretch" if k in short
@@ -721,7 +866,7 @@ def classify(rows: Iterable[LogRow],
                 in_poll.setdefault(f, r.id)
                 kept[f].append(r.id)
             # only now does this poll's order join the record's
-            _remember_order(poll, keys, near, recent, prev)
+            order.remember(poll, keys)
             for k in range(n):
                 r = poll[k]
                 if (r.lab_id in MISREAD_LAB_IDS and r.is_imported()
@@ -1024,8 +1169,32 @@ def prediction_check(result: Classification,
                      key=lambda r: (r.ts, r.id))
         loose = len(runs) - len(new)
         nstep = max(1, len(new) // EXAMPLES_PER_BENCH)
+        # G1's burst rows that copy nothing, poll by poll, and what they
+        # are: the evidence the band's revision (D7) rests on
+        bench_rows = by_machine.get(uid, ())
+        oldest = min((r.ts for r in bench_rows), default="")
+        lab_since: Dict[str, str] = {}
+        for r in bench_rows:
+            if r.lab_id not in lab_since or r.ts < lab_since[r.lab_id]:
+                lab_since[r.lab_id] = r.ts
+        polls: Dict[str, Dict[str, Any]] = {}
+        for r in burst:
+            if r.id in has_earlier:
+                continue
+            p = polls.setdefault(r.ts, {
+                "ts": r.ts, "rows": per_poll[r.ts], "first_copies": 0,
+                "new_lab_id": 0, "re_processed": 0,
+                "first_poll": r.ts == oldest})
+            p["first_copies"] += 1
+            # a Lab ID no earlier poll of the bench carried, or one it did
+            # (the sample's result again, with new numbers)
+            p["new_lab_id" if lab_since[r.lab_id] == r.ts
+              else "re_processed"] += 1
+        first_copy_polls = sorted(polls.values(),
+                                  key=lambda p: (-p["first_copies"], p["ts"]))
         benches.append({
             "machine_uid": uid, "name": want.get("name", uid),
+            "first_copy_polls": first_copy_polls,
             "since": since, "predicted": predicted, "band": [lo, hi],
             "burst_rows_measured": len(burst),
             "burst_rows_accounted": accounted(burst),
@@ -1678,6 +1847,33 @@ def o9_lines(pred: Dict[str, Any]) -> List[str]:
                 if not b["reachable_by_any_definition"] else
                 "reached only by also hiding re-tests and re-processed "
                 "results" if not b["reachable"] else "reachable"))
+    for b in pred["benches"]:
+        polls = b.get("first_copy_polls") or []
+        if b["within_band"] or not polls:
+            continue
+        firsts = sum(p["first_copies"] for p in polls)
+        shown = []
+        for p in polls[:6]:
+            what = ("first ingest: {0:,} rows of new Lab IDs".format(
+                p["new_lab_id"])
+                    if p["first_poll"] else ", ".join(
+                        x for x in (
+                            "{0:,} rows of new Lab IDs".format(
+                                p["new_lab_id"])
+                            if p["new_lab_id"] else "",
+                            "{0:,} re-processed".format(p["re_processed"])
+                            if p["re_processed"] else "") if x))
+            shown.append("{0} {1} {2:,} of {3:,} ({4})".format(
+                p["ts"][5:10], p["ts"][11:16], p["first_copies"], p["rows"],
+                what))
+        more = len(polls) - len(shown)
+        out.append(
+            "  WHY G1 IS HIGH FOR {0}: {1:,} of G1's {2:,} burst rows are the "
+            "first copy of their reading (no identical earlier row): {3}{4}."
+            .format(b["name"], firsts,
+                    b["burst_rows_measured"], "; ".join(shown),
+                    "; and {0} more poll{1}".format(more, "s" * (more > 1))
+                    if more else ""))
     for b in pred["benches"]:
         out.append(
             "  since {0} {1:<13} G1 {2:>6,} band {3:,.0f}-{4:,.0f}  "

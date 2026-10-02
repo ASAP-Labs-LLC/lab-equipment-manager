@@ -640,20 +640,98 @@ class TestARetestOfAFewSamplesIsNotACopy:
         assert self._hidden(got, ids) == []
 
     def test_five_samples_in_a_row_are_the_evidence_floor(self):
-        """The edge, both sides: four sample twins in a row are a re-test
-        as far as anyone can tell; five are a re-read."""
+        """The edge, both sides, where a restart puts its re-read: at the
+        HEAD of the poll (it reads from its stale offset first, then the
+        new lines), running to the END of what the record holds (a stale
+        offset re-reads to the end of the file). Four sample twins there
+        are a re-test as far as anyone can tell; five are a re-read."""
         lab = SimLab()
-        s = self._first(lab, "five", lambda k: {"S": "%d.%d" % (k, k)})
-        ids4 = lab.poll("five", self._new(10) + s[10:14] + self._new(10, 42),
-                        [GENUINE] * 24)
-        ids5 = lab.poll("five", self._new(10, 43) + s[20:25]
-                        + self._new(10, 44), [GENUINE] * 10 + [DUP] * 5
+        out = {}
+        for uid, n in (("four", 4), ("five", 5)):
+            s = self._first(lab, uid, lambda k: {"S": "%d.%d" % (k, k)})
+            out[uid] = lab.poll(uid, s[30 - n:] + self._new(20, 42),
+                                [DUP] * n + [GENUINE] * 20)
+        got = self._cls(lab).candidates
+        assert self._hidden(got, out["four"]) == []
+        assert [got[i].label for i in out["four"][:4]] == [
+            "probable_duplicate"] * 4
+        assert [(got[i].label, got[i].rule) for i in out["five"][:5]] == [
+            ("replay_duplicate", "burst")] * 5
+        assert self._hidden(got, out["five"][5:]) == []
+
+    def test_retests_at_the_head_that_stop_short_of_the_end(self):
+        """Out-of-sample fuzz, seed 14250: a catch-up poll that opens with
+        two re-tests back to back — 40010-40012, then 40012-40014 — five
+        sample twins at the head, in the record's order. But the record
+        went on past 40014; a restart re-reading from a stale offset would
+        have gone on with it, to the end. Stopping short, at the head, it
+        is held to the mid-poll floor (MID_POLL_SAMPLES) and listed."""
+        lab = SimLab()
+        s = self._first(lab, "short", lambda k: {"S": "%d.%d" % (k, k)})
+        ids = lab.poll("short", s[10:13] + s[12:15] + self._new(20),
+                       [GENUINE] * 26)
+        got = self._cls(lab).candidates
+        assert self._hidden(got, ids) == []
+        assert {got[i].label for i in ids[:6]} == {"probable_duplicate"}
+        assert {got[i].rule for i in ids[:6] if got[i].rule != "repeat_in_poll"
+                } == {"mid_poll_stretch"}
+
+    @pytest.mark.parametrize("seed_shape", ["contiguous", "two_blocks"])
+    def test_five_samples_in_the_middle_of_new_work_are_not_enough(
+            self, seed_shape):
+        """Round-5 critic's fuzz, seeds 456, 2456, 3919: an analyst
+        re-tests four consecutive samples and then the next one or two,
+        mid catch-up, every value the same. That is five or six sample
+        twins in the record's order — the round-4 floor called it a
+        re-read and hid six genuine readings.
+
+        A restart's re-read is not printed among new lines; it comes first.
+        In the middle of a poll of new work, a stretch has to carry more
+        than two re-tests of four samples back to back can: MID_POLL_SAMPLES
+        (9). Or it has to carry on, a few rows later and the same way
+        round, from a re-read the poll already proved (the next test)."""
+        lab = SimLab()
+        s = self._first(lab, "mid", lambda k: {"S": "%d.%d" % (k, k)})
+        again = (s[10:15] if seed_shape == "contiguous"
+                 else s[10:14] + s[14:16])
+        ids = lab.poll("mid", self._new(10, 43) + again + self._new(10, 44),
+                       [GENUINE] * (20 + len(again)))
+        nine = lab.poll("mid", self._new(10, 45) + s[20:29]
+                        + self._new(10, 46), [GENUINE] * 10 + [DUP] * 9
                         + [GENUINE] * 10)
         got = self._cls(lab).candidates
-        assert self._hidden(got, ids4) == []
-        assert [(got[i].label, got[i].rule) for i in ids5[10:15]] == [
-            ("replay_duplicate", "burst")] * 5
-        assert self._hidden(got, ids5[:10] + ids5[15:]) == []
+        assert self._hidden(got, ids) == []
+        assert {got[i].label for i in ids[10:10 + len(again)]} == {
+            "probable_duplicate"}
+        assert [got[i].label for i in nine[10:19]] == [
+            "replay_duplicate"] * 9
+        assert self._hidden(got, nine[:10] + nine[19:]) == []
+
+    def test_a_re_read_broken_by_re_processed_rows_stays_one_re_read(self):
+        """The other side of the mid-poll floor, modelled on Agilent GC 2's
+        09-18 10:58 poll: a file kept newest-first is re-read whole (from
+        the record's last row, backwards), but two of its
+        results were re-processed since the record took them (new numbers,
+        so no twin) and sit between the copies. The stretches after them
+        hold five samples each; each picks up, a row or two on and the
+        same way round, where the proven stretch before it ended. One
+        re-read: all of it is proposed; the re-processed rows stay."""
+        lab = SimLab()
+        s = [SimLab.run_line("40%03d" % k, {"S": "%d.%d" % (k, k)})
+             for k in range(20)]
+        lab.poll("np", s, [GENUINE] * 20)
+        for _ in range(5):
+            lab.noise()
+        back = s[::-1]
+        redo = [SimLab.run_line("40%03d" % k, {"S": "9%d.0" % k})
+                for k in (14, 8)]
+        lines = back[:5] + [redo[0]] + back[6:11] + [redo[1]] + back[12:]
+        truth = [DUP] * 5 + [GENUINE] + [DUP] * 5 + [GENUINE] + [DUP] * 8
+        ids = lab.poll("np", lines + self._new(10), truth + [GENUINE] * 10)
+        got = self._cls(lab).candidates
+        dup = [i for i, t in zip(ids, truth) if t == DUP]
+        assert {got[i].label for i in dup} == {"replay_duplicate"}
+        assert self._hidden(got, [ids[5], ids[11]] + ids[20:]) == []
 
     @pytest.mark.parametrize("how_many", [2, 4])
     def test_samples_retested_straight_after_in_the_same_poll(self,
@@ -713,21 +791,21 @@ class TestARetestOfAFewSamplesIsNotACopy:
         assert [got[i].rule for i in ids[5:9]] == ["short_stretch"] * 4
 
     def test_a_standard_does_not_carry_a_re_read_into_a_retest(self):
-        """A re-read that ends on the AF26 check, then a re-test of three
-        samples that, in the record, came right after ANOTHER AF26 check.
-        The AF26 sits next to half the record; it may end the re-read, but
-        it cannot link the re-read to the samples after it. (Had the three
-        come right after the re-read's own last sample, they would be what
-        a longer re-read writes, and nothing could tell them apart.)"""
+        """A re-read that ends on the AF26 check (the record's last row),
+        then a re-test of three samples that, in the record, came right
+        after ANOTHER AF26 check. The AF26 sits next to half the record; it
+        may end the re-read, but it cannot link the re-read to the samples
+        after it. (Had the three come right after the re-read's own last
+        row, they would be what a longer re-read writes, and nothing could
+        tell them apart.)"""
         lab = SimLab()
         af = SimLab.qc_line("AF26", "S", 2.0)
         s = [SimLab.run_line("40%03d" % k, {"S": "%d" % (k % 3)})
-             for k in range(30)]
-        lab.poll("sb", s[:10] + [af] + s[10:20] + [af] + s[20:],
-                 [GENUINE] * 32)
+             for k in range(20)]
+        lab.poll("sb", s[:10] + [af] + s[10:20] + [af], [GENUINE] * 22)
         for _ in range(5):
             lab.noise()
-        ids = lab.poll("sb", s[3:10] + [af] + s[20:23] + self._new(20),
+        ids = lab.poll("sb", s[13:20] + [af] + s[10:13] + self._new(20),
                        [DUP] * 8 + [GENUINE] * 23)
         got = self._cls(lab).candidates
         assert {got[i].label for i in ids[:8]} == {"replay_duplicate"}
@@ -755,10 +833,12 @@ class TestARetestOfAFewSamplesIsNotACopy:
     def test_a_run_keeps_one_direction(self, backwards):
         """A newest-first file is re-read backwards, an oldest-first one
         forwards; a run does not turn round. 40006 was re-tested once
-        already, so the record holds it twice. The re-read below copies
-        40005-40009 (one way or the other) and then the analyst re-tests
-        40006 again: the only link from the re-read's last sample to it
-        runs the OTHER way, so it is a run of one, and listed."""
+        already, so the record ends ..., 40011, 40006. The re-read below
+        copies the record's last five rows, from the end backwards or up
+        to it forwards; then the analyst re-tests a sample that sits right
+        next to the re-read's last copy — but on the side it came FROM.
+        The only link runs the other way, so it is a run of one, and
+        listed."""
         lab = SimLab()
         s = [SimLab.run_line("40%03d" % k, {"S": "%d" % (k % 3)})
              for k in range(12)]
@@ -767,14 +847,33 @@ class TestARetestOfAFewSamplesIsNotACopy:
         for _ in range(5):
             lab.noise()
         if backwards:
-            reread, retest = s[9:4:-1], [s[6]]      # 9..5, then 5 -> 6
+            reread, retest = [s[6], s[11], s[10], s[9], s[8]], [s[9]]
         else:
-            reread, retest = s[3:8], [s[6]]         # 3..7, then 7 -> 6
+            reread, retest = s[8:12] + [s[6]], [s[11]]
         ids = lab.poll("dw", reread + retest + self._new(20),
                        [DUP] * 5 + [GENUINE] * 21)
         got = self._cls(lab).candidates
         assert {got[i].label for i in ids[:5]} == {"replay_duplicate"}
         assert self._hidden(got, ids[5:]) == []
+        assert got[ids[5]].label == "probable_duplicate"
+
+    def test_five_retests_behind_a_whole_poll_re_read(self):
+        """Out-of-sample fuzz, seed 18615, on the MAJORITY path: a restart
+        re-reads the last twenty lines (to the end of the record), one new
+        sample follows, and then a re-test of 40002-40006, in order, every
+        value the same. 96 % of the poll is twins, so the poll is a re-read
+        — but the five re-tests neither start it nor carry on from where
+        its re-read ended (40029, the record's end; 40002 sits 27 rows
+        back). Same floor as anywhere mid-poll: listed, not proposed."""
+        lab = SimLab()
+        s = self._first(lab, "mj", lambda k: {"S": "%d.%d" % (k, k)})
+        ids = lab.poll("mj", s[10:30] + self._new(1) + s[2:7],
+                       [DUP] * 20 + [GENUINE] * 6)
+        got = self._cls(lab).candidates
+        assert {got[i].label for i in ids[:20]} == {"replay_duplicate"}
+        assert self._hidden(got, ids[20:]) == []
+        assert {got[i].label for i in ids[21:]} == {"probable_duplicate"}
+        assert {got[i].rule for i in ids[21:]} == {"mid_poll_stretch"}
 
     def test_a_retest_inside_a_whole_poll_re_read_is_not_part_of_it(self):
         """The majority path, same reasoning: a re-read of twenty samples
@@ -791,6 +890,58 @@ class TestARetestOfAFewSamplesIsNotACopy:
         assert self._hidden(got, ids[20:]) == []
         assert [got[i].label for i in ids[20:22]] == [
             "probable_duplicate"] * 2
+
+    def test_two_retests_are_not_joined_through_another_copy(self):
+        """Round-5 critic's fuzz, seed 3371. Day one is logged live,
+        40000-40015. A catch-up poll then prints 40013 again (a re-test)
+        and right behind it the new 40100. The next catch-up re-tests
+        40010-40013 and, straight after, 40100-40103: two re-tests of four
+        samples each, every value the same, all genuine.
+
+        Joined by WHICH READINGS ever sat next to each other, they were one
+        run of eight: 40013 did once come right before 40100 — but that was
+        the re-test's copy of 40013, not the 40013 the first four were
+        aligned on. A re-read copies one stretch of the file, so a run is
+        a copy only if ONE alignment carries it all the way: 40010-40013
+        sit at record positions 10-13, and 40100 sits after position 16's
+        re-test, never after 13. Two runs of four; neither proves a copy;
+        all eight stay visible and are listed."""
+        lab = SimLab()
+        day1 = [SimLab.run_line("40%03d" % k, {"S": "%d.%d" % (k, k)})
+                for k in range(16)]
+        for line in day1:
+            lab.poll("al", [line], [GENUINE])
+        news = [SimLab.run_line("40%03d" % (100 + k), {"S": "9.%d" % k})
+                for k in range(4)]
+        lab.poll("al", self._new(10, 42) + [day1[13]] + news
+                 + self._new(12, 43), [GENUINE] * 27)
+        ids = lab.poll("al", self._new(9, 44) + day1[10:14] + news
+                       + self._new(12, 45), [GENUINE] * 29)
+        got = self._cls(lab).candidates
+        assert self._hidden(got, ids) == []
+        assert [got[i].label for i in ids[9:17]] == [
+            "probable_duplicate"] * 8
+
+    def test_a_re_read_ends_where_the_record_ended(self):
+        """Round-5 critic's fuzz, seeds 268 and 1284. A restart re-reads
+        the last five samples and the Blank the record ended on; the new
+        day then opens with its own Blank, identical. The file once held
+        Blank, Blank (the instrument ran it twice), so "a Blank has come
+        right after a Blank" is true of the record — but not of the
+        stretch being copied: the re-read's Blank IS the record's last
+        row, and nothing comes after it yet. The new Blank stays visible."""
+        lab = SimLab()
+        b = SimLab.run_line("Blank", {"S": "0"})
+        s = [SimLab.run_line("40%03d" % k, {"S": "%d.%d" % (k, k)})
+             for k in range(20)]
+        lab.poll("end", s[:4] + [b, b] + s[4:] + [b], [GENUINE] * 23)
+        for _ in range(5):
+            lab.noise()
+        ids = lab.poll("end", s[15:] + [b] + [b] + self._new(20),
+                       [DUP] * 6 + [GENUINE] * 21)
+        got = self._cls(lab).candidates
+        assert {got[i].label for i in ids[:6]} == {"replay_duplicate"}
+        assert self._hidden(got, ids[6:]) == []
 
     def test_a_two_line_re_read_and_a_pair_retest_are_the_same_record(self):
         """The case no rule can split, shown rather than hidden: bench A
@@ -1015,3 +1166,52 @@ class TestRandomLabsKeepTheirRetests:
                 if c.label in dedupe.HIDE_CANDIDATE_LABELS}
         assert lab.ids(GENUINE) & hide == set()
         assert lab.ids(DUP) - hide == set()
+
+
+class TestTheCriticsFuzz:
+    """Round-5 critic: on 4,000 random file-modelled benches
+    (`dedupe_sim.file_bench`, its own `bigfuzz.py`), genuine rows were
+    hidden on 17 and replays were left visible on 869. Both halves of the
+    bar, on all 4,000, in the suite:
+
+    * no GENUINE row is a hide candidate;
+    * every replayed row is MARKED: proposed for hiding, or — where the
+      record cannot tell it from a re-test — listed (`probable_duplicate`)
+      beside its original, visible, for a person. Listed only for a reason
+      §10.5 gives: a twin in a poll under 20 rows that is not mostly twins
+      (`twin_not_in_burst`; the spec never makes those candidates), or a
+      re-read too short to prove itself (`short_stretch`,
+      `fewer_than_five_samples`: under five samples it writes exactly
+      what a re-test of a few samples writes; `mid_poll_stretch`: five to
+      eight samples away from where a restart puts its re-read, exactly
+      what two re-tests back to back write).
+
+    Measured at this commit over seeds 0-3999: 57,880 replayed rows,
+    52,428 proposed (90.6 %), 5,452 listed, 0 unmarked; 404,619 genuine
+    rows, 0 proposed. Out of sample, seeds 4,000-19,999: 228,969
+    replayed, 0 unmarked; 1,605,128 genuine, 0 proposed."""
+
+    LISTED_BECAUSE = {"twin_not_in_burst", "short_stretch",
+                      "fewer_than_five_samples", "mid_poll_stretch"}
+
+    @pytest.mark.parametrize("block", range(8))
+    def test_five_hundred_benches(self, block):
+        hidden_genuine, unmarked, odd = [], [], []
+        for seed in range(block * 500, block * 500 + 500):
+            lab = dedupe_sim.file_bench(seed)
+            got = dedupe.classify(
+                dedupe.LogRow.from_dict(r) for r in lab.rows).candidates
+            for rid, truth in lab.truth.items():
+                c = got.get(rid)
+                hide = c is not None and (
+                    c.label in dedupe.HIDE_CANDIDATE_LABELS)
+                if truth == GENUINE and hide:
+                    hidden_genuine.append((seed, rid))
+                elif truth == DUP and c is None:
+                    unmarked.append((seed, rid))
+                elif truth == DUP and not hide and (
+                        c.rule not in self.LISTED_BECAUSE):
+                    odd.append((seed, rid, c.rule))
+        assert hidden_genuine == []
+        assert unmarked == []
+        assert odd == []

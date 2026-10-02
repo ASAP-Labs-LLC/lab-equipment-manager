@@ -514,3 +514,60 @@ class TestO9SaysNotMetWhenItIsNotMet:
         assert v["met"] is True and v["benches_out_of_band"] == []
         assert v["readings_erased_to_meet"] == 0
         assert dedupe.o9_lines(chk)[1].startswith("  VERDICT: MET")
+
+
+class TestTheGapToG1IsShownPollByPoll:
+    """Round-5 critic: Agilent GC 2 proposes 390 against G1's 654 (-40 %),
+    and its ceiling (468) is below the band too — "the band itself has to
+    be revised by Ryan (D7)". For Ryan to revise it he needs to see, not
+    take on trust, WHICH burst rows G1 counted that are no copy of
+    anything. On the mirror they are a handful of polls: the bench's first
+    ingest of its file (09-18 10:11, 107 rows, every Lab ID new), a
+    re-processing of the same samples 41 minutes later (10:52, 29 rows,
+    Lab IDs known, every number new) and a batch of new results (09-30
+    15:35, 43 rows). G1 counts each as a replay because it is big; none of
+    their rows has an identical earlier row to be a copy of.
+
+    So for every named bench the check lists its burst polls that carry
+    first copies, largest first: when, how many rows, how many are first
+    copies, and what they are — rows of a Lab ID no earlier poll carried,
+    or a RE-PROCESSED result (Lab ID known from an earlier poll, numbers
+    new) — and whether the poll is the bench's first ever (a first
+    ingest). A Lab ID with several rows in its first poll (one per test,
+    a standard read twice) counts every row as new."""
+
+    def _lab(self):
+        lab = SimLab()
+        first = [SimLab.run_line("40%03d" % k, {"S": "%d.%d" % (k, k)})
+                 for k in range(25)]
+        lab.poll("g", first, [GENUINE] * 25,
+                 ts="2026-09-18T10:11:54.000000")
+        redo = [SimLab.run_line("40%03d" % k, {"S": "9%d.5" % k})
+                for k in range(20)]
+        lab.poll("g", redo, [GENUINE] * 20, ts="2026-09-18T10:52:54.000000")
+        lab.poll("g", first[5:25], [DUP] * 20,
+                 ts="2026-09-23T16:55:03.000000")
+        return lab
+
+    def test_each_burst_poll_of_first_copies_is_named_with_its_shape(self):
+        lab = self._lab()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        chk = dedupe.prediction_check(result, {
+            "since": "2026-09-01", "total": [60, 70], "band": 0.10,
+            "benches": {"g": {"name": "GC", "burst_rows": 65}}})
+        b = chk["benches"][0]
+        assert b["burst_rows_measured"] == 65
+        assert b["proposed"] == 20
+        assert b["first_copy_polls"] == [
+            {"ts": "2026-09-18T10:11:54.000000", "rows": 25,
+             "first_copies": 25, "new_lab_id": 25, "re_processed": 0,
+             "first_poll": True},
+            {"ts": "2026-09-18T10:52:54.000000", "rows": 20,
+             "first_copies": 20, "new_lab_id": 0, "re_processed": 20,
+             "first_poll": False},
+        ]
+        text = "\n".join(dedupe.o9_lines(chk))
+        assert ("GC: 45 of G1's 65 burst rows are the first copy of their "
+                "reading") in text
+        assert "09-18 10:11 25 of 25 (first ingest: 25 rows of new Lab IDs)" in text
+        assert "09-18 10:52 20 of 20 (20 re-processed)" in text
