@@ -359,26 +359,26 @@ class TestValueEndpoint:
 
 class TestThePage:
     def test_it_can_import_v4(self, client):
-        assert "import-v4" in client.get("/checklists").get_data(as_text=True)
+        assert "import-v4" in client.get("/checklists/edit").get_data(as_text=True)
 
     def test_it_renders_entry_fields(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit").get_data(as_text=True)
         assert "data-entry" in body
 
     def test_it_has_an_editor(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit").get_data(as_text=True)
         assert 'id="editDlg"' in body
 
     def test_the_editor_offers_both_field_types(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit").get_data(as_text=True)
         assert 'value="number"' in body and 'value="text"' in body
 
     def test_the_editor_offers_headers_and_subtasks(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit").get_data(as_text=True)
         assert 'value="header"' in body and 'value="subtask"' in body
 
     def test_weekdays_are_editable(self, client):
-        assert 'id="edDays"' in client.get("/checklists").get_data(as_text=True)
+        assert 'id="edDays"' in client.get("/checklists/edit").get_data(as_text=True)
 
 
 # ── the editor, finished ────────────────────────────────────────────────────
@@ -390,7 +390,7 @@ class TestThePage:
 class TestEditorIsComplete:
     @pytest.fixture
     def page(self, client):
-        return client.get("/checklists").get_data(as_text=True)
+        return client.get("/checklists/edit").get_data(as_text=True)
 
     def test_you_can_choose_which_checklist_to_edit(self, page):
         assert 'id="edPick"' in page
@@ -445,7 +445,7 @@ class TestParentChildStillWorks:
 class TestArchive:
     @pytest.fixture
     def page(self, client):
-        return client.get("/checklists").get_data(as_text=True)
+        return client.get("/checklists/edit").get_data(as_text=True)
 
     def test_there_is_an_archived_button(self, page):
         assert 'id="btnArchive"' in page

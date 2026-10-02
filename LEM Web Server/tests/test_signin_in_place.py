@@ -37,7 +37,7 @@ STATIC = ROOT / "static"
 
 SHELL_PAGES = ["/settings", "/help"]
 # the pages still drawn by _nav.html that have a Sign in of their own
-OLD_PAGES = ["/", "/checklists", "/maintenance", "/logs"]
+OLD_PAGES = ["/", "/checklists/edit", "/maintenance", "/logs"]
 
 
 class StubAuth:

@@ -1,0 +1,128 @@
+{% extends "_layout.html" %}
+{#- The round (ia-final §3.3, piece 9): DO today's opening or closing round,
+    tablet first. Record anatomy from GC hub's /instruments/<id>: crumbs in
+    the top bar, one h1 with its meta line, then the one card the page exists
+    for. Then the bench bar, sticky, where the words strip would be.
+
+    The rows are drawn here when today's round is in memory (no "Loading…"
+    flash), and by static/js/round.js from the same markup (the <template>
+    below) when it is not. round.js owns every change after that: the tick
+    paints on the tap, the POST carries the absolute `checked`, and a live
+    merge touches one row at a time and never one that is saving.
+
+    No add-item box: a live round is for doing, not defining (P2, P15).
+    Defining is /checklists/edit, one tap away in the top bar. -#}
+{%- set SLOT_NAME = slot|capitalize ~ ' round' -%}
+{%- set who = session.get('user') or '' -%}
+{%- macro byline(st) -%}{% if st and st.checked %}{{ st.user ~ ' · ' if st.user }}{{ (st.at or '')[11:16] }}{% endif %}{%- endmacro -%}
+{%- macro row(cl_uid, item, st, blank=False) -%}
+{%- set kind = 'number' if item.entry_type == 'number' else ('text' if item.entry_type == 'text' else 'tick') -%}
+{%- set done = st and st.checked -%}
+<div class="item rrow{% if item.item_type == 'subtask' %} sub{% endif %}" data-item="{{ item.uid }}" data-cl="{{ cl_uid }}" data-kind="{{ kind }}" data-checked="{{ '1' if done else '' }}" data-state="{{ 'done' if done else 'todo' }}">
+  <button type="button" class="tick" aria-pressed="{{ 'true' if done else 'false' }}" aria-label="{{ item.text }}"{% if kind != 'tick' %} data-reading="1"{% endif %}>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5.5 12.5 4.2 4.2 8.8-9.4"/></svg>
+  </button>
+  <div class="rbody">
+    <span class="rlabel">{{ item.text }}</span>
+    <span class="rcap" hidden></span>
+    <p class="rerr" role="alert" hidden></p>
+  </div>
+  {%- if kind != 'tick' %}
+  <div class="rentry">
+    <input class="rinput" type="text" {% if kind == 'number' %}inputmode="decimal" {% endif %}enterkeyhint="done" autocomplete="off" spellcheck="false" value="{{ (st.value if st else '') or '' }}" aria-label="{{ item.text }}{% if item.units %}, in {{ item.units }}{% endif %}" placeholder="{{ '—' if kind == 'number' else 'Note' }}">
+    {%- if item.units %}<span class="runits">{{ item.units }}</span>{% endif %}
+    <button type="button" class="btn btn-primary rsave">Save</button>
+  </div>
+  {%- endif %}
+  <div class="rmeta">
+    <span class="rby">{{ byline(st) }}</span>
+    <button type="button" class="undo"{% if not done %} hidden{% endif %}>Undo</button>
+  </div>
+</div>
+{%- endmacro -%}
+
+{% block title %}{{ SLOT_NAME }}{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists/edit">Checklists</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page">{{ SLOT_NAME }}</span></nav>
+  <span class="spacer"></span>
+  <nav class="seg seg-lg seg-links" aria-label="Round">
+    <a id="slotOpening" href="/checklists/opening"{% if slot == 'opening' %} aria-current="page"{% endif %}>Opening</a>
+    <a id="slotClosing" href="/checklists/closing"{% if slot == 'closing' %} aria-current="page"{% endif %}>Closing</a>
+  </nav>
+  <a class="btn btn-ghost round-edit" id="round-edit" href="/checklists/edit">Edit this round</a>
+{% endblock %}
+
+{% block content %}
+{%- set R = round -%}
+{%- set lists = (R.checklists if R else []) -%}
+{%- set ns = namespace(done=0, total=0, due='') -%}
+{%- for cl in lists %}{% set ns.done = ns.done + (cl.checked or 0) %}{% set ns.total = ns.total + (cl.total or 0) %}{% if cl.due_time and (not ns.due or cl.due_time < ns.due) %}{% set ns.due = cl.due_time %}{% endif %}{% endfor -%}
+<main class="content round" id="main" tabindex="-1" data-testid="round"
+      data-slot="{{ slot }}" data-day="{{ day }}"
+      data-state="{{ ('ready' if lists else 'empty') if R else 'reading' }}"
+      {%- if R %} data-round='{{ R|tojson }}'{% endif %}>
+  <div class="page-head">
+    <h1>{{ SLOT_NAME }}</h1>
+    <div class="meta">
+      <span class="pill" id="round-pill"{% if not ns.total %} hidden{% endif %}><span class="glyph" id="round-pill-glyph" aria-hidden="true"></span><span id="round-pill-text">{{ ns.done }} of {{ ns.total }} done</span></span>
+      <span class="sep" aria-hidden="true"{% if not ns.total %} hidden{% endif %}>·</span>
+      <span id="round-date">{{ day_label }}</span>
+      <span class="sep" aria-hidden="true" id="round-due-sep"{% if not ns.due %} hidden{% endif %}>·</span>
+      <span id="round-due"{% if not ns.due %} hidden{% endif %}>Due {{ ns.due }}</span>
+    </div>
+  </div>
+
+  <section class="card round-card" id="lists" aria-labelledby="round-items-title"{% if not lists %} hidden{% endif %}>
+    <h2 class="visually-hidden" id="round-items-title">{{ SLOT_NAME }} items</h2>
+    {#- the pill as a length along the card's top edge: decoration of the
+        same count (aria-hidden; the pill is what is read out) -#}
+    <div class="round-meter" id="round-meter" aria-hidden="true"><i style="width: {{ '%.4f'|format(100 * ns.done / ns.total) if ns.total else 0 }}%"></i></div>
+    {%- for cl in lists %}
+    {%- if lists|length > 1 %}<h2 class="rgroup">{{ cl.name }}</h2>{% endif %}
+    {%- for item in cl["items"] %}
+    {%- if item.item_type == 'header' %}
+    <h3 class="rhead">{{ item.text }}</h3>
+    {%- else %}
+    {{ row(cl.uid, item, ((R.state or {}).get(cl.uid) or {}).get(item.uid)) }}
+    {%- endif %}
+    {%- endfor %}
+    {%- endfor %}
+  </section>
+
+  {#- every state that is not a round, each its own sentence (A.1) -#}
+  <section class="card round-note" id="round-reading" data-testid="round-reading"{% if R %} hidden{% endif %} aria-busy="{{ 'false' if R else 'true' }}">
+    <div class="skeleton" aria-hidden="true"><i></i><i></i><i></i></div>
+    <p>Reading today's {{ slot }} round from LabCore…</p>
+  </section>
+  <section class="card round-note" id="round-empty" data-testid="round-empty"{% if not R or lists %} hidden{% endif %}>
+    <p><b>No {{ slot }} round is set up.</b> A round is the list someone ticks through at the bench every {{ 'morning' if slot == 'opening' else 'evening' }}.</p>
+    <a class="btn btn-primary" href="/checklists/edit/new?slot={{ slot }}">Set it up →</a>
+  </section>
+  <section class="card round-note" id="round-failed" data-testid="round-failed" role="alert" hidden>
+    <p><span class="glyph error" aria-hidden="true"></span> <b>Today's round could not be read.</b> <span id="round-failed-why"></span></p>
+    <p class="caption">Nothing here was ticked or unticked by this. LEM asks again every 30 s.</p>
+    <button type="button" class="btn" id="round-retry">Try again now</button>
+  </section>
+
+  <p class="round-foot"><a class="link" id="round-edit-foot" href="/checklists/edit">Edit this round</a></p>
+
+  <template id="row-tpl">{{ row('', {'uid': '', 'text': '', 'item_type': 'item', 'entry_type': 'none', 'units': ''}, None) }}</template>
+  <template id="reading-tpl">{{ row('', {'uid': '', 'text': '', 'item_type': 'item', 'entry_type': 'number', 'units': ''}, None) }}</template>
+</main>
+{% endblock %}
+
+{% block bench %}
+<div class="bench-bar" id="bench-bar" role="region" aria-label="Who is ticking, and what is saved" data-testid="bench-bar">
+  <div class="bb-who" id="bb-who">
+    <span class="bb-in" id="bb-in"{% if not who %} hidden{% endif %}><span class="avatar bb-avatar" id="bb-avatar" aria-hidden="true"></span><span>Ticking as <b id="bb-name">{{ who }}</b></span><button type="button" class="linkbtn" id="bb-switch">Not you?</button></span>
+    <span class="bb-out" id="bb-out"{% if who %} hidden{% endif %}><span>Not signed in</span><button type="button" class="linkbtn" id="bb-signin">Sign in to tick</button></span>
+  </div>
+  <div class="bb-live" id="bb-live" role="status"><span class="live-dot" id="bb-dot" data-state="connecting" aria-hidden="true"></span><span id="bb-live-text">Connecting…</span></div>
+  <div class="bb-saved" id="bb-saved" role="status"><span class="glyph never" id="bb-glyph" aria-hidden="true"></span><span><span id="bb-saved-text">&nbsp;</span><span class="bb-tail" id="bb-saved-tail"></span></span></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+<script src="/static/js/round.js?v={{ v('js/round.js') }}"></script>
+{% endblock %}
