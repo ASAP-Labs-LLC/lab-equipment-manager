@@ -45,8 +45,15 @@ adds:
   view or trigger (a temp object of the same name stands in front of the
   real one; a trigger can RAISE(IGNORE) a write that then answers ok), and
   refuses switching off the PRAGMAs the guarantee rests on. Readers are `query_only`. The bare file can still drop
-  a trigger — SQLite has no rule against its owner — so every open restores
-  the guards and `health()["guards_missing"]` names any that are gone.
+  a trigger — SQLite has no rule against its owner — or save a look-alike
+  under a guard's name, so every open compares each guard trigger and the
+  effective view with its declaration BY ITS SQL, rebuilds any that differ,
+  drops any trigger LEM did not write, and `health()` names what differs
+  (`guards_missing`, `foreign_triggers`) and what the open repaired
+  (`guards_repaired`).
+* **One schema.** Every CREATE outside `main` (`temp.x`, however spelled)
+  and every ATTACH is refused: an unqualified name resolves in `temp` first,
+  so an object there stands in front of the record.
 * **Hiding is an annotation.** `lem_machine_log_effective` is the record minus
   rows whose newest annotation hides them, minus the history of a machine
   retired with "purge history" (which used to DELETE, and now cannot).
@@ -66,6 +73,7 @@ from __future__ import annotations
 import contextlib
 import os
 import queue
+import re
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -109,7 +117,15 @@ HIDING_LABELS = ("replay_duplicate", "import_leftover")
 #: re-declares them.
 GUARD_TRIGGERS = ("lem_log_no_update", "lem_log_no_delete",
                   "lem_log_no_overwrite", "ann_no_update", "ann_no_delete",
-                  "ann_no_overwrite")
+                  "ann_no_overwrite", "cfg_no_future_retire_insert",
+                  "cfg_no_future_retire_update")
+
+#: Every schema object the guarantee rests on and that a statement could
+#: replace with a look-alike: the guard triggers and the effective view. Each
+#: is checked by its SQL, never by its name alone — a no-op trigger saved
+#: under `lem_log_no_update` has the right name and guards nothing (round 4's
+#: critic did exactly that with the bare file).
+GUARD_OBJECTS = GUARD_TRIGGERS + ("lem_machine_log_effective",)
 
 #: What the store will not let a statement drop, alter or hang a trigger on:
 #: the record, the annotations that decide how it counts, the approvals behind
@@ -119,6 +135,22 @@ GUARD_TRIGGERS = ("lem_log_no_update", "lem_log_no_delete",
 PROTECTED = frozenset(("lem_machine_log", "log_annotation",
                        "annotation_approval", "lem_machine_config",
                        "lem_machine_log_effective"))
+
+#: What may not be DROPPED or ALTERed: the above, plus every table §5.2 adds.
+#: `request_ledger` is W2's memory of what was already done — dropped, the
+#: next retry of a save that DID commit would be performed a second time —
+#: and the others are the bench's cursors, tokens and outbox, whose loss is a
+#: silent re-ingest. They are the store's to shape, in `_migrate`, only.
+UNDROPPABLE = PROTECTED | frozenset(STORE_TABLES)
+
+#: Every authorizer action that creates a schema object. Each carries the
+#: name of the database it creates in, and only `main` is allowed (`_guard`).
+_CREATE_ACTIONS = frozenset((
+    sqlite3.SQLITE_CREATE_INDEX, sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_INDEX, sqlite3.SQLITE_CREATE_TEMP_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_TRIGGER, sqlite3.SQLITE_CREATE_TEMP_VIEW,
+    sqlite3.SQLITE_CREATE_TRIGGER, sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_CREATE_VTABLE))
 
 #: PRAGMAs a statement may not SET on a store connection: each one switches
 #: off part of the guarantee (schema writes, the REPLACE-fires-DELETE rule,
@@ -139,8 +171,21 @@ def _guard(action, arg1, arg2, _db, _src):
     hold for the bare file too.
     """
     a = sqlite3
+    if action in (a.SQLITE_ATTACH, a.SQLITE_DETACH):
+        # A second schema is a second place for an unqualified name to
+        # resolve. LEM has one file and never attaches another.
+        return a.SQLITE_DENY
+    if action in _CREATE_ACTIONS and (_db or "").lower() != "main":
+        # Round 4: refusing the TEMP *keyword* was not enough. `CREATE TABLE
+        # temp.lem_machine_log (...)` reaches this function as a plain
+        # SQLITE_CREATE_TABLE whose database is "temp", and stood in front of
+        # the record exactly like the TEMP-keyword form did. The rule is
+        # where the object goes, however the statement spells it: `main`,
+        # or nowhere.
+        return a.SQLITE_DENY
     if action in (a.SQLITE_CREATE_TEMP_TABLE, a.SQLITE_CREATE_TEMP_VIEW,
-                  a.SQLITE_CREATE_TEMP_TRIGGER, a.SQLITE_CREATE_TRIGGER):
+                  a.SQLITE_CREATE_TEMP_TRIGGER, a.SQLITE_CREATE_TEMP_INDEX,
+                  a.SQLITE_CREATE_TRIGGER):
         # Nothing may stand in front of a table. SQLite resolves an
         # unqualified name in `temp` before `main`, so a TEMP table named
         # `lem_machine_log` on the writer took every later INSERT ("1 row")
@@ -154,14 +199,14 @@ def _guard(action, arg1, arg2, _db, _src):
         return a.SQLITE_DENY
     if action in (a.SQLITE_DROP_TABLE, a.SQLITE_DROP_TEMP_TABLE,
                   a.SQLITE_DROP_VIEW, a.SQLITE_DROP_TEMP_VIEW):
-        return a.SQLITE_DENY if arg1 in PROTECTED else a.SQLITE_OK
+        return a.SQLITE_DENY if arg1 in UNDROPPABLE else a.SQLITE_OK
     if action in (a.SQLITE_DROP_TRIGGER, a.SQLITE_DROP_TEMP_TRIGGER,
                   a.SQLITE_DROP_INDEX, a.SQLITE_DROP_TEMP_INDEX):
         if arg1 in GUARD_TRIGGERS or arg2 in PROTECTED:
             return a.SQLITE_DENY
         return a.SQLITE_OK
     if action == a.SQLITE_ALTER_TABLE:
-        return a.SQLITE_DENY if arg2 in PROTECTED else a.SQLITE_OK
+        return a.SQLITE_DENY if arg2 in UNDROPPABLE else a.SQLITE_OK
     if action == a.SQLITE_PRAGMA:
         if arg2 is not None and str(arg1).lower() in _LOCKED_PRAGMAS:
             return a.SQLITE_DENY
@@ -249,6 +294,28 @@ _DDL = (
     "CREATE TABLE IF NOT EXISTS lem_machine_config ("
     " machine_uid TEXT PRIMARY KEY, title TEXT NOT NULL, config TEXT,"
     " updated_at TEXT, updated_by TEXT, retired_at TEXT)",
+    # "Purge history" hides a machine's rows with `ts < retired_at`. A
+    # retirement stamped in the future (round 4's critic used '9999') hides
+    # readings that have not happened yet — everything a re-registered bench
+    # files from then on — with no annotation and no approval. The app stamps
+    # `retired_at` from its own local clock, so the store refuses anything
+    # later than its local clock plus a day (slack for a server whose time
+    # zone and SQLite's 'localtime' disagree), and anything that is not text
+    # (an integer compares below every text `ts` and would read as "never").
+    "CREATE TRIGGER IF NOT EXISTS cfg_no_future_retire_insert BEFORE INSERT "
+    "ON lem_machine_config WHEN NEW.retired_at IS NOT NULL AND ("
+    " typeof(NEW.retired_at) <> 'text' OR NEW.retired_at > "
+    " strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime', '+1 day')) "
+    "BEGIN SELECT RAISE(ABORT, 'lem_machine_config.retired_at must be a "
+    "time no later than now: a retirement in the future would hide readings "
+    "not yet taken'); END",
+    "CREATE TRIGGER IF NOT EXISTS cfg_no_future_retire_update BEFORE UPDATE "
+    "OF retired_at ON lem_machine_config WHEN NEW.retired_at IS NOT NULL AND ("
+    " typeof(NEW.retired_at) <> 'text' OR NEW.retired_at > "
+    " strftime('%Y-%m-%dT%H:%M:%S', 'now', 'localtime', '+1 day')) "
+    "BEGIN SELECT RAISE(ABORT, 'lem_machine_config.retired_at must be a "
+    "time no later than now: a retirement in the future would hide readings "
+    "not yet taken'); END",
     "CREATE TABLE IF NOT EXISTS bench_cursor ("
     " machine_uid TEXT, bench_epoch TEXT, acked_seq INTEGER NOT NULL,"
     " durable_seq INTEGER NOT NULL DEFAULT 0, digest TEXT, records_total INTEGER,"
@@ -303,6 +370,61 @@ _DDL = (
     "  WHERE c.machine_uid = l.machine_uid AND c.retired_at IS NOT NULL "
     "  AND l.ts < c.retired_at)",
 )
+
+
+def _guard_ddl() -> Dict[str, str]:
+    """Each guard object's name -> the statement in `_DDL` that declares it."""
+    out = {}
+    for stmt in _DDL:
+        m = re.match(r"CREATE (?:TRIGGER|VIEW) IF NOT EXISTS (\w+)", stmt)
+        if m:
+            out[m.group(1)] = stmt
+    missing = set(GUARD_OBJECTS) - set(out)
+    if missing:                                       # pragma: no cover
+        raise RuntimeError("no DDL for guard objects: {0}".format(missing))
+    return out
+
+
+_CANON: Dict[str, str] = {}
+_CANON_LOCK = threading.Lock()
+
+
+def _canonical_sql() -> Dict[str, str]:
+    """What `sqlite_master.sql` holds for each guard object when this module
+    declared it. Taken from SQLite itself (an in-memory database running the
+    same `_DDL`) rather than retyped, so the comparison can never drift from
+    the declaration by a space."""
+    with _CANON_LOCK:
+        if not _CANON:
+            mem = sqlite3.connect(":memory:")
+            try:
+                for stmt in _DDL:
+                    mem.execute(stmt)
+                for name, sql in mem.execute(
+                        "SELECT name, sql FROM sqlite_master "
+                        "WHERE type IN ('trigger', 'view')"):
+                    if name in GUARD_OBJECTS:
+                        _CANON[name] = sql
+            finally:
+                mem.close()
+        return dict(_CANON)
+
+
+def _schema_audit(con) -> Dict[str, List[str]]:
+    """Which guard objects are missing OR differ from their declaration, and
+    which triggers in the file LEM did not write. The store refuses CREATE
+    TRIGGER after `_migrate`, so any trigger outside `GUARD_TRIGGERS` came
+    from outside the store — and a trigger can make a write vanish
+    (`RAISE(IGNORE)`) or rewrite one, so none is trusted."""
+    canon = _canonical_sql()
+    have = {name: (kind, sql) for kind, name, sql in con.execute(
+        "SELECT type, name, sql FROM main.sqlite_master "
+        "WHERE type IN ('trigger', 'view')")}
+    wrong = [n for n in GUARD_OBJECTS
+             if n not in have or have[n][1] != canon.get(n)]
+    foreign = sorted(n for n, (kind, _sql) in have.items()
+                     if kind == "trigger" and n not in GUARD_TRIGGERS)
+    return {"guards_missing": wrong, "foreign_triggers": foreign}
 
 
 def default_store_path() -> str:
@@ -385,6 +507,8 @@ class LocalStoreGateway:
         self._closed = False
         self._open_error = ""
         self._writer: Optional[sqlite3.Connection] = None
+        #: Guard objects the last open had to rebuild or remove (`health()`).
+        self._repaired: List[str] = []
         if self.read_only:
             # Nothing is created, migrated or declared. A missing file stays
             # missing and every read says so.
@@ -492,8 +616,34 @@ class LocalStoreGateway:
                 if cfg and "retired_at" not in cfg:
                     con.execute("ALTER TABLE lem_machine_config "
                                 "ADD COLUMN retired_at TEXT")
+                # Before the declarations, because they are all IF NOT EXISTS:
+                # a look-alike under a guard's name would otherwise be kept.
+                # Anything that differs from what this module declares is
+                # dropped and declared again; a trigger LEM never writes is
+                # dropped. Both are named in `health()["guards_repaired"]`.
+                audit = _schema_audit(con)
+                _guard_ddl()       # every guard object has a declaration
+                kinds = {n: k for k, n in con.execute(
+                    "SELECT type, name FROM main.sqlite_master "
+                    "WHERE type IN ('trigger', 'view')")}
+                repaired = []
+                for name in audit["guards_missing"]:
+                    if name in kinds:
+                        con.execute('DROP {0} "{1}"'.format(
+                            kinds[name].upper(), name.replace('"', '""')))
+                        repaired.append(name)
+                for name in audit["foreign_triggers"]:
+                    con.execute('DROP TRIGGER "{0}"'.format(
+                        name.replace('"', '""')))
+                    repaired.append(name)
                 for stmt in _DDL:
                     con.execute(stmt)
+                left = _schema_audit(con)
+                if left["guards_missing"] or left["foreign_triggers"]:
+                    raise RuntimeError(
+                        "the LEM store could not restore its guards: "
+                        "{0}".format(left))
+                self._repaired = repaired
                 con.execute(
                     "INSERT INTO store_meta (key, value) VALUES "
                     "('schema_version', ?) ON CONFLICT(key) DO UPDATE SET "
@@ -619,26 +769,23 @@ class LocalStoreGateway:
             except OSError:
                 pass
         out = {"path": self.path, "read_only": self.read_only, "bytes": size,
-               "schema_version": None, "guards_missing": None}
+               "schema_version": None, "guards_missing": None,
+               "foreign_triggers": None,
+               "guards_repaired": list(self._repaired)}
         # On the engine, like `is_running`: `/healthz` must never count as a
         # read in anybody's tally.
         try:
             with self._reader() as con:
                 row = con.execute("SELECT value FROM store_meta "
                                   "WHERE key = 'schema_version'").fetchone()
+                # `None` for either list means it could not be read, which
+                # is not "all there".
+                audit = _schema_audit(con)
             out["schema_version"] = int(row[0]) if row else None
-            out["guards_missing"] = self._guards_missing(con)
+            out.update(audit)
         except (sqlite3.Error, TypeError, ValueError) as exc:
             out["error"] = "{0}: {1}".format(type(exc).__name__, exc)
         return out
-
-    @staticmethod
-    def _guards_missing(con) -> List[str]:
-        """The append-only triggers NOT in the file, by name. `None` from
-        `health()` means this could not be read, which is not "all there"."""
-        have = {r[0] for r in con.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger'")}
-        return [t for t in GUARD_TRIGGERS if t not in have]
 
     def _pragmas(self, con) -> Dict[str, Any]:
         out = {}

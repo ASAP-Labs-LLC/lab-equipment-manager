@@ -523,9 +523,224 @@ class TestNothingCanStandInFrontOfTheRecord:
         hits = []
         for path in root.glob("*.py"):
             text = path.read_text(encoding="utf-8", errors="replace")
-            if re.search(r"CREATE\s+TEMP(ORARY)?\s+(TABLE|VIEW)", text, re.I):
+            # Both spellings of "a second schema": the TEMP keyword, a
+            # `temp.`-qualified name (round 4), and ATTACH.
+            if re.search(r"CREATE\s+TEMP(ORARY)?\s+(TABLE|VIEW)"
+                         r"|CREATE\s+(TABLE|VIEW|INDEX|TRIGGER)\s+"
+                         r"(IF\s+NOT\s+EXISTS\s+)?[\"`]?temp[\"`]?\."
+                         r"|ATTACH\s+(DATABASE\s+)?['\"]", text, re.I):
                 hits.append(path.name)
         assert hits == [], hits
+
+
+class TestNoSchemaButMain:
+    """Round 4's critic: round 3 refused the `CREATE TEMP ...` SPELLING and
+    nothing else. `CREATE TABLE temp.lem_machine_log (...)` puts the very
+    same object in the very same place — SQLite reports it to the authorizer
+    as a plain CREATE TABLE whose database is `temp` — and after that one
+    statement an unqualified `UPDATE lem_machine_log` answered ok with
+    rows_affected 1, `DELETE` likewise, every later INSERT answered "1 row"
+    into a table that dies with the connection, and the guard trigger itself
+    resolved `lem_machine_log` to the impostor. `CREATE VIEW
+    temp.lem_machine_log_effective` shadowed the view the same way.
+
+    So the rule is now about WHERE, not how it is spelled: every CREATE
+    whose database is anything but `main` is refused, and so is ATTACH,
+    which is the only other way to give a statement a second schema to
+    resolve names in. LEM has one database file and never needs a second.
+    """
+
+    @pytest.mark.parametrize("ddl", [
+        "CREATE TABLE temp.lem_machine_log (id INTEGER PRIMARY KEY, "
+        "machine_uid, ts, kind, lab_id, test_name, value, detail)",
+        "CREATE TABLE TEMP.lem_machine_log (id, machine_uid, value)",
+        'CREATE TABLE "temp".lem_machine_log (id, machine_uid, value)',
+        "CREATE TABLE temp.log_annotation (id, log_id, label)",
+        "CREATE TABLE temp.request_ledger (request_id, route, status, body)",
+        "CREATE TABLE temp.scratch (x)",
+        "CREATE TABLE temp.lem_machine_log AS "
+        "SELECT * FROM main.lem_machine_log",
+        "CREATE VIEW temp.lem_machine_log_effective AS SELECT 1 AS id",
+        "CREATE VIEW temp.anything AS SELECT 1 AS id",
+        "CREATE TRIGGER temp.t1 BEFORE INSERT ON main.lem_machine_log "
+        "BEGIN SELECT RAISE(IGNORE); END",
+        "CREATE VIRTUAL TABLE temp.lem_machine_log USING fts5(value)",
+        "ATTACH DATABASE ':memory:' AS aux",
+    ])
+    def test_nothing_is_created_outside_main(self, store, ddl):
+        res = store.sql(ddl)
+        assert "error" in res and "not authorized" in res["error"], (ddl, res)
+        assert store.read_sql(
+            "SELECT COUNT(*) AS n FROM sqlite_temp_master")["rows"][0]["n"] == 0
+
+    def test_the_critics_sequence_now_leaves_the_record_guarded(self, store):
+        """The exact attack, end to end: after the attempt, UPDATE and DELETE
+        still raise, and the INSERT that answers "1 row" is IN the file."""
+        rid = _log(store, value="real")
+        store.sql("CREATE TABLE temp.lem_machine_log (id INTEGER PRIMARY KEY, "
+                  "machine_uid, ts, kind, lab_id, test_name, value, detail)")
+        store.sql("CREATE VIEW temp.lem_machine_log_effective AS "
+                  "SELECT 1 AS id")
+        _log(store, value="after")
+        upd = store.sql("UPDATE lem_machine_log SET value = 'rewritten'")
+        dele = store.sql("DELETE FROM lem_machine_log")
+        assert "append-only" in upd.get("error", ""), upd
+        assert "append-only" in dele.get("error", ""), dele
+        store.close()
+        con = sqlite3.connect(store.path)
+        try:
+            on_disk = con.execute(
+                "SELECT id, value FROM lem_machine_log ORDER BY id").fetchall()
+        finally:
+            con.close()
+        assert on_disk == [(rid, "real"), (rid + 1, "after")]
+
+    def test_nor_on_a_reader(self, store):
+        for ddl in ("CREATE TABLE temp.x (a)",
+                    "CREATE VIEW temp.lem_machine_log_effective AS SELECT 1",
+                    "ATTACH DATABASE ':memory:' AS aux"):
+            assert "error" in store.read_sql(ddl), ddl
+
+
+class TestTheGuardsAreCheckedByWhatTheySayNotTheirName:
+    """Round 4's critic, second gap: `guards_missing` compared NAMES. Drop
+    `lem_log_no_update` with the bare sqlite3 module, recreate it under the
+    same name as `SELECT 1`, reopen: `health()` said nothing was missing and
+    UPDATE went through. A guard is its SQL. Every open now compares each
+    guard trigger AND the effective view against the text this module
+    declares, rebuilds any that differ, and removes any trigger LEM did not
+    write (the store refuses CREATE TRIGGER, so one that exists came from
+    outside, and a `RAISE(IGNORE)` trigger makes a write answer ok and land
+    nowhere). `health()` names what differs while the store runs, and what
+    the last open had to repair."""
+
+    def _bare(self, path, *stmts):
+        con = sqlite3.connect(path)
+        try:
+            for s in stmts:
+                con.execute(s)
+            con.commit()
+        finally:
+            con.close()
+
+    def test_a_decoy_trigger_under_a_guards_name_is_seen_and_replaced(
+            self, tmp_path):
+        path = str(tmp_path / "lem.db")
+        s = LocalStoreGateway(path)
+        rid = _log(s, value="real")
+        self._bare(path, "DROP TRIGGER lem_log_no_update",
+                   "CREATE TRIGGER lem_log_no_update BEFORE UPDATE ON "
+                   "lem_machine_log BEGIN SELECT 1; END")
+        assert s.health()["guards_missing"] == ["lem_log_no_update"]
+        s.close()
+        s = LocalStoreGateway(path)
+        try:
+            h = s.health()
+            assert h["guards_missing"] == []
+            assert h["guards_repaired"] == ["lem_log_no_update"]
+            res = s.sql("UPDATE lem_machine_log SET value = 'DECOY' "
+                        "WHERE id = ?", [rid])
+            assert "append-only" in res.get("error", ""), res
+        finally:
+            s.close()
+
+    def test_a_foreign_trigger_is_seen_and_removed(self, tmp_path):
+        path = str(tmp_path / "lem.db")
+        s = LocalStoreGateway(path)
+        self._bare(path, "CREATE TRIGGER swallow BEFORE INSERT ON "
+                         "lem_machine_log BEGIN SELECT RAISE(IGNORE); END")
+        assert s.health()["foreign_triggers"] == ["swallow"]
+        s.close()
+        s = LocalStoreGateway(path)
+        try:
+            h = s.health()
+            assert h["foreign_triggers"] == []
+            assert h["guards_repaired"] == ["swallow"]
+            _log(s, value="lands")
+            assert s.read_sql("SELECT COUNT(*) AS n FROM lem_machine_log"
+                              )["rows"][0]["n"] == 1
+        finally:
+            s.close()
+
+    def test_a_decoy_effective_view_is_seen_and_replaced(self, tmp_path):
+        path = str(tmp_path / "lem.db")
+        s = LocalStoreGateway(path)
+        _log(s)
+        self._bare(path, "DROP VIEW lem_machine_log_effective",
+                   "CREATE VIEW lem_machine_log_effective AS "
+                   "SELECT * FROM lem_machine_log WHERE 0")
+        assert s.health()["guards_missing"] == ["lem_machine_log_effective"]
+        s.close()
+        s = LocalStoreGateway(path)
+        try:
+            assert s.health()["guards_missing"] == []
+            assert s.read_sql("SELECT COUNT(*) AS n FROM "
+                              "lem_machine_log_effective")["rows"][0]["n"] == 1
+        finally:
+            s.close()
+
+    def test_an_untouched_store_reports_nothing_repaired(self, tmp_path):
+        path = str(tmp_path / "lem.db")
+        LocalStoreGateway(path).close()
+        s = LocalStoreGateway(path)
+        try:
+            h = s.health()
+            assert (h["guards_missing"], h["foreign_triggers"],
+                    h["guards_repaired"]) == ([], [], [])
+        finally:
+            s.close()
+
+
+class TestTheStoresOwnTablesCannotBeDropped:
+    """Round 4's critic: `DROP TABLE request_ledger` was allowed, which
+    deletes W2's record of what was already done — the next retry of a save
+    that DID commit would be performed a second time. Every table §5.2 adds
+    is the store's to shape, in `_migrate`, and nobody's to drop or rename
+    afterwards."""
+
+    @pytest.mark.parametrize("table", STORE_TABLES)
+    def test_drop_and_rename_are_refused(self, store, table):
+        for ddl in ("DROP TABLE {0}".format(table),
+                    "ALTER TABLE {0} RENAME TO gone".format(table)):
+            res = store.sql(ddl)
+            assert "not authorized" in res.get("error", ""), (ddl, res)
+
+
+class TestRetirementCannotHideTheFuture:
+    """Round 4's critic: `retired_at = '9999'` hid 2 of 2 rows from the
+    effective view with no annotation and no guard. "Purge history" hides a
+    machine's history UP TO the moment it was retired — `l.ts < retired_at`
+    — so a retirement stamped in the future hides readings that have not
+    happened yet, including ones a re-registered bench will file tomorrow.
+    The store refuses a `retired_at` later than its own clock (plus a day,
+    because the app stamps local time and SQLite's 'localtime' may disagree
+    with a bench's by a time zone), on INSERT and on UPDATE."""
+
+    def _cfg(self, store, retired):
+        return store.sql(
+            "INSERT INTO lem_machine_config (machine_uid, title, config, "
+            "updated_at, updated_by, retired_at) VALUES ('m1', 'm1', '{}', "
+            "'t', 'ryan', ?) ON CONFLICT(machine_uid) DO UPDATE SET "
+            "retired_at = excluded.retired_at", [retired])
+
+    def test_a_future_retirement_is_refused_on_insert_and_update(self, store):
+        _log(store, ts="2026-10-01T09:00:00")
+        res = self._cfg(store, "9999")
+        assert "retired_at" in res.get("error", ""), res
+        assert "error" not in self._cfg(store, None)
+        res = store.sql("UPDATE lem_machine_config SET retired_at = "
+                        "'9999-01-01T00:00:00' WHERE machine_uid = 'm1'")
+        assert "retired_at" in res.get("error", ""), res
+        assert store.read_sql("SELECT COUNT(*) AS n FROM "
+                              "lem_machine_log_effective")["rows"][0]["n"] == 1
+
+    def test_a_retirement_now_still_hides_the_history(self, store):
+        from datetime import datetime
+        _log(store, ts="2020-01-01T00:00:00")
+        now = datetime.now().isoformat(timespec="seconds")
+        assert "error" not in self._cfg(store, now)
+        assert store.read_sql("SELECT COUNT(*) AS n FROM "
+                              "lem_machine_log_effective")["rows"][0]["n"] == 0
 
 
 class TestTheEffectiveView:
