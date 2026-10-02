@@ -1911,7 +1911,9 @@ def create_app(gateway, labcore_gateway=None,
             notices=app.config["NOTICES"], audit_spool=len(audit_spool),
             certificates=_certs["items"], mirror=mstatus,
             jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
-            now=_now(), tz=ui_live.lab_tz())
+            now=_now(), tz=ui_live.lab_tz(),
+            custody=(app.config["CUSTODY"].status_items()
+                     if app.config.get("CUSTODY") is not None else None))
 
     # ── the Instruments home's answer (ia-final §3.2, §5) ───────────────
     # Built once per snapshot cycle: the memo key is the snapshot's build
@@ -2156,8 +2158,10 @@ def create_app(gateway, labcore_gateway=None,
         hours and the import previews are fetched by the page itself, so a slow
         LabCore is a loading row and then a sentence, never a page that will
         not open. The Developer section exists only under --dev."""
+        cust = app.config.get("CUSTODY")
         return render_template("settings.html", nav="settings", diag=_diagnostics(),
-                               dev_tools=app.config["DEV_TOOLS"])
+                               dev_tools=app.config["DEV_TOOLS"],
+                               custody=cust.view() if cust is not None else None)
 
     @app.route("/help")
     def page_help():
@@ -2416,6 +2420,18 @@ def create_app(gateway, labcore_gateway=None,
                        authed=lambda: bool(session.get("user")),
                        current_user=lambda: session.get("user", ""),
                        version=APP_VERSION)
+
+    # ── backup and custody (transfer spec §11) ──────────────────────────
+    # The service exists for every app on a local store so /healthz,
+    # Settings and the global status can say what it knows; it runs NOTHING
+    # here. The server's boot starts its schedule (web_server.pyw), like the
+    # snapshot poller: a factory that took backups would take one per test.
+    import custody as _custody
+    from lem_store import is_local_store as _is_store
+    if _is_store(gateway):
+        _cust = _custody.Custody(gateway)
+        _cust.hydrate()
+        _custody.attach(app, _cust)
 
     def _mirrored_last_qc():
         """The newest QC verdict per (machine, test) from the local log copy.
@@ -2722,6 +2738,10 @@ def create_app(gateway, labcore_gateway=None,
             # background asks it anything any more — and inventing an answer
             # here is the one thing this route must not do.
             store_info = dict(gateway.health(), reachable=reach)
+            cust = app.config.get("CUSTODY")
+            if cust is not None:
+                # last_backup_at/ok, offsite_last_ok (§12), from memory
+                store_info.update(cust.health())
         split = labcore_split
         return {
             "status": "ok",

@@ -35,6 +35,10 @@
     <a href="#hours">Lab hours{{ lock() }}</a>
     <a href="#imports">Imports{{ lock() }}</a>
     <a href="#exports">Records and exports</a>
+    {%- if custody %}
+    {%- set cust_bad = custody.rows | selectattr("glyph", "in", ["error", "held"]) | list %}
+    <a href="#backups">Backups{% if cust_bad %}<span class="glyph {{ 'error' if cust_bad | selectattr('glyph', 'equalto', 'error') | list else 'held' }} nav-glyph" id="cust-nav-glyph" aria-hidden="true"></span>{% endif %}</a>
+    {%- endif %}
     <a href="#diagnostics">Diagnostics<span class="glyph {{ diag.summary.glyph if diag.summary.glyph in ('error', 'held') else '' }} nav-glyph" id="diag-nav-glyph" aria-hidden="true"></span></a>
     {%- if dev_tools %}
     <a href="#developer">Developer</a>
@@ -198,6 +202,29 @@
       </div>
     </section>
 
+    {%- if custody %}
+    {#- ── Backups (transfer §11: custody of the record) ───────────────── -#}
+    <section class="sec" id="backups" data-testid="section-backups">
+      <div class="about"><h2>Backups</h2>
+        <p class="intro">The record lives in this server's store, so its safety is here: an hourly checked copy, a nightly copy off this machine, and a monthly drill that proves a copy restores.</p></div>
+      <div class="body">
+        <div class="kv cust-kv" id="cust-rows" data-testid="custody-rows" aria-live="polite">
+          {%- for row in custody.rows %}
+          <div class="k">{{ row.label }}</div>
+          <div class="v" data-key="{{ row.key }}"><span class="line"><span class="glyph {{ row.glyph }}" aria-hidden="true"></span><span class="val">{{ row.value }}</span></span>{% if row.note %}<span class="caption">{{ row.note }}</span>{% endif %}</div>
+          {%- endfor %}
+        </div>
+        <div class="cust-actions" role="group" aria-label="Backup actions">
+          <button type="button" class="btn btn-sm" id="cust-backup" data-gated="back up the store">Back up now</button>
+          <button type="button" class="btn btn-sm" id="cust-drill" data-gated="run the restore drill"{% if custody.drill_running %} disabled{% endif %}>Run the restore drill</button>
+          <span class="spacer"></span>
+          <button type="button" class="btn btn-sm btn-ghost" id="cust-bridge" data-testid="bridge-off" data-gated="turn the bridge off" data-on="{{ 'true' if custody.bridge_on else 'false' }}">{{ "Turn the bridge off…" if custody.bridge_on else "Turn the bridge back on" }}</button>
+        </div>
+        <p class="msg" id="cust-msg" role="status"></p>
+      </div>
+    </section>
+    {%- endif %}
+
     {#- ── Diagnostics ──────────────────────────────────────────────── -#}
     <section class="sec" id="diagnostics" data-testid="section-diagnostics">
       <div class="about"><h2>Diagnostics</h2>
@@ -256,6 +283,9 @@
 {% block scripts %}
 <script src="/static/js/settings_logic.js?v={{ v('js/settings_logic.js') }}"></script>
 <script src="/static/js/settings.js?v={{ v('js/settings.js') }}"></script>
+{%- if custody %}
+<script src="/static/js/settings_custody.js?v={{ v('js/settings_custody.js') }}"></script>
+{%- endif %}
 {%- if dev_tools %}
 <script src="/static/js/settings_dev.js?v={{ v('js/settings_dev.js') }}"></script>
 {%- endif %}

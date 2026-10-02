@@ -460,8 +460,11 @@ class TestEveryReaderNamesTheEffectiveView:
         # existence check, reading back the custody row it just wrote, and
         # the §4.4 occurrence count. Each must see hidden rows: a row an
         # annotation hides is still in the record and still holds its key.
+        # custody.py: the backup manifest's daily log digest (transfer
+        # §11), an audit over every row — a hidden row is still in the
+        # record, and a backup that skipped it could not prove it unaltered.
         assert files == ["bench_api.py", "bench_api.py", "bench_api.py",
-                         "lem_store.py", "lem_store.py", "log_mirror.py",
+                         "custody.py", "lem_store.py", "lem_store.py", "log_mirror.py",
                          "log_mirror.py",
                          "web_app.py", "web_app.py"], allowed
 
