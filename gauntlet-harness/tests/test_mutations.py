@@ -79,19 +79,114 @@ def test_a_pattern_with_no_match_is_unavailable_and_copies_nothing(
     assert not (tmp_path / "copy").exists()
 
 
-def test_unique_seq_off_is_available_once_p6_has_landed(tmp_path):
-    """P6 owns it: the store's `ux_log_bench` unique index exists in this
-    worktree now, exactly once, and the mutation turns it into a plain
-    index in the copy — and only the copy."""
+WEB_PY = os.environ.get("LEM_WEB_PYTHON") or os.path.join(
+    "/Users/rynatical/Projects/lab-equipment-manager", "LEM Web Server",
+    ".venv", "bin", "python")
+
+# What a second writer does to the store: insert a row for a (uid, epoch,
+# seq) the store already holds — once through plain INSERT, once through
+# INSERT OR IGNORE. Prints how many of the two the store ACCEPTED.
+_REPLAY = r"""
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import lem_store
+s = lem_store.LocalStoreGateway(sys.argv[2])
+row = ("INSERT {0}INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+       "test_name, value, detail, origin, bench_epoch, bench_seq) VALUES "
+       "('b1', '2026-10-01 09:00:00', 'run', 'L-1', 'Density', '0.8', '{{}}', "
+       "'bench', 'e1', 1)")
+first = s.sql(row.format(""))
+assert not first.get("error"), first
+accepted = 0
+for verb in ("", "OR IGNORE "):
+    res = s.sql(row.format(verb))
+    if not res.get("error") and res.get("rows_affected", 1):
+        accepted += 1
+n = s.read_sql("SELECT COUNT(*) AS n FROM lem_machine_log WHERE "
+               "machine_uid='b1' AND bench_epoch='e1' AND bench_seq=1")
+print(accepted, n["rows"][0]["n"])
+"""
+
+
+def _replay_into_store(code_root, tmp_path):
+    """(second-writer inserts accepted, rows held for that one seq) on a
+    fresh store built by `code_root`'s lem_store.py."""
+    if not os.path.exists(WEB_PY):
+        pytest.skip("the web server's venv is not at %s" % WEB_PY)
+    p = subprocess.run([WEB_PY, "-c", _REPLAY,
+                        os.path.join(code_root, "LEM Web Server"),
+                        str(tmp_path / "store.sqlite3")],
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       timeout=120)
+    assert p.returncode == 0, p.stderr.decode()
+    a, n = p.stdout.decode().split()
+    return int(a), int(n)
+
+
+def test_the_store_refuses_a_second_row_for_one_bench_seq(tmp_path):
+    """The property `unique_seq_off` must break, measured on this tree."""
+    assert _replay_into_store(WORKTREE, tmp_path) == (0, 1)
+
+
+def test_removing_only_the_index_was_an_equivalent_mutant(tmp_path):
+    """Why `unique_seq_off` is two edits, not one. Its first form turned
+    `ux_log_bench` into a plain index and nothing else, and SURVIVED every
+    gate run (critic, T-P8 round 2). It could not do otherwise: the store
+    enforces the same uniqueness a second time, in `lem_log_no_overwrite`'s
+    (uid, epoch, seq) arm, which refuses the insert before any index is
+    consulted. With the index alone removed, a second writer is still
+    refused — no test of any kind could tell the mutant from the original,
+    which is the definition of an equivalent mutant. Pinned here, so that
+    the mutation is never "simplified" back into one the gate cannot see."""
+    dst, n = MU.apply_source("unique_seq_off", WORKTREE,
+                             str(tmp_path / "copy"),
+                             edits=MU.MUTATIONS["unique_seq_off"]["edits"][:1])
+    assert n == 1
+    assert _replay_into_store(dst, tmp_path) == (0, 1)
+
+
+def test_unique_seq_off_removes_the_uniqueness_itself(tmp_path):
+    """P6 owns the code: `ux_log_bench` and the overwrite trigger's
+    (uid, epoch, seq) arm each exist once in this worktree. The mutation
+    edits both — in the copy only — and the copy's store then accepts a
+    second row for a seq it holds: the constraint is really gone."""
     store_src = os.path.join(WORKTREE, "LEM Web Server", "lem_store.py")
     before = open(store_src, encoding="utf-8").read()
     dst, n = MU.apply_source("unique_seq_off", WORKTREE, str(tmp_path / "copy"))
-    assert n == 1
+    assert n == 2
     mutated = open(os.path.join(dst, "LEM Web Server", "lem_store.py"),
                    encoding="utf-8").read()
     assert "CREATE INDEX IF NOT EXISTS ux_log_bench" in mutated
     assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_log_bench" not in mutated
     assert open(store_src, encoding="utf-8").read() == before
+    accepted, held = _replay_into_store(dst, tmp_path / "m")
+    assert accepted >= 1 and held >= 2
+
+
+def test_a_multi_edit_mutation_with_one_edit_missing_is_unavailable(
+        tmp_path, monkeypatch):
+    """Every edit of a mutation must find its code: half a mutation breaks
+    less than it says, and a KILLED verdict on it would overclaim."""
+    monkeypatch.setitem(MU.MUTATIONS, "half_there", {
+        "kind": "source", "owner": "P99", "what": "one edit names no code",
+        "edits": [{"pattern": r"CREATE UNIQUE INDEX (IF NOT EXISTS )?ux_log_bench",
+                   "replace": r"CREATE INDEX \1ux_log_bench"},
+                  {"pattern": r"THIS_TEXT_IS_IN_NO_LEM_SOURCE_FILE",
+                   "replace": "x"}]})
+    dst, n = MU.apply_source("half_there", WORKTREE, str(tmp_path / "copy"))
+    assert (dst, n) == (None, 0)
+    assert not (tmp_path / "copy").exists()
+
+
+def test_resend_skip_off_is_available_and_edits_only_the_copy(tmp_path):
+    """The server's resend handling (§6.1 step 3: a record at or below
+    `acked` is ignored; one already held is not written again). Both edits
+    find their code once; the worktree is untouched."""
+    src = os.path.join(WORKTREE, "LEM Web Server", "bench_api.py")
+    before = open(src, encoding="utf-8").read()
+    dst, n = MU.apply_source("resend_skip_off", WORKTREE, str(tmp_path / "copy"))
+    assert n == 2
+    assert open(src, encoding="utf-8").read() == before
 
 
 def test_verdict():

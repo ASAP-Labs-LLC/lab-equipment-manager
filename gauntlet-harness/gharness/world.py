@@ -48,10 +48,13 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
+import time
 import zlib
 from collections import Counter
 
 from . import env
+from .hgateway import OFF_THREAD_KILLS, note_kill
 from .hserver import HServer
 from .ledger import Ledger, tally as ledger_tally, results as ledger_results
 
@@ -83,20 +86,48 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
     # World from an earlier make_world (World over World recurses in tally).
     Ctx = rf.__dict__.setdefault("_gate_original_ctx", rf.Ctx)
     Kill = lh.Kill
+    # A kill on the uploader thread ends that thread by design (see
+    # hgateway.OFF_THREAD_KILLS); its traceback is not news. Anything else a
+    # thread raises still goes to the hook that was there.
+    if not getattr(threading.excepthook, "_gate_quiet_kill", False):
+        prior_hook = threading.excepthook
+
+        def quiet_kill(args, _prior=prior_hook, _kill=Kill):
+            if args.exc_type is not None and issubclass(args.exc_type, _kill):
+                return
+            _prior(args)
+        quiet_kill._gate_quiet_kill = True
+        threading.excepthook = quiet_kill
     plumbing = hasattr(mod, "fault_point") and \
         hasattr(getattr(mod, "LEMStationModule", object), "_fault_point")
     original_hook = getattr(mod, "fault_point", None)
     reader_seam = hasattr(getattr(mod, "LEMStationModule", object),
                           "_open_serial_reader")
+    # A target with transfer v2 (P8): an uploader thread, enrolment, a canvas
+    # that remembers a v2 journal. The harness then (a) publishes the shared
+    # token to lem_meta as the server does at boot, (b) lets the uploader
+    # finish what each poll woke it for before the next poll — the time a
+    # 30 s poll interval gives it — and (c) restarts a bench from its saved
+    # canvas state, as LabStation does.
+    v2_target = hasattr(mod, "BenchUploader")
 
     class World(Ctx):
         mutation = None          # set by the mutation runner
         batch_mode = "baseline"
+        # Road modes a World starts with when the scenario names none: a
+        # phase-1 scenario re-run on the legacy road (F1L, N2L) sets 404.
+        default_road_modes = None
 
         def __init__(self, source="single_csv", publish=True, batch_mode=None,
-                     n_samples=None):
+                     n_samples=None, road_modes=None):
             self.ledger = Ledger("Density")
+            del OFF_THREAD_KILLS[:]
             self.home = fresh_world_dirs()
+            if v2_target:
+                # The bench's clock for wakes that are not polls (its bind):
+                # this world's simulated time, as every poll already is.
+                world = self
+                mod.bench_now = lambda: rf.T0 + getattr(world, "k", 0) * rf.POLL
             if original_hook is not None:
                 mod.fault_point = original_hook
             self._kill = None
@@ -104,7 +135,22 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
             mode = batch_mode or type(self).batch_mode
             # The baseline Ctx builds `self.gw = HGateway()` from run_faults'
             # globals; GateGateway is swapped in there by gate.py.
-            rf.HGateway = lambda: GateGateway(batch_mode=mode)
+            rf.HGateway = lambda: _published(GateGateway(batch_mode=mode),
+                                             v2_target)
+            # The server is reachable from the first moment the bench exists
+            # (it binds inside Ctx.__init__); it is BUILT lazily, on the first
+            # request, so a bench that never calls out still pays nothing.
+            self.server = HServer(lambda: server_factory(self)) \
+                if server_factory else None
+            if self.server:
+                self.server.install()
+                self.server.poll_thread = threading.get_ident()
+                # Roads as they are from before the bench exists (T1: "LAN
+                # dark throughout" means dark at enrolment too).
+                if road_modes is None:
+                    road_modes = type(self).default_road_modes
+                for road, road_mode in (road_modes or {}).items():
+                    self.server.set_road(road, road_mode)
             if n_samples is not None:
                 old = rf.N_SAMPLES
                 rf.N_SAMPLES = n_samples
@@ -114,13 +160,37 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 if n_samples is not None:
                     rf.N_SAMPLES = old
             self.printed = LedgerDict(self.ledger)
-            self.server = HServer(lambda: server_factory(self)) \
-                if server_factory else None
-            if self.server:
-                self.server.install()
             self._before_restart = []
             self.torn = None
             self._attach_reader()
+            self.settle_uploader()
+
+        def settle_uploader(self):
+            """The uploader finishes what it was woken for (v4 only)."""
+            wait = getattr(self.m, "_uploader_wait_idle", None)
+            up = getattr(self.m, "_uploader", None)
+            thread = getattr(up, "thread", None)
+            if callable(wait):
+                # Idle, or dead of a kill: a thread that died mid-cycle can
+                # leave a wake pending (its own journal write woke it) that
+                # nothing will ever take, so "idle" alone would wait 120 s.
+                deadline = time.monotonic() + 120.0
+                while not wait(0.2):
+                    if OFF_THREAD_KILLS and thread is not None \
+                            and not thread.is_alive():
+                        break
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(
+                            "the bench's uploader did not go idle in 120 s")
+            if OFF_THREAD_KILLS:
+                # The process died on the uploader thread (see hgateway): the
+                # poll had finished, the bench had not — restart it.
+                if thread is not None:
+                    thread.join(30.0)
+                del OFF_THREAD_KILLS[:]
+                self.kills += 1
+                self.gw.plan = None
+                self.restart()
 
         # ── serial, through the module's own reader (v4) ──
         def _attach_reader(self):
@@ -142,7 +212,9 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
 
         def poll(self):
             if self.source != "serial" or not reader_seam:
-                return Ctx.poll(self)
+                Ctx.poll(self)
+                self.settle_uploader()
+                return
             try:
                 self._deliver_frames()
                 lh.poll(self.m, self.now)
@@ -150,17 +222,123 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 self.kills += 1
                 self.gw.plan = None
                 self.restart()
+            self.settle_uploader()
             self.k += 1
 
         def restart(self):
             hooks, self._before_restart = self._before_restart, []
+            state = None
+            if v2_target:
+                try:
+                    state = self.m.serialize_state()
+                except Exception:
+                    state = None
             for fn in hooks:
                 fn()
-            Ctx.restart(self)
+            if state and state.get("lem_v2"):
+                # LabStation restores a module from its saved canvas state —
+                # all of it, not only the uid the phase-1 harness passes.
+                try:
+                    self.m.shutdown()
+                except Exception:
+                    pass
+                self.restarts += 1
+                self.m = lh.new_bench(self.gw)
+                self.m.restore_state(state)
+                if self.m.machine() is None:
+                    raise RuntimeError("restart did not bind")
+            else:
+                Ctx.restart(self)
             self._attach_reader()
+            self.settle_uploader()
 
         def before_next_restart(self, fn):
             self._before_restart.append(fn)
+
+        # ── transfer v2: what a person and the server do (v4 only) ──
+        def wipe_journal(self):
+            """The bench's whole journal folder is deleted (a new PC, a
+            well-meant clean-up): segments, journal.meta, cursor.json,
+            config.json and bench.key alike. The canvas file survives."""
+            d = self.journal_dir()
+            if not os.path.isdir(d):
+                raise RuntimeError("no journal folder to wipe at %s" % d)
+            shutil.rmtree(d)
+            self.wiped = True
+
+        def approve_reenrolment(self):
+            """A person approves the bench's re-enrolment in Settings ›
+            Transfer — through the server's own endpoint, signed in."""
+            client = self.server.app.test_client()
+            r = client.post("/api/login", json={"username": "kaden",
+                                                "password": "good"})
+            if r.status_code != 200:
+                raise RuntimeError("gate login failed: %s" % r.status_code)
+            r = client.post("/api/transfer/benches/%s/approve" % self.uid)
+            return r.status_code
+
+        def lem_store(self):
+            from .servers import find_store_gateway
+            Store = find_store_gateway()
+            if Store is None or not self.server.app.config.get("LEM_STORE"):
+                raise Unsupported("the target's server has no LEM store")
+            return Store(self.server.app.config["LEM_STORE"])
+
+        def set_lem_factor(self, test, correction):
+            """A person saves a correction factor in LEM (the store), and the
+            server's snapshot picks it up — what the floor's save does."""
+            store = self.lem_store()
+            for sql, args in (
+                    ("DELETE FROM lem_correction_factors WHERE machine_uid = ? "
+                     "AND test_name = ?", [self.uid, test]),
+                    ("INSERT INTO lem_correction_factors (machine_uid, "
+                     "test_name, correction) VALUES (?, ?, ?)",
+                     [self.uid, test, correction])):
+                res = store.sql(sql, args)
+                if res.get("error"):
+                    raise RuntimeError("factor write: " + res["error"])
+            self.server.app.config["SNAPSHOTS"].refresh()
+
+        def replay_bench_rows(self):
+            """A second writer replays every machine-log row this bench's
+            sync put in the store — a backup's rows merged back by hand, an
+            import re-run, a second ingest process — through the store's own
+            write path, exactly as written (uid, epoch, seq included).
+
+            Returns (rows tried, rows the store ACCEPTED). The store holds
+            the record's uniqueness of (uid, epoch, seq) itself; the sync's
+            ingest checks for a held seq before it writes, so no bench
+            behaviour alone ever asks the store that question, and this
+            does. A failed read of the rows raises: "nothing to replay" from
+            a read that failed would pass the check vacuously."""
+            store = self.lem_store()
+            path = os.environ["LEM_STORE_PATH"]
+            cols = ("machine_uid", "ts", "kind", "lab_id", "test_name",
+                    "value", "detail", "origin", "bench_epoch", "bench_seq",
+                    "content_key")
+            con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+            con.row_factory = sqlite3.Row
+            try:
+                rows = [tuple(r) for r in con.execute(
+                    "SELECT %s FROM lem_machine_log WHERE machine_uid = ? AND "
+                    "bench_seq IS NOT NULL ORDER BY id" % ", ".join(cols),
+                    [self.uid])]
+            finally:
+                con.close()
+            accepted = 0
+            try:
+                for r in rows:
+                    res = store.sql("INSERT INTO lem_machine_log (%s) VALUES "
+                                    "(%s)" % (", ".join(cols),
+                                              ", ".join("?" for _ in cols)),
+                                    list(r))
+                    if not res.get("error"):
+                        accepted += 1
+            finally:
+                close = getattr(store, "close", None)
+                if callable(close):
+                    close()
+            return len(rows), accepted
 
         # ── the journal on disk ──
         def journal_dir(self):
@@ -275,6 +453,7 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 if hits["n"] == n:
                     world._kill = None
                     world._kills_fired.append(name)
+                    note_kill("fault point " + name)
                     raise Kill("fault point " + name)
                 return None
             self._kill = name
@@ -291,8 +470,16 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
 
         # ── stored rows ──
         def store_kind(self):
+            """Where this bench's record went. The LEM store when the server
+            has one AND the bench synced v2 into it; a bench on the old road
+            (a 404 answer, legacy projection) still writes LabCore's
+            lem_machine_log, and that is where its record is counted."""
+            forced = getattr(self, "record_in", None)
+            if forced in ("lem", "labcore"):
+                return forced              # the harness's own tests say so
             if self.server is not None and self.server._app is not None \
-                    and getattr(self.server._app, "config", {}).get("LEM_STORE"):
+                    and getattr(self.server._app, "config", {}).get("LEM_STORE") \
+                    and self.server.v2_syncs() > 0:
                 return "lem"
             return "labcore"
 
@@ -400,6 +587,14 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 "v2_syncs": v2,
                 "records_resent": srv.records_resent if (srv is not None and v2) else None,
                 "roads_used": srv.roads_used() if srv is not None else [],
+                # LEM requests made on the thread the harness polls on: LEM
+                # I/O on the poll, which §6.3 forbids. Must be 0.
+                "lem_requests_on_poll_thread":
+                    srv.poll_thread_requests if srv is not None else None,
+                # Exceptions the bench's uploader caught (it never dies of
+                # one; a crash must not read as "LEM was unreachable").
+                "uploader_errors": getattr(getattr(self.m, "_uploader", None),
+                                           "errors", None),
                 "max_sends_per_cell": max(gw.cell_sends.values()) if gw.cell_sends else 0,
                 # Re-read prints the journal's store check dropped (v4). None
                 # on a target with no journal: "nothing suppressed" and "cannot
@@ -462,6 +657,22 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 con.close()
 
     return World
+
+
+def _published(gw, v2_target):
+    """The fake LabCore as production has it after a server boot: lem_meta
+    holds the shared live token (no address — a v3.9 bench then pushes
+    nothing, exactly as phase 1 measured). Only for a v2 target: the v3.9
+    reproduction stays byte-for-byte phase 1's world."""
+    if v2_target:
+        from live_presence import META_DDL, META_UPSERT, LIVE_TOKEN_KEY
+        from .servers import SHARED_TOKEN
+        for sql, args in ((META_DDL, None),
+                          (META_UPSERT, [LIVE_TOKEN_KEY, SHARED_TOKEN])):
+            res = gw.fake.sql(sql, args)
+            if res.get("error"):
+                raise RuntimeError("lem_meta seed: " + res["error"])
+    return gw
 
 
 _WORLDS = {"n": 0}

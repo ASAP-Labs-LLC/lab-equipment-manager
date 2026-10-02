@@ -27,7 +27,15 @@ The rules each test below pins, and the failure it guards against:
   * roads are sticky, a dark LAN sits out ten minutes, and both roads down
     back off 30, 60, 120, then 300 s.
 
-The fake LEM below speaks the server's wire contract (bench_api.py); the
+These tests came with T-P3's inline v2 sync. That sync and T-P8's uploader
+thread were the same road built twice; the merged module keeps the uploader
+(the poll never does LEM I/O), so the tests here drive a poll and then give
+the uploader the poll interval to do its work (`settle`), and talk to the
+shared wire fake `fake_lem_v2.FakeLem` — which also answers /checkpoint and
+the other paths the uploader uses, where a fake that 404'd them would read
+as "an old server". Every rule below is unchanged.
+
+The fake LEM speaks the server's wire contract (bench_api.py); the
 server side is held to the same contract by the web server's own tests, and
 `LEM Web Server/tests/test_bench_v2_module_road.py` runs THIS module against
 the REAL server.
@@ -45,6 +53,7 @@ from datetime import datetime, timedelta
 import pytest
 
 import lem_station_module as mod
+from fake_lem_v2 import FakeLem as _WireLem
 from lem_station_module import Machine
 
 from test_module_qt import make_module
@@ -60,106 +69,36 @@ def canonical(body):
                       ensure_ascii=False, default=str).encode("utf-8")
 
 
-class FakeLem:
-    """LEM's v2 bench API, in memory: enrol, sync, config. `mode` per road:
-    up / down (refused, nothing reaches LEM) / 404 (an old server) / lose
-    (LEM stores the sync, the answer never arrives — N3)."""
+class FakeLem(_WireLem):
+    """`fake_lem_v2.FakeLem`, with the views these tests read: every call as
+    (road, method, path), LEM's run lab_ids, the sync count, the acked
+    cursor, and "lose" as a road mode (LEM stores the sync, the answer never
+    arrives — N3)."""
 
     def __init__(self):
-        self.modes = {"lan": "up", "public": "up"}
-        self.calls = []                 # (road, method, path)
-        self.records = {}               # (epoch, seq) -> body
-        self.received = []              # every (epoch, seq) ever sent
-        self.rev = "rev-1"
-        self.corrections = []
-        self.token = "bench-token-1"
-        self.bad_crc = 0
+        super().__init__(uid=UID, shared=SHARED)
+        self._lose = False
 
-    def road_of(self, url):
-        return "lan" if urllib.parse.urlsplit(url).netloc == "192.168.1.5:5557" \
-            else "public"
+    @property
+    def calls(self):
+        return [(r["road"], r["method"], r["path"]) for r in self.requests]
+
+    def set_modes(self, **modes):
+        lose = any(v == "lose" for v in modes.values())
+        self._lose = lose
+        self.modes.update({k: ("up" if v == "lose" else v)
+                           for k, v in modes.items()})
+        self.lost_responses = 10 ** 6 if lose else 0
 
     def acked(self, epoch):
-        n = 0
-        while (epoch, n + 1) in self.records:
-            n += 1
-        return n
+        return self.cursor.get(epoch, 0)
 
     def syncs(self):
-        return sum(1 for _r, m, p in self.calls if m == "POST" and p.endswith("/sync"))
-
-    def urlopen(self, req, data=None, timeout=None, **kw):
-        url = req.full_url
-        road = self.road_of(url)
-        method = req.get_method()
-        path = urllib.parse.urlsplit(url).path
-        self.calls.append((road, method, path))
-        mode = self.modes[road]
-        if mode == "down":
-            raise urllib.error.URLError(ConnectionRefusedError(61, "refused"))
-        if mode == "404":
-            raise urllib.error.HTTPError(url, 404, "NOT FOUND", {},
-                                         io.BytesIO(b'{"error":"not found"}'))
-        headers = {k.lower(): v for k, v in req.header_items()}
-        assert headers.get("user-agent", "").startswith("LEM-Station/"), headers
-        status, body = self.handle(method, path, headers, req.data)
-        if mode == "lose":
-            raise socket.timeout("timed out")
-        raw = json.dumps(body).encode("utf-8")
-        if status >= 400:
-            raise urllib.error.HTTPError(url, status, "ERR", {}, io.BytesIO(raw))
-
-        class Resp(io.BytesIO):
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-        r = Resp(raw)
-        r.status = status
-        return r
-
-    def handle(self, method, path, headers, data):
-        if path.endswith("/enroll"):
-            if headers.get("x-lem-token") != SHARED:
-                return 401, {"error": "Not authorised."}
-            return 200, {"token": self.token, "machine_uid": UID}
-        if headers.get("x-lem-bench-token") != self.token:
-            return 401, {"error": "bad token"}
-        if path.endswith("/config"):
-            return 200, {"machine_uid": UID, "snapshot_age_seconds": 1.0,
-                         "corrections": list(self.corrections),
-                         "qc_samples": [], "qc_targets": [], "qc_specs": [],
-                         "maintenance": [], "override": "",
-                         "config_rev": self.rev, "last_qc": []}
-        if path.endswith("/adoption"):
-            # §10.2's digest: this fake LEM has recorded nothing before the
-            # bench's first v4 start, so there is no history to adopt.
-            return 200, {"machine_uid": UID, "counts": {}, "rows": 0,
-                         "first_ts": None, "recent": []}
-        if path.endswith("/sync"):
-            doc = json.loads(data.decode("utf-8"))
-            epoch = doc["epoch"]
-            acked = self.acked(epoch)
-            if doc["from_seq"] > acked + 1:
-                return 409, {"error": "cursor", "acked": acked}
-            for i, rec in enumerate(doc["records"]):
-                assert rec["seq"] == doc["from_seq"] + i, "not contiguous"
-                body = {k: v for k, v in rec.items() if k != "crc"}
-                if rec.get("crc") != "%08x" % (zlib.crc32(canonical(body)) & 0xffffffff):
-                    self.bad_crc += 1
-                    return 400, {"error": "crc"}
-                self.received.append((epoch, rec["seq"]))
-                self.records.setdefault((epoch, rec["seq"]), body)
-            return 200, {"epoch": epoch, "acked": self.acked(epoch),
-                         "durable": 0, "notes": [], "config_rev": self.rev,
-                         "resolutions": [], "machine": "active",
-                         "need_snapshot": []}
-        return 404, {"error": "no route"}
+        return sum(1 for _r, m, p in self.calls
+                   if m == "POST" and p.endswith("/sync"))
 
     def runs(self):
-        return sorted(b["lab_id"] for b in self.records.values()
-                      if b.get("kind") == "run")
+        return sorted(r["lab_id"] for r in super().runs())
 
 
 class LabCore:
@@ -230,8 +169,12 @@ class LabCore:
 def world(qapp, monkeypatch, tmp_path):
     monkeypatch.setenv("LEM_JOURNAL_DIR", str(tmp_path / "journal"))
     monkeypatch.setattr(mod, "_in_thread", lambda fn, cb: cb(fn()))
+    # A bind wakes the uploader at `bench_now()`; on the wall clock that is
+    # a day after T0, and the roads' ten-minute re-probe would then read the
+    # first poll as time running backwards. One clock, as the gate does.
+    monkeypatch.setattr(mod, "bench_now", lambda: T0)
     lem = FakeLem()
-    monkeypatch.setattr("urllib.request.urlopen", lem.urlopen)
+    lem.install(monkeypatch)
     made = []
 
     class World:
@@ -257,7 +200,13 @@ def world(qapp, monkeypatch, tmp_path):
                 methods=["Density"], selector=mod.Selector(mode="cell", index=1))]),
             publish=False)
         made.append(m)
+        settle(m)
         return m
+
+    def settle(m):
+        assert m._uploader_wait_idle(30.0), "the uploader never went idle"
+        up = m._uploader
+        assert up is None or up.errors == 0, up.last_error
 
     def poll(m, k, prints=1):
         with open(w.path, "a") as f:
@@ -265,6 +214,7 @@ def world(qapp, monkeypatch, tmp_path):
                 f.write("%s,0.%04d\n" % (LABS[w.n], 8000 + w.n))
                 w.n += 1
         m.process_now(T0 + timedelta(seconds=30 * k))
+        settle(m)
     w.bench, w.poll = bench, poll
     yield w
     for m in made:
@@ -272,17 +222,47 @@ def world(qapp, monkeypatch, tmp_path):
 
 
 class TestNoTokenNoCall:
-    def test_a_bench_that_cannot_prove_who_it_is_calls_nobody(self, world):
-        """No bench.key and no shared token in `lem_meta`: today's road,
-        exactly, and not one request — an unenrollable bench knocking every
-        poll is load for nothing."""
+    def test_a_bench_that_cannot_prove_who_it_is_takes_todays_road(self, world):
+        """No bench.key and no shared token in `lem_meta`: no v4 server has
+        ever published itself to this LabCore, so this is today's road,
+        exactly — results file, and LEM is not knocked on every poll (an
+        unenrollable bench knocking is load for nothing).
+
+        One question IS asked, once: LEM's ping, before the token read. The
+        order is deliberate. A bench that binds while LEM is dark must not
+        cost LabCore anything while it does not know what LEM is (N404/N503:
+        0 LabCore ops while unknown), so the token is read only after LEM has
+        answered; here it answers, the token read finds none, and that —
+        a successful read of an empty lem_meta, never a FAILED read — is
+        what sends the bench the old way. It asks again every 15 minutes,
+        not every poll: 20 polls (10 minutes) cost one ping in all."""
         lab = LabCore(token=None)
+        m = world.bench(lab)
+        for k in range(20):
+            world.poll(m, k)
+        assert world.lem.calls == [("lan", "GET", "/api/v2/ping")]
+        assert m._v2_active() is False
+        assert sorted(lab.cells()) == LABS[:20]
+
+    def test_a_failed_token_read_is_not_an_empty_one(self, world):
+        """The same bench, but LabCore's read of lem_meta FAILS. That says
+        nothing about whether a token exists, so the bench must not decide
+        it is on an old fleet: it stays v2 (holding, as in any outage) and
+        asks again later."""
+        lab = LabCore(token=None)
+        real = lab.read_sql
+
+        def failing(sql, args=None, **kw):
+            if "lem_meta" in sql:
+                lab.calls.append(("read", sql))
+                return {"error": "LabCore is busy", "busy": True}
+            return real(sql, args, **kw)
+        lab.read_sql = failing
         m = world.bench(lab)
         for k in range(3):
             world.poll(m, k)
-        assert world.lem.calls == []
-        assert m._v2_active() is False
-        assert sorted(lab.cells()) == LABS[:3]
+        assert m._v2_active() is True
+        assert lab.lem_calls() == [c for c in lab.calls if "lem_meta" in c[1]]
 
 
 class TestV2Mode:
@@ -309,16 +289,15 @@ class TestV2Mode:
         m = world.bench(lab)
         world.poll(m, 0)
         mark = len(lab.calls)
-        world.lem.modes.update(lan="down", public="down")
+        world.lem.set_modes(lan="down", public="down")
         for k in range(1, 21):
             world.poll(m, k)
         assert lab.lem_calls(mark) == []
-        world.lem.modes.update(lan="up", public="up")
+        world.lem.set_modes(lan="up", public="up")
         for k in range(21, 40):                       # past the 300 s backoff
             world.poll(m, k, prints=0)
         assert world.lem.runs() == LABS[:21]
-        assert len(world.lem.received) == len(set(world.lem.received)), \
-            "a record was sent to LEM twice"
+        assert world.lem.resent == 0, "a record was sent to LEM twice"
         assert lab.lem_calls(mark) == []
 
     def test_D2_results_hold_while_LEM_cannot_confirm_the_factor(self, world):
@@ -328,16 +307,50 @@ class TestV2Mode:
         lab = LabCore()
         m = world.bench(lab)
         world.poll(m, 0)
-        world.lem.modes.update(lan="down", public="down")
+        world.lem.set_modes(lan="down", public="down")
         for k in range(1, 6):                          # 150 s dark
             world.poll(m, k)
         held = [lab_id for lab_id in LABS[1:6] if lab_id not in lab.cells()]
         assert held, "nothing was held while LEM could not confirm the factor"
         assert set(held) >= set(LABS[3:6]), held
-        world.lem.modes.update(lan="up", public="up")
+        world.lem.set_modes(lan="up", public="up")
         for k in range(6, 30):
             world.poll(m, k, prints=0)
         assert sorted(lab.cells()) == LABS[:6]
+
+    def test_a_factor_changed_in_LEM_reaches_the_very_next_print(self, world):
+        """The 60 s rule says a factor may be applied if LEM confirmed it
+        within the last minute — but a minute-old confirmation says nothing
+        about a factor a person saved in LEM ten seconds ago. With the roads
+        UP, the critic (round 3) found the two readings printed straight
+        after a factor change filed to LabCore with the factor LEM had
+        already replaced: values LabCore keeps, that LEM no longer stands
+        behind. A reading is now filed only on a confirmation made AFTER it
+        was read — the uploader's sync that follows the poll — and with the
+        factor that sync confirmed. That sync runs within the same poll
+        interval, so nothing waits a poll longer, and the poll itself still
+        never talks to LEM (`test_the_poll_thread_never_talks_to_lem`)."""
+        lab = LabCore()
+        m = world.bench(lab)
+        world.poll(m, 0)
+        world.poll(m, 1)
+        assert sorted(lab.cells()) == LABS[:2]
+        world.lem.corrections = [{"machine_uid": UID, "test_name": "Density",
+                                  "correction": 0.001}]
+        world.lem.config_rev = "rev-factor-saved-in-LEM"
+        for k in range(2, 5):
+            world.poll(m, k, prints=2)
+            # filed in the poll interval it was read in, not one later
+            assert set(LABS[:2 + 2 * (k - 1)]) <= set(lab.cells()), k
+        cells = lab.cells()
+        stale = [lab_id for lab_id in LABS[2:8]
+                 if abs(float(cells[lab_id]) -
+                        (0.8 + LABS.index(lab_id) / 10000) - 0.001) > 1e-9]
+        assert stale == [], "filed with the factor LEM had replaced: %s" % (
+            {k: cells[k] for k in stale})
+        for lab_id in LABS[:2]:                        # before the change
+            assert abs(float(cells[lab_id]) -
+                       (0.8 + LABS.index(lab_id) / 10000)) < 1e-9
 
     def test_a_restart_in_v2_stays_v2_while_LEM_is_dark(self, world):
         """The journal remembers the handshake: a LabStation restart during an
@@ -346,7 +359,7 @@ class TestV2Mode:
         m = world.bench(lab)
         world.poll(m, 0)
         m.shutdown()
-        world.lem.modes.update(lan="down", public="down")
+        world.lem.set_modes(lan="down", public="down")
         m2 = world.bench(lab)
         mark = len(lab.calls)
         for k in range(1, 5):
@@ -358,9 +371,9 @@ class TestV2Mode:
         lab = LabCore()
         m = world.bench(lab)
         world.poll(m, 0)
-        world.lem.modes.update(lan="lose", public="lose")
+        world.lem.set_modes(lan="lose", public="lose")
         world.poll(m, 1, prints=3)                     # LEM stored them
-        world.lem.modes.update(lan="up", public="up")
+        world.lem.set_modes(lan="up", public="up")
         for k in range(2, 20):
             world.poll(m, k, prints=0)
         assert world.lem.runs() == LABS[:4]
@@ -374,9 +387,15 @@ class TestV2Mode:
         lab = LabCore()
         m = world.bench(lab)
         world.poll(m, 0)
-        world.lem.modes.update(lan="down", public="down")
-        world.poll(m, 1, prints=2)                     # journaled, not acked
-        world.lem.modes.update(lan="404", public="404")
+        # The first v4 start holds its file until LEM's adoption digest has
+        # come back (§10.2: the uploader asks, the poll never waits), so the
+        # first print is read — and acked — one poll later.
+        world.poll(m, 1, prints=0)
+        assert LABS[0] in world.lem.runs(), (
+            "the premise: LEM acked the first reading before the outage")
+        world.lem.set_modes(lan="down", public="down")
+        world.poll(m, 2, prints=2)                     # journaled, not acked
+        world.lem.set_modes(lan="404", public="404")
         for k in range(12, 16):                        # past the backoff
             world.poll(m, k, prints=1)
         assert m._v2_active() is False
@@ -385,6 +404,49 @@ class TestV2Mode:
         assert set(LABS[1:3]) <= set(landed), landed
         assert LABS[0] not in landed, (
             "a reading LEM had already acked was sent to LabCore as well")
+
+
+    def test_a_bench_set_up_against_an_old_server_publishes_its_setup_there(
+            self, qapp, world, monkeypatch):
+        """M3 from the very first moment: a v4 bench set up on a floor whose
+        LEM is v3.9 (it answers 404). The setup dialog's save happens while
+        the bench's state is still UNKNOWN, so it is journaled as a `config`
+        record — and the uploader's first probe hears the 404 before the
+        first poll. The fall-back that projects journaled bookkeeping to
+        LabCore used to fire only on a poll that SAW the bench go from v2 to
+        legacy; a bench that was never seen as v2 by a poll skipped it, and
+        its configuration reached LabCore never. On an old server LabCore's
+        lem_machine_config is the only place the floor reads a bench's setup
+        from, and the only place a restart that has lost config.json can bind
+        from (the gate's A1j: "restart did not bind")."""
+        lab = LabCore()
+        world.lem.set_modes(lan="404", public="404")
+        for name, fn in (("labcore_write", lab.write),
+                         ("labcore_sql", lab.sql),
+                         ("labcore_read_sql", lab.read_sql),
+                         ("labcore_is_running", lab.is_running)):
+            monkeypatch.setitem(mod.__dict__, name, fn)
+        m = make_module()
+        try:
+            m.set_machine(Machine(
+                uid=UID, title="Bench b1", source_type="single_csv",
+                csv_path=str(world.path), delimiter=",",
+                lab_id=mod.Selector(mode="cell", index=0),
+                mappings=[mod.MethodMapping(
+                    methods=["Density"],
+                    selector=mod.Selector(mode="cell", index=1))]),
+                publish=True)
+            assert m._uploader_wait_idle(30.0)
+            assert m._v2_active() is False, "the 404 was not heard at bind"
+            world.poll(m, 1, prints=1)
+            rows = lab.db.execute(
+                "SELECT machine_uid, title FROM lem_machine_config").fetchall()
+            assert [tuple(r) for r in rows] == [(UID, "Bench b1")]
+            world.poll(m, 2, prints=0)
+            assert len(lab.db.execute(
+                "SELECT * FROM lem_machine_config").fetchall()) == 1
+        finally:
+            m.shutdown()
 
 
 class TestRoads:
@@ -398,15 +460,40 @@ class TestRoads:
         assert len(lan) == 1, "the dark LAN was retried within ten minutes"
         assert m._v2_active()
 
-    def test_both_roads_down_back_off_30_60_120_then_300(self):
-        link = mod.V2Link(UID, mod.v2_roads(""))
-        waits = []
-        for _ in range(5):
-            link.backoff(T0)
-            waits.append((link.retry_at - T0).total_seconds())
-        assert waits == [30, 60, 120, 300, 300]
-        link.backoff(T0, retry_after=900)
-        assert (link.retry_at - T0).total_seconds() == 900
+    def test_both_roads_down_back_off_30_60_120_then_300(self, world):
+        """Measured on the bench's own attempts, not on a helper: with both
+        roads refusing, the gaps between the uploader's tries are 30, 60,
+        120, then 300 s, and stay at 300 — so a long outage costs LEM's
+        roads one try per five minutes, not one per poll."""
+        lab = LabCore()
+        m = world.bench(lab)
+        world.poll(m, 0, prints=0)
+        world.lem.set_modes(lan="down", public="down")
+        tries = []
+        st = m._transfer
+        for k in range(1, 60):                       # 30 minutes
+            world.poll(m, k, prints=0)
+            with st.lock:
+                at = st.last_attempt
+            if not tries or tries[-1] != at:
+                tries.append(at)
+        gaps = [round(b - a) for a, b in zip(tries, tries[1:])]
+        assert gaps[:5] == [30, 60, 120, 300, 300], gaps
+
+    def test_a_503_is_held_off_for_its_retry_after_not_a_fallback(self, world):
+        """A 503 with Retry-After says "busy, come back then": the bench
+        waits that long (the fake says 30 s) and stays a v2 bench."""
+        lab = LabCore()
+        m = world.bench(lab)
+        world.poll(m, 0, prints=0)
+        world.lem.set_modes(lan="503", public="503")
+        world.poll(m, 1, prints=1)
+        st = m._transfer
+        with st.lock:
+            gap = st.next_attempt - st.last_attempt
+        assert gap == 30
+        assert m._v2_active() is True
+        assert lab.lem_calls() == [c for c in lab.calls if "lem_meta" in c[1]]
 
     def test_the_agent_names_the_bench(self):
         """Cloudflare answers urllib's default agent with 1010 (§6.2)."""
@@ -414,39 +501,51 @@ class TestRoads:
 
 
 class TestJournalReadBack:
-    def test_records_after_is_contiguous_and_bounded(self, tmp_path):
+    def test_records_from_is_contiguous_and_bounded(self, tmp_path):
+        """A sync carries records from acked+1 AS WRITTEN (crc included, which
+        is what LEM checks), at most `limit` of them; nothing past the end."""
         j = mod.BenchJournal(str(tmp_path / "j"), UID)
         try:
             j.append([{"kind": "comment", "n": i} for i in range(7)])
-            recs = j.records_after(2, limit=3)
+            recs = j.records_from(3, limit=3)
             assert [r["seq"] for r in recs] == [3, 4, 5]
             assert all("crc" in r for r in recs)
-            assert j.records_after(7) == []
+            assert j.records_from(8) == []
         finally:
             j.close()
 
     def test_an_ack_marks_the_readings_projected(self, tmp_path):
+        """LEM's ack is the projection: a reading at or below `acked` is in
+        LEM's record, with no separate mark to write or lose."""
         j = mod.BenchJournal(str(tmp_path / "j"), UID)
         try:
             j.append([{"kind": "run", "lab_id": "A", "row": {}, "log": []},
                       {"kind": "run", "lab_id": "B", "row": {}, "log": []}])
-            j.mark_projected_through(1)
+            j.set_acked(1)
             assert [r["projected"] for r in j.open_runs()] == [True, False]
         finally:
             j.close()
 
 
 class TestEventsBecomeRecords:
-    def test_each_kind_lands_as_the_record_the_store_reads(self):
-        def ev(kind, **kw):
-            return mod.build_log_insert(UID, kind, T0, **kw)
-        recs, kept = mod.journal_events_as_records([
-            ev("comment", detail={"note": "hi"}),
-            ev("status_change", detail={"to": "RED"}),
-            ev("held_expired", lab_id="L1"),
-            mod._log_entry(ev("run", lab_id="L2")[1], "e:1")])
-        assert kept == []
-        assert [r["kind"] for r in recs] == ["comment", "given_up"], (
-            "status_change rides the `state` record; a reading's own rows "
-            "ride its `run` record")
-        assert recs[0]["detail"] == {"note": "hi"}
+    def test_each_kind_lands_as_the_record_the_store_reads(self, world):
+        """On a v2 bench `_log_event` journals a record LEM turns into the
+        same machine-log row: a comment as `comment`, an expired held reading
+        as `given_up`; a status change is NOT journaled on its own (the
+        `state` record carries it), and none of it reaches LabCore."""
+        lab = LabCore()
+        m = world.bench(lab)
+        world.poll(m, 0, prints=0)
+        mark = len(lab.calls)
+        before = len(world.lem.records)
+        m._log_event("comment", detail={"note": "hi"}, now=T0)
+        m._log_event("status_change", detail={"to": "RED"}, now=T0)
+        m._log_event("held_expired", lab_id="L1", now=T0)
+        world.poll(m, 1, prints=0)
+        kinds = [r["kind"] for r in world.lem.records[before:]
+                 if r["kind"] in ("comment", "given_up", "status_change")]
+        assert kinds == ["comment", "given_up"]
+        comment = next(r for r in world.lem.records[before:]
+                       if r["kind"] == "comment")
+        assert comment["detail"] == {"note": "hi"}
+        assert lab.lem_calls(mark) == []

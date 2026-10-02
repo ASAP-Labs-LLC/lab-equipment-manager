@@ -215,6 +215,11 @@ def lem(labstation, gateway, clock):
             "labcore_read_sql": gateway.read_sql,
             "labcore_is_running": lambda: True,
         })
+    # A lab day is a v4 bench on TODAY's v3.9 LEM server, which answers v2
+    # with 404: the bench starts where that leaves it, on the legacy road
+    # (see tests/old_server.py — an unknown v2 state now holds instead).
+    import old_server
+    mod._TransferState = old_server.transfer_state_class(mod._TransferState)
     mod._REPLAY_CLASS = cls
     return mod
 

@@ -32,9 +32,11 @@ What HServer counts: requests per road and per path, v2 sync bodies, and
 was already received in an earlier request (spec §6.1 / T4).
 """
 import email.message
+import gzip
 import io
 import json
 import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,6 +45,12 @@ from collections import Counter
 from . import netguard
 
 ROAD_HOSTS = {"192.168.1.5:5557": "A", "lem.asaplabs.net": "B"}
+#: Sync bodies the harness could not read, process-wide. Raising inside
+#: urlopen is not enough on its own: the bench's uploader treats any
+#: exception as a dark road and carries on. The gate reports every entry
+#: here as a harness error, so an uncounted body can never pass as "0".
+OBSERVE_ERRORS = []
+
 MODES = ("up", "down", "drop_before", "lose_response", "404", "503",
          "1010-without-UA")
 
@@ -106,6 +114,13 @@ class HServer:
         self._seen_pk = set()
         self.records_received = 0
         self.records_resent = 0
+        # Which thread made each request. `poll_thread` is the thread the
+        # harness polls on; a request from it is LEM I/O on the poll, which
+        # transfer §6.3 forbids (`poll_thread_requests` must stay 0).
+        self.poll_thread = None
+        self.poll_thread_requests = 0
+        self.request_threads = Counter()
+        self.user_agents = Counter()
 
     # ── configuration ──
     def set_road(self, road, mode, times=None):
@@ -150,6 +165,11 @@ class HServer:
                 self._remaining[road] = None
         method = req.get_method()
         path = parts.path + (("?" + parts.query) if parts.query else "")
+        ident = threading.get_ident()
+        self.request_threads[ident] += 1
+        if self.poll_thread is not None and ident == self.poll_thread:
+            self.poll_thread_requests += 1
+        self.user_agents[(req.get_header("User-agent") or "")[:40]] += 1
         self.requests[(road, method, parts.path)] += 1
         self.outcomes[(road, mode)] += 1
         if mode == "down":
@@ -190,10 +210,23 @@ class HServer:
         if method != "POST" or not path.startswith("/api/v2/bench/") \
                 or not path.endswith("/sync"):
             return
+        raw = body or b"{}"
+        if raw[:2] == b"\x1f\x8b":              # Content-Encoding: gzip
+            try:
+                raw = gzip.decompress(raw)
+            except (OSError, EOFError) as exc:
+                OBSERVE_ERRORS.append("gzip: %s" % exc)
+                raise RuntimeError("HServer: a gzip sync body the harness "
+                                   "cannot read (%s) — its records cannot be "
+                                   "counted" % exc)
         try:
-            doc = json.loads(body or b"{}")
-        except Exception:
-            return
+            doc = json.loads(raw)
+        except ValueError as exc:
+            OBSERVE_ERRORS.append("json: %s" % exc)
+            # Skipping it would count its records as never sent — a resend
+            # count of 0 that only means "not looked at".
+            raise RuntimeError("HServer: a sync body the harness cannot read "
+                               "(%s) — its records cannot be counted" % exc)
         self.sync_bodies.append(doc)
         uid = doc.get("machine_uid")
         epoch = doc.get("epoch")

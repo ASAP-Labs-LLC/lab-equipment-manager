@@ -53,11 +53,43 @@ MUTATIONS = {
         "what": "a result write is 'the same write' whatever its value",
         "pattern": r'str\(params\.get\("value"\) or ""\)\)',
         "replace": '"")'},
+    # The store's uniqueness of (uid, epoch, seq), which it enforces TWICE:
+    # the `ux_log_bench` unique index, and the (uid, epoch, seq) arm of the
+    # `lem_log_no_overwrite` trigger (which refuses a colliding insert before
+    # any index is consulted, OR IGNORE included). The first form of this
+    # mutation edited the index only and survived every gate run: with the
+    # trigger still there, no observable thing changed — an equivalent
+    # mutant (test_mutations pins that). Both edits together remove the
+    # constraint the name promises; T2L's second-writer replay must go red.
     "unique_seq_off": {
         "kind": "source", "owner": "P6",
-        "what": "unique (uid, epoch, seq) removed from the store",
-        "pattern": r"CREATE UNIQUE INDEX (IF NOT EXISTS )?ux_log_bench",
-        "replace": r"CREATE INDEX \1ux_log_bench"},
+        "what": "unique (uid, epoch, seq) removed from the store "
+                "(the unique index AND the overwrite trigger's seq arm)",
+        "edits": [
+            {"pattern": r"CREATE UNIQUE INDEX (IF NOT EXISTS )?ux_log_bench",
+             "replace": r"CREATE INDEX \1ux_log_bench"},
+            {"pattern": r'" OR \(NEW\.bench_seq IS NOT NULL AND EXISTS',
+             "replace": r'" OR (0 AND NEW.bench_seq IS NOT NULL AND EXISTS'}]},
+    # The server's resend handling (§6.1 step 3, P7): a record at or below
+    # the cursor's `acked` is skipped, and one already in bench_record is not
+    # written again. Off, a re-sent record is inserted a second time; the
+    # store's own guards then refuse the whole sync (a 503, forever), so the
+    # bench never hears its records acked and never files its held results.
+    # T2L — 240 held prints and lost answers, so hundreds of resends — must
+    # go red, or the gate cannot see the server's de-duplication break.
+    "resend_skip_off": {
+        "kind": "source", "owner": "P7",
+        "what": "the sync stores a re-sent record again (cursor skip and the "
+                "bench_record existence check removed)",
+        "edits": [
+            {"pattern": r"if seq <= acked:\n(\s*)continue( +# a resend: already held)",
+             "replace": r"if False:\n\1continue\2"},
+            {"pattern": r'"kind, ts, body\) SELECT \?, \?, \?, \?, \?, \? WHERE NOT EXISTS "\n'
+                        r'(\s*)"\(SELECT 1 FROM bench_record WHERE machine_uid = \? AND "\n'
+                        r'(\s*)"bench_epoch = \? AND bench_seq = \?\)",',
+             "replace": r'"kind, ts, body) SELECT ?, ?, ?, ?, ?, ? WHERE 1 OR NOT EXISTS "\n'
+                        r'\1"(SELECT 1 FROM bench_record WHERE machine_uid = ? AND "\n'
+                        r'\2"bench_epoch = ? AND bench_seq = ?)",'}]},
     # ── the bench journal (owner P1) ──
     # A serial frame is CONSUMED when the poll takes it off the reader. v4
     # journals it on the reader's thread first; reversed, the frame reaches
@@ -142,8 +174,15 @@ MUTATIONS = {
         "pattern": r'rows = \[r for r in rows if r\.get\(ORIGIN_KEY\) != "recovered"\]',
         "replace": "rows = list(rows)",
         "what": "recovered readings auto-filed (U2 must fail)"},
+    # A bench whose journal is gone reads its file only once LEM has said
+    # where its record ends (P8, `_transfer_blind`). Off, a wiped bench
+    # reads its whole file from the top and sends it all again: T4/T4b's
+    # records_resent leaves 0.
     "blind_mode_off": {
-        "kind": "source", "owner": "P8", "pattern": None, "replace": None,
+        "kind": "source", "owner": "P8",
+        "pattern": r"if journal is None or not journal\.checkpoint_pending\(\):\n"
+                   r"(\s*)return False",
+        "replace": r"if True:\n\1return False",
         "what": "blind mode off: a wiped journal re-sends (T4 floods)"},
 }
 
@@ -160,37 +199,55 @@ def copy_tree(src_root, dst_root):
     return dst_root
 
 
-def apply_source(name, code_root, dst_root):
+def _edits(spec):
+    """A mutation's edits: `edits` (several sites, ALL of which must be
+    found), or the one `pattern`/`replace` pair."""
+    if spec.get("edits"):
+        return list(spec["edits"])
+    if spec.get("pattern"):
+        return [{"pattern": spec["pattern"], "replace": spec["replace"]}]
+    return []
+
+
+def apply_source(name, code_root, dst_root, edits=None):
     """Copy, edit, and return (dst_root, matches). matches == 0 means
-    UNAVAILABLE and nothing was edited."""
+    UNAVAILABLE and nothing was edited — including when ANY one of a
+    mutation's edits finds no code: half a mutation breaks less than it
+    says. `edits` overrides the mutation's own (the tests use it to apply
+    a subset)."""
     spec = MUTATIONS[name]
     if spec["kind"] != "source":
         raise ValueError(name + " is not a source mutation")
-    if not spec.get("pattern"):
+    edits = _edits(spec) if edits is None else list(edits)
+    if not edits:
         return None, 0
-    rx = re.compile(spec["pattern"])
-    hits = []
-    for sub in CODE_DIRS:
-        for dirpath, dirnames, files in os.walk(os.path.join(code_root, sub)):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-            for f in files:
-                if f.endswith(".py"):
-                    p = os.path.join(dirpath, f)
-                    with open(p, encoding="utf-8") as fh:
-                        if rx.search(fh.read()):
-                            hits.append(os.path.relpath(p, code_root))
-    if not hits:
-        return None, 0
+    plan = []                                  # (compiled, replace, [rel])
+    for e in edits:
+        rx = re.compile(e["pattern"])
+        hits = []
+        for sub in CODE_DIRS:
+            for dirpath, dirnames, files in os.walk(os.path.join(code_root, sub)):
+                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+                for f in files:
+                    if f.endswith(".py"):
+                        p = os.path.join(dirpath, f)
+                        with open(p, encoding="utf-8") as fh:
+                            if rx.search(fh.read()):
+                                hits.append(os.path.relpath(p, code_root))
+        if not hits:
+            return None, 0
+        plan.append((rx, e["replace"], hits))
     copy_tree(code_root, dst_root)
     n = 0
-    for rel in hits:
-        p = os.path.join(dst_root, rel)
-        with open(p, encoding="utf-8") as fh:
-            src = fh.read()
-        new, k = rx.subn(spec["replace"], src)
-        n += k
-        with open(p, "w", encoding="utf-8") as fh:
-            fh.write(new)
+    for rx, replace, hits in plan:
+        for rel in hits:
+            p = os.path.join(dst_root, rel)
+            with open(p, encoding="utf-8") as fh:
+                src = fh.read()
+            new, k = rx.subn(replace, src)
+            n += k
+            with open(p, "w", encoding="utf-8") as fh:
+                fh.write(new)
     return dst_root, n
 
 
