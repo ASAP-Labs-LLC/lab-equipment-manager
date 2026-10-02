@@ -456,8 +456,9 @@ class TestEveryReaderNamesTheEffectiveView:
         purpose — the list is the decision, not a side effect."""
         _offenders, allowed = self._offenders()
         files = sorted(a.split(":")[0] for a in allowed)
-        assert files == ["lem_store.py", "lem_store.py", "log_mirror.py",
-                         "log_mirror.py",
+        assert files == ["dedupe.py", "dedupe.py",
+                         "lem_store.py", "lem_store.py", "lem_store.py",
+                         "log_mirror.py", "log_mirror.py",
                          "web_app.py", "web_app.py"], allowed
 
     def test_the_check_would_catch_a_split_literal(self, tmp_path):

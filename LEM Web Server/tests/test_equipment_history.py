@@ -1799,9 +1799,17 @@ class TestTheTriggerNamesOneEvent:
         # Gone from what the reader sees — hidden by an annotation, because
         # the record itself is append-only and refuses the DELETE this test
         # used to simulate "aged out of the window" with.
+        # (under an approval: the store refuses a hide without one, D7)
         assert "error" not in gw.sql(
-            "INSERT INTO log_annotation (log_id, label, by, at) "
-            "SELECT id, 'import_leftover', 'test', 't' FROM lem_machine_log")
+            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+            "approved_by, approved_at, decision) SELECT DISTINCT machine_uid,"
+            " 'import_leftover', 'test', 'test', 't', 'approved' "
+            "FROM lem_machine_log_effective")
+        assert "error" not in gw.sql(
+            "INSERT INTO log_annotation (log_id, label, by, at, approval_id) "
+            "SELECT l.id, 'import_leftover', 'test', 't', p.id "
+            "FROM lem_machine_log_effective l JOIN annotation_approval p "
+            "ON p.machine_uid = l.machine_uid")
         out = EquipmentHistory(gw).timeline("m1")
         assert [e.uid for e in out] == ["CA-1"]
         assert out[0].caused_by == ""

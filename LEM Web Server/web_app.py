@@ -7524,4 +7524,8 @@ def create_app(gateway, labcore_gateway=None,
     app.config["DEV_TOOLS"] = dev_tools_allowed(labcore, dev_tools)
     if app.config["DEV_TOOLS"]:
         _register_dev_tools(app, gateway, snapshots)
+    # §10.5: dedupe dry run, per-bench approval, apply, reinstate. On the
+    # store only — `dedupe` refuses any gateway that is not LEM's store.
+    import dedupe_routes
+    dedupe_routes.register(app, gateway)
     return app

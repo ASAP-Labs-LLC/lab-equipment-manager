@@ -122,10 +122,17 @@ class TestSameAnswersAsTheCopy:
 class TestWhereItDiffersOnPurpose:
     def test_hidden_rows_are_hidden(self, store, both):
         _old, new = both
+        # Hidden the only way the store allows: under an approval (D7).
         assert "error" not in store.sql(
-            "INSERT INTO log_annotation (log_id, label, by, at) "
-            "SELECT id, 'replay_duplicate', 'test', 't' FROM lem_machine_log "
-            "WHERE lab_id = '38004'")
+            "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+            "approved_by, approved_at, decision) SELECT DISTINCT machine_uid,"
+            " 'replay_duplicate', 'test', 'test', 't', 'approved' "
+            "FROM lem_machine_log_effective WHERE lab_id = '38004'")
+        assert "error" not in store.sql(
+            "INSERT INTO log_annotation (log_id, label, by, at, approval_id) "
+            "SELECT l.id, 'replay_duplicate', 'test', 't', p.id "
+            "FROM lem_machine_log_effective l JOIN annotation_approval p "
+            "ON p.machine_uid = l.machine_uid WHERE l.lab_id = '38004'")
         assert new.by_lab_id("38004") == []
         assert new.count() == 33
         assert "38004" not in {r["lab_id"] for r in new.search("3800")}

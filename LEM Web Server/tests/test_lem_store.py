@@ -48,6 +48,18 @@ def store(tmp_path):
     s.close()
 
 
+def _approved(store, uid="m1", rule="replay_duplicate"):
+    """An approved `annotation_approval` (D7): the store refuses any hiding
+    annotation that does not name one for the row's bench and rule."""
+    res = store.sql(
+        "INSERT INTO annotation_approval (machine_uid, rule, run_id, "
+        "approved_by, approved_at, decision) VALUES (?, ?, 'test', 'ryan', "
+        "'2026-10-01T09:00:00', 'approved')", [uid, rule])
+    assert "error" not in res, res
+    return store.read_sql("SELECT MAX(id) AS id FROM annotation_approval"
+                          )["rows"][0]["id"]
+
+
 def _log(store, uid="m1", ts="2026-10-01T09:00:00", kind="run", lab="L1",
          value="1.0"):
     res = store.sql(
@@ -250,9 +262,16 @@ class TestTheRecordIsAppendOnly:
             "DELETE FROM log_annotation")["error"]
 
     def test_an_annotation_must_point_at_a_real_row(self, store):
+        # A review label, which needs no approval: what is refused is the
+        # dangling reference itself. (A hiding label is refused earlier
+        # still — no approval can be for a row that does not exist.)
         res = store.sql("INSERT INTO log_annotation (log_id, label, by, at) "
-                        "VALUES (999, 'replay_duplicate', 'lem', 't')")
+                        "VALUES (999, 'replay_candidate', 'lem', 't')")
         assert "FOREIGN KEY" in res["error"]
+        res = store.sql("INSERT INTO log_annotation (log_id, label, by, at, "
+                        "approval_id) VALUES (999, 'replay_duplicate', 'lem', "
+                        "'t', ?)", [_approved(store)])
+        assert "error" in res
 
 
 class TestNothingRewritesTheRecord:
@@ -327,9 +346,12 @@ class TestNothingRewritesTheRecord:
         assert "error" not in store.sql(
             "INSERT INTO log_annotation (id, log_id, label, by, at) "
             "VALUES (1, ?, 'replay_candidate', 'lem', 't')", [rid])
+        # The forger even holds an approval: what refuses the write is that
+        # annotation 1 is already in the record.
         res = store.sql(
-            verb + " INTO log_annotation (id, log_id, label, by, at) "
-            "VALUES (1, ?, 'replay_duplicate', 'forger', 't')", [rid])
+            verb + " INTO log_annotation (id, log_id, label, by, at, "
+            "approval_id) VALUES (1, ?, 'replay_duplicate', 'forger', 't', ?)",
+            [rid, _approved(store)])
         assert "already in the record" in res.get("error", ""), res
         assert store.read_sql("SELECT label, by FROM log_annotation"
                               )["rows"] == [{"label": "replay_candidate",
@@ -345,6 +367,7 @@ class TestNothingRewritesTheRecord:
         assert "error" not in store.sql(
             "INSERT INTO log_annotation (id, log_id, label, by, at) "
             "VALUES (1, ?, 'replay_candidate', 'lem', 't')", [rid])
+        aid = _approved(store)
         con = sqlite3.connect(store.path)
         try:
             with pytest.raises(sqlite3.DatabaseError,
@@ -355,8 +378,8 @@ class TestNothingRewritesTheRecord:
             with pytest.raises(sqlite3.DatabaseError,
                                match="already in the record"):
                 con.execute("REPLACE INTO log_annotation (id, log_id, label, "
-                            "by, at) VALUES (1, ?, 'replay_duplicate', 'x', "
-                            "'t')", [rid])
+                            "by, at, approval_id) VALUES (1, ?, "
+                            "'replay_duplicate', 'x', 't', ?)", [rid, aid])
         finally:
             con.close()
         assert self._row(store, rid) == {"value": "1.0", "detail": "{}",
@@ -745,9 +768,11 @@ class TestRetirementCannotHideTheFuture:
 
 class TestTheEffectiveView:
     def _annotate(self, store, rid, label):
+        hides = label in ("replay_duplicate", "import_leftover")
         assert "error" not in store.sql(
-            "INSERT INTO log_annotation (log_id, label, by, at) "
-            "VALUES (?, ?, 'ryan', 't')", [rid, label])
+            "INSERT INTO log_annotation (log_id, label, by, at, approval_id) "
+            "VALUES (?, ?, 'ryan', 't', ?)",
+            [rid, label, _approved(store, rule=label) if hides else None])
 
     def _effective_ids(self, store):
         return [r["id"] for r in store.read_sql(

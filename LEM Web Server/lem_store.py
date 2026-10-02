@@ -106,10 +106,11 @@ LOG_COLUMNS = ("machine_uid", "ts", "kind", "lab_id", "test_name", "value",
 CUSTODY_COLUMNS = ("id", "origin", "bench_epoch", "bench_seq", "content_key",
                    "legacy_key", "legacy_rowid", "received_at")
 
-#: Annotation labels that HIDE a row from the effective view. Every other label
-#: (`replay_candidate`, `ambiguous_repeat`, `probable_duplicate`) is visible,
-#: and `reinstated` cancels an earlier hide because only the NEWEST annotation
-#: on a row counts.
+#: Annotation labels that HIDE a row from the effective view — and only under
+#: an approved `annotation_approval` for the row's bench (D7). Every other
+#: label (`replay_candidate`, `ambiguous_repeat`, `probable_duplicate`) is
+#: visible, and `reinstated` cancels an earlier hide because only the NEWEST
+#: hide-or-reinstate annotation on a row counts.
 HIDING_LABELS = ("replay_duplicate", "import_leftover")
 
 #: The triggers that make the record append-only. `health()` names any that
@@ -117,7 +118,9 @@ HIDING_LABELS = ("replay_duplicate", "import_leftover")
 #: re-declares them.
 GUARD_TRIGGERS = ("lem_log_no_update", "lem_log_no_delete",
                   "lem_log_no_overwrite", "ann_no_update", "ann_no_delete",
-                  "ann_no_overwrite", "cfg_no_future_retire_insert",
+                  "ann_no_overwrite", "ann_hide_needs_approval",
+                  "apr_no_update", "apr_no_delete", "apr_no_overwrite",
+                  "apr_signed", "cfg_no_future_retire_insert",
                   "cfg_no_future_retire_update")
 
 #: Every schema object the guarantee rests on and that a statement could
@@ -287,6 +290,46 @@ _DDL = (
     " id INTEGER PRIMARY KEY, machine_uid TEXT, rule TEXT, run_id TEXT,"
     " candidates INTEGER, examples TEXT, qc_impact TEXT, approved_by TEXT,"
     " approved_at TEXT, decision TEXT)",
+    # D7: an approval is the record of Ryan's decision, and the evidence for
+    # every row it hid. Edited or deleted afterwards, a hidden row would have
+    # no say-so behind it (or a different one), so it is append-only like
+    # the annotations it authorises — and it is refused unsigned, or with a
+    # decision that is neither of the two.
+    "CREATE TRIGGER IF NOT EXISTS apr_no_update BEFORE UPDATE ON "
+    "annotation_approval "
+    "BEGIN SELECT RAISE(ABORT, 'annotation_approval is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS apr_no_delete BEFORE DELETE ON "
+    "annotation_approval "
+    "BEGIN SELECT RAISE(ABORT, 'annotation_approval is append-only'); END",
+    "CREATE TRIGGER IF NOT EXISTS apr_no_overwrite BEFORE INSERT ON "
+    "annotation_approval WHEN EXISTS (SELECT 1 FROM annotation_approval "
+    "WHERE id = NEW.id) "
+    "BEGIN SELECT RAISE(ABORT, 'annotation_approval is append-only: that "
+    "approval is already in the record and cannot be replaced'); END",
+    "CREATE TRIGGER IF NOT EXISTS apr_signed BEFORE INSERT ON "
+    "annotation_approval WHEN NEW.decision IS NULL "
+    " OR NEW.decision NOT IN ('approved', 'rejected')"
+    " OR NEW.approved_by IS NULL OR trim(NEW.approved_by) = ''"
+    " OR NEW.approved_at IS NULL OR trim(NEW.approved_at) = '' "
+    "BEGIN SELECT RAISE(ABORT, 'an annotation_approval needs a decision "
+    "(approved or rejected), the person who made it and when'); END",
+    # §10.5 "no automatic hiding anywhere", kept by the FILE: a hiding
+    # annotation must name an APPROVED approval for the row's own bench and
+    # for that rule (`resend` hides as `replay_duplicate`). Without this any
+    # statement reaching the store could take a reading out of every QC
+    # chart with no approval behind it.
+    # raw-log: the guard reads the row's bench, hidden or not.
+    "CREATE TRIGGER IF NOT EXISTS ann_hide_needs_approval BEFORE INSERT ON "
+    "log_annotation WHEN NEW.label IN ('replay_duplicate', 'import_leftover') "
+    "AND NOT EXISTS (SELECT 1 FROM annotation_approval p "
+    " WHERE p.id = NEW.approval_id AND p.decision = 'approved'"
+    " AND p.machine_uid = (SELECT m.machine_uid FROM lem_machine_log m"
+    "                      WHERE m.id = NEW.log_id)"
+    " AND (p.rule = NEW.label"
+    "      OR (p.rule = 'resend' AND NEW.label = 'replay_duplicate'))) "
+    "BEGIN SELECT RAISE(ABORT, 'hiding a reading needs an approved "
+    "annotation_approval for its bench and rule (D7): nothing was "
+    "hidden'); END",
     # The machine's configuration row, declared HERE (with its owner's exact
     # columns from machine_configs.CONFIG_DDL) because the effective view
     # reads `retired_at` from it and a view naming a missing table fails every
@@ -357,15 +400,24 @@ _DDL = (
     " at TEXT, who TEXT, fingerprint TEXT)",
     # The record minus what an append-only annotation hides, minus the history
     # of a machine retired with "purge history" (rows older than its
-    # `retired_at`). Only the NEWEST annotation on a row decides, so
-    # `reinstated` undoes a hide without touching anything that came before.
+    # `retired_at`). Only the NEWEST deciding annotation on a row counts — a
+    # hide or a `reinstated`; a later review note (`replay_candidate`, ...)
+    # neither hides nor unhides — so `reinstated` undoes a hide without
+    # touching anything that came before. A hide counts only through an
+    # APPROVED approval for the row's own bench: the trigger above refuses
+    # any other, and the view does not trust that a trigger was in place
+    # when the annotation was written (the bare file can drop one).
     # raw-log: the view IS the definition of the effective record.
     "CREATE VIEW IF NOT EXISTS lem_machine_log_effective AS "
     "SELECT l.* FROM lem_machine_log l "
     "WHERE NOT EXISTS (SELECT 1 FROM log_annotation a "
     "  WHERE a.id = (SELECT MAX(b.id) FROM log_annotation b "
-    "                WHERE b.log_id = l.id) "
-    "  AND a.label IN ('replay_duplicate', 'import_leftover')) "
+    "                WHERE b.log_id = l.id AND b.label IN "
+    "                ('replay_duplicate', 'import_leftover', 'reinstated')) "
+    "  AND a.label IN ('replay_duplicate', 'import_leftover') "
+    "  AND EXISTS (SELECT 1 FROM annotation_approval p "
+    "    WHERE p.id = a.approval_id AND p.decision = 'approved' "
+    "    AND p.machine_uid = l.machine_uid)) "
     "AND NOT EXISTS (SELECT 1 FROM lem_machine_config c "
     "  WHERE c.machine_uid = l.machine_uid AND c.retired_at IS NOT NULL "
     "  AND l.ts < c.retired_at)",
