@@ -226,6 +226,18 @@
         return cut.replace(/[\s,·:;—-]+$/, '') + '…';
     }
 
+    /** A last word that is a number or one or two letters ("1", "S",
+        "NS") is glued to the word before it with a no-break space, so a
+        name that needs two lines breaks as "PAC / Flash 1", never
+        "PAC Flash / 1". A real word ("NIR") is left free to wrap. */
+    function glue(name) {
+        const s = String(name || '');
+        const i = s.lastIndexOf(' ');
+        const last = s.slice(i + 1);
+        if (i <= 0 || !(/^\d{1,3}$/.test(last) || /^[A-Za-z]{1,2}$/.test(last))) return s;
+        return s.slice(0, i) + '\u00a0' + last;
+    }
+
     /** With a cause chosen in the Needs-you column, the instruments without
         it step back; the ones with it stay at full strength. */
     function dimmed(r, cause) {
@@ -234,7 +246,7 @@
     }
 
     const api = { PITCH, bayIndex, coord, parseMapView, mapQuery, currentLevel, onLevel, layout,
-                  toSaved, occupant, isFree, canDrag, cellHeight, density, bayWords, dimmed, shortWord, cutAt,
+                  toSaved, occupant, isFree, canDrag, cellHeight, density, bayWords, dimmed, shortWord, cutAt, glue,
                   CELL_MIN, CELL_MAX, draw: null };
 
     // ── the DOM half ──────────────────────────────────────────────────────
@@ -253,7 +265,9 @@
         };
         /** Draw `lay` into `host` (an element that becomes the grid).
             opts: arranging, focus (uid), cause (key), picked (uid), saving
-            (Set of uids), cellH (px). In view mode a bay is a link to its
+            (Set of uids), cellH (px), details and detailsShort ({uid:
+            line}: the wall's own detail line and the shorter one it falls
+            back to before cutting, ui_wall.bay_details). In view mode a bay is a link to its
             record; in Arrange it is a button and the free cells are drop
             targets. Nothing in view mode can be dragged: links carry
             draggable="false" so even the browser's own link drag is off. */
@@ -291,11 +305,22 @@
                                 style: 'grid-column:' + (b.x + 1) + ';grid-row:' + (b.y + 1),
                                 'aria-current': opts.focus === b.uid ? 'true' : null };
                 const glyph = el('span', { className: 'glyph ' + w.glyph, 'aria-hidden': 'true' });
-                const lines = [
-                    el('span', { className: 'b-name', text: w.name }),
+                // On the wall (fullWords) the glyph is the bay's corner mark,
+                // floated at the end of the name's first line: the word line
+                // is the whole word and nothing else, so "OK to run, but…"
+                // fits a 7-wide floor without a short form (round 4), and
+                // the state reads from across the room by its shape alone.
+                const lines = opts.fullWords ? [
+                    el('span', { className: 'b-name' }, glyph, el('span', { className: 'b-ntext', text: glue(w.name) })),
+                    el('span', { className: 'b-word' }, el('span', { className: 'b-wtext', text: w.word })),
+                ] : [
+                    el('span', { className: 'b-name', text: glue(w.name) }),
                     el('span', { className: 'b-word' }, glyph, el('span', { className: 'b-wtext', text: w.word })),
-                    el('span', { className: 'b-detail', text: opts.saving && opts.saving.has(b.uid) ? 'Saving…' : (w.detail || (b.row.bench && b.row.bench.word) || '') }),
                 ];
+                lines.push(
+                    el('span', { className: 'b-detail', 'data-short': (opts.detailsShort && opts.detailsShort[b.uid]) || null,
+                        text: opts.saving && opts.saving.has(b.uid) ? 'Saving…'
+                        : ((opts.details && opts.details[b.uid]) || w.detail || (b.row.bench && b.row.bench.word) || '') }));
                 let node;
                 if (opts.arranging) {
                     node = el('button', Object.assign(attrs, { type: 'button', 'aria-pressed': opts.picked === b.uid ? 'true' : 'false',
@@ -306,6 +331,13 @@
                 kids.push(node);
             }
             host.replaceChildren(...kids);
+            host.classList.toggle('fullwords', !!opts.fullWords);
+            // the wall never shortens a word (one vocabulary, §4.1): a floor
+            // too narrow for them is drawn 'tight' (less padding), and as a
+            // last resort 'wrap' lets a word that still does not fit take a
+            // second line, whole
+            host.classList.toggle('tightwords', !!opts.fullWords && (opts.words === 'tight' || opts.words === 'wrap'));
+            host.classList.toggle('wrapwords', !!opts.fullWords && opts.words === 'wrap');
             host.classList.toggle('roomy', (opts.cellH || 0) >= 140 && (opts.cellH || 0) < 200);
             host.classList.toggle('grand', (opts.cellH || 0) >= 200);
             fit(host);
@@ -320,29 +352,49 @@
         function over(el, tall) {
             return el.scrollWidth > el.clientWidth + 0.5 || (tall && el.scrollHeight > el.clientHeight + 1);
         }
-        function fitText(el, full, short, tall) {
+        // `box` is the element whose overflow counts (the word's own line
+        // on the wall, where its glyph sits inline in the text)
+        function fitText(el, full, short, tall, box) {
+            box = box || el;
             el.textContent = full;
-            if (!over(el, tall)) return;
-            if (short) { el.textContent = short; if (!over(el, tall)) return; }
+            if (!over(box, tall)) return;
+            if (short) { el.textContent = short; if (!over(box, tall)) return; }
             const s = short || full;
             let lo = 0, hi = s.length - 1;
             while (lo < hi) {
                 const mid = (lo + hi + 1) >> 1;
                 el.textContent = cutAt(s, mid);
-                if (over(el, tall)) hi = mid - 1; else lo = mid;
+                if (over(box, tall)) hi = mid - 1; else lo = mid;
             }
             el.textContent = cutAt(s, lo);
-            if (over(el, tall)) el.textContent = '…';
+            if (over(box, tall)) el.textContent = '…';
         }
         function fit(host) {
+            // fullwords (the wall): the verdict is the app's whole word, on
+            // one line, never a short form and never cut (round 4: "OK,
+            // but…" in the bays beside "OK to run, but…" in the counts was
+            // two vocabularies on one screen). When it does not fit, the bay
+            // is marked (data-word-cut) and the wall redraws the floor
+            // tighter (wall_floor.js); only in 'wrapwords', the last resort,
+            // may it take two lines. When a bay is too short for all three
+            // lines, the detail steps aside last of all (the title keeps it).
+            const full = host.classList.contains('fullwords');
+            const wrap = host.classList.contains('wrapwords');
             for (const bay of host.querySelectorAll('.bay')) {
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
                 const det = bay.querySelector('.b-detail');
                 const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
-                if (name) fitText(name, name.textContent, '', true);
-                if (word) fitText(word, word.textContent, shortWord(state), false);
-                if (det && det.textContent) fitText(det, det.textContent, '', false);
+                const ntext = name && name.querySelector('.b-ntext');
+                if (ntext) fitText(ntext, ntext.textContent, '', true, name);
+                else if (name) fitText(name, name.textContent, '', true);
+                if (word && full) {
+                    bay.removeAttribute('data-word-cut');
+                    if (!wrap && over(word, false)) bay.setAttribute('data-word-cut', '1');
+                } else if (word) fitText(word, word.textContent, shortWord(state), false, word);
+                if (det) det.hidden = false;
+                if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);
+                if (full && det && bay.scrollHeight > bay.clientHeight + 1) det.hidden = true;
             }
         }
         api.fit = fit;

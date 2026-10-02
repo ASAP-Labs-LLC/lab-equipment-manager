@@ -31,7 +31,7 @@ def floor_html():
     from web_app import create_app
     app = create_app(FakeLabCoreGateway(), authenticator=StubAuth(), secret="s")
     app.config["TESTING"] = True
-    return app.test_client().get("/floor").get_data(as_text=True)
+    return app.test_client().get("/floor/classic").get_data(as_text=True)
 
 
 def interval(html, name):

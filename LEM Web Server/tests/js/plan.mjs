@@ -137,6 +137,16 @@ check('bay: a stopped bench gets the dashed outline', [quiet.stopped, quiet.stop
 check('bay: never checked in is stopped too', P.bayWords(row('n', [0, 0], { bench: { state: 'never' } })).stopped, true);
 check('bay: an OK bay with no detail says nothing extra', P.bayWords(row('k', [0, 0], { readiness: { state: 'ok', word: 'OK to run', glyph: 'final', detail: '' } })).title, 'K · OK to run');
 
+// a short last word stays with the one before it, so a two-line name never
+// strands its number ("PAC Flash / 1" on the wall at 1440): it breaks as
+// "PAC / Flash 1" instead
+check('glue: a number stays with its name', P.glue('PAC Flash 1'), 'PAC Flash\u00a01');
+check('glue: GC 1', P.glue('Agilent GC 1'), 'Agilent GC\u00a01');
+check('glue: a long last word is left to wrap', P.glue('Mini Grabner'), 'Mini Grabner');
+check('glue: one word', P.glue('Eravap'), 'Eravap');
+check('glue: a short word that is not a number still wraps ("Eraspec / NIR")', P.glue('Eraspec NIR'), 'Eraspec NIR');
+check('glue: a one-letter model', P.glue('Multitek S'), 'Multitek\u00a0S');
+
 // ── the cell size: uniform, filling the height it is given, within reason ──
 check('cell height: fills the room', P.cellHeight(600, 4, 12), 141);
 check('cell height: two rows stop short of a poster', P.cellHeight(700, 2, 12), 240);

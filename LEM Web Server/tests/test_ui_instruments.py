@@ -112,6 +112,15 @@ def spec(test, ok, at="2026-10-01T11:23:00", sample="AF26"):
             "expected": 1.5, "last_qc_value": 1.4}
 
 
+def lapsed(test, sample="AF26"):
+    """A check that ran before and has no verdict in the window: "QC due".
+    ``spec(test, None)`` is one that never ran, which §4.1 calls "No verdict
+    yet" (round 5: /qc and /floor gave such a check two words)."""
+    s = spec(test, None, sample=sample)
+    s["last_qc_at"] = "2026-09-20T10:00:00"
+    return s
+
+
 def task(kind, status, name=None):
     return {"uid": "t-" + kind, "kind": kind, "status": status, "name": name or kind.upper(),
             "next_due": "2026-09-01", "reason": ""}
@@ -194,7 +203,7 @@ class TestEachInstrumentSaysWhetherItCanRun:
         the row's verdict, but it is still a fact about that instrument, so
         its row says it, after the cause that outranks it."""
         p = build([machine("g", specs=[spec("Flash Point", False)], maint=[task("calibration", "RED")]),
-                   machine("b", specs=[spec("Flash Point", None)], maint=[task("calibration", "RED")]),
+                   machine("b", specs=[lapsed("Flash Point")], maint=[task("calibration", "RED")]),
                    machine("a", specs=[spec("Flash Point", True)], maint=[task("calibration", "RED")])])
         assert row(p, "g")["readiness"]["detail"] == "Flash Point out of spec · calibration overdue since 1 Sep too"
         assert row(p, "b")["readiness"]["detail"] == "QC due on Flash Point · calibration overdue since 1 Sep too"
@@ -304,7 +313,7 @@ class TestEveryProblemIsOnItsRow:
         assert [x["key"] for x in r["problems"]] == ["ok_but-cal", "ok_but-pm"]
 
     def test_several_behind_one_cause_each_say_since_when(self):
-        p = build([machine("g", specs=[spec("Flash Point", False), spec("Density", None)],
+        p = build([machine("g", specs=[spec("Flash Point", False), lapsed("Density")],
                            maint=[task("calibration", "RED"), task("pm", "RED")])])
         assert row(p, "g")["readiness"]["detail"] == (
             "Flash Point out of spec · QC due on Density too"
@@ -380,8 +389,8 @@ class TestNeedsYou:
 
     def test_same_cause_merges_into_one_tile(self):
         """§3.2: OptiMPP 1 and OptiMPP 2, both QC due, are one tile."""
-        ms = [machine("o1", "OptiMPP 1", specs=[spec("Cloud", None)]),
-              machine("o2", "OptiMPP 2", specs=[spec("Pour", None)])]
+        ms = [machine("o1", "OptiMPP 1", specs=[lapsed("Cloud")]),
+              machine("o2", "OptiMPP 2", specs=[lapsed("Pour")])]
         tiles = build(ms)["needs_you"]["tiles"]
         assert len(tiles) == 1
         t = tiles[0]
@@ -455,7 +464,7 @@ class TestNeedsYou:
         assert not re.search(r"\d", said), said
 
     def test_worst_cause_first(self):
-        ms = [machine("d", "D", specs=[spec("X", None)]),
+        ms = [machine("d", "D", specs=[lapsed("X")]),
               machine("a", "A", specs=[spec("X", False)])]
         assert [t["cause"] for t in build(ms)["needs_you"]["tiles"]] == ["QC out of spec", "QC due"]
 

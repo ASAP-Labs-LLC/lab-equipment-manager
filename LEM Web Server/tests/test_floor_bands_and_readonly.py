@@ -47,7 +47,7 @@ def client():
 
 @pytest.fixture
 def floor(client):
-    return client.get("/floor").get_data(as_text=True)
+    return client.get("/floor/classic").get_data(as_text=True)
 
 
 @pytest.fixture

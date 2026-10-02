@@ -189,7 +189,11 @@ class TestThe3DSiteIsDeleted:
 
     def test_the_floor_page_cannot_ask_for_it(self, tmp_path):
         app, _ = _seeded(tmp_path)
-        body = app.test_client().get("/floor").get_data(as_text=True)
+        for path in ("/floor", "/floor/classic"):
+            self._cannot_ask(app.test_client().get(path).get_data(as_text=True))
+
+    @staticmethod
+    def _cannot_ask(body):
         assert '<script type="importmap">' not in body
         assert "world/index.js" not in body
         assert 'id="world"' not in body

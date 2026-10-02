@@ -989,6 +989,285 @@ a.bay:hover { border-color: var(--border-strong); }
 }
 @media (prefers-reduced-motion: reduce) { .bay { transition: none; } }
 
+/* ── the wall kiosks (/floor, /qc, /wall: ia-final §3.8, piece 13) ────────
+   Read from across the room, on a TV nobody touches. The sizes are the
+   bar's: at 1920x1080 a bay's name is at least 22px, its state word 20px
+   and its detail 16px; at 1440x900 never below 18 / 16 / 14. They scale
+   with the screen's height (2.04vh is 22px at 1080 and 18.4px at 900), so
+   one rule serves both and a 4K TV gets bigger type, not more empty room.
+   The page is exactly the viewport: nothing scrolls, whatever fits fits,
+   and what does not is cut with an ellipsis (plan.js measures every line)
+   or rotates. Status colour is the glyph and the word only: a stop is the
+   1.5px ink border and a bold word, never a red fill (§0.1, J1). A stale
+   wall dims to half (wall_logic.liveState). Tokens only. */
+.wall-body { margin: 0; height: 100vh; overflow: hidden; background: var(--bg); color: var(--text); }
+.wall {
+    --w-name: max(18px, 2.04vh); --w-word: max(16px, 1.86vh); --w-detail: max(14px, 1.49vh);
+    --w-pad: clamp(16px, 2.2vw, 40px);
+    height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; padding: clamp(14px, 2.2vh, 28px) var(--w-pad) 0;
+}
+.wall .glyph { scale: 1.5; margin: 0 3px; }
+.wall-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.wall-view[hidden] { display: none; }
+
+/* the head: the way home, the sentence, the counts */
+.wall-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: clamp(16px, 1.8vw, 36px); align-items: start; }
+.wall-mark {
+    display: inline-flex; align-items: center; gap: 10px; height: 44px; margin-top: 2px; padding: 0 14px 0 8px;
+    border-radius: var(--radius-pill); color: var(--text); text-decoration: none; font-weight: 600; font-size: max(16px, 1.7vh);
+}
+.wall-mark:hover { background: var(--bg-hover); }
+.wall-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.wall-mark .mark-logo { width: 32px; height: 32px; }
+.wall-headline { min-width: 0; }
+.wh-title {
+    display: flex; align-items: center; gap: 14px; margin: 0; min-width: 0;
+    font-size: max(30px, 4.1vh); line-height: 1.12; font-weight: 650; letter-spacing: -0.02em;
+}
+.wh-title > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wall .wh-glyph { scale: 2.1; margin: 0 10px 0 8px; }
+.wh-sub {
+    margin: 6px 0 0; font-size: max(17px, 2.1vh); line-height: 1.35; color: var(--text-muted);
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.wh-sub:empty { display: none; }
+.wall-counts {
+    list-style: none; margin: 4px 0 0; padding: 0; display: grid; justify-content: end; align-items: center;
+    gap: 6px clamp(18px, 1.8vw, 32px);
+}
+.wall-counts.cols-1 { grid-template-columns: auto; }
+.wall-counts.cols-2 { grid-template-columns: repeat(2, auto); }
+.wall-counts.cols-3 { grid-template-columns: repeat(3, auto); }
+.wall-counts[hidden] { display: none; }
+.wc { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: max(16px, 1.9vh); color: var(--text); }
+.wc .wc-n { min-width: 1.2em; text-align: right; font-size: max(28px, 3.5vh); font-weight: 650; line-height: 1; font-variant-numeric: tabular-nums; }
+.wc .wc-w { color: var(--text-muted); }
+.wc.s-not_ok .wc-w { color: var(--st-error); font-weight: 600; }
+
+/* the body: the plan, and the Needs-attention column beside it */
+.wall-main {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 23vw, 460px);
+    gap: clamp(16px, 1.8vw, 36px); margin-top: clamp(12px, 2.2vh, 28px);
+}
+.wall-plan-card { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.wp-bar { display: flex; align-items: center; gap: var(--s3); min-height: 30px; margin-bottom: 8px; }
+.wp-title { margin: 0; font-size: max(16px, 1.75vh); font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wp-dots, .wq-pages { display: inline-flex; gap: 6px; align-items: center; }
+.wp-dots i, .wq-pages i { width: 22px; height: 4px; border-radius: 2px; background: var(--border); }
+.wp-dots i.on, .wq-pages i.on { background: var(--ink); }
+.wp-step[hidden], .wq-step[hidden] { display: none; }
+.wp-step, .wq-step { display: inline-flex; gap: 6px; margin-left: auto; }
+.wall-plan-wrap { flex: 1; min-height: 0; position: relative; }
+.wall-unplaced { margin: 10px 0 0; font-size: max(15px, 1.6vh); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wall-unplaced[hidden] { display: none; }
+.wall-unplaced .wu-head { color: var(--text-muted); }
+.wall-unplaced .wu-item { color: var(--text); text-decoration: none; }
+.wall-empty {
+    margin: 0; padding: var(--s5); border-radius: var(--radius-md); background: var(--bg-sunken);
+    color: var(--text-muted-sunken); font-size: max(18px, 2.1vh); line-height: 1.4;
+}
+.wall-empty[hidden] { display: none; }
+
+/* the plan, at wall sizes (beats plan.js's compact / roomy / grand) */
+.plan.wallplan { border-radius: var(--radius-lg); }
+.plan.wallplan .bay { padding: clamp(8px, 1.1vh, 14px) clamp(10px, 0.75vw, 16px); }
+.plan.wallplan .bay .b-name { font-size: var(--w-name); line-height: 1.2; font-weight: 650; }
+.plan.wallplan .bay .b-word { font-size: var(--w-word); line-height: 1.3; font-weight: 600; gap: 9px; }
+.plan.wallplan .bay .b-word .glyph { scale: 1.45; margin: 0 3px; }
+.plan.wallplan .bay .b-detail { font-size: var(--w-detail); line-height: 1.3; margin-top: 3px; }
+.plan.wallplan.grand .bay { padding: clamp(14px, 1.8vh, 24px) clamp(16px, 1.3vw, 24px); }
+.plan.wallplan.grand .bay .b-name { font-size: max(22px, 2.6vh); }
+.plan.wallplan.grand .bay .b-word { font-size: max(19px, 2.2vh); }
+.plan.wallplan.grand .bay .b-detail { font-size: max(16px, 1.7vh); }
+/* the verdict is one line, always: the whole word where it fits, else every
+   bay says the short form (plan.js fit; wall_floor.js redraws all short).
+   A word broken in two ("Not OK to / run") reads as two words (round 3). */
+.plan.wallplan.fullwords .bay .b-word { flex: none; white-space: nowrap; overflow: hidden; max-width: 100%; }
+.plan.wallplan.fullwords .bay .b-wtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.plan.wallplan .bay .b-detail[hidden] { display: none; }
+/* on the wall the name and the verdict never give way; the detail does */
+.plan.wallplan.fullwords .bay .b-name { flex: none; margin-bottom: 4px; }
+.plan.wallplan.fullwords .bay .b-detail { flex: none; }
+/* Round 5. The glyph is the bay's corner mark: floated at the end of the
+   name's first line (the name wraps around it, its second line runs full
+   width), so the word line holds the whole word and nothing else. Status
+   colour is the glyph's; the word is ink, except a stop's, which is the red
+   pill below. Round 4's blind judges: "OK to run, but…" in orange in ten
+   bays drowned the two stops; now the only red word on the floor is a stop. */
+.plan.wallplan.fullwords .bay .b-name {
+    display: block; max-height: 2.4em; overflow: hidden; -webkit-line-clamp: none; line-clamp: none;
+}
+.plan.wallplan.fullwords .bay .b-name > .glyph {
+    float: right; scale: 1.7; margin: calc(0.6em - 5px) 5px 0 8px;
+}
+.plan.wallplan.fullwords .bay .b-name > .glyph.off { margin-right: 8px; }
+/* (scale and the rotation draw past the box, and count as overflow: the
+   right margins keep the drawn shape inside the name, or fit() reads every
+   name as too wide and cuts it to "…") */
+.plan.wallplan.fullwords .bay .b-word { gap: 0; }
+.wall .plan.wallplan .bay:not(.stop) .b-word { color: var(--text); }
+/* a floor too narrow for the whole words at the normal padding (seven
+   columns at 1440): the bays' sides come in to 8px, and Needs attention
+   gives up some width (it has height to spare beside a single level) */
+.plan.wallplan.tightwords .bay { padding-inline: 8px; }
+/* and its word sits on the bar's own line: 20.1px at 1080, 16.1px at 900
+   (the usual 1.86vh is 20.1 / 16.7), never under 16 */
+.plan.wallplan.tightwords .bay .b-word { font-size: max(16px, calc(2.2222vh - 3.9px)); }
+.wall-main.tight-plan { grid-template-columns: minmax(0, 1fr) clamp(256px, 18vw, 460px); }
+.wall-main.tight-plan .wa-names { -webkit-line-clamp: 3; line-clamp: 3; }
+/* the last resort: a word that still does not fit takes two lines, whole */
+.plan.wallplan.wrapwords .bay .b-word, .plan.wallplan.wrapwords .bay .b-wtext { white-space: normal; text-overflow: clip; }
+/* Not OK to run: the alarm is the word, set as the app's error pill
+   (.pill.error), so it is status colour as glyph + word (§0.1) and still
+   the one red thing in the room. Round 2's 3px and round 3's 2px ink boxes
+   read as "selected" to the blind judges (in dark: white glare), so the
+   bay keeps exactly the spec's 1.5px ink border (.bay.stop), which a TV at
+   device-pixel-ratio 1 draws as a 1px ink hairline. */
+.wall .bay.stop .b-word, .wall .wa-group.s-not_ok .wa-word, .wall .qc-card.v-out .qc-word {
+    align-self: flex-start; max-width: 100%; box-sizing: border-box;
+    padding: 0 0.6em 0 0.25em; border-radius: var(--radius-pill);
+    background: var(--bad-soft); color: var(--pill-error-fg); font-weight: 700;
+}
+/* the whole floor at once: every level its own plan, one cell size for all */
+.wall-levels { display: flex; flex-direction: column; gap: 20px; height: 100%; }
+.wall-levels[hidden] { display: none; }
+.wl-row { display: flex; gap: 20px; min-width: 0; }
+.wl-panel { flex: none; min-width: 0; display: flex; flex-direction: column; }
+.wl-name {
+    margin: 0; height: var(--wl-head, 32px); display: flex; align-items: center; font-size: max(16px, 1.75vh);
+    font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wall-view.is-stale .wall-plan-wrap, .wall-view.is-stale .wall-attn .wa-list,
+.wall-view.is-stale .wall-counts, .wall-view.is-stale .wq-grid { opacity: 0.5; }
+/* in the hole, Needs attention is inside the plan, which is already at half */
+.wall-view.is-stale .wall-attn.in-hole .wa-list { opacity: 1; }
+
+/* Needs attention: the worst five, grouped by state, worst group first.
+   Each state word is said once, as its group's heading (round 4: "OK to
+   run, but…" on every card made the warning tier compete with the
+   failures); each row is a name and its whole reason. The Not-OK group is
+   the one raised card; the rest sit flat on the sunken surface, so the eye
+   goes headline → the raised card → the plan. No ring anywhere: status is
+   the glyph and the word (§0.1), and a 2px ink box read as "selected", in
+   dark as white glare (both blind judges, rounds 2 and 3). */
+.wall-attn { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
+.wa-h { margin: 0 0 8px; min-height: 30px; display: flex; align-items: center; font-size: max(16px, 1.75vh); font-weight: 600; color: var(--text-muted); white-space: nowrap; }
+.wa-h .wa-h-note { margin-left: 6px; font-weight: 500; }
+.wa-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: clamp(10px, 1.3vh, 16px); min-height: 0; }
+.wa-group {
+    display: flex; flex-direction: column; gap: clamp(4px, 0.6vh, 8px); min-width: 0;
+    padding: clamp(10px, 1.3vh, 16px) clamp(14px, 1.2vw, 20px);
+    border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text);
+}
+.wa-group.s-not_ok { background: var(--bg-card); box-shadow: var(--e2); }
+.wa-word { display: flex; align-items: center; gap: 9px; font-size: var(--w-word); font-weight: 600; line-height: 1.3; min-width: 0; }
+.wa-word .wa-wtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wa-group.s-ok_but .wa-word { color: var(--pill-held-fg); }
+.wa-rows { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.wa-item { min-width: 0; }
+.wa-item + .wa-item { border-top: 1px solid var(--border-light); }
+.wa-item a {
+    display: flex; flex-direction: column; gap: 1px; padding: clamp(4px, 0.6vh, 8px) 0;
+    color: var(--text); text-decoration: none; min-width: 0;
+}
+.wa-item:first-child a { padding-top: 2px; }
+.wa-item:last-child a { padding-bottom: 0; }
+.wa-item a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+/* a stopped module: the dashed mark the plan gives its bay (§3.8) */
+.wa-item.stopped .wa-names { text-decoration: underline dashed var(--border-strong); text-underline-offset: 4px; }
+.wa-names {
+    font-size: var(--w-name); font-weight: 650; line-height: 1.2;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+.wa-detail {
+    font-size: var(--w-detail); line-height: 1.35; color: var(--text-muted); text-wrap: pretty;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
+}
+/* the worst state's reason is never cut: it is what the wall is for */
+.wa-group.s-not_ok .wa-detail { display: block; -webkit-line-clamp: none; line-clamp: none; overflow: visible; }
+/* room for it: the name and its reason side by side, the reasons in one
+   column across every group, so the eye runs down a single edge */
+@container (min-width: 520px) {
+    .wa-item a { display: grid; grid-template-columns: minmax(0, 36%) minmax(0, 1fr); column-gap: clamp(16px, 1.4vw, 28px); align-items: baseline; }
+}
+.wa-more, .wa-none { margin: 10px 0 0; font-size: var(--w-detail); color: var(--text-muted); }
+/* Needs attention in the room the levels leave (wall_logic.wallLayout): the
+   levels take the whole width, so bays are wide enough for whole words, and
+   no block of the wall is dead (round 3: a 520x360 hole under Mezzanine,
+   J1). Its heading sits on the level names' line. */
+.wall-main[data-layout="hole"] { grid-template-columns: minmax(0, 1fr); }
+.wall-attn.in-hole { flex: none; }
+.wall-attn.in-hole .wa-h { height: var(--wl-head, 32px); min-height: 0; margin: 0; }
+.wall-attn.tight .wa-group { padding-block: clamp(8px, 1vh, 12px); }
+.wall-attn.tight .wa-group:not(.s-not_ok) .wa-detail, .wall-attn.tighter .wa-names { -webkit-line-clamp: 1; line-clamp: 1; }
+.wall-plan-card.whole .wp-bar { display: none; }
+.wa-more[hidden], .wa-none[hidden] { display: none; }
+
+/* the foot: live (with the lab's clock and zone), benches, rotation */
+.wall-foot {
+    flex: none; display: flex; align-items: center; gap: clamp(14px, 1.6vw, 32px); min-width: 0;
+    height: clamp(44px, 5.4vh, 60px); margin-top: clamp(10px, 1.6vh, 20px);
+    padding-right: calc(var(--badge-w, 32px) + 12px); border-top: 1px solid var(--border-light);
+    font-size: max(15px, 1.7vh); color: var(--text); white-space: nowrap;
+}
+.wall-foot > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wall-foot .wf-live { display: inline-flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+.wall-foot .wf-spacer { flex: 1; }
+.wall-foot .wf-rot, .wall-foot .wf-fleet { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.wall .live-dot { width: 10px; height: 10px; }
+.wall .live-dot[data-state="stale"] { background: transparent; border: 1.5px dashed var(--text-muted); box-shadow: none; }
+.wall-body #app-version { font-size: 11px; bottom: 8px; right: 12px; }
+
+/* /qc: the cards, as many as fit (wall_logic.qcGrid), the rest rotate */
+.wq-pages { margin-top: 18px; }
+.wq-grid {
+    flex: 1; min-height: 0; display: grid; gap: 16px; margin-top: clamp(12px, 2.2vh, 28px);
+    grid-template-columns: repeat(var(--qc-cols, 3), minmax(0, 1fr));
+    grid-template-rows: repeat(var(--qc-rows, 3), minmax(0, 1fr));
+}
+.wq-grid[hidden] { display: none; }
+.qc-card {
+    display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden;
+    padding: clamp(12px, 1.5vh, 18px) clamp(14px, 1.2vw, 20px);
+    border: 1px solid var(--border-light); border-radius: var(--radius-md); background: var(--bg-card); box-shadow: var(--e1);
+    color: var(--text); text-decoration: none;
+}
+.qc-card.stop { border: 1.5px solid var(--ink); }
+.qc-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.qc-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.qc-word { display: flex; align-items: center; gap: 9px; min-width: 0; font-size: var(--w-word); font-weight: 600; line-height: 1.3; }
+.qc-word .qc-wtext { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-card.v-out .qc-word { color: var(--st-error); font-weight: 700; }
+.qc-card.v-due .qc-word { color: var(--pill-held-fg); }
+.qc-chip {
+    flex: none; margin-left: auto; max-width: 55%; padding: 2px 10px; border-radius: var(--radius-pill);
+    border: 1.5px solid var(--border-strong); font-size: var(--w-detail); line-height: 1.4; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.qc-name { margin-top: 4px; font-size: var(--w-name); font-weight: 650; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-check {
+    margin-top: 2px; font-size: var(--w-word); font-weight: 600; line-height: 1.3; color: var(--text);
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+}
+.qc-method { font-size: var(--w-detail); line-height: 1.35; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-chart { flex: 1; min-height: 28px; margin: 8px 0 6px; position: relative; display: flex; align-items: center; justify-content: center; }
+.qc-chart svg { position: absolute; inset: 0; display: block; }
+.qc-band { fill: var(--chart-band); }
+.qc-limit { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 5 4; }
+.qc-target { stroke: var(--chart-ref); stroke-width: 1; }
+.qc-line { fill: none; stroke: var(--chart-ink); stroke-width: 1.6; stroke-linejoin: round; opacity: 0.55; }
+.qc-pt { fill: var(--chart-ink); }
+.qc-pt.out { fill: var(--st-error); }
+.qc-pt.last { stroke: var(--bg-card); stroke-width: 2; }
+.qc-nochart { font-size: var(--w-detail); color: var(--text-muted); text-align: center; }
+.qc-last { display: flex; align-items: baseline; gap: 0; min-width: 0; font-size: var(--w-detail); line-height: 1.35; white-space: nowrap; overflow: hidden; }
+.qc-last .qc-value { font-size: var(--w-word); font-weight: 650; font-variant-numeric: tabular-nums; }
+.qc-last .qc-value.none { font-weight: 500; color: var(--text-muted); font-size: var(--w-detail); }
+.qc-last .qc-at { margin-left: 0.4em; color: var(--text-muted); }
+.qc-limits { font-size: var(--w-detail); line-height: 1.35; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (prefers-reduced-motion: reduce) { .wall * { transition: none !important; } }
+
 /* ── the data transfer (transfer §14, T-P12) ──────────────────────────────
    GC's record anatomy, one more time: a section's title and one sentence on
    the left, hairline .kv rows on the right. A row's value is a glyph and a

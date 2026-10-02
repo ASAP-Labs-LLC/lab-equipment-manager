@@ -33,7 +33,8 @@
     // and a 'lem:theme' event on document (detail = get()) whenever the mode
     // or the choice changes, so a page's charts can re-theme.
     const media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
-    function themePref() { return U.themeChoice(load(THEME_KEY)); }
+    // a wall's ?theme= pin (wall_boot.js) outranks the stored choice, and is never stored
+    function themePref() { return U.themeChoice(window.LEM_THEME_PIN || load(THEME_KEY)); }
     let themeNow = null;
     function themeGet() {
         return { choice: themePref(), mode: document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light' };

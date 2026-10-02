@@ -1,0 +1,8 @@
+{% extends "_wall.html" %}
+{#- /qc (ia-final §3.8): the QC wall. -#}
+{% block title %}QC wall{% endblock %}
+{% block content %}{% include "_wall_qc_view.html" %}{% endblock %}
+{% block scripts %}
+  <script src="/static/js/wall_qc.js?v={{ v('js/wall_qc.js') }}"></script>
+  <script src="/static/js/wall.js?v={{ v('js/wall.js') }}"></script>
+{% endblock %}
