@@ -134,3 +134,34 @@ def test_baseline_mode_keeps_phase_ones_accounting(loaded):
     assert r == {"ok": True}
     assert g.cell_lands[("L1", "Density", None)] == 1
     assert g.cell_lands[("L1", "Density", "0.8")] == 1
+
+
+def test_a_kill_off_the_scenario_thread_is_noted_for_the_world(gw, loaded):
+    """Since round 3 a v2 bench files confirmed readings from its uploader
+    thread. A kill plan aimed at one of those LabCore writes raises `Kill`
+    there, which ends only that thread: nothing would restart the bench and
+    the kill scenario would silently measure a half-dead one (the uploader
+    then never goes idle again). The gateway notes such a kill so the world
+    restarts the bench after the uploader settles, as `Ctx.poll` does for a
+    kill on the poll thread. A kill on the scenario's own thread is the
+    poll's to handle and is not noted."""
+    import threading
+    from gharness.hgateway import OFF_THREAD_KILLS
+    Kill = loaded[0].Kill
+    del OFF_THREAD_KILLS[:]
+    gw.plan = lambda kind, cat, payload: "kill_after"
+    with pytest.raises(Kill):
+        gw.write("batch", {"operations": [cell("L1", "0.8")]})
+    assert OFF_THREAD_KILLS == []
+    seen = []
+
+    def off():
+        try:
+            gw.write("batch", {"operations": [cell("L2", "0.9")]})
+        except Kill:
+            seen.append("killed")
+    t = threading.Thread(target=off)
+    t.start(); t.join(10)
+    assert seen == ["killed"]
+    assert OFF_THREAD_KILLS == ["labcore kill_after"]
+    del OFF_THREAD_KILLS[:]

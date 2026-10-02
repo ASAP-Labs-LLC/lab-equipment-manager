@@ -44,3 +44,14 @@ def _no_real_network(monkeypatch):
             "urllib.request.urlopen (or post_live / fetch_floor_config)")
 
     monkeypatch.setattr("urllib.request.urlopen", refuse)
+
+
+
+@pytest.fixture(autouse=True)
+def _lem_is_todays_server(monkeypatch):
+    """Unless a test brings its own LEM, LEM is today's v3.9 server and has
+    already answered 404 — see `old_server.py` for why."""
+    import lem_station_module as mod
+    import old_server
+    monkeypatch.setattr(mod, "_TransferState",
+                        old_server.transfer_state_class(mod._TransferState))

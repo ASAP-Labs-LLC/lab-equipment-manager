@@ -1852,7 +1852,7 @@
     "analyst_overwritten": 0,
     "conflicts": 5
    },
-   "v4_spec": "0 overwritten with the journal lost (today 5): the guard read alone (harness row; A1w adds 0 re-sent, P8)"
+   "v4_spec": "0 overwritten with the journal lost (today 5): the guard read alone (harness row). Run against an old server (404), so no checkpoint can tell the bench where its record ends and it re-reads its file: all 5 re-sent readings meet the analyst's values and become conflicts. (Round 3: with LEM up, P8's blind mode now suppresses the re-read, which is A1w's row.)"
   },
   "A3": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2042,9 +2042,11 @@
     "idle_labcore_ops": 0,
     "v2_syncs": {
      "ge": 1
-    }
+    },
+    "polls": 110,
+    "lem_requests_on_poll_thread": 0
    },
-   "v4_spec": "0 LabCore ops in 120 idle polls, v2 mode (today 4.86/min)"
+   "v4_spec": "0 LabCore ops over the 110 steady polls (+10 heartbeats) of a 120-poll idle hour, v2 mode (today 4.86/min); 0 LEM requests made on the poll thread"
   },
   "E1": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2222,9 +2224,12 @@
     "cell_dup_lands": 0,
     "roads_used": [
      "B"
-    ]
+    ],
+    "default_ua_gets_1010": true,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0 · 0/0, road = public"
+   "v4_spec": "0/0 · 0/0, road = public; the LAN is dark from before enrolment and road B refuses urllib's default agent with 1010 (enforced, and checked: default_ua_gets_1010)"
   },
   "T2": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2272,9 +2277,38 @@
     "cell_dup_lands": 0,
     "v2_syncs": {
      "ge": 1
-    }
+    },
+    "filed_while_dark": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0 · 0/0; results keep filing"
+   "v4_spec": "0/0 · 0/0 after the road returns; 0 results filed while dark. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
+  },
+  "T2L": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0,
+    "filed_while_dark": 0,
+    "records_resent": {
+     "ge": 100
+    },
+    "v2_syncs": {
+     "ge": 1
+    },
+    "store_replays_tried": {
+     "ge": 240
+    },
+    "store_replays_accepted": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 3 (critic, T-P8 round 2: unique_seq_off survived, and in T2 with lost answers 418 re-sent records were kept out of the record by LEM's de-duplication alone, which no scenario checked). T2's 2 h outage and 240 held prints; when the roads return the first 2 requests on each road are executed by LEM and their answers lost (at the 300 s backoff cap, so ~40 min to settle), so the bench re-sends what LEM holds: records_resent >= 100 proves the resend path ran, and dup 0 / lost 0 / res_lost 0 must hold through it. Then a second writer replays every bench row (all >= 240, uid/epoch/seq as written) into the store through its own write path: store_replays_accepted must be 0 — the store refuses any (uid, epoch, seq) it holds. D2 still holds results while dark (filed_while_dark 0)."
   },
   "D1": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2317,7 +2351,6 @@
    "v4": {
     "lost": 0,
     "dup": 0,
-    "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
     "cell_dup_lands": 0,
@@ -2326,18 +2359,32 @@
     },
     "v2_syncs": {
      "ge": 1
-    }
+    },
+    "filed_while_dark": 0,
+    "res_lost_final": 0,
+    "polls_to_file": {
+     "le": 30
+    },
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0/0; drains in ≤ 10 polls"
+   "v4_spec": "record 0/0 and drained in ≤ 10 polls; results held while dark (0 filed), then all filed — res_lost_final 0 — at the results road's 300 identity lookups a poll (16 polls for 4,800, after ≤ 10 of backoff), bound ≤ 30 polls. res_lost at poll 10 is not 0 under D2 and is no longer asserted. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
   "A1w": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
    "v3.9": null,
    "v4": {
     "analyst_overwritten": 0,
-    "records_resent": 0
+    "records_resent": 0,
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "approved": 200,
+    "blind_after": false,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0 overwritten, 0 re-sent (checkpoint)"
+   "v4_spec": "0 overwritten, 0 re-sent (checkpoint). Built with P8's blind mode (round 3): LEM up, the wipe takes bench.key so a person approves re-enrolment (200); the bench must then be working, not stuck — blind_after false, and 2 new prints filed (lost 0, res_lost 0)."
   },
   "T3": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2362,9 +2409,20 @@
     "res_wrong": 0,
     "cell_dup_sends": 0,
     "cell_dup_lands": 0,
-    "records_resent": 0
+    "records_resent": 0,
+    "extra_guard_ops": {
+     "le": 0
+    },
+    "approved": 200,
+    "blind_after": false,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0,
+    "extra_labcore_ops": 0,
+    "enrol_token_reads": {
+     "le": 1
+    }
    },
-   "v4_spec": "0/0; 0 records re-sent"
+   "v4_spec": "0/0; 0 records re-sent; 0 results-road LabCore ops beyond an unwiped twin. The wipe takes bench.key with it, so re-enrolment needs a person (§6.4) — the scenario approves through Settings › Transfer's endpoint; extra_guard_ops ≤ 0 against the twin (never more results-road ops); and 0 LabCore ops of ANY kind beyond the twin (extra_labcore_ops, round 2): while its re-enrolment waits for a person the wiped bench holds on the v2 side, never the legacy road (§6.3; only a 404 is an old server) — except the one shared-token read of lem_meta §6.4 allows (enrol_token_reads ≤ 1)"
   },
   "T4b": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2375,9 +2433,22 @@
     "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
-    "cell_dup_lands": 0
+    "cell_dup_lands": 0,
+    "records_resent": 0,
+    "extra_guard_ops": {
+     "le": 0
+    },
+    "blind_while_dark": true,
+    "blind_after": false,
+    "approved": 200,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0,
+    "extra_labcore_ops": 0,
+    "enrol_token_reads": {
+     "le": 1
+    }
    },
-   "v4_spec": "0/0 (blind; source waits)"
+   "v4_spec": "0/0 (blind; the file source waits while both roads are down, then resumes at LEM's mirrored cursor); 0 re-sent; extra_guard_ops ≤ 0 against an unwiped twin (the blind bench reads what waited in one poll after it resumes, so it may file in fewer batches than the twin — never more); and 0 LabCore ops of ANY kind beyond the twin (extra_labcore_ops, round 2): while its re-enrolment waits for a person the wiped bench holds on the v2 side, never the legacy road (§6.3; only a 404 is an old server) — except the one shared-token read of lem_meta §6.4 allows (enrol_token_reads ≤ 1)"
   },
   "T5": {
    "v3.9_source": "none: the scenario needs a v4 capability (kill_not_reached)",
@@ -2397,21 +2468,51 @@
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
    "v3.9": null,
    "v4": {
+    "lost": 0,
+    "dup": 0,
     "res_lost": 0,
+    "res_wrong": 0,
+    "filed_while_dark": 0,
     "factor_confirmed_within_s": {
      "le": 60
-    }
+    },
+    "filings": {
+     "ge": 1
+    },
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "results file; factor confirmed through the replica within 60 s"
+   "v4_spec": "both roads dark, LabCore up: 0 results filed once the confirmation is older than 60 s; after a road returns all file, each with its factor confirmed ≤ 60 s before. Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
   },
   "CF2": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
    "v3.9": null,
    "v4": {
+    "lost": 0,
+    "dup": 0,
     "res_wrong": 0,
-    "filed_with_stale_factor": 0
+    "filed_with_stale_factor": 0,
+    "filed_after_change": 10,
+    "filed_while_dark": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "the new factor is applied before filing; readings in between held"
+   "v4_spec": "a factor changed in LEM while both roads are dark: the 10 readings made after it are held, then filed with the NEW factor (res_wrong measured against raw + new factor). Ryan, D2 (2026-10-01): no LabCore replica — while both LEM roads are dark, results are HELD in the bench journal and filed once a road returns. This replaces the spec's 'results keep filing (with the factor replica)'. filed_while_dark counts prints made more than 60 s after the bench last heard LEM confirm its factors (the 60 s rule allows the ones before that) that were filed before a road returned."
+  },
+  "CF2u": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_wrong": 0,
+    "filed_with_stale_factor": 0,
+    "filed_after_change": 6,
+    "filed_late": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 3 (critic, T-P8 round 2): a factor changed in LEM while the roads are UP. The 6 readings printed after it are filed with the NEW factor (round 2 filed the first 2 with the replaced one: the 60 s rule allowed it), each in the poll interval it was read in (filed_late 0). A reading is filed only on a confirmation made after it was read: the uploader's sync that follows the poll, which files it right after."
   },
   "U1": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2715,6 +2816,155 @@
     "store_inserts_ok": 4
    },
    "v4_spec": "server INSERTs at web_app.py:3085/3125/3686 and levels.py:243 succeed on the store"
+  },
+  "F1L": {
+   "v3.9_source": "F1's phase-1 row: the same function, run with the server answering 404 — v3.9 never calls out, so the numbers are F1's exactly",
+   "v3.9": {
+    "scenario": "F1 single_csv",
+    "what": "log INSERT refused busy once",
+    "printed": 6,
+    "log_rows": 6,
+    "log_lost": 0,
+    "log_dup": 0,
+    "log_stray": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0,
+    "still_held_at_bench": 0,
+    "still_queued_log": 0,
+    "kills": 0,
+    "restarts": 0,
+    "ops": 43,
+    "notes": [],
+    "lost": 0,
+    "dup": 0,
+    "labelled_dup": 0,
+    "labelled_rows": 0,
+    "truth_prints": 6,
+    "stored_effective": 6,
+    "analyst_overwritten": 0,
+    "expect_audit_hits": null,
+    "injected": 0,
+    "conflicts": null,
+    "rejected": null,
+    "labcore_ops": 43,
+    "v2_syncs": 0,
+    "records_resent": null,
+    "roads_used": [],
+    "max_sends_per_cell": 1
+   },
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0
+   },
+   "v4_spec": "F1 on the legacy road (a v4 bench meeting an old server, D8): the LabCore log drain still loses nothing. 0"
+  },
+  "N2L": {
+   "v3.9_source": "N2's phase-1 row: the same function, run with the server answering 404 — v3.9 never calls out, so the numbers are N2's exactly",
+   "v3.9": {
+    "scenario": "N2 single_csv",
+    "what": "log INSERT: connection dropped before LabCore got it",
+    "printed": 6,
+    "log_rows": 6,
+    "log_lost": 0,
+    "log_dup": 0,
+    "log_stray": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0,
+    "still_held_at_bench": 0,
+    "still_queued_log": 0,
+    "kills": 0,
+    "restarts": 0,
+    "ops": 42,
+    "notes": [],
+    "lost": 0,
+    "dup": 0,
+    "labelled_dup": 0,
+    "labelled_rows": 0,
+    "truth_prints": 6,
+    "stored_effective": 6,
+    "analyst_overwritten": 0,
+    "expect_audit_hits": null,
+    "injected": 0,
+    "conflicts": null,
+    "rejected": null,
+    "labcore_ops": 42,
+    "v2_syncs": 0,
+    "records_resent": null,
+    "roads_used": [],
+    "max_sends_per_cell": 1
+   },
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0
+   },
+   "v4_spec": "N2 on the legacy road (a v4 bench meeting an old server, D8): the LabCore log drain still loses nothing. 0"
+  },
+  "CF2r": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_wrong": 0,
+    "filed_with_stale_factor": 0,
+    "filed_after_change": 12,
+    "filed_while_dark": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 2 (critic, T-P8 round 1): CF2 plus one LabStation restart while both roads are still dark. All 12 readings made after the factor change are held, then filed with the NEW factor — including the ones journaled before the restart, which come back from the journal carrying the old correction (round 1 filed 6 of 12 stale). D2: held, not filed, while dark."
+  },
+  "N404": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "log_rows": 0,
+    "labcore_ops_while_unknown": 0,
+    "legacy_road_ops": 0,
+    "went_legacy": false,
+    "v2_syncs": {
+     "ge": 1
+    },
+    "records_resent": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 2 (critic, T-P8 round 1): a bench that binds while LEM's roads are down. §6.1/§12.2: only a 404 means 'old server' — timeouts and 5xx never cause a fallback to LabCore. So 0 LabCore ops while LEM is unknown (round 1: the legacy road, 311 ops an idle hour, and 20 machine_log rows written to LabCore that were later also synced to LEM); once LEM answers, the records reach LEM only (log_rows 0 in LabCore) and the held results are filed (res_lost 0). legacy_road_ops counts every op but the results road and §6.4's one shared-token read."
+  },
+  "N503": {
+   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "log_rows": 0,
+    "labcore_ops_while_unknown": 0,
+    "legacy_road_ops": 0,
+    "went_legacy": false,
+    "v2_syncs": {
+     "ge": 1
+    },
+    "records_resent": 0,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
+   },
+   "v4_spec": "Round 2 (critic, T-P8 round 1): a bench that binds while LEM's roads are answering 503. §6.1/§12.2: only a 404 means 'old server' — timeouts and 5xx never cause a fallback to LabCore. So 0 LabCore ops while LEM is unknown (round 1: the legacy road, 311 ops an idle hour, and 20 machine_log rows written to LabCore that were later also synced to LEM); once LEM answers, the records reach LEM only (log_rows 0 in LabCore) and the held results are filed (res_lost 0). legacy_road_ops counts every op but the results road and §6.4's one shared-token read."
   }
  }
 }

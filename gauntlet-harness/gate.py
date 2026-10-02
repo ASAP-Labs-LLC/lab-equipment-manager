@@ -127,12 +127,12 @@ def run(args):
     # tree under test. Same call, rooted in tmp.
     import web_app
     _create_app = web_app.create_app
+    import functools
 
-    # `functools.wraps`, because servers.py reads the factory's SIGNATURE to
-    # tell a v4 server (`create_app(store, labcore=...)`) from v3.9's. A bare
-    # `*a, **k` wrapper hid `labcore`, so every v4 target was built in the
-    # v3.9 shape — LabCore as its store — and any bench that called it got a
-    # server with no store at all.
+    # functools.wraps keeps create_app's signature visible: servers.py asks
+    # `inspect.signature` whether the server takes `labcore=` (a LEM store,
+    # P6) — through a bare (*a, **k) wrapper the answer was always "no", so
+    # every World ran the LabCore-backed server whatever the target had.
     @functools.wraps(_create_app)
     def create_app(*a, **k):
         k.setdefault("documents_root", os.path.join(tmp_root, "data", "documents"))
@@ -211,6 +211,11 @@ def run(args):
         target.verify_loaded(code_root)
     except Exception as e:
         harness_errors.append(str(e))
+    from gharness import hserver as _hs
+    if _hs.OBSERVE_ERRORS:
+        harness_errors.append("the harness could not read %d sync bodies, so "
+                              "their records were not counted: %s"
+                              % (len(_hs.OBSERVE_ERRORS), _hs.OBSERVE_ERRORS[:3]))
     viol = netguard.violations()
     if viol:
         harness_errors.append("production was called: %s" % (viol[:5],))
