@@ -70,7 +70,7 @@ def test_mutation_t0_turns_every_tallied_scenario_red(tmp_path, v39):
     rc, out, _ = run_gate(tmp_path, "--target", "v3.9", "--mutation", "T0")
     tallied = {s for s, r in v39[1]["scenarios"].items()
                if "lost" in (r.get("measured") or {})}
-    assert len(tallied) == 47
+    assert len(tallied) == 48           # 47 of §9, plus the harness's A1j
     assert set(out["drifted"]) == tallied
     assert rc == 2          # drift: the harness no longer reproduces today
 

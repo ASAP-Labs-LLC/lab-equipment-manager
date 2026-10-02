@@ -248,7 +248,10 @@ class TestAResolvedIdIsNeverAskedAboutAgain:
                           samples_answer={"error": "LabCore is busy."})
         module = bench(gateway)
         self.steady(module, gateway)
-        self.steady(module, gateway, when=NOW + timedelta(seconds=12))
+        # Past the results road's backoff (30 s after a refusal, transfer v4
+        # §8.3): a poll 12 s later leaves a refusing LabCore alone, which says
+        # nothing about the cache. The one after the backoff must ASK again.
+        self.steady(module, gateway, when=NOW + timedelta(seconds=31))
         assert len(gateway.identity_queries) == 2
 
     def test_an_answer_a_date_decided_is_never_remembered(self, bench):
@@ -344,12 +347,15 @@ class TestTheDedupesAreNotQuadratic:
 
 
 class TestADroppedReadingIsNeverPaintedAsDelivered:
-    def test_the_parked_cap_does_not_report_what_it_threw_away(self, qapp,
-                                                              monkeypatch):
-        """`_parked_storage` was handed the UNCAPPED list, so readings `_park`
-        had just discarded were painted onto the Results grid — the exact
-        "reported delivered while dropped" failure the rest of this change
-        exists to remove."""
+    def test_the_park_throws_nothing_away_so_everything_it_paints_is_kept(
+            self, qapp, monkeypatch):
+        """`_parked_storage` was once handed the uncapped list while `_park`
+        discarded past a hundred, so dropped readings were painted onto the
+        Results grid — "reported delivered while dropped". The count cap is
+        retired (transfer v4 §3.2: a reading leaves custody when it is filed,
+        decided or seven days old, never because a queue was full), so the
+        painted list and the kept list are the same list, and nothing is
+        announced as lost because nothing was."""
         for name in ("labcore_write", "labcore_sql", "labcore_read_sql"):
             monkeypatch.delitem(mod.__dict__, name, raising=False)
         module = make_module()
@@ -360,16 +366,16 @@ class TestADroppedReadingIsNeverPaintedAsDelivered:
                              mod.MachineEvaluation(status="GREEN", reason=""),
                              NOW, [], [])
         filed = module._last_storage["filed"]
-        assert len(filed) == mod.HELD_ROW_LIMIT
-        assert filed == rows[50:]
-        assert module._take_losses(), "the drop was not reported either"
+        assert filed == rows
+        assert module._parked_rows == rows
+        assert module._take_losses() == []
 
     def test_park_returns_what_it_kept(self, qapp):
         module = make_module()
         module._machine = Machine(uid="m1", title="Eraspec")
         rows = [row(lab_id=str(i)) for i in range(mod.HELD_ROW_LIMIT + 3)]
         kept = module._park(rows)
-        assert kept == rows[3:]
+        assert kept == rows, "the park has no cap any more; it keeps them all"
         assert module._park([]) == []
 
 
@@ -664,19 +670,21 @@ class TestTheMachineLogPromiseIsNeverMadeFalsely:
         assert "stay in the machine log" not in module._log_home()
         assert "NOT reached LabCore" in module._log_home()
 
-    def test_the_parked_cap_does_not_promise_a_log_it_never_wrote(self, bench):
+    def test_the_park_makes_no_promise_because_it_drops_nothing(self, bench):
         """`_park` runs ONLY when LabCore is unreachable, so the drain provably
-        has not run — this is the one notice guaranteed false when it prints,
-        and the one that hardcoded the confident sentence."""
+        has not run, and the drop notice it used to print past a hundred
+        readings ("they stay in the machine log") was the one guaranteed false
+        when it printed. With the count cap retired there is no drop to
+        announce: all hundred and fifty are kept, and nothing is said about a
+        log they are not in."""
         module = bench(BusyLabCore())
         rows = [row(lab_id=str(60000 + i), Density="0.86") for i in range(150)]
         module._queue_run_events(module._machine, rows, NOW)
         messages = []
         module._park(rows, messages)
-        dropped = [m for m in messages if "could not be kept waiting" in m]
-        assert dropped, messages
-        assert "stay in the machine log" not in dropped[0], dropped[0]
-        assert "NOT reached LabCore" in dropped[0], dropped[0]
+        assert module._parked_rows == rows
+        assert not [m for m in messages if "could not be kept" in m], messages
+        assert "nothing is dropped" in mod.describe_parked(module._parked_rows)
 
 
 class TestARefusedStatusIsRetriedNotLatched:

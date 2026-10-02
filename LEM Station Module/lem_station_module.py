@@ -21,6 +21,7 @@ import ast
 import csv
 import difflib
 import hashlib
+import inspect
 import io
 import json
 import operator
@@ -483,6 +484,11 @@ JOURNAL_DIRNAME = "lem_journal"
 JOURNAL_META_NAME = "journal.meta"
 JOURNAL_KEY_NAME = "bench.key"
 JOURNAL_KNOWN_NAME = "known.idx"
+# LEM's ledger of what it filed, for the cells whose `filed` records have been
+# pruned: one JSON line [lab_id, test, value] per cell, newest last. The guard
+# (`decide_cell`) needs "what did LEM last file here?" for as long as a re-run
+# of that sample can arrive, which outlives a 30-day segment.
+JOURNAL_LEDGER_NAME = "ledger.idx"
 # A segment is the unit retention deletes. 4 MB is ten thousand ordinary
 # readings: small enough that a pruned file is a few days of a busy bench,
 # large enough that the folder never holds thousands of files.
@@ -720,6 +726,16 @@ class BenchJournal:
         self.recovery_done = False        # the module's re-delivery has run
         self.pause_files = False          # disk policy: file ingest paused
         self._known: set = set()
+        # {(lab_id, test): the value LEM last filed there} — the ledger `L` of
+        # the results guard, rebuilt from `filed` records (and ledger.idx for
+        # pruned ones), never from memory alone.
+        self.ledger: Dict[tuple, str] = {}
+        # Results decisions a person still has to make: {conflict ref: record}
+        # until a `resolution` names it. Kept like owed runs, so the segment
+        # holding one is never pruned out from under it.
+        self.conflicts: "OrderedDict[str, dict]" = OrderedDict()
+        self._conflict_segment: Dict[str, int] = {}
+        self.rejected: "OrderedDict[str, dict]" = OrderedDict()
         self._frames: "OrderedDict[str, tuple]" = OrderedDict()
         self._runs: "OrderedDict[str, dict]" = OrderedDict()
         self._segments: List[dict] = []
@@ -776,6 +792,7 @@ class BenchJournal:
         per_epoch_seq: Dict[str, int] = {}
         per_epoch_frame: Dict[str, int] = {}
         last_epoch = None
+        self._load_ledger()
         segs = self._segment_files()
         for idx, (n, path) in enumerate(segs):
             seg = {"n": n, "path": path, "size": 0, "seqs": {}}
@@ -899,9 +916,48 @@ class BenchJournal:
         except OSError as exc:
             raise JournalError(f"cannot read {path}: {exc}") from exc
 
+    def _load_ledger(self) -> None:
+        path = os.path.join(self.dir, JOURNAL_LEDGER_NAME)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        cell = json.loads(line)
+                    except ValueError:
+                        continue      # a torn last line: the segment had it
+                    if isinstance(cell, list) and len(cell) >= 3:
+                        self.ledger[(str(cell[0]), str(cell[1]))] = str(cell[2])
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            raise JournalError(f"cannot read {path}: {exc}") from exc
+
+    def ledger_value(self, lab_id, test) -> Optional[str]:
+        with self._lock:
+            return self.ledger.get((str(lab_id), str(test)))
+
     def _apply(self, body: dict, seg: dict) -> None:
         kind = body.get("kind")
         ref = f"{body['epoch']}:{body['seq']}"
+        if kind == "filed":
+            if body.get("repeat"):
+                return        # an old reading come round again: not LEM's latest
+            for cell in body.get("cells") or ():
+                if isinstance(cell, list) and len(cell) >= 3:
+                    self.ledger[(str(cell[0]), str(cell[1]))] = str(cell[2])
+            return
+        if kind == "conflict":
+            self.conflicts[ref] = body
+            self._conflict_segment[ref] = seg["n"]
+            return
+        if kind == "resolution":
+            done = str(body.get("conflict_ref") or "")
+            self.conflicts.pop(done, None)
+            self._conflict_segment.pop(done, None)
+            return
+        if kind == "rejected":
+            self.rejected[ref] = body
+            return
         if kind == "frame":
             self._frames[str(body.get("pk"))] = (str(body.get("text") or ""),
                                                  seg["n"])
@@ -1021,6 +1077,29 @@ class BenchJournal:
     def mark_settled(self, refs) -> List[str]:
         return self._mark("settled", refs)
 
+    def settle_with(self, records: List[dict], refs) -> List[str]:
+        """Append the results road's decisions (`filed`, `conflict`,
+        `rejected`, `given_up`) and the `settled` mark of the readings they
+        finish, in ONE fsync'd write: a kill can never leave a reading settled
+        without the record of what became of it, nor the other way round.
+        Returns the refs marked settled."""
+        with self._lock:
+            todo = []
+            for ref in refs or ():
+                run = self._runs.get(str(ref))
+                if run is not None and not run["settled"] and str(ref) not in todo:
+                    todo.append(str(ref))
+            out = [dict(r) for r in records or ()]
+            if todo:
+                out.append({"kind": "settled", "of": todo})
+            if out:
+                self.append(out)
+            return todo
+
+    def holds_run(self, ref) -> bool:
+        with self._lock:
+            return str(ref) in self._runs
+
     def _mark(self, kind: str, refs) -> List[str]:
         with self._lock:
             todo = []
@@ -1078,6 +1157,72 @@ class BenchJournal:
         with self._lock:
             self._meta["last_v2_handshake"] = when or _local_ts()
             self._write_meta()
+
+    def v2_handshaken(self) -> bool:
+        """Has this bench ever completed a v2 sync? From then on it never
+        writes `lem_*` into LabCore again unless LEM answers 404 (§6.1)."""
+        with self._lock:
+            return bool(self._meta.get("last_v2_handshake"))
+
+    def forget_v2_handshake(self) -> None:
+        """A 404: the server has no v2 (a rollback). Legacy until re-probed."""
+        with self._lock:
+            if self._meta.get("last_v2_handshake"):
+                self._meta["last_v2_handshake"] = None
+                self._write_meta()
+
+    def last_seq(self) -> int:
+        with self._lock:
+            return self._seq
+
+    def records_after(self, acked: int, limit: int = 100,
+                      max_bytes: int = 192 * 1024) -> List[dict]:
+        """This epoch's records from seq `acked`+1, contiguous, AS WRITTEN —
+        each line's body with its `crc`, which is what the server checks.
+
+        Stops at `limit` records or `max_bytes` (at least one record always,
+        so one big record cannot wedge the sync). A hole in the numbering is
+        not skipped over: the records before it are returned and the server
+        is never told "contiguous" about a gap. A segment that cannot be read
+        raises — a failed read is not "nothing to send"."""
+        with self._lock:
+            acked = int(acked)
+            if acked >= self._seq:
+                return []
+            out: List[dict] = []
+            size = 0
+            want = acked + 1
+            for seg in self._segments:
+                if seg["seqs"].get(self.epoch, 0) < want:
+                    continue
+                try:
+                    with open(seg["path"], "rb") as f:
+                        data = f.read(seg["size"])
+                except OSError as exc:
+                    raise JournalError(f"cannot read {seg['path']}: {exc}") \
+                        from exc
+                for line in data.splitlines(True):
+                    if _line_body(line) is None:
+                        continue
+                    rec = json.loads(line.decode("utf-8"))
+                    if rec.get("epoch") != self.epoch or rec.get("seq") != want:
+                        continue
+                    if out and (len(out) >= limit or size + len(line) > max_bytes):
+                        return out
+                    out.append(rec)
+                    size += len(line)
+                    want += 1
+            return out
+
+    def mark_projected_through(self, acked: int) -> List[str]:
+        """LEM acked this epoch through `acked`: every reading at or below it
+        is in LEM's record — PROJECTED, in v2 terms. One fsync'd mark."""
+        with self._lock:
+            refs = [ref for ref, run in self._runs.items()
+                    if not run["projected"]
+                    and run["rec"].get("epoch") == self.epoch
+                    and int(run["rec"].get("seq") or 0) <= int(acked)]
+            return self._mark("projected", refs) if refs else []
 
     # ── reading back ─────────────────────────────────────────────────────────
 
@@ -1166,7 +1311,8 @@ class BenchJournal:
     def _segment_busy(self, seg: dict) -> bool:
         n = seg["n"]
         return (any(r["segment"] == n for r in self._runs.values())
-                or any(sn == n for _t, sn in self._frames.values()))
+                or any(sn == n for _t, sn in self._frames.values())
+                or any(sn == n for sn in self._conflict_segment.values()))
 
     def prune(self, now: datetime, early: bool = False) -> int:
         """Delete whole segments the bench no longer needs to hold: every
@@ -1192,7 +1338,7 @@ class BenchJournal:
                     break
                 if not early and mtime > limit:
                     break
-                keys, last_seq, last_frame = [], 0, 0
+                keys, last_seq, last_frame, filed = [], 0, 0, []
                 with open(seg["path"], "rb") as f:
                     data = f.read(seg["size"])
                 for line in data.splitlines(True):
@@ -1206,7 +1352,18 @@ class BenchJournal:
                         keys.extend(str(k) for k in body.get("pks") or ())
                     elif body.get("kind") == "frame":
                         last_frame = max(last_frame, int(body.get("frame_no") or 0))
+                    elif body.get("kind") == "filed":
+                        filed.extend(c[:3] for c in body.get("cells") or ()
+                                     if isinstance(c, list) and len(c) >= 3)
                 d = self.digest(last_seq) if last_seq else None
+                if filed:
+                    # The ledger outlives the segment: a re-run of this sample
+                    # next quarter is still LEM superseding its own value.
+                    with open(os.path.join(self.dir, JOURNAL_LEDGER_NAME), "ab") as f:
+                        f.write("".join(json.dumps(c) + "\n" for c in filed
+                                        ).encode("utf-8"))
+                        f.flush()
+                        self._fsync(f.fileno())
                 if keys:
                     with open(os.path.join(self.dir, JOURNAL_KNOWN_NAME), "ab") as f:
                         f.write("".join(k + "\n" for k in keys).encode("utf-8"))
@@ -1351,7 +1508,7 @@ LOG_INDEX_DDL = (
 #
 # Read the drop notices on the results road and they all end the same way: the
 # reading "stays in the machine log". That sentence is the whole justification
-# for HELD_ROW_LIMIT, for IDENTITY_BACKLOG_LIMIT, for the parked cap and for the
+# for the count caps this road used to have and for the
 # seven-day expiry — none of them is a loss, because the record went to
 # lem_machine_log the moment the print was parsed (ISO/IEC 17025:2017 §7.5.1).
 #
@@ -4130,10 +4287,12 @@ def run_log_events(machine: "Machine", rows: List[dict], operator,
 # table AT ALL (see `identity_verdict`), where there is no identity to resolve
 # against and no table for a phantom to appear in.
 
-# How many unplaceable readings one bench keeps offering. A hundred of them is a
-# paperwork problem, not a timing gap, and every one is in lem_machine_log as it
-# was parsed (ISO/IEC 17025:2017 §7.5.1) and in lem_held_results as it waits —
-# the record is not what is at stake, only the automatic filing.
+# How many held readings the LabCore MIRROR (lem_held_results) carries. It used
+# to be how many the bench itself kept, and F3/F4/F5 measured what that cost: a
+# LabCore refusing for ten minutes shredded the oldest readings past a hundred.
+# The bench's custody has no count cap now (transfer v4 §3.2) — its journal
+# holds every reading until it is filed, decided or seven days old — and this
+# bounds only the size of the one mirror row a v3.9 floor reads.
 HELD_ROW_LIMIT = 100
 # And how long. A week covers a Friday-night run whose paperwork lands on Monday;
 # past that the sample is not late, it is not coming.
@@ -4142,10 +4301,8 @@ HELD_ROW_MAX_AGE = timedelta(days=7)
 # re-read source file, a restarted watch — does not re-stamp updated_at and cost
 # a slot in a queue that refuses past 100 pending.
 WRITTEN_CELL_MEMORY = 4000
-# Ops LabCore's queue refused, kept for the next poll. Past this the OLDEST go:
-# a newer reading of the same cell supersedes an older one, so the tail is the
-# part worth keeping.
-RETRY_OP_LIMIT = 200
+# (RETRY_OP_LIMIT, the 200-op retry queue, is retired: a refused cell stays
+# open on its reading and is read again before it is re-sent — §8.3.)
 # Printed Lab IDs per identity query. The lookup is one round trip per chunk
 # rather than one for the whole poll, because the whole poll has no bound: a
 # multi-CSV folder holding a weekend of archived prints is read in a single pass,
@@ -4175,23 +4332,9 @@ IDENTITY_LOOKUP_CHUNK = 150
 # later. See `split_identity_backlog`, and `_identity_backlog` for where the
 # remainder waits.
 IDENTITY_LOOKUP_MAX_CHUNKS = 2
-# And how many readings may be waiting their turn at that ceiling.
-#
-# This is NOT HELD_ROW_LIMIT and must not be: a hundred readings LabCore has
-# been asked about and cannot place is a paperwork problem, and dropping the
-# oldest is a defensible answer to it. A reading that has not been ASKED about
-# yet is not unplaceable — it is work in progress, its sample is almost always
-# sitting in `samples` already, and the queue drains at three hundred a poll
-# whatever the operator does. Sending an archive import through a hundred-row
-# cap would drop the other two thousand seven hundred readings and call it an
-# overflow of a queue they were never in.
-#
-# It is bounded all the same, because "unbounded on the worker" is how this road
-# got its other bug. Five thousand is more than a day of any real bench and a
-# few hundred kilobytes of dicts; past it the OLDEST go, like everywhere else
-# here, and they stay in lem_machine_log. It is memory only, deliberately — see
-# "Whose sample is this?" for which queue is mirrored and why this one is not.
-IDENTITY_BACKLOG_LIMIT = 5000
+# (IDENTITY_BACKLOG_LIMIT, the 5,000-reading cap on readings waiting their turn
+# at that ceiling, is retired with the other count caps — §3.2. The backlog
+# drains at three hundred a poll; a reading is never dropped to make room.)
 # How recently parsed a held reading has to be to be asked about on EVERY poll.
 #
 # The identity query is not free and cannot be made free: every arm wraps
@@ -4695,14 +4838,12 @@ def build_result_cells(rows: List[dict],
         lab_id = identities.get(printed, "") if printed else ""
         if not lab_id:
             continue
-        for key, value in row.items():
-            if key in RESERVED_ROW_KEYS:
-                continue
-            if value in (None, ""):
-                continue
+        # `row_cells` is the one rule for which keys of a row are results —
+        # the guarded road (`_road_decide`) files exactly these.
+        for key, value in row_cells(row):
             ops.append({"operation": "update_cell",
                         "params": {"lab_id": lab_id, "test_name": key,
-                                   "value": str(value)}})
+                                   "value": value}})
     return ops
 
 
@@ -4711,6 +4852,224 @@ def result_cell_key(op: dict) -> tuple:
     params = op.get("params") or {}
     return (str(params.get("lab_id") or ""), str(params.get("test_name") or ""),
             str(params.get("value") or ""))
+
+
+# ── The guard: read the cell before writing it (transfer v4 §8) ─────────────
+#
+# Measured on the real v3.9.0 module by the gate: an analyst corrects five filed
+# cells and LabStation restarts — all five corrections overwritten (A1); an
+# analyst types a cell while the bench holds the reading for its sample — all
+# three overwritten the moment the sample appears (A3). The bench never LOOKED
+# at the cell. Now one read answers both "which sample is this?" and "what is in
+# the cell now?", and each cell is decided from that read and from LEM's own
+# ledger of what it filed (`decide_cell`). Ryan's decision D1: a re-sent reading
+# that meets a cell a person edited is a CONFLICT for a person to resolve in
+# LEM. It is never overwritten.
+#
+# What is left is the A5 race — an edit that lands between the guard read and
+# the batch is overwritten — until LabCore offers compare-and-set. Every
+# `update_cell` therefore carries `expect` (what the read saw), so the audit can
+# list every such write, and `source = "LEM Station:<uid>"`, which LabCore
+# already writes into result history.
+
+# A probe after a refusal: at most this many cells, so a LabCore that is still
+# refusing costs twenty wasted sends and not the whole queue (F5: 10,100).
+ROAD_PROBE_CELLS = 20
+# And at most this many in the batch right after a probe lands. A bench that
+# was refused for an hour has a few thousand cells waiting, and one batch of all
+# of them is minutes of LabCore's serialised write queue in a single request,
+# offered to a LabCore that has only just started answering again. After that
+# poll the road is open: the per-poll identity ceiling (300 readings) is the
+# only bound, exactly as before the guard.
+ROAD_BATCH_CELLS = 200
+# A cell LabCore refuses by name inside an `ok` batch (a per-index error) is
+# tried this many times, on the backoff clock, and then parked as `rejected`
+# for a person: the error is about THIS cell, so trying it forever only repeats
+# it (B1).
+ROAD_CELL_TRIES = 3
+ROAD_BACKOFF_FIRST = 30
+ROAD_BACKOFF_MAX = 300
+
+
+def road_backoff_seconds(failures: int, retry_after: Optional[float] = None) -> float:
+    """How long the results road leaves LabCore alone after its `failures`-th
+    refusal in a row: 30, 60, 120, 240, then 300 s — or LabCore's own
+    `retry_after`, when it asked for longer. LabCore knows how deep its queue
+    is; this module only knows it was turned away."""
+    n = max(1, int(failures))
+    wait = min(ROAD_BACKOFF_MAX, ROAD_BACKOFF_FIRST * 2 ** (n - 1))
+    try:
+        asked = float(retry_after) if retry_after is not None else 0.0
+    except (TypeError, ValueError):
+        asked = 0.0
+    return max(asked, float(wait))
+
+
+def same_result(a, b) -> bool:
+    """Do two cell values say the same thing? Text first; then as numbers, so
+    "0.80" in the cell and "0.8000" from the instrument are one reading and not
+    a conflict (or a pointless re-send)."""
+    sa = "" if a is None else str(a).strip()
+    sb = "" if b is None else str(b).strip()
+    if sa == sb:
+        return True
+    if not sa or not sb:
+        return False
+    try:
+        return Decimal(sa) == Decimal(sb)
+    except (ArithmeticError, ValueError):
+        return False
+
+
+def decide_cell(cur_rows: List[dict], new, ledger) -> tuple:
+    """(verdict, expect) for one (lab_id, test) cell — §8.3:
+
+        cell empty, NULL or no row      ("write",    "")
+        cell == this reading            ("landed",   cur)   no write: it landed
+        cell == LEM's last filing (L)   ("write",    cur)   a re-run supersedes
+        anything else                   ("conflict", cur)   a person's value
+
+    `cur_rows` is what the guard read returned for the cell — normally one row,
+    none when the test was never assigned. Two rows that disagree are not a
+    cell anybody can say is "ours", so they are a conflict too. `ledger` is
+    what LEM last filed in this cell (None: it never has)."""
+    values = []
+    for r in cur_rows or ():
+        v = r.get("result") if isinstance(r, dict) else r
+        v = "" if v is None else str(v).strip()
+        if v and not any(same_result(v, seen) for seen in values):
+            values.append(v)
+    if not values:
+        return "write", ""
+    if len(values) > 1:
+        return "conflict", values[0]
+    cur = values[0]
+    if same_result(cur, new):
+        return "landed", cur
+    if ledger is not None and same_result(cur, ledger):
+        return "write", cur
+    return "conflict", cur
+
+
+def row_cells(row: dict) -> List[tuple]:
+    """The (test, value) cells one reading files — `build_result_cells`'s rule:
+    every non-reserved key with a value."""
+    return [(key, str(value)) for key, value in row.items()
+            if key not in RESERVED_ROW_KEYS and value not in (None, "")]
+
+
+def build_cell_lookup(lab_ids: List[str], tests: List[str]) -> tuple:
+    """(sql, params): the guard read for samples whose identity is already
+    settled (the identity cache). A lookup on sample_tests' own key — no scan
+    of `samples`. `SELECT *`, because the columns beyond the key differ between
+    LabCore builds (`operator` is written by `_batch_update_cell`; an older
+    table may lack it), and naming one that is missing would make the read fail
+    on every poll."""
+    labs = sorted({str(x) for x in lab_ids if str(x or "").strip()})
+    names = sorted({str(t) for t in tests if str(t or "").strip()})
+    if not labs or not names:
+        return "", []
+    return ('SELECT * FROM sample_tests WHERE lab_id IN (%s) AND test_name IN '
+            '(%s)' % (", ".join("?" for _ in labs),
+                      ", ".join("?" for _ in names)), labs + names)
+
+
+def build_combined_identity_query(printed_ids: List[str], tests: List[str],
+                                  settled: List[str] = ()) -> tuple:
+    """(sql, params): ONE read answering "which samples could these printed IDs
+    be?" and "what do their cells hold now?" (§8.2).
+
+    The identity arms are `build_sample_identity_query`'s, unchanged — a
+    prefilter `sample_matches` re-checks. `settled` names samples whose
+    identity is cached but whose cells this poll must still read; they ride on
+    an exact arm so a mixed poll is still one read. A settled name can only add
+    a candidate `sample_matches` would have accepted from the prefilter anyway.
+
+    The sample comes back as `sample_lab_id`, the cell's columns as `t.*` (see
+    `build_cell_lookup` for why `*`). `lab_id` is sample_tests' own and is NULL
+    where the sample has no such test yet."""
+    ident_sql, ident_params = build_sample_identity_query(printed_ids)
+    names = sorted({str(t) for t in tests if str(t or "").strip()})
+    extra = sorted({str(x) for x in settled if str(x or "").strip()})
+    if not ident_sql and not extra:
+        return "", []
+    where = ident_sql.split(" WHERE ", 1)[1] if ident_sql else ""
+    arms = []
+    params: list = []
+    if where:
+        arms.append("(" + where.replace('"lab_id"', 's."lab_id"') + ")")
+        params += list(ident_params)
+    if extra:
+        arms.append('s."lab_id" IN (%s)' % ", ".join("?" for _ in extra))
+        params += extra
+    if names:
+        join = (' LEFT JOIN sample_tests t ON t.lab_id = s."lab_id" AND '
+                't.test_name IN (%s)' % ", ".join("?" for _ in names))
+    else:
+        join = " LEFT JOIN sample_tests t ON 0"
+    sql = ('SELECT s."lab_id" AS sample_lab_id, t.* FROM "samples" s' + join
+           + " WHERE " + " OR ".join(arms))
+    return sql, list(names) + params
+
+
+def cells_from_rows(rows) -> Dict[tuple, List[dict]]:
+    """{(lab_id, test): [the cell's row(s)]} from a guard read's rows. A row
+    with no test_name is a sample with no cell for the asked tests."""
+    out: Dict[tuple, List[dict]] = {}
+    for r in rows or ():
+        if not isinstance(r, dict):
+            continue
+        lab, test = r.get("lab_id"), r.get("test_name")
+        if lab in (None, "") or test in (None, ""):
+            continue
+        out.setdefault((str(lab), str(test)), []).append(r)
+    return out
+
+
+def batch_outcome(result, n_ops: int) -> tuple:
+    """What one `batch` answer says about each of its `n_ops` sub-operations:
+
+        ("failed", reason, retry_after, None)   nothing is known to have landed
+        ("ok",     "",     None,  [error-or-None-or-MISSING per index])
+
+    LabCore's `_wop_batch` answers `ok` even when a sub-operation failed; the
+    failure is only in that index's `results` entry (B1). An index the answer
+    does not mention is unknown — the next guard read says whether it landed —
+    so it is never counted as filed. An answer with no `results` at all is an
+    older shape that only reports whole-batch success."""
+    if not isinstance(result, dict):
+        return "failed", "no answer", None, None
+    if result.get("error"):
+        return ("failed", str(result.get("error")),
+                retry_after_seconds(result), None)
+    per = result.get("results")
+    if not isinstance(per, list):
+        return "ok", "", None, [None] * n_ops
+    out: List[object] = [BATCH_INDEX_MISSING] * n_ops
+    for i, entry in enumerate(per):
+        if not isinstance(entry, dict):
+            continue
+        idx = entry.get("index", i)
+        if isinstance(idx, int) and 0 <= idx < n_ops:
+            out[idx] = str(entry["error"]) if entry.get("error") else None
+    return "ok", "", None, out
+
+
+BATCH_INDEX_MISSING = object()
+
+
+def labcore_write_takes_op_id(write) -> bool:
+    """Does the injected `labcore_write` have an `op_id` PARAMETER? A `**kw`
+    catch-all does not count: LabStation's own helper (LabStation.pyw:330)
+    forwards nothing it does not name, and an op_id that is silently dropped
+    is not idempotency."""
+    try:
+        sig = inspect.signature(write)
+    except (TypeError, ValueError):
+        return False
+    param = sig.parameters.get("op_id")
+    return param is not None and param.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
 
 
 def identity_lookup_ids(rows: List[dict], now: datetime,
@@ -4952,7 +5311,7 @@ def describe_parked(rows: List[dict]) -> str:
     named = ", ".join(ids[:3]) + ("…" if len(ids) > 3 else "")
     named = f" for {named}" if named else ""
     return (f"{len(rows)} reading(s) kept at the bench{named} — LabCore has "
-            f"not been reachable to file them (limit {HELD_ROW_LIMIT}).")
+            "not been reachable to file them; nothing is dropped.")
 
 
 # How many sentences the status line carries before it starts counting them.
@@ -5660,6 +6019,309 @@ def floor_config_results(body, machine_uid: str) -> Optional[dict]:
             "override": {"rows": [{"machine_uid": str(machine_uid),
                                    "manual_override": override}]}}
 
+
+
+# ── Protocol v2: the bench's own world goes to LEM, not LabCore (§6) ────────
+#
+# Measured by the gate on this module before it spoke v2: a bench printing one
+# reading per poll cost LabCore 5.43 ops a poll, 3.0 more than the same bench
+# idle, and idle was already 2.4 a poll — heartbeats, the config, override,
+# QC-library and maintenance reads, status and spec writes, the machine-log
+# row. LabCore's queue runs every bench's reads and writes at about 1.5 ops/s,
+# so that is the cost that multiplies by every bench Ryan adds. A v2 bench
+# sends its journal records, status, specs and heartbeat to LEM in ONE sync per
+# poll and reads its configuration from LEM; the only LabCore traffic left is
+# the results road (one identity-and-cell read, one batch) — §6.3.
+#
+# Nothing here is ever allowed to fall back to writing `lem_*` into LabCore
+# once the bench has completed a v2 handshake: an unreachable LEM means the
+# journal holds the records until a road answers (§6.1). The ONLY signal that
+# sends a bench back to LabCore is a 404 — an old server with no v2 at all.
+
+#: Road A, the LAN (dark in production until port 5557 is opened, G2) and
+#: road B, the public tunnel. Compiled in; `config.json`/the canvas/`lem_meta`
+#: may put another address in front of them (§6.2).
+LEM_LAN_URL = "http://192.168.1.5:5557"
+LEM_PUBLIC_URL = "https://lem.asaplabs.net"
+#: Per-road timeouts: a silently dropped LAN must cost 1.5 s, not 10.
+V2_LAN_TIMEOUT = 1.5
+V2_PUBLIC_TIMEOUT = 10.0
+#: A road that failed is tried again at most this often (sticky selection).
+V2_ROAD_REPROBE_SECONDS = 600
+#: Both roads down: 30, 60, 120, then 300 s between attempts, capped.
+V2_BACKOFF_SECONDS = (30, 60, 120, 300)
+#: An old server (404) is asked again for v2 every 15 minutes.
+V2_OLD_SERVER_REPROBE_SECONDS = 900
+#: A person must approve this bench in LEM: asked again this often.
+V2_PENDING_REPROBE_SECONDS = 300
+#: Ryan's D2: a result is filed only with a correction factor LEM confirmed
+#: current within this long. Both LEM roads dark → results HOLD in the journal.
+V2_FACTOR_CONFIRM_SECONDS = 60
+#: Per sync (the server refuses more than 100 records or 256 KB).
+V2_SYNC_MAX_RECORDS = 100
+V2_SYNC_MAX_BYTES = 192 * 1024
+#: Catch-up after an outage: at most this many syncs in one poll.
+V2_SYNC_ROUNDS_PER_POLL = 10
+V2_PROTO = 2
+V2_ENROLL_PATH = "/api/v2/bench/{uid}/enroll"
+V2_SYNC_PATH = "/api/v2/bench/{uid}/sync"
+V2_CONFIG_PATH = "/api/v2/bench/{uid}/config"
+#: `_log_event` kinds the LEM store keeps as their own record kind.
+V2_EVENT_KINDS = ("comment", "override", "pm", "calibration", "config")
+
+
+def lem_user_agent(machine_uid: str) -> str:
+    """Cloudflare's browser-integrity check answers urllib's default agent with
+    1010; a `LEM-Station/...` agent is forwarded (§6.2, A's probe)."""
+    return f"LEM-Station/{MODULE_VERSION} ({machine_uid})"
+
+
+def v2_roads(preferred: str = "") -> List[tuple]:
+    """[(name, base url, timeout)] in the order a fresh bench tries them: an
+    address this bench was given first, then the LAN, then the tunnel."""
+    out, seen = [], set()
+    for base in (str(preferred or "").strip().rstrip("/"), LEM_LAN_URL,
+                 LEM_PUBLIC_URL):
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        public = base.startswith("https://")
+        out.append(("public" if public else "lan", base,
+                    V2_PUBLIC_TIMEOUT if public else V2_LAN_TIMEOUT))
+    return out
+
+
+class LemAnswer:
+    """One answer from LEM. `status` 0 means no road answered at all (refused,
+    timed out, DNS) — never confused with an HTTP answer, because only an
+    HTTP 404 may send a bench back to LabCore."""
+
+    def __init__(self, status: int, body=None, retry_after=None,
+                 road: str = "", why: str = "") -> None:
+        self.status = int(status)
+        self.body = body if isinstance(body, dict) else None
+        self.retry_after = retry_after
+        self.road = road
+        self.why = why
+
+    def __repr__(self) -> str:
+        return f"LemAnswer({self.status}, road={self.road!r}, why={self.why!r})"
+
+
+def _retry_after_header(headers) -> Optional[float]:
+    try:
+        value = headers.get("Retry-After") if headers is not None else None
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def lem_call(base: str, method: str, path: str, uid: str,
+             body: Optional[dict] = None, headers: Optional[dict] = None,
+             timeout: float = V2_PUBLIC_TIMEOUT, road: str = "") -> LemAnswer:
+    """One HTTP request to LEM. Total: every failure is an answer, never a
+    raise (this runs on the poll worker; a raise strands `_polling`)."""
+    hdrs = {"User-Agent": lem_user_agent(uid), "X-LEM-Proto": str(V2_PROTO),
+            "Accept": "application/json"}
+    hdrs.update(headers or {})
+    data = None
+    if body is not None:
+        data = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    try:
+        request = urllib.request.Request(base.rstrip("/") + path, data=data,
+                                         headers=hdrs, method=method)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read() if callable(getattr(response, "read", None)) \
+                else b""
+            status = int(getattr(response, "status", 200) or 200)
+            try:
+                doc = json.loads(raw.decode("utf-8")) if raw else {}
+            except (UnicodeDecodeError, ValueError):
+                doc = None
+            return LemAnswer(status, doc, None, road)
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read() or b""
+            doc = json.loads(raw.decode("utf-8")) if raw else None
+        except Exception:                                  # noqa: BLE001
+            doc = None
+        return LemAnswer(exc.code, doc, _retry_after_header(exc.headers), road,
+                         str((doc or {}).get("error") or exc.reason or ""))
+    except Exception as exc:                               # noqa: BLE001
+        return LemAnswer(0, None, None, road,
+                         str(exc) or exc.__class__.__name__)
+
+
+class V2Link:
+    """The bench's two roads to LEM and what it knows about them.
+
+    Sticky: the road that last answered is tried first, the other within the
+    same call; a failed road is not tried again for V2_ROAD_REPROBE_SECONDS,
+    so a silently dropped LAN costs one 1.5 s timeout per ten minutes, not one
+    per poll (§6.2). Every clock here is the POLL's clock, so the gate's
+    simulated time and a test's are the time it runs on."""
+
+    def __init__(self, uid: str, roads: List[tuple]) -> None:
+        self.uid = uid
+        self.roads = list(roads)
+        self.sticky = 0
+        self.failed_at: Dict[str, datetime] = {}
+        # "unknown" until a handshake; "v2" after one (for good, until a 404);
+        # "old_server" after a 404; "pending" while a person must approve.
+        self.mode = "unknown"
+        self.retry_at: Optional[datetime] = None
+        self.failures = 0
+        self.last_ok: Optional[datetime] = None
+        self.healthy = False
+        self.road = ""
+        self.why = ""
+        self.config_rev: Optional[str] = None         # newest rev LEM named
+        self.applied_rev: Optional[str] = None        # rev of the config held
+        self.confirmed_at: Optional[datetime] = None  # applied == LEM's, when
+        self.enroll_key = secrets.token_urlsafe(24)
+
+    def waiting(self, now: datetime) -> bool:
+        return self.retry_at is not None and now < self.retry_at
+
+    def backoff(self, now: datetime, retry_after=None) -> None:
+        """Both roads failed: 30·2^n s, capped at 300, or LEM's Retry-After if
+        it is longer."""
+        step = V2_BACKOFF_SECONDS[min(self.failures, len(V2_BACKOFF_SECONDS) - 1)]
+        self.failures += 1
+        wait = max(float(step), float(retry_after or 0))
+        self.retry_at = now + timedelta(seconds=wait)
+        self.healthy = False
+
+    def answered(self, now: datetime) -> None:
+        self.failures = 0
+        self.retry_at = None
+        self.healthy = True
+        self.last_ok = now
+
+    def confirmed(self, now: datetime) -> bool:
+        """D2: is the factor this bench holds one LEM confirmed current in the
+        last V2_FACTOR_CONFIRM_SECONDS?"""
+        if self.confirmed_at is None:
+            return False
+        age = (now - self.confirmed_at).total_seconds()
+        return 0 <= age <= V2_FACTOR_CONFIRM_SECONDS
+
+    def note_rev(self, rev, now: datetime) -> bool:
+        """LEM named its current config rev. True when it is NOT the one this
+        bench applied — the config must be read again before a factor is
+        trusted."""
+        self.config_rev = rev if isinstance(rev, str) and rev else None
+        if self.config_rev is not None and self.config_rev == self.applied_rev:
+            self.confirmed_at = now
+            return False
+        return True
+
+    def call(self, method: str, path: str, now: datetime,
+             body: Optional[dict] = None,
+             headers: Optional[dict] = None) -> LemAnswer:
+        """Try the roads in sticky order. The first HTTP answer of ANY status
+        is LEM's answer; only "nobody answered" moves on to the next road."""
+        order = sorted(range(len(self.roads)), key=lambda i: (i != self.sticky, i))
+
+        def resting(i):
+            failed = self.failed_at.get(self.roads[i][1])
+            return failed is not None and \
+                0 <= (now - failed).total_seconds() < V2_ROAD_REPROBE_SECONDS
+        # Roads that failed in the last ten minutes sit out — unless every
+        # road has, and then the backoff (not this) is what spaces attempts.
+        candidates = [i for i in order if not resting(i)] or order
+        last = LemAnswer(0, None, None, "", "no road to LEM")
+        for i in candidates:
+            name, base, timeout = self.roads[i]
+            answer = lem_call(base, method, path, self.uid, body, headers,
+                              timeout, name)
+            if answer.status == 0:
+                self.failed_at[base] = now
+                last = answer
+                continue
+            self.failed_at.pop(base, None)
+            self.sticky = i
+            self.road = name
+            return answer
+        self.why = last.why
+        return last
+
+
+def journal_events_as_records(events) -> tuple:
+    """Queued machine-log events (`_log_event`'s (sql, args) entries) as v2
+    journal records, for a bench that sends its world to LEM.
+
+    Returns (records, kept): `kept` are entries that are NOT turned into a
+    record here — none today; the split exists so a kind the store cannot
+    hold is never silently thrown away. Entries tied to a journaled reading
+    (`.ref`) are the reading's own log rows, already inside its `run` record,
+    and are dropped. `status_change` is carried by the `state` record the sync
+    journals instead, and `held_expired` by the road's `given_up` record when
+    the reading had one."""
+    records, kept = [], []
+    for entry in events:
+        if getattr(entry, "ref", None):
+            continue
+        try:
+            _sql, args = entry
+            _uid, ts, kind, lab_id, test_name, value, detail = list(args)[:7]
+        except (TypeError, ValueError):
+            kept.append(entry)
+            continue
+        try:
+            detail = json.loads(detail) if isinstance(detail, str) and detail \
+                else (detail or {})
+        except ValueError:
+            detail = {"text": detail}
+        if kind == "status_change":
+            continue
+        rec = {"kind": kind if kind in V2_EVENT_KINDS else
+               ("given_up" if kind == "held_expired" else kind),
+               "lab_id": str(lab_id or ""), "test_name": str(test_name or ""),
+               "value": "" if value is None else str(value),
+               "detail": detail if isinstance(detail, dict) else {"value": detail},
+               "event_ts": str(ts or "")}
+        records.append(rec)
+    return records, kept
+
+
+def v2_spec_set(machine: Machine) -> List[dict]:
+    """The effective specs as a `specs` record carries them (the columns of
+    `build_effective_specs_publish`, by name)."""
+    out = []
+    for spec in sorted(machine.tests or [], key=lambda s: s.name):
+        low, high = spec_band(spec)
+        out.append({"test_name": spec.name, "sample_id": spec.sample_id,
+                    "expected": float(spec.expected),
+                    "std_dev": float(spec.std_dev), "k": float(spec.k),
+                    "units": spec.units, "low": low, "high": high,
+                    "last_qc_at": spec.last_qc_at or None,
+                    "last_qc_value": spec.last_qc_value,
+                    "last_qc_in_spec": (None if spec.last_qc_in_spec is None
+                                        else int(spec.last_qc_in_spec)),
+                    "correction": float(spec.correction or 0.0)})
+    return out
+
+
+def v2_last_qc_rows(entries) -> List[dict]:
+    """The v2 config's `last_qc` (newest verdict per series, from LEM's
+    effective record) in the row shape `last_qc_by_test` reads — so a v2
+    bench recovers its QC memory from LEM instead of the LabCore read v3.9
+    made (a v2 bench's QC rows are no longer in LabCore to be read)."""
+    rows = []
+    for e in entries or ():
+        if not isinstance(e, dict) or not e.get("test_name"):
+            continue
+        in_spec = e.get("in_spec")
+        if not isinstance(in_spec, bool):
+            verdict = str(e.get("verdict") or "").upper()
+            in_spec = True if verdict == "PASS" else \
+                False if verdict == "FAIL" else None
+        rows.append({"test_name": e.get("test_name"), "lab_id": e.get("lab_id"),
+                     "ts": e.get("ts"), "value": e.get("value"),
+                     "detail": json.dumps({"in_spec": in_spec})})
+    return rows
 
 
 # ── what this module is ACTUALLY checking ──────────────────────────────────
@@ -6575,6 +7237,9 @@ class LEMStationModule:
         self._live_url = ""
         self._live_token = ""
         self._live_checked = False
+        # Protocol v2's link to LEM (see `_v2_engage`); None until this bench
+        # has a token to prove itself with.
+        self._v2 = None
         self._live_failures = 0
         # Whether the LAST push came back SPEAKING THE NOTE PROTOCOL — which is
         # a different question from `_live_failures`, and the one the refresh
@@ -6744,9 +7409,7 @@ class LEMStationModule:
         # Readings parsed but not yet ASKED about, because one poll asks at most
         # IDENTITY_LOOKUP_CHUNK × IDENTITY_LOOKUP_MAX_CHUNKS Lab IDs. Kept apart
         # from `_held_rows` on purpose: these are not unplaceable, they are
-        # untried, so the hundred-row cap that is a fair answer to a paperwork
-        # backlog would be a silent shredder for an archive import. See
-        # IDENTITY_BACKLOG_LIMIT.
+        # untried, and the held-for-a-sample notice would be false about them.
         self._identity_backlog: List[dict] = []
         # Rows handed to the results road while it was already busy on the other
         # thread, or that never reached it at all. They join the held queue at
@@ -6758,10 +7421,20 @@ class LEMStationModule:
         # and a bench in steady state asks LabCore nothing. Least-recently-used,
         # bounded, and it never remembers a failure — see IDENTITY_CACHE_LIMIT.
         self._identity_cache: dict = {}
-        self._retry_ops: List[dict] = []  # ops LabCore's queue refused
+        # The guarded results road (transfer v4 §8). Its retry queue of ops is
+        # gone: a cell LabCore refused stays OPEN on its reading, and is read
+        # again before it is sent again, because the cell may have changed.
+        self._road_cells: dict = {}       # reading -> {test: filed|conflict|rejected}
+        self._road_tries: dict = {}       # (reading, test) -> (tries, next try)
+        self._road_failures = 0           # refusals in a row (backoff)
+        self._road_retry_at = None        # when the backoff ends
+        self._road_ramp = False           # a probe landed: next batch capped
+        self._ledger_mem: dict = {}       # `L` when there is no journal
+        self._road_stats = {"filed": 0, "conflicts": 0, "rejected": 0}
         self._identity_lookup_ok = True   # can LabCore say what samples it holds
-        # The held queue, the retry queue and the written-cell memory are the
-        # only custody an unfiled reading has, and two threads reach them: the
+        # The held queue, the road's per-cell state and the written-cell memory
+        # are the custody an unfiled reading has in memory (the bench journal
+        # holds it on disk), and two threads reach them: the
         # poll worker, and the main thread on an explicit operator action. The
         # RLock guards every read-modify-write of that state; `_storing` is
         # taken WITHOUT waiting, so a second caller parks its rows and leaves
@@ -6974,6 +7647,14 @@ class LEMStationModule:
         # just READ from it — no point echoing it straight back.
         if publish:
             self._publish_config(machine)
+        # Where LEM listens and the shared token a first enrolment proves
+        # itself with: read ONCE, here at bind (§6.2's mixed-fleet allowance),
+        # so the first poll can already speak v2 and costs LabCore nothing.
+        # Kept apart from the live road's own state: the v1 push adopts it
+        # instead of reading `lem_meta` a second time, but nothing on today's
+        # road changes WHEN it learns the address (see `_live_config`).
+        if not self._live_checked and getattr(self, "_live_hint", None) is None:
+            _in_thread(self._read_live_hint, lambda _answer: None)
 
     def _refresh_card(self) -> None:
         machine = self._machine
@@ -7387,9 +8068,12 @@ class LEMStationModule:
         if counts is None:
             counts = self._journal_unprojected = {}
         lock = self._journal_lock_or_new()
+        v2 = self._v2_active()
         for row, ref in zip(rows, refs[lead:]):
             row[JOURNAL_KEY] = ref
-            args_list = logs.get(id(row), [])
+            # In v2 the record IS the delivery: its log rows ride the sync
+            # inside it, and LEM's ack marks it projected. Nothing to queue.
+            args_list = [] if v2 else logs.get(id(row), [])
             if args_list:
                 # Counted BEFORE queued: a drain on another worker that lands
                 # an entry the instant it is queued must find its count.
@@ -7555,12 +8239,19 @@ class LEMStationModule:
             if isinstance(row, dict) and row.get(JOURNAL_KEY):
                 dropped.add(row[JOURNAL_KEY])
 
-    def _journal_settle(self, refs) -> None:
+    def _journal_settle(self, refs, decisions=()) -> None:
         """The results road has decided on `refs`: those not back in its
-        custody — filed, given up after seven days, carrying no Lab ID, or a
-        QC standard's check — are SETTLED. Held, backlogged, parked or
-        cap-dropped readings are not."""
-        if not refs:
+        custody — filed, decided as a conflict or a rejection, given up after
+        seven days, carrying no Lab ID, or a QC standard's check — are
+        SETTLED. Held, backlogged or parked readings are not.
+
+        `decisions` are the road's records of WHAT became of them (`filed`,
+        `conflict`, `rejected`, `given_up`), journaled in the same write as the
+        settle mark (`BenchJournal.settle_with`): a kill can never leave a
+        reading settled with no record of its fate, and a record whose reading
+        then re-files after a restart is caught by the guard read (the cell
+        already holds it)."""
+        if not refs and not decisions:
             return
         with self._results_lock:
             custody = {row.get(JOURNAL_KEY)
@@ -7569,11 +8260,398 @@ class LEMStationModule:
                                    + list(self._parked_rows))
                        if isinstance(row, dict)}
         dropped = getattr(self, "_journal_dropped", None) or set()
-        settled = set(refs) - custody - dropped
+        settled = set(refs or ()) - custody - dropped
         if dropped:
-            dropped.difference_update(refs)
-        if settled:
-            self._journal_mark("settled", sorted(settled))
+            dropped.difference_update(refs or ())
+        if not decisions:
+            if settled:
+                self._journal_mark("settled", sorted(settled))
+            return
+        journals = list((getattr(self, "_journals", None) or {}).values())
+        current = getattr(self, "_journal", None)
+        if current is not None and current not in journals:
+            journals.append(current)
+        for journal in journals:
+            mine = [d for d in decisions
+                    if any(journal.holds_run(r) for r in d.get("of") or ())]
+            refs_here = [r for r in sorted(settled) if journal.holds_run(r)]
+            if not mine and not refs_here:
+                continue
+            try:
+                journal.settle_with(mine, refs_here)
+            except JournalError:
+                # Unrecorded means re-offered after a restart, where the guard
+                # read finds the cell as this poll left it: a re-decided
+                # reading, never a lost or doubled one.
+                pass
+
+    # ── Protocol v2 (§6): this bench's own world goes to LEM ─────────────────
+    #
+    # Four touch points, every one of them a place a LabCore op used to be:
+    #
+    #   top of the poll   `_v2_engage`: enrol once, handshake once; then the
+    #                     config (corrections, QC library, override, PM) comes
+    #                     from `GET /api/v2/bench/<uid>/config` when it is due
+    #                     or when a sync named a rev this bench has not applied
+    #   the sync step     status, specs and machine-log events become journal
+    #                     records (`state`, `specs`, `comment`, ...) instead of
+    #                     LabCore writes; the results road stays on LabCore
+    #   end of the sync   `_v2_sync`: ONE `POST .../sync` carries every record
+    #                     from acked+1 plus the live block — the heartbeat too
+    #   the pulse         a sync when one is due, never a LabCore heartbeat
+    #
+    # The journal is the custody throughout: a record is PROJECTED when LEM
+    # acks its seq, and nothing is ever re-sent to LabCore because LEM is dark.
+
+    def _v2_active(self) -> bool:
+        link = getattr(self, "_v2", None)
+        return link is not None and link.mode == "v2"
+
+    def _v2_link_for(self, machine, journal) -> Optional["V2Link"]:
+        """This bench's link to LEM, or None when it has nothing to prove who
+        it is with — no bench.key yet and no shared token from `lem_meta` or
+        the canvas. Such a bench makes no request at all (and behaves exactly
+        as v3.9 did)."""
+        uid = str(getattr(machine, "uid", "") or "")
+        link = getattr(self, "_v2", None)
+        if link is not None and link.uid == uid:
+            return link
+        try:
+            key = journal.read_bench_key()
+        except JournalError:
+            key = None
+        url, shared = self._v2_address()
+        if not key and not shared:
+            self._v2 = None
+            return None
+        link = V2Link(uid, v2_roads(url))
+        if journal.v2_handshaken():
+            # Once a v2 bench, always one until LEM says 404: a restart while
+            # LEM is dark must hold records in the journal, not send them to
+            # LabCore (§6.1 "never falls back").
+            link.mode = "v2"
+        self._v2 = link
+        return link
+
+    def _v2_engage(self, machine, now: datetime, messages: List[str]) -> bool:
+        """Top of every poll. True when this poll runs in v2 mode.
+
+        A bench that has never completed a handshake stays on today's road
+        (legacy projection) until one succeeds; once it has, LEM being dark is
+        a reason to hold records in the journal, never to write `lem_*` into
+        LabCore. Total: a raise here would strand the worker."""
+        self._v2_poll_now = now
+        try:
+            if machine is None or not str(machine.uid or "").strip():
+                return False
+            journal = self._journal_for(machine)
+            if journal is None:
+                return False         # the records live in the journal
+            link = self._v2_link_for(machine, journal)
+            if link is None:
+                return False
+            if link.mode != "v2":
+                if link.waiting(now):
+                    return False
+                if not self._v2_enrol(link, journal, now, messages):
+                    return False
+                if not self._v2_sync(machine, journal, now, None, messages):
+                    return False
+            if getattr(self, "_v2_config_stale", True) or self._config_due(now) \
+                    or self._corrections_due(now) or self._override_due(now):
+                if self._v2_config(machine) is not None:
+                    # One answer applies everything it carries, this poll:
+                    # the factor before the parse, the QC library, override
+                    # and PM in the sync step.
+                    self._corrections_read_at = None
+                    self._config_read_at = None
+                    self._override_read_at = None
+            return True
+        except Exception as exc:                          # noqa: BLE001
+            messages.append(f"LEM sync error: {exc}")
+            return self._v2_active()
+
+    def _v2_token(self, journal) -> Optional[str]:
+        try:
+            return journal.read_bench_key()
+        except JournalError:
+            return None
+
+    def _v2_enrol(self, link, journal, now, messages) -> bool:
+        """bench.key, or enrolment with the shared token (§6.4)."""
+        if self._v2_token(journal):
+            return True
+        answer = link.call(
+            "POST", V2_ENROLL_PATH.format(uid=urllib.parse.quote(link.uid, safe="")),
+            now, {"machine_uid": link.uid, "module_version": MODULE_VERSION,
+                  "enroll_key": link.enroll_key},
+            {"X-LEM-Token": str(self._v2_address()[1] or "")})
+        token = (answer.body or {}).get("token") if answer.status == 200 else None
+        if isinstance(token, str) and token.strip():
+            try:
+                journal.write_bench_key(token)
+            except JournalError as exc:
+                messages.append(f"LEM enrolled this bench but its key could "
+                                f"not be kept ({exc}); staying on LabCore.")
+                link.backoff(now)
+                return False
+            return True
+        if answer.status == 202:
+            link.mode = "pending"
+            link.retry_at = now + timedelta(seconds=V2_PENDING_REPROBE_SECONDS)
+            messages.append("LEM is waiting for a person to approve this bench "
+                            "(Settings › Transfer); until then it reports "
+                            "through LabCore as before.")
+            return False
+        if answer.status == 404:
+            self._v2_old_server(journal, now, messages)
+            return False
+        if answer.status == 0 or answer.status >= 500:
+            link.backoff(now, answer.retry_after)
+            return False
+        link.why = answer.why or f"HTTP {answer.status}"
+        link.retry_at = now + timedelta(seconds=V2_OLD_SERVER_REPROBE_SECONDS)
+        messages.append(f"LEM refused to enrol this bench ({link.why}).")
+        return False
+
+    def _v2_old_server(self, journal, now: datetime, messages) -> None:
+        """404: this server has no v2 (§6.1's ONLY fallback signal). Back to
+        legacy projection, re-probed every 15 minutes. Readings LEM never acked
+        go out to LabCore through the owed-row check, which asks LabCore what
+        already landed before it sends anything (no doubles)."""
+        link = self._v2
+        was_v2 = link is not None and link.mode == "v2"
+        if link is not None:
+            link.mode = "old_server"
+            link.healthy = False
+            link.retry_at = now + timedelta(seconds=V2_OLD_SERVER_REPROBE_SECONDS)
+        if journal is None or not was_v2:
+            return
+        try:
+            journal.forget_v2_handshake()
+        except JournalError:
+            pass
+        counts = getattr(self, "_journal_unprojected", None)
+        if counts is None:
+            counts = self._journal_unprojected = {}
+        owed = []
+        for run in journal.open_runs():
+            if run["projected"]:
+                continue
+            logs = [a for a in run["rec"].get("log") or () if isinstance(a, list)]
+            if logs:
+                owed.extend(_log_entry(args, run["ref"]) for args in logs)
+                counts[run["ref"]] = len(logs)
+        if owed:
+            self._journal_owed = list(getattr(self, "_journal_owed", None)
+                                      or []) + owed
+        messages.append("LEM answered 404 (an older server): this bench reports "
+                        "through LabCore again and asks LEM for v2 every 15 "
+                        "minutes.")
+
+    def _v2_config(self, machine) -> Optional[dict]:
+        """This bench's configuration from LEM, LabCore-shaped (see
+        `floor_config_results`), at most one GET per poll. None means no
+        answer — and in v2 the caller then keeps what it has; it never asks
+        LabCore instead."""
+        link = getattr(self, "_v2", None)
+        now = getattr(self, "_v2_poll_now", None) or datetime.now()
+        cached = getattr(self, "_v2_config_cache", None)
+        if cached is not None and cached[0] == now:
+            return cached[1]
+        result = None
+        journal = self._journal_for(machine)
+        token = self._v2_token(journal) if journal is not None else None
+        if link is not None and token and not link.waiting(now):
+            answer = link.call(
+                "GET", V2_CONFIG_PATH.format(
+                    uid=urllib.parse.quote(link.uid, safe="")), now, None,
+                {"X-LEM-Bench-Token": token})
+            if answer.status == 200 and answer.body is not None:
+                result = floor_config_results(answer.body, machine.uid)
+                if result is not None:
+                    result["last_qc"] = {"rows": v2_last_qc_rows(
+                        answer.body.get("last_qc"))}
+                    rev = answer.body.get("config_rev")
+                    link.applied_rev = rev if isinstance(rev, str) and rev else None
+                    link.config_rev = link.applied_rev
+                    link.confirmed_at = now if link.applied_rev else None
+                    self._v2_config_stale = False
+            elif answer.status == 404:
+                self._v2_old_server(journal, now, [])
+            elif answer.status == 0:
+                link.backoff(now, answer.retry_after)
+        self._v2_config_cache = (now, result)
+        return result
+
+    def _v2_journal(self, journal, records: List[dict], now: datetime,
+                    messages: List[str]) -> bool:
+        if not records:
+            return True
+        try:
+            journal.append(records, ts=_poll_ts(now))
+            return True
+        except JournalError as exc:
+            messages.append(f"Bench journal write failed ({exc}); this bench's "
+                            "status for LEM is retried next poll.")
+            return False
+
+    def _v2_journal_events(self, journal, now: datetime,
+                           messages: List[str]) -> None:
+        """The machine-log queue, as journal records (one fsync). A failed
+        write puts every entry back: the queue is the record until it lands."""
+        batch = []
+        while self._pending_events:
+            try:
+                batch.append(self._pending_events.popleft())
+            except IndexError:
+                break
+        if not batch:
+            return
+        records, kept = journal_events_as_records(batch)
+        if not self._v2_journal(journal, records, now, messages):
+            self._pending_events.extendleft(reversed(batch))
+            return
+        if kept:
+            self._pending_events.extendleft(reversed(kept))
+
+    def _v2_live_block(self, machine, evaluation, now: datetime) -> dict:
+        evaluation = evaluation or getattr(self, "_evaluation", None)
+        if evaluation is None:
+            return {"status": STATUS_UNKNOWN, "reason": "",
+                    "at": now.isoformat(),
+                    "interval_seconds": int(getattr(self, "_poll_seconds", 30) or 0)}
+        body = build_live_payload(machine, evaluation, now,
+                                  getattr(self, "_poll_seconds", 30),
+                                  getattr(self, "_v2_rows", None) or [])
+        body.pop("machine_uid", None)
+        return body
+
+    def _v2_sync(self, machine, journal, now: datetime, evaluation,
+                 messages: List[str]) -> bool:
+        """`POST /api/v2/bench/<uid>/sync`: every record from acked+1, the live
+        block, the stats. Adopts the `acked` of ANY 200 or 409 — even one
+        ahead of the bench's own (N3: the answer to an earlier sync was lost).
+        True when LEM answered 200 (the last round)."""
+        lock = getattr(self, "_v2_lock", None)
+        if lock is None:
+            lock = self._v2_lock = threading.RLock()
+        # One sync at a time per bench: the pulse and a poll could otherwise
+        # race two answers into `acked` out of order.
+        with lock:
+            return self._v2_sync_locked(machine, journal, now, evaluation,
+                                        messages)
+
+    def _v2_sync_locked(self, machine, journal, now: datetime, evaluation,
+                        messages: List[str]) -> bool:
+        link = getattr(self, "_v2", None)
+        token = self._v2_token(journal)
+        if link is None or not token:
+            return False
+        if link.mode == "v2" and link.waiting(now):
+            return False
+        path = V2_SYNC_PATH.format(uid=urllib.parse.quote(link.uid, safe=""))
+        with self._results_lock:
+            held = len(self._held_rows) + len(self._identity_backlog)
+        for _round in range(V2_SYNC_ROUNDS_PER_POLL):
+            try:
+                acked = journal.acked
+                records = journal.records_after(acked, V2_SYNC_MAX_RECORDS,
+                                                V2_SYNC_MAX_BYTES)
+                try:
+                    digest = journal.digest(acked)
+                except JournalError:
+                    digest = None          # pruned past it: say nothing
+            except JournalError as exc:
+                messages.append(f"The bench journal could not be read for LEM "
+                                f"({exc}); nothing was sent, retrying next poll.")
+                return False
+            last = journal.last_seq()
+            stats = {"unacked": max(0, last - acked), "records_total": last,
+                     "road": link.road or None, "held": held,
+                     "conflicts_open": len(journal.conflicts),
+                     "rejected": len(journal.rejected),
+                     "config_rev_applied": link.applied_rev}
+            if digest is not None:
+                stats["digest"] = digest
+                stats["digest_seq"] = acked
+            body = {"machine_uid": link.uid, "epoch": journal.epoch,
+                    "proto": V2_PROTO, "module_version": MODULE_VERSION,
+                    "from_seq": acked + 1, "records": records,
+                    "live": self._v2_live_block(machine, evaluation, now),
+                    "bench_clock": _local_ts(), "sources": [], "stats": stats}
+            answer = link.call("POST", path, now, body,
+                               {"X-LEM-Bench-Token": token})
+            got = (answer.body or {}).get("acked")
+            if answer.status in (200, 409) and isinstance(got, int) \
+                    and not isinstance(got, bool) and got >= 0:
+                durable = (answer.body or {}).get("durable")
+                try:
+                    journal.set_acked(got, durable if isinstance(durable, int)
+                                      and not isinstance(durable, bool) else None)
+                    journal.mark_projected_through(got)
+                except JournalError as exc:
+                    messages.append(f"LEM acked through seq {got} but the "
+                                    f"journal could not note it ({exc}); the "
+                                    "next sync re-sends and LEM keeps one.")
+                    return False
+                if answer.status == 409:
+                    continue               # LEM restored from a backup (T3)
+                link.answered(now)
+                if link.mode != "v2":
+                    link.mode = "v2"
+                    try:
+                        journal.note_v2_handshake()
+                    except JournalError:
+                        pass
+                    messages.append("This bench now reports to LEM (protocol "
+                                    "v2); LabCore carries its results only.")
+                if link.note_rev(answer.body.get("config_rev"), now):
+                    self._v2_config_stale = True
+                # `last` is what this round offered; the `projected` mark the
+                # ack just wrote rides the NEXT poll's sync rather than costing
+                # a second request now.
+                if not records or got >= last:
+                    return True
+                continue
+            if answer.status == 404:
+                self._v2_old_server(journal, now, messages)
+                return False
+            if answer.status == 401:
+                link.why = "LEM does not recognise this bench: re-enrol"
+                messages.append(f"{link.why}. Records stay in the journal.")
+            elif answer.status == 400:
+                link.why = answer.why or "LEM refused the sync as malformed"
+                messages.append(f"LEM refused this bench's sync ({link.why}); "
+                                "records stay in the journal.")
+            else:
+                link.why = answer.why or f"HTTP {answer.status}"
+            link.backoff(now, answer.retry_after)
+            return False
+        return True
+
+    def _v2_factor_confirmed(self, now: datetime) -> bool:
+        link = getattr(self, "_v2", None)
+        return link is not None and link.confirmed(now)
+
+    def _v2_hold_results(self, rows: List[dict], messages: List[str]) -> dict:
+        """D2: LEM has not confirmed this bench's correction factors within a
+        minute — both roads dark, or LEM's config not readable. The readings
+        are journaled already; they wait in the results backlog and file the
+        first poll LEM confirms. Never filed with a factor nobody confirmed."""
+        rows = [r for r in rows if isinstance(r, dict)]
+        with self._results_lock:
+            self._identity_backlog = list(self._identity_backlog) + rows
+            waiting = len(self._identity_backlog) + len(self._held_rows)
+        notice = (f"Holding {waiting} result(s): LEM has not confirmed this "
+                  "bench's correction factors in the last minute, so nothing is "
+                  "filed to LabCore until it does. Every reading is in the "
+                  "bench journal.") if waiting else ""
+        if notice:
+            messages.append(notice)
+        self._held_notice = notice
+        return {"identities": {}, "filed": [], "stored": True,
+                "notice": notice, "given_up": ""}
 
     # ── Ingestion (thread-safe half: no widget access) ────────────────────
 
@@ -7913,6 +8991,11 @@ class LEMStationModule:
         if floor is not None:
             answered, wanted = True, parse_correction_rows(
                 floor["corrections"]["rows"])
+        elif self._v2_active():
+            # v2 never reads LabCore for its own world (§6.3): no answer from
+            # LEM keeps the factor this bench holds, unstamped, and D2 holds
+            # the results until LEM confirms it.
+            return False
         else:
             answered, wanted = fetch_corrections(
                 machine.uid, globals().get("labcore_read_sql"))
@@ -7984,6 +9067,13 @@ class LEMStationModule:
         """
         if self._live_checked and self._live_failures < LIVE_RETRY_AFTER:
             return self._live_url, self._live_token
+        hint = getattr(self, "_live_hint", None)
+        if not self._live_checked and hint is not None:
+            # Read at bind; the same answer, not a second LabCore read.
+            self._live_hint = None
+            self._live_checked = True
+            self._live_url, self._live_token = hint
+            return self._live_url, self._live_token
         self._live_checked = True
         self._live_failures = 0
         read_sql = globals().get("labcore_read_sql")
@@ -7997,6 +9087,29 @@ class LEMStationModule:
             self._live_url, self._live_token = parse_live_config(
                 result.get("rows") or [])
         return self._live_url, self._live_token
+
+    def _read_live_hint(self) -> Optional[tuple]:
+        """`lem_meta`'s (url, token), read once at bind. None when LabCore
+        could not answer — then nothing is known, and the live road reads it
+        itself as it always has."""
+        read_sql = globals().get("labcore_read_sql")
+        if not callable(read_sql):
+            return None
+        try:
+            result = read_sql(*build_live_config_query())
+        except Exception:                                  # noqa: BLE001
+            return None
+        if not isinstance(result, dict) or result.get("error"):
+            return None
+        self._live_hint = parse_live_config(result.get("rows") or [])
+        return self._live_hint
+
+    def _v2_address(self) -> tuple:
+        """(url, shared token) for protocol v2: what the live road holds, else
+        what bind read from `lem_meta`."""
+        hint = getattr(self, "_live_hint", None) or ("", "")
+        return (getattr(self, "_live_url", "") or hint[0],
+                getattr(self, "_live_token", "") or hint[1])
 
     def _live_channel_healthy(self) -> bool:
         """Is the note channel actually delivering right now?
@@ -8026,6 +9139,10 @@ class LEMStationModule:
         re-reads, so the counter alone drops back under the threshold and would
         re-open the window on a floor that is still dead. See `_live_delivering`.
         """
+        if self._v2_active():
+            # Every sync names the config rev, so a change made in LEM reaches
+            # this bench within one poll while the sync is answering.
+            return bool(self._v2.healthy)
         return (bool(self._live_url)
                 and self._live_delivering
                 and self._live_failures < LIVE_RETRY_AFTER)
@@ -8066,6 +9183,8 @@ class LEMStationModule:
         DEPEND on that — the guarantee has to hold at the seam as well as
         inside it.
         """
+        if machine is not None and self._v2_active():
+            return self._v2_config(machine)
         if machine is None or not self._live_channel_healthy():
             return None
         try:
@@ -8115,6 +9234,8 @@ class LEMStationModule:
             evaluation = payload.get("evaluation")
             if machine is None or evaluation is None:
                 return
+            if self._v2_active():
+                return          # the live block rode this poll's v2 sync
             url, token = self._live_config()
             if not url:
                 return
@@ -8291,7 +9412,13 @@ class LEMStationModule:
         # a floor too old to speak the note protocol all leave the flag exactly
         # as it was, and the reads below fall back to LabCore precisely as they
         # do today. See `_probe_live_channel`.
-        self._probe_live_channel(machine)
+        # Protocol v2 first (§6): enrol and handshake once, and read this
+        # bench's configuration from LEM when it is due, so the corrections
+        # step below takes its factor from LEM and nothing on this poll asks
+        # LabCore for the bench's own world.
+        self._v2_rows = []
+        if not self._v2_engage(machine, now, messages):
+            self._probe_live_channel(machine)
 
         # Before anything is parsed: the factor applied to a measurement must be the
         # one in force when it was made. Moved here from the LabCore sync (which runs
@@ -8888,45 +10015,131 @@ class LEMStationModule:
         Nothing else about this method changes: a cached ID takes the same
         road out as one answered this second.
         """
+        return self._resolve_identities_and_cells(
+            printed_ids, read_sql, dates, standards=standards)[:3]
+
+    def _resolve_identities_and_cells(self, printed_ids: List[str], read_sql,
+                                      dates: Optional[Dict[str, datetime]] = None,
+                                      standards=(), tests=(),
+                                      now: Optional[datetime] = None) -> tuple:
+        """(identities, ambiguous, unknown, cells, failure) — the identity
+        question and the guard read in ONE read per chunk (§8.2).
+
+        `cells` maps (sample, test) to the cell's row(s) for every placed ID,
+        for the `tests` asked about. An ID is only reported placed when its
+        cells were read too: a sample whose cell could not be read cannot be
+        guarded, so it is `unknown` — held, asked again — exactly like an ID
+        whose identity could not be asked. `failure` is (reason, retry_after)
+        of the first refused or failed read, None when every read answered.
+
+        A sample whose identity is cached rides on the first identity chunk as
+        an exact arm; when nothing needs identifying it is read by key from
+        sample_tests (`build_cell_lookup`) without touching `samples`. Neither
+        read names a `source`: LabCore queues a sourced read behind its write
+        queue (A.5)."""
         identities: Dict[str, str] = {}
         ambiguous: Dict[str, List[str]] = {}
         unknown: set = set()
+        cells: Dict[tuple, List[dict]] = {}
+        failure = None
+        tests = [t for t in tests or () if str(t or "").strip()]
         standard_keys = {str(s or "").strip().lower() for s in standards}
         # Split before a single query is built, so an all-cached poll builds
-        # none. The keys carry the standard flag because it changes the answer.
+        # no identity query. The keys carry the standard flag because it
+        # changes the answer.
         asking: List[str] = []
+        cached: Dict[str, str] = {}
         for printed in printed_ids:
             key = str(printed or "").strip()
             if not key:
                 continue
-            known = self._cached_identity(key, key.lower() in standard_keys)
+            known = self._cached_identity(key, key.lower() in standard_keys,
+                                          now=now)
             if known:
-                identities[key] = known
+                cached[key] = known
             else:
                 asking.append(key)
-        for sql, params, chunk in build_sample_identity_queries(asking):
+
+        def failed(result):
+            nonlocal failure
+            if failure is None:
+                reason = (result.get("error") if isinstance(result, dict)
+                          else None) or "no answer"
+                failure = (str(reason), retry_after_seconds(result))
+
+        # Cached samples to read by key, unless an identity chunk carries them.
+        by_key = dict(cached)
+        chunks = build_sample_identity_queries(asking)
+        for n, (sql, params, chunk) in enumerate(chunks):
+            settled: List[str] = []
+            if n == 0 and cached and tests and \
+                    len(params) + len(tests) + len(set(cached.values())) <= 900:
+                settled = sorted(set(cached.values()))
+            if tests or settled:
+                sql, params = build_combined_identity_query(chunk, tests,
+                                                            settled)
             try:
                 result = read_sql(sql, params)
-            except Exception:
-                result = None
+            except Exception as exc:          # noqa: BLE001 — any failure
+                result = {"error": str(exc) or exc.__class__.__name__}
             verdict = identity_verdict(result)
             if verdict == "unknown":
+                failed(result)
                 unknown.update(chunk)
                 continue
             if verdict == "no samples":
                 # Deliberately NOT cached. This is not an answer about the lab's
                 # samples, it is the absence of a samples table, and a gateway
                 # that grows one later must be believed the moment it does.
-                identities.update(identity_of_last_resort(chunk))
+                # Its cells are still guarded: read by key, below.
+                for printed, lab in identity_of_last_resort(chunk).items():
+                    by_key[printed] = lab
                 continue
-            candidates = [str(row.get("lab_id") or "")
-                          for row in (result.get("rows") or [])]
+            rows = result.get("rows") or []
+            if settled:
+                for printed in list(by_key):
+                    if by_key[printed] in settled:
+                        identities[printed] = by_key.pop(printed)
+            candidates = sorted({str(row.get("sample_lab_id")
+                                     or row.get("lab_id") or "")
+                                 for row in rows} - {""})
             found, unsure, certain = resolve_lab_ids_certain(
                 chunk, candidates, dates, standards=standards)
-            self._remember_identities(found, certain, standard_keys)
+            self._remember_identities(found, certain, standard_keys, now=now)
             identities.update(found)
             ambiguous.update(unsure)
-        return identities, ambiguous, unknown
+            for cell, got in cells_from_rows(rows).items():
+                cells.setdefault(cell, []).extend(got)
+        # The guard read for samples already known: sample_tests by its key.
+        if by_key and tests:
+            labs = sorted(set(by_key.values()))
+            for start in range(0, len(labs), 400):
+                part = labs[start:start + 400]
+                sql, params = build_cell_lookup(part, tests)
+                try:
+                    result = read_sql(sql, params)
+                except Exception as exc:      # noqa: BLE001 — any failure
+                    result = {"error": str(exc) or exc.__class__.__name__}
+                verdict = identity_verdict(result)
+                answered = verdict == "answered"
+                if verdict == "no samples":
+                    # No sample_tests table: no cell exists to be overwritten.
+                    answered, result = True, {"rows": []}
+                if not answered:
+                    failed(result)
+                for printed, lab in list(by_key.items()):
+                    if lab not in part:
+                        continue
+                    if answered:
+                        identities[printed] = lab
+                    else:
+                        unknown.add(printed)
+                if answered:
+                    for cell, got in cells_from_rows(result.get("rows")).items():
+                        cells.setdefault(cell, []).extend(got)
+        elif by_key:
+            identities.update(by_key)      # no cells asked: identity only
+        return identities, ambiguous, unknown, cells, failure
 
     def _cached_identity(self, printed: str, standard: bool,
                          now: Optional[datetime] = None) -> str:
@@ -8997,7 +10210,8 @@ class LEMStationModule:
              "stored":     True}
 
         `stored` is True whatever the outcome — written, held, deduplicated
-        away, refused and queued for retry — because it means "this step ran".
+        away, refused and kept open for the next try, decided as a conflict —
+        because it means "this step ran".
         Only when it did not does the main thread have to cover for it.
 
         Worker thread: no widgets, everything reported through `messages`, and
@@ -9048,7 +10262,6 @@ class LEMStationModule:
             # printed ID, and deriving the one from the other is what made a
             # deferred reading indistinguishable from an unplaceable one.
             untried_rows = {id(row) for row in untried}
-            retry = list(self._retry_ops)
             # The journaled readings this step is about to decide on. Whatever
             # is not back in custody when it is done has been settled.
             journal_refs = {row.get(JOURNAL_KEY) for row in waiting
@@ -9069,15 +10282,31 @@ class LEMStationModule:
                 "sample to file them against, so the machine log is the only "
                 "record: " + self._log_home())
 
+        # What the road decided about each reading this poll — `filed`,
+        # `conflict`, `rejected`, `given_up` — journaled in the same write that
+        # settles the readings they finish (`_journal_settle`).
+        decisions: List[dict] = []
         waiting, expired = expire_held_rows(waiting, now)
         given_up = ""
         if expired:
             # Named, not counted: "1 reading(s)" tells an operator nothing they
             # can act on, and this is the last time anybody hears about it.
             for row in expired:
-                self._log_event("held_expired",
-                                lab_id=str(row.get(LAB_ID_KEY) or "").strip(),
-                                detail=run_log_detail(row), now=now)
+                # In v2 the `given_up` record below IS the held_expired row in
+                # LEM's log; queuing the event too would write it twice.
+                if not (row.get(JOURNAL_KEY) and self._v2_active()):
+                    self._log_event("held_expired",
+                                    lab_id=str(row.get(LAB_ID_KEY) or "").strip(),
+                                    detail=run_log_detail(row), now=now)
+                # The journal's own record of the decision: no sample in seven
+                # days. It reaches the LEM store as a `held_expired` row.
+                if row.get(JOURNAL_KEY):
+                    decisions.append({
+                        "kind": "given_up", "of": [row[JOURNAL_KEY]],
+                        "lab_id": str(row.get(LAB_ID_KEY) or "").strip(),
+                        "why": f"no sample matched in {HELD_ROW_MAX_AGE.days} "
+                               "days"})
+                self._road_forget(row)
             # Carried on the payload like the hold notice, and for the same
             # reason only more sharply: `messages[-1]` wins the status line, and
             # "Recovered 2 QC result(s) from LabCore." appended further down the
@@ -9138,10 +10367,26 @@ class LEMStationModule:
         # held queue. `sweep` still records that the slow clock ran: the rows it
         # did not get to are at the FRONT of the next poll's queue, which is
         # sooner than the sweep would have come round again anyway.
-        asking, deferred = split_identity_backlog(asking)
+        # The road's own clock (§8.3). After a refusal LabCore is left alone
+        # for the backoff, then offered a PROBE of at most ROAD_PROBE_CELLS
+        # cells; only once a probe lands does the bench send the rest, at most
+        # ROAD_BATCH_CELLS a poll. While it waits nothing is read either: the
+        # read is half of every filing, and it queues on the same LabCore.
+        gate = self._road_gate(now)
+        budget = {"probe": ROAD_PROBE_CELLS,
+                  "ramp": ROAD_BATCH_CELLS}.get(gate)
+        if gate == "ramp":
+            self._road_ramp = False       # one capped poll, then open
+        if gate == "wait":
+            asking, deferred = [], row_lab_ids(never_asked)
+        else:
+            asking = self._road_due_ids(waiting, asking, now)
+            asking, deferred = split_identity_backlog(asking)
+            asking, over = self._road_budget(waiting, asking, now, budget)
+            deferred = deferred + over
+            if sweep:
+                self._held_swept_at = now
         deferred_ids = set(deferred)
-        if sweep:
-            self._held_swept_at = now
         # When each of these readings was PARSED — `_row_time`, this module's
         # clock, and not a date read off the print, which nothing on this road
         # extracts. See `closest_by_date` for why that is a good enough measure
@@ -9169,8 +10414,18 @@ class LEMStationModule:
                     print_dates[printed] = when
         print_dates = {printed: when for printed, when in print_dates.items()
                        if len(print_days.get(printed) or ()) == 1}
-        identities, ambiguous, unknown = self._resolve_identities(
-            asking, read_sql, print_dates, standards=standard_ids)
+        # ONE read per chunk answers both questions: which samples these
+        # printed IDs are, and what each of their cells holds now (§8.2). A
+        # sample whose identity is already settled is read by its key.
+        asked = set(asking)
+        tests = sorted({test for row in waiting
+                        if str(row.get(LAB_ID_KEY) or "").strip() in asked
+                        for test, _value in row_cells(row)})
+        identities, ambiguous, unknown, cells, read_failure = \
+            self._resolve_identities_and_cells(
+                asking, read_sql, print_dates, standards=standard_ids,
+                tests=tests, now=now)
+        self._fault_point("after_combined_read")
         # A reading is in the backlog because its own ID was deferred, and the
         # deferred set is disjoint from the asked set — so a row is either
         # answered or untried, never both.
@@ -9178,12 +10433,6 @@ class LEMStationModule:
         for row in results:
             (backlog if str(row.get(LAB_ID_KEY) or "").strip() in deferred_ids
              else askable).append(row)
-        still_held = [row for row in askable
-                      if str(row.get(LAB_ID_KEY) or "").strip()
-                      not in identities]
-        filed = [row for row in waiting
-                 if str(row.get(LAB_ID_KEY) or "").strip() in identities]
-        ops = retry + build_result_cells(waiting, identities)
 
         # Said once, on the change: unlike a held reading, this is not a state
         # the operator can do anything about, and repeating it every twelve
@@ -9197,86 +10446,440 @@ class LEMStationModule:
                 "held until it can." if unknown else
                 "LabCore is answering identity lookups again.")
 
-        ops = self._unwritten(ops)
+        # Every cell of every placed reading, decided against what the read
+        # found and what LEM itself last filed there (§8.3).
+        plan = self._road_decide(machine, waiting, identities, unknown, cells,
+                                 now, budget)
+
         # The mirror is written DOWN before the batch goes out, never after.
         # The two orders fail in opposite directions and only one of them is
         # survivable: stop here and the mirror is missing a reading that is
-        # still held, which costs custody of something lem_machine_log already
-        # records; stop the other way round and the mirror still names a reading
-        # that HAS been filed, and every restart inside the seven-day window
-        # files it again — over an analyst's correction, silently, on a real
-        # sample. A bench may lose a copy of its own work. It may not revive a
-        # value somebody has since replaced.
-        self._persist_held(machine, run_sql, now, rows=still_held)
-        error = None
-        if ops:
-            try:
-                result = write("batch", {"operations": ops},
-                               source="LEM Station")
-            except Exception as exc:
-                # A gateway that raises rather than returning an error dict used
-                # to cost the whole retry queue, because the queue was emptied
-                # before the write. Nothing is given up until the write comes
-                # back, so a dropped connection costs a poll, not the readings.
-                error = str(exc) or exc.__class__.__name__
-            else:
-                if isinstance(result, dict) and result.get("error"):
-                    # LabCore answers a full queue with an error DICT, not an
-                    # exception. The prints have already been consumed off the
-                    # source file, so if these ops are dropped here nothing will
-                    # ever re-offer them.
-                    error = str(result["error"])
+        # still held, which costs custody of something lem_machine_log (and
+        # the bench journal) already records; stop the other way round and the
+        # mirror still names a reading that HAS been filed, and every restart
+        # inside the seven-day window offers it again. The guard read now
+        # catches that re-offer (the cell already holds it), but a mirror that
+        # names a filed reading is still a false statement on the floor.
+        identified = {id(row) for row in waiting
+                      if str(row.get(LAB_ID_KEY) or "").strip() in identities}
+        unplaced = [row for row in askable if id(row) not in identified]
+        self._persist_held(machine, run_sql, now, rows=unplaced)
+        outcome = self._road_send(machine, plan["writes"], write, now)
+        # A refused or failed read is a refusal too: nothing was sent because
+        # LabCore could not be asked, and asking again next poll is exactly the
+        # load the backoff exists to spare it.
+        if outcome["status"] == "failed":
+            self._road_refused(now, outcome["retry_after"])
+            messages.append(f"LabCore write error: {outcome['reason']}")
+        elif read_failure is not None and outcome["status"] == "none":
+            self._road_refused(now, read_failure[1])
+        elif outcome["status"] == "ok" or (asking and read_failure is None):
+            if gate == "probe" and outcome["status"] == "ok":
+                self._road_ramp = True    # the probe landed: the rest, capped
+            self._road_failures = 0
+            self._road_retry_at = None
+
+        self._fault_point("before_filed_journaled")
+        filed, pending = self._road_settle_cells(machine, waiting, identified,
+                                                 plan, outcome, now, decisions,
+                                                 messages)
 
         with self._results_lock:
             # The untried backlog is set on BOTH paths and outside the held
             # queue, because a refused write says nothing about whether these
             # readings have a sample — nobody asked. They keep their place at
-            # the front of the next poll either way.
-            self._identity_backlog = backlog[-IDENTITY_BACKLOG_LIMIT:]
-            # Said if it ever overflows, like every other cap on this road. It
-            # takes a bench producing readings faster than three hundred a
-            # poll for four hours, which is not a thing an instrument does — so if
-            # anybody ever reads this line, the interesting news is that it
-            # happened at all.
-            if len(backlog) > IDENTITY_BACKLOG_LIMIT:
-                lost = backlog[:len(backlog) - IDENTITY_BACKLOG_LIMIT]
-                self._journal_note_dropped(lost)
-                self._report_loss(
-                    f"{len(lost)} reading(s) for "
-                    f"{', '.join(row_lab_ids(lost)[:3])} were dropped before "
-                    f"their sample could be looked up (limit "
-                    f"{IDENTITY_BACKLOG_LIMIT}); " + self._log_home(),
-                    messages)
-            if error:
-                self._retry_ops = ops[-RETRY_OP_LIMIT:]
-                messages.append(f"LabCore write error: {error}")
-                # The rows are held as well as queued, and that is not belt and
-                # braces: `_retry_ops` is memory only, so a restart between the
-                # refusal and the next poll would take the readings with it,
-                # while the held queue is mirrored into LabCore. The retry queue
-                # is kept for its ORDER — a re-run must land after the value it
-                # supersedes — and the duplicate collapses in `_unwritten`,
-                # which deduplicates on (sample, test, value) across the whole
-                # batch. Nothing is given up until a write comes back clean.
-                filed = []
-                self._commit_held(askable, messages, taken=parked)
-            else:
-                self._retry_ops = []
-                self._remember_written(ops)
-                self._commit_held(still_held, messages, taken=parked)
+            # the front of the next poll either way. There is no cap on it, nor
+            # on the held queue: a reading leaves this bench's custody when it
+            # is filed, decided (conflict, rejected) or given up after seven
+            # days, and never because a queue was full (§3.2).
+            self._identity_backlog = backlog
+            self._commit_held(unplaced + pending, messages, taken=parked)
         # And again afterwards, which is a no-op in the ordinary case because
         # the queue is exactly what was written above. It is not a no-op when
-        # the write was refused and every reading came back into the queue, or
-        # when another thread parked one while this write was in flight.
+        # a write was refused and its readings stayed, or when another thread
+        # parked one while this write was in flight.
         self._persist_held(machine, run_sql, now)
         # Kept on the module, not just returned: the notice describes a state
         # that outlives the poll that discovered it, and the operator-action
         # path (`_reevaluate_and_show`) has no payload to read it off.
-        self._held_notice = describe_held(self._held_rows, ambiguous, unknown,
-                                          self._identity_backlog)
-        self._journal_settle(journal_refs)
+        waiting_on_labcore = {id(r) for r in pending}
+        self._held_notice = " · ".join(part for part in (
+            describe_held([r for r in self._held_rows
+                           if id(r) not in waiting_on_labcore],
+                          ambiguous, unknown, self._identity_backlog),
+            self._road_notice(pending, now)) if part)
+        self._journal_settle(journal_refs, decisions)
         return {"identities": identities, "filed": filed, "stored": True,
                 "notice": self._held_notice, "given_up": given_up}
+
+    # ── The guarded road's pieces (§8.2–8.3) ────────────────────────────────
+
+    @staticmethod
+    def _road_key(row: dict) -> str:
+        """What the road's per-cell state is kept under: the reading's journal
+        record, or — with no journal — the row object itself, which stays
+        referenced for exactly as long as the reading is in custody."""
+        ref = row.get(JOURNAL_KEY) if isinstance(row, dict) else None
+        return str(ref) if ref else "mem:%x" % id(row)
+
+    def _road_state(self) -> tuple:
+        """(cells done per reading, tries per cell), created on first use so a
+        module built without __init__ (the tests' stand-ins) still works."""
+        done = getattr(self, "_road_cells", None)
+        if done is None:
+            done = self._road_cells = {}
+        tries = getattr(self, "_road_tries", None)
+        if tries is None:
+            tries = self._road_tries = {}
+        return done, tries
+
+    def _road_forget(self, row: dict) -> None:
+        done, tries = self._road_state()
+        key = self._road_key(row)
+        done.pop(key, None)
+        for cell in [c for c in tries if c[0] == key]:
+            tries.pop(cell, None)
+
+    def _road_gate(self, now: datetime) -> str:
+        """"open", "probe" (the backoff is over: send at most a probe), or
+        "wait" (still backing off: ask and send nothing). A retry stamp in
+        the future by more than the longest backoff is a clock that went
+        backwards, not a wait, and is treated as over."""
+        failures = getattr(self, "_road_failures", 0) or 0
+        if not failures:
+            return "ramp" if getattr(self, "_road_ramp", False) else "open"
+        at = getattr(self, "_road_retry_at", None)
+        if at is None:
+            return "probe"
+        ahead = (at - now).total_seconds()
+        if ahead <= 0 or ahead > ROAD_BACKOFF_MAX * 2:
+            return "probe"
+        return "wait"
+
+    def _road_refused(self, now: datetime, retry_after=None) -> None:
+        self._road_failures = (getattr(self, "_road_failures", 0) or 0) + 1
+        self._road_retry_at = now + timedelta(
+            seconds=road_backoff_seconds(self._road_failures, retry_after))
+
+    def _road_cell_due(self, key: str, test: str, now: datetime) -> bool:
+        _done, tries = self._road_state()
+        entry = tries.get((key, test))
+        return entry is None or entry[1] is None or now >= entry[1]
+
+    def _road_open_cells(self, row: dict, now: datetime) -> List[tuple]:
+        """The cells of `row` still to be decided and due now."""
+        done, _tries = self._road_state()
+        key = self._road_key(row)
+        finished = done.get(key) or {}
+        return [(test, value) for test, value in row_cells(row)
+                if test not in finished and self._road_cell_due(key, test, now)]
+
+    def _road_due_ids(self, waiting: List[dict], asking: List[str],
+                      now: datetime) -> List[str]:
+        """`asking` minus the printed IDs whose every reading is waiting out a
+        per-cell backoff (a per-index error, B1). Asking about them would cost
+        a read and send nothing. A reading with no cells at all is still asked
+        about: its sample is all there is to decide."""
+        due: set = set()
+        busy: set = set()
+        for row in waiting:
+            printed = str(row.get(LAB_ID_KEY) or "").strip()
+            if not printed:
+                continue
+            cells = row_cells(row)
+            if not cells or self._road_open_cells(row, now):
+                due.add(printed)
+            else:
+                busy.add(printed)
+        return [p for p in asking if p in due or p not in busy]
+
+    def _road_budget(self, waiting: List[dict], asking: List[str],
+                     now: datetime, budget: Optional[int]) -> tuple:
+        """(the IDs this poll asks about, the ones left for the next) so that
+        their readings carry at most `budget` cells — the probe, or the batch
+        ceiling. The first ID always fits, however many cells it has: a single
+        reading must never be too big to file. `budget` None: no cell bound
+        (the open road; the identity ceiling already bounds the poll)."""
+        if budget is None:
+            return list(asking), []
+        per: Dict[str, int] = {}
+        for row in waiting:
+            printed = str(row.get(LAB_ID_KEY) or "").strip()
+            if printed:
+                per[printed] = per.get(printed, 0) + len(
+                    self._road_open_cells(row, now))
+        take, rest, total = [], [], 0
+        for printed in asking:
+            n = per.get(printed, 0)
+            if take and total + n > budget:
+                rest.append(printed)
+                continue
+            take.append(printed)
+            total += n
+        return take, rest
+
+    def _ledger_value(self, machine, lab_id: str, test: str) -> Optional[str]:
+        """`L`: what LEM last filed in this cell. The journal's ledger, rebuilt
+        from its `filed` records, is the authority; the in-memory one only
+        covers a bench whose journal could not be opened."""
+        journal = self._journal_for(machine) if machine is not None else None
+        if journal is not None:
+            value = journal.ledger_value(lab_id, test)
+            if value is not None:
+                return value
+        mem = getattr(self, "_ledger_mem", None) or {}
+        return mem.get((str(lab_id), str(test)))
+
+    def _road_decide(self, machine, waiting: List[dict],
+                     identities: Dict[str, str], unknown, cells: dict,
+                     now: datetime, budget: Optional[int]) -> dict:
+        """Every open, due cell of every placed reading, decided (§8.3):
+        writes (at most `budget`), cells that already hold the reading,
+        conflicts, and stale repeats.
+
+        Readings are taken in queue order and each planned write becomes the
+        cell's value for the readings after it, so a sample printed twice in
+        one poll is a re-run of LEM's own value, not a conflict with itself.
+
+        A WRITE OF A VALUE THIS BENCH HAS ALREADY FILED (`_written_cells`) is
+        not sent again. If the cell is now empty, a person cleared it, and that
+        is their decision to override, not ours (D1): a conflict. Otherwise the
+        cell holds LEM's own later value and this is an old reading come round
+        again — a repeat, settled without touching the cell."""
+        writes, landed, conflicts, repeats = [], [], [], []
+        view: Dict[tuple, tuple] = {}
+        for row in waiting:
+            printed = str(row.get(LAB_ID_KEY) or "").strip()
+            lab = identities.get(printed) if printed else None
+            if not lab or printed in unknown:
+                continue
+            key = self._road_key(row)
+            for test, value in self._road_open_cells(row, now):
+                cell = (str(lab), str(test))
+                if cell in view:
+                    cur_rows, led = view[cell]
+                else:
+                    cur_rows = cells.get(cell, [])
+                    led = self._ledger_value(machine, lab, test)
+                verdict, expect = decide_cell(cur_rows, value, led)
+                op = {"operation": "update_cell",
+                      "params": {"lab_id": lab, "test_name": test,
+                                 "value": value}}
+                if verdict == "write" and result_cell_key(op) in self._written_cells:
+                    verdict = "repeat" if expect else "conflict"
+                entry = {"row": row, "key": key, "lab": lab, "test": test,
+                         "value": value, "expect": expect, "cur": cur_rows}
+                if verdict == "write":
+                    if budget is not None and len(writes) >= budget:
+                        continue            # stays open: the next poll
+                    writes.append(entry)
+                    view[cell] = ([{"result": value}], value)
+                elif verdict == "landed":
+                    landed.append(entry)
+                    view[cell] = (cur_rows, value)
+                elif verdict == "repeat":
+                    repeats.append(entry)
+                else:
+                    conflicts.append(entry)
+        return {"writes": writes, "landed": landed, "conflicts": conflicts,
+                "repeats": repeats}
+
+    def _road_send(self, machine, writes: List[dict], write,
+                   now: datetime) -> dict:
+        """One `batch` of `update_cell`, each carrying `expect` (what the guard
+        read saw) and `source = "LEM Station:<uid>"`. `op_id` only when
+        LabStation's `labcore_write` names that parameter (§8.3).
+
+        THE op_id NAMES THE BATCH'S CONTENT — the bench, and every reading's
+        record, test and value in it — not the moment and not only its first
+        record. It exists so LabCore can recognise a retry of a batch it has
+        already applied: the identical batch re-sent must carry the identical
+        id, and a different batch must not. §8.3's H(uid, epoch, first_seq)
+        breaks the second half: a probe after a refusal re-sends the first
+        twenty cells of a refused batch of two hundred under the same first
+        seq, and a LabCore deduplicating on it would skip the hundred and
+        eighty it never wrote."""
+        if not writes:
+            return {"status": "none", "reason": "", "retry_after": None,
+                    "per": [], "op_id": None}
+        uid = str(getattr(machine, "uid", "") or "")
+        ops = [{"operation": "update_cell",
+                "params": {"lab_id": w["lab"], "test_name": w["test"],
+                           "value": w["value"], "expect": w["expect"],
+                           "source": "LEM Station:" + uid}} for w in writes]
+        kw = {}
+        op_id = None
+        if labcore_write_takes_op_id(write):
+            seed = json.dumps([uid] + [[w["key"], w["lab"], w["test"],
+                                        w["value"], w["expect"]]
+                                       for w in writes])
+            op_id = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+            kw["op_id"] = op_id
+        try:
+            result = write("batch", {"operations": ops},
+                           source="LEM Station", **kw)
+        except Exception as exc:              # noqa: BLE001 — any failure
+            # Raised, not answered: the batch may or may not have landed (N4).
+            # Nothing is called filed; the next guard read says which it was.
+            result = {"error": str(exc) or exc.__class__.__name__}
+        self._fault_point("after_batch_landed")
+        status, reason, retry_after, per = batch_outcome(result, len(ops))
+        return {"status": status, "reason": reason, "retry_after": retry_after,
+                "per": per or [], "op_id": op_id}
+
+    def _road_settle_cells(self, machine, waiting: List[dict], placed: set,
+                           plan: dict, outcome: dict, now: datetime,
+                           decisions: List[dict],
+                           messages: List[str]) -> tuple:
+        """Record what became of every decided cell and return (the rows to
+        paint as filed — copies holding only their filed cells — and the
+        placed readings that still have open cells, which stay in custody).
+
+        Only a CLEAN sub-result is filed (B1). A per-index error keeps that
+        cell open on its own backoff and, at the ROAD_CELL_TRIES-th, parks it
+        as `rejected` for a person. An index the answer did not mention, and
+        every cell of a batch that failed or raised, stays open with no try
+        counted: the next guard read decides whether it landed."""
+        done, tries = self._road_state()
+        uid = str(getattr(machine, "uid", "") or "")
+        filed_cells: Dict[str, list] = {}
+        repeat_cells: Dict[str, list] = {}
+        conflict_cells: Dict[str, list] = {}
+        rows_by_key: Dict[str, dict] = {}
+
+        def finish(entry, how):
+            rows_by_key[entry["key"]] = entry["row"]
+            done.setdefault(entry["key"], {})[entry["test"]] = how
+            tries.pop((entry["key"], entry["test"]), None)
+
+        def mark_filed(entry, bucket):
+            finish(entry, "filed")
+            bucket.setdefault(entry["key"], []).append(
+                [entry["lab"], entry["test"], entry["value"], entry["expect"]])
+            mem = getattr(self, "_ledger_mem", None)
+            if mem is None:
+                mem = self._ledger_mem = {}
+            if bucket is filed_cells:
+                mem[(str(entry["lab"]), str(entry["test"]))] = entry["value"]
+
+        for entry in plan["landed"]:
+            mark_filed(entry, filed_cells)
+        for entry in plan["repeats"]:
+            mark_filed(entry, repeat_cells)
+        for entry in plan["conflicts"]:
+            finish(entry, "conflict")
+            cur = (entry["cur"] or [{}])[0] if entry["cur"] else {}
+            conflict_cells.setdefault(entry["key"], []).append(
+                [entry["lab"], entry["test"], entry["value"], entry["expect"],
+                 cur.get("updated_at"), cur.get("operator")])
+        landed_ops = []
+        if outcome["status"] == "ok":
+            for entry, err in zip(plan["writes"], outcome["per"]):
+                if err is BATCH_INDEX_MISSING:
+                    continue
+                if err is None:
+                    mark_filed(entry, filed_cells)
+                    landed_ops.append({"operation": "update_cell", "params": {
+                        "lab_id": entry["lab"], "test_name": entry["test"],
+                        "value": entry["value"]}})
+                    continue
+                n = (tries.get((entry["key"], entry["test"])) or (0, None))[0] + 1
+                if n >= ROAD_CELL_TRIES:
+                    finish(entry, "rejected")
+                    ref = entry["row"].get(JOURNAL_KEY)
+                    if ref:
+                        decisions.append({
+                            "kind": "rejected", "of": [ref],
+                            "cell": [entry["lab"], entry["test"], entry["value"]],
+                            "error": err, "tries": n})
+                    self._road_count("rejected")
+                    self._report_loss(
+                        f"LabCore rejected {entry['lab']} {entry['test']} = "
+                        f"{entry['value']}: {err} (tried {n} times) — not "
+                        "filed; it needs a decision in LEM.", messages)
+                else:
+                    tries[(entry["key"], entry["test"])] = (
+                        n, now + timedelta(seconds=road_backoff_seconds(n)))
+        self._remember_written(landed_ops)
+
+        for key, cells_ in filed_cells.items():
+            ref = rows_by_key[key].get(JOURNAL_KEY)
+            if ref:
+                record = {"kind": "filed", "of": [ref], "cells": cells_}
+                if outcome.get("op_id"):
+                    record["op_id"] = outcome["op_id"]
+                decisions.append(record)
+            self._road_count("filed", len(cells_))
+        for key, cells_ in repeat_cells.items():
+            ref = rows_by_key[key].get(JOURNAL_KEY)
+            if ref:
+                # Not LEM's latest value: the ledger must not move back to it.
+                decisions.append({"kind": "filed", "of": [ref], "cells": cells_,
+                                  "repeat": True})
+        said = []
+        for key, cells_ in conflict_cells.items():
+            ref = rows_by_key[key].get(JOURNAL_KEY)
+            if ref:
+                decisions.append({"kind": "conflict", "of": [ref],
+                                  "uid": uid, "cells": cells_})
+            self._road_count("conflicts", len(cells_))
+            said.extend(cells_)
+        if said:
+            # Once per poll, whatever the count: the status line is one line
+            # and a bench replaying a morning over a corrected batch would
+            # otherwise say a hundred sentences nobody reads.
+            lab, test, ours, theirs, at, who = said[0]
+            by = " by %s" % who if who else ""
+            when = " at %s" % at if at else ""
+            more = (f" — and {len(said) - 1} more result(s) like it"
+                    if len(said) > 1 else "")
+            self._report_loss(
+                f"{lab} {test}: the instrument read {ours} but LabCore holds "
+                f"{theirs} (changed{by}{when}){more}; not overwritten — "
+                "needs a decision in LEM.", messages)
+
+        filed_rows, pending = [], []
+        seen: set = set()
+        for row in waiting:
+            key = self._road_key(row)
+            if key in seen:
+                continue
+            seen.add(key)
+            finished = done.get(key) or {}
+            if key in filed_cells:
+                copy = {k: v for k, v in row.items() if k in RESERVED_ROW_KEYS}
+                for lab, test, value, _expect in filed_cells[key]:
+                    copy[test] = row.get(test, value)
+                filed_rows.append(copy)
+            if id(row) not in placed:
+                continue          # not placed this poll: the caller holds it
+            if all(test in finished for test, _v in row_cells(row)):
+                done.pop(key, None)       # the reading is finished with
+            else:
+                pending.append(row)
+        return filed_rows, pending
+
+    def _road_count(self, what: str, n: int = 1) -> None:
+        stats = getattr(self, "_road_stats", None)
+        if stats is None:
+            stats = self._road_stats = {"filed": 0, "conflicts": 0,
+                                        "rejected": 0}
+        stats[what] = stats.get(what, 0) + n
+
+    def _road_notice(self, pending: List[dict], now: datetime) -> str:
+        """One sentence for readings whose sample is known and whose cells
+        LabCore has not taken yet — not the held-for-a-sample sentence, which
+        would send the operator to log in a sample that is already there."""
+        if not pending:
+            return ""
+        at = getattr(self, "_road_retry_at", None)
+        if getattr(self, "_road_failures", 0) and at is not None:
+            wait = max(0, int((at - now).total_seconds()))
+            return (f"{len(pending)} reading(s) waiting for LabCore to take "
+                    f"them — it refused the last try; next try in {wait} s. "
+                    "Nothing is dropped.")
+        return (f"{len(pending)} reading(s) waiting for LabCore to take them; "
+                "nothing is dropped.")
 
     def _log_home(self) -> str:
         """The tail of every give-up notice: where the reading actually is.
@@ -9361,9 +10964,11 @@ class LEMStationModule:
         if not rows:
             return []
         with self._results_lock:
-            kept = self._parked_rows + list(rows)
-            dropped = kept[:max(0, len(kept) - HELD_ROW_LIMIT)]
-            self._parked_rows = kept[-HELD_ROW_LIMIT:]
+            # No count cap (§3.2): LabCore being away is not a reason to drop
+            # a reading. The `dropped` road below is kept for a future bound
+            # and is empty.
+            self._parked_rows = self._parked_rows + list(rows)
+            dropped: List[dict] = []
         if not dropped:
             return list(rows)
         self._journal_note_dropped(dropped)
@@ -9434,24 +11039,15 @@ class LEMStationModule:
         no Lab ID and a QC standard's reading are both taken out upstream.
         """
         if taken:
+            taken_ids = {id(one) for one in taken}
             self._parked_rows = [row for row in self._parked_rows
-                                 if not any(row is one for one in taken)]
+                                 if id(row) not in taken_ids]
+        # No count cap (transfer v4 §3.2). The hundred-reading cap here is
+        # what F3, F4 and F5 lost readings to: a LabCore refusing for ten
+        # minutes at ten prints a poll shredded the oldest hundred. A reading
+        # leaves this queue when it is filed, decided, or seven days old.
         rows = list(rows) + self._parked_rows
         self._parked_rows = []
-        rows, dropped = cap_held_rows(rows)
-        if dropped:
-            self._journal_note_dropped(dropped)
-            # Named for what it is. It used to say "dropped from the retry
-            # queue", which is a different queue (`_retry_ops`, ops LabCore
-            # refused) and sends whoever reads it looking for a write that was
-            # never attempted: nothing in this queue has been refused by
-            # anybody, it is waiting for a sample to be logged in.
-            self._report_loss(
-                f"{len(dropped)} reading(s) for "
-                f"{', '.join(row_lab_ids(dropped)[:3])} stopped waiting for a "
-                f"sample to be logged in (limit {HELD_ROW_LIMIT} readings); "
-                + self._log_home(), messages)
-            self._note_evicted(dropped)
         self._held_rows = rows
 
     def _note_evicted(self, rows: List[dict]) -> None:
@@ -9492,6 +11088,11 @@ class LEMStationModule:
         """
         if self._held_restored or machine is None:
             return
+        if self._v2_active():
+            # The journal is this bench's custody; v2 never reads the
+            # LabCore mirror (§6.3).
+            self._held_restored = True
+            return
         try:
             result = read_sql(HELD_QUERY, [machine.uid])
         except Exception:
@@ -9530,10 +11131,9 @@ class LEMStationModule:
         with self._results_lock:
             known = {json.dumps(r, sort_keys=True, default=str)
                      for r in self._held_rows}
-            self._held_rows = (self._held_rows + [
+            self._held_rows = self._held_rows + [
                 r for r in restored
-                if json.dumps(r, sort_keys=True, default=str) not in known
-            ])[-HELD_ROW_LIMIT:]
+                if json.dumps(r, sort_keys=True, default=str) not in known]
         messages.append(
             f"{len(restored)} reading(s) still waiting for a sample were "
             "recovered from LabCore.")
@@ -9578,6 +11178,8 @@ class LEMStationModule:
         """
         if machine is None or not callable(run_sql) or not self._held_restored:
             return
+        if self._v2_active():
+            return       # v2: the journal is the custody, never a LabCore row
         with self._results_lock:
             rows = list(self._held_rows if rows is None else rows)
             rows, evicted = cap_held_rows(rows)
@@ -9611,32 +11213,14 @@ class LEMStationModule:
         # this write can matter again.
         self._held_evicted_keys.clear()
 
-    def _unwritten(self, ops: List[dict]) -> List[dict]:
-        """The ops that are not a repeat of a cell already stored.
-
-        An unchanged reading offered again — a source file re-read from the top,
-        a watch restarted — would re-stamp updated_at and the operator on a cell
-        nobody touched, and cost a slot in a queue that refuses past 100 pending.
-        Only `update_cell` is deduplicated; anything else is idempotent already.
-        """
-        seen, out = set(), []
-        for op in ops:
-            if op.get("operation") != "update_cell":
-                out.append(op)
-                continue
-            key = result_cell_key(op)
-            if key in seen or key in self._written_cells:
-                continue
-            seen.add(key)
-            out.append(op)
-        return out
-
     def _remember_written(self, ops: List[dict]) -> None:
-        """Remember stored cells, oldest forgotten first.
+        """Remember stored cells, oldest forgotten first. `_road_decide`
+        consults this: a value this bench already filed is not sent again (a
+        stale repeat, or a cell a person has since cleared — a conflict).
 
         Bounded because a bench runs for months. Forgetting the far past only
-        risks re-writing a reading the instrument offers again long after it was
-        first stored, which is a wasted op and not a wrong one.
+        loses that second line of defence for very old readings; the guard
+        read and the journal's ledger still decide them.
         """
         for op in ops:
             if op.get("operation") == "update_cell":
@@ -9929,6 +11513,16 @@ class LEMStationModule:
         is_running = globals().get("labcore_is_running")
         if callable(is_running) and not is_running():
             messages.append("LabCore not reachable — data kept locally.")
+            if store and self._v2_active():
+                # LEM does not need LabCore: the readings, status and
+                # heartbeat still go to LEM this poll.
+                journal = self._journal_for(machine)
+                if journal is not None:
+                    self._v2_journal_events(journal, now, messages)
+                    self._v2_rows = rows
+                    if self._v2_sync(machine, journal, now, evaluation,
+                                     messages):
+                        self._last_heartbeat = now
             # "Locally" used to mean the history list and nothing else, so a
             # LabCore that was down for one poll cost every print in it. The
             # readings are parked instead and join the held queue on the poll
@@ -9942,14 +11536,29 @@ class LEMStationModule:
             if store:
                 self._last_storage = self._parked_storage(kept)
             return evaluation
+        # Protocol v2 (§6.3): this bench's own world — heartbeat, status,
+        # specs, the machine log, its configuration — goes to LEM, and LabCore
+        # carries the results road only. Every LabCore read of the bench's
+        # world below goes through `lc_read`, which in v2 is an answer of "not
+        # asked" (an error, so nothing is stamped as read) rather than a call.
+        v2 = self._v2_active()
+        journal = self._journal_for(machine) if v2 else None
+        if v2 and journal is None:
+            v2 = False
+
+        def not_asked(*_a, **_k):
+            return {"error": "v2: LabCore is not asked for this bench's own "
+                             "world; LEM did not answer this poll"}
+        lc_read = not_asked if v2 else read_sql
         try:
-            self._declare_tables(run_sql, now)
+            if not v2:
+                self._declare_tables(run_sql, now)
 
             # Prove the module is alive even when the bench is quiet. One gate,
             # shared with the pulse timer through `_last_heartbeat`, so however
             # many roads want to check in the bench emits at most one beat per
             # HEARTBEAT_SECONDS — see `_send_pulse`.
-            if self._heartbeat_due(now):
+            if not v2 and self._heartbeat_due(now):
                 sql, args = build_heartbeat_upsert(machine, now, polling=True)
                 # Only a beat LabCore ACCEPTED closes the window. Marking the
                 # gate on a refusal made one busy moment cost the whole
@@ -9997,13 +11606,13 @@ class LEMStationModule:
                      if (config_due or override_due) else None)
 
             samples_result = ((floor["qc_samples"] if floor
-                               else read_sql(QC_SAMPLES_QUERY))
+                               else lc_read(QC_SAMPLES_QUERY))
                               if config_due else {})
             if config_due and not samples_result.get("error"):
                 answered.append(True)
                 got_qc_config = True
                 targets_result = (floor["targets"] if floor else
-                                  read_sql(QC_TARGETS_QUERY, [machine.uid]))
+                                  lc_read(QC_TARGETS_QUERY, [machine.uid]))
                 answered.append(not targets_result.get("error"))
                 targets = [] if targets_result.get("error") else [
                     {"sample": r.get("sample_name"), "test": r.get("test_name")}
@@ -10015,7 +11624,7 @@ class LEMStationModule:
                 answered.append(False)
 
             specs_result = ((floor["qc_specs"] if floor
-                             else read_sql(QC_SPECS_QUERY))
+                             else lc_read(QC_SPECS_QUERY))
                             if config_due else {})
             if config_due:
                 answered.append(not specs_result.get("error"))
@@ -10060,7 +11669,13 @@ class LEMStationModule:
             # pristine code's worst case was two hundred records. Nothing about
             # that click is waiting on these records and the next poll takes
             # them.
-            if store:
+            if store and v2:
+                # The journal already holds every reading's record; what LEM
+                # has not acked goes in this poll's sync. Owed rows a previous
+                # process left are the same records — nothing to re-check.
+                self._journal_owed = []
+                self._v2_journal_events(journal, now, messages)
+            elif store:
                 self._journal_verify_owed(machine, read_sql, messages)
                 self._drain_events(run_sql, messages)
 
@@ -10077,7 +11692,9 @@ class LEMStationModule:
             # going to log in, and the operator was told so. On a `manual` bench
             # every row IS a QC reading, so every restart began by holding the
             # whole poll and saying the readings were unmatched.
-            if store:
+            if store and v2 and not self._v2_factor_confirmed(now):
+                self._last_storage = self._v2_hold_results(rows, messages)
+            elif store:
                 self._last_storage = self._store_results(
                     machine, rows, read_sql, run_sql, write, messages, now)
 
@@ -10091,7 +11708,9 @@ class LEMStationModule:
             # congestion being reported — 50 a minute across ten benches — and
             # it contradicts the backoff the refusal path exists to honour.
             # These records go out on the next poll with everything else.
-            if store and self._log_road_open:
+            if store and v2:
+                self._v2_journal_events(journal, now, messages)
+            elif store and self._log_road_open:
                 self._drain_events(run_sql, messages)
 
             # Read this machine's own QC verdicts back, so a LabStation restart
@@ -10126,7 +11745,8 @@ class LEMStationModule:
                        if not s.last_qc_at and s.name not in self._qc_tried]
             if pending:
                 sql, args = build_last_qc_query(machine.uid)
-                past = read_sql(sql, args)
+                past = (floor["last_qc"] if v2 and floor and "last_qc" in floor
+                        else lc_read(sql, args))
                 if not past.get("error"):
                     self._qc_tried.update(pending)
                     self._qc_memory.update(last_qc_by_test(past.get("rows") or []))
@@ -10144,7 +11764,13 @@ class LEMStationModule:
             # Publish what we are actually checking, so the floor can draw the
             # band instead of saying "No QC assigned" about a live instrument.
             fingerprint = effective_specs_fingerprint(machine)
-            if fingerprint != self._published_specs:
+            if fingerprint != self._published_specs and v2:
+                # One `specs` record: LEM replaces the set whole (§7).
+                if self._v2_journal(journal, [{"kind": "specs", "specs":
+                                               v2_spec_set(machine)}],
+                                    now, messages):
+                    self._published_specs = fingerprint
+            elif fingerprint != self._published_specs:
                 ok = run_sql is not None
                 if ok:
                     for sql, args in build_effective_specs_publish(machine, now):
@@ -10159,7 +11785,7 @@ class LEMStationModule:
                     self._published_specs = fingerprint
 
             maint = ((floor["maint"] if floor
-                      else read_sql(MAINTENANCE_QUERY, [machine.uid]))
+                      else lc_read(MAINTENANCE_QUERY, [machine.uid]))
                      if config_due else {})
             if config_due:
                 answered.append(not maint.get("error"))
@@ -10202,8 +11828,8 @@ class LEMStationModule:
                 # `config_due`, so the two questions are asked before the floor
                 # is, and one answer serves both.
                 control = (floor["override"] if floor else
-                           read_sql("SELECT machine_uid, manual_override "
-                                    "FROM lem_machine_control"))
+                           lc_read("SELECT machine_uid, manual_override "
+                                   "FROM lem_machine_control"))
                 if not control.get("error"):
                     # Stamped only on an ANSWER. A busy LabCore replies with an
                     # error DICT rather than raising, and stamping that would
@@ -10222,7 +11848,20 @@ class LEMStationModule:
             # sync ticks must not hammer LabCore's write queue.
             snapshot = (machine.uid, evaluation.status, evaluation.reason,
                         tuple(sorted((evaluation.sub_statuses or {}).items())))
-            if snapshot != self._last_status_pushed:
+            if snapshot != self._last_status_pushed and v2:
+                previous = self._last_status_pushed
+                sub = evaluation.sub_statuses or {}
+                if self._v2_journal(journal, [{
+                        "kind": "state", "status": evaluation.status,
+                        "reason": evaluation.reason or "",
+                        "from": previous[1] if previous else "",
+                        "sub": {"qc": sub.get("qc", STATUS_UNKNOWN),
+                                "pm": sub.get("pm", STATUS_UNKNOWN),
+                                "calibration": sub.get("calibration",
+                                                       STATUS_UNKNOWN)}}],
+                        now, messages):
+                    self._last_status_pushed = snapshot
+            elif snapshot != self._last_status_pushed:
                 sql, args = build_status_upsert(machine, evaluation, now)
                 refused = refusal_reason(run_sql(sql, args,
                                                  source="LEM Station"))
@@ -10248,6 +11887,13 @@ class LEMStationModule:
                         f"LabCore refused the status write ({refused}); "
                         "the floor still shows the previous status and this "
                         "retries on the next poll.")
+            if v2 and store:
+                # ONE sync per poll, last: it carries this poll's readings,
+                # the road's decisions, status and specs — and is the
+                # heartbeat. LEM dark: it all waits in the journal.
+                self._v2_rows = rows
+                if self._v2_sync(machine, journal, now, evaluation, messages):
+                    self._last_heartbeat = now
         except Exception as exc:  # sync must never break local operation
             messages.append(f"LabCore sync error: {exc}")
         return evaluation
@@ -10417,6 +12063,17 @@ class LEMStationModule:
         _in_thread(self._flush_events_worker, done)
 
     def _flush_events_worker(self) -> Optional[str]:
+        if self._v2_active():
+            # An operator's note, override or PM: journaled, then sent to LEM.
+            machine = self._machine
+            journal = self._journal_for(machine) if machine is not None else None
+            if journal is None:
+                return None
+            messages: List[str] = []
+            now = datetime.now()
+            self._v2_journal_events(journal, now, messages)
+            self._v2_sync(machine, journal, now, None, messages)
+            return None
         run_sql = globals().get("labcore_sql")
         if not callable(run_sql):
             return None
@@ -11139,6 +12796,25 @@ class LEMStationModule:
             return
         polling = self._polling
         now = now or datetime.now()
+        if self._v2_active():
+            # v2: the heartbeat is a sync, and LabCore is not asked whether
+            # the config still exists — only LEM's explicit "retired" answer
+            # could ever say so (§6.6), never an outage.
+            if not self._heartbeat_due(now):
+                return
+
+            def beat():
+                journal = self._journal_for(machine)
+                if journal is not None and self._v2_sync(machine, journal, now,
+                                                         None, []):
+                    return now
+                return None
+
+            def beaten(sent):
+                if sent is not None:
+                    self._last_heartbeat = sent
+            _in_thread(beat, beaten)
+            return
         if not self._heartbeat_due(now):
             # Somebody has already checked in for this bench inside the window.
             # Still worth the tick for the config check below, which costs a

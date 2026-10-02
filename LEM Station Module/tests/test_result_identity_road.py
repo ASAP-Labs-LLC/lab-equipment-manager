@@ -137,6 +137,12 @@ def bench(qapp, monkeypatch):
     return build
 
 
+# After a refusal the results road leaves LabCore alone for 30 s (transfer v4
+# §8.3, `road_backoff_seconds`). A poll inside that window asks and sends
+# nothing, so a test about "the next poll after LabCore recovers" polls here.
+AFTER_BACKOFF = NOW + timedelta(seconds=31)
+
+
 def store(module, gateway, rows, machine=None, now=NOW):
     messages = []
     result = module._store_results(machine or module._machine, rows,
@@ -226,7 +232,7 @@ class TestABusyLabCoreHoldsRatherThanGuesses:
         module = bench(gateway)
         store(module, gateway, [row(Density="0.8654")])
         gateway.samples_answer = None
-        store(module, gateway, [])
+        store(module, gateway, [], now=AFTER_BACKOFF)
         assert gateway.cells() == [(CANONICAL, "Density", "0.8654")]
         assert module._held_rows == []
 
@@ -418,26 +424,43 @@ class TestTheQueuesSurviveAFailedWrite:
     """Both queues used to be emptied into locals BEFORE the write. A gateway
     that raises rather than returning an error dict — a dropped LAN connection,
     a wrapper that does not catch — therefore destroyed every accumulated late
-    reading and every refused op, silently."""
+    reading and every refused op, silently.
 
-    def test_a_raising_write_keeps_the_ops_for_the_next_poll(self, bench):
+    The separate queue of refused OPS is retired (transfer v4 §8.3): a refused
+    cell stays open on its READING, and the reading is read again before it is
+    sent again, because the cell may have changed in between."""
+
+    def test_a_raising_write_keeps_the_reading_for_the_next_poll(self, bench):
         gateway = Gateway(samples=[CANONICAL],
                           write_raises=RuntimeError("connection reset"))
         module = bench(gateway)
-        _, messages = store(module, gateway, [row(Density="0.8654")])
-        assert [mod.result_cell_key(o) for o in module._retry_ops] == [
-            (CANONICAL, "Density", "0.8654")]
+        result, messages = store(module, gateway, [row(Density="0.8654")])
+        assert mod.row_lab_ids(module._held_rows) == [BARE]
+        assert result["filed"] == []
         assert any("write error" in m for m in messages)
 
-    def test_a_raising_write_does_not_empty_the_retry_queue(self, bench):
+    def test_the_retry_reads_the_cell_again_before_it_sends(self, bench):
+        """A raised write may have landed (the answer was lost) or not. The
+        retry does not trust a remembered op: it asks again, and only then
+        decides whether there is anything to send."""
         gateway = Gateway(samples=[CANONICAL],
                           write_raises=RuntimeError("connection reset"))
         module = bench(gateway)
-        module._retry_ops = [{"operation": "update_cell",
-                              "params": {"lab_id": "A", "test_name": "T",
-                                         "value": "1"}}]
-        store(module, gateway, [])
-        assert module._retry_ops
+        reads = []
+        real = gateway.read_sql
+
+        def counted(sql, args=None, **kw):
+            reads.append(sql)
+            return real(sql, args, **kw)
+        gateway.read_sql = counted
+        store(module, gateway, [row(Density="0.8654")])
+        asked = len(reads)
+        gateway.write_raises = None
+        store(module, gateway, [], now=AFTER_BACKOFF)
+        # The dated sample is cached now, so the re-read is a key lookup on
+        # sample_tests rather than a scan of samples — but it is a read.
+        assert len(reads) == asked + 1 and "sample_tests" in reads[-1]
+        assert gateway.cells() == [(CANONICAL, "Density", "0.8654")]
 
     def test_a_raising_write_does_not_empty_the_held_queue(self, bench):
         gateway = Gateway(samples=[], write_raises=RuntimeError("reset"))
@@ -453,15 +476,14 @@ class TestTheQueuesSurviveAFailedWrite:
         module = bench(gateway)
         store(module, gateway, [row(Density="0.8654")])
         gateway.write_raises = None
-        store(module, gateway, [])
+        store(module, gateway, [], now=AFTER_BACKOFF)
         assert gateway.cells() == [(CANONICAL, "Density", "0.8654")]
-        assert module._retry_ops == []
+        assert module._held_rows == []
 
-    def test_a_refused_reading_is_held_as_well_as_queued(self, bench):
-        """`_retry_ops` is memory only. A restart between the refusal and the
-        next poll would take the reading with it, so the ROW is held too — and
-        the duplicate collapses in `_unwritten`, which deduplicates on
-        (sample, test, value) across the whole batch."""
+    def test_a_refused_reading_is_held(self, bench):
+        """A restart between the refusal and the next poll must not take the
+        reading with it, so the ROW is held — journaled at the bench, and
+        mirrored for a v3.9 floor."""
         gateway = Gateway(samples=[CANONICAL], write_error="queue full")
         module = bench(gateway)
         result, _ = store(module, gateway, [row(Density="0.8654")])
@@ -477,8 +499,8 @@ class TestTheQueuesSurviveAFailedWrite:
         store(module, gateway, [row(Density="0.8654")])
         gateway.write_error = None
         gateway.ops = []
-        store(module, gateway, [])
-        store(module, gateway, [])
+        store(module, gateway, [], now=AFTER_BACKOFF)
+        store(module, gateway, [], now=AFTER_BACKOFF + timedelta(seconds=30))
         assert gateway.cells() == [(CANONICAL, "Density", "0.8654")]
         assert module._held_rows == []
 
@@ -487,8 +509,8 @@ class TestTheQueuesSurviveAFailedWrite:
         module = bench(gateway)
         store(module, gateway, [row(Density="0.8654")])
         gateway.write_error = None
-        store(module, gateway, [])
-        store(module, gateway, [])
+        store(module, gateway, [], now=AFTER_BACKOFF)
+        store(module, gateway, [], now=AFTER_BACKOFF + timedelta(seconds=30))
         assert gateway.cells() == [(CANONICAL, "Density", "0.8654"),
                                    (CANONICAL, "Density", "0.8654")], (
             "once refused, once accepted — and never a third time")
@@ -698,16 +720,17 @@ class TestParkedReadings:
             store(module, gateway, [row(lab_id="B", Density="0.87")])
         assert mod.row_lab_ids(module._parked_rows) == ["A"]
 
-    def test_what_cannot_be_kept_is_named(self, bench):
+    def test_an_outage_keeps_every_reading(self, bench):
         """`_park` is the path that runs during an outage, and the message the
         operator is reading while it fills — "LabCore not reachable — data kept
-        locally." — stops being true at the hundred-and-first reading."""
+        locally." — used to stop being true at the hundred-and-first reading.
+        With the count cap retired it stays true."""
         module = bench(Gateway())
         messages = []
         module._park([row(lab_id=f"{i}", Density="0.86") for i in range(150)],
                      messages)
-        assert len(module._parked_rows) == mod.HELD_ROW_LIMIT
-        assert any("could not be kept waiting" in m for m in messages)
+        assert len(module._parked_rows) == 150
+        assert not any("could not be kept" in m for m in messages)
 
     def test_an_operator_action_never_reports_a_poll_as_stored(self, bench,
                                                                monkeypatch):
@@ -938,17 +961,38 @@ class TestTheOperatorLearnsWhatIsWaiting:
         assert module._status_label.text().startswith("1 reading(s) for 34566")
 
 
-# ── Nothing is discarded quietly ────────────────────────────────────────────
+# ── Nothing is discarded, and a decision is said out loud ──────────────────
 #
-# Three caps can end a reading's automatic filing: the held queue's hundred
+# Three caps used to end a reading's automatic filing: the held queue's hundred
 # rows, the parked list's hundred, and the identity backlog's five thousand.
-# All three said so through `messages`, and `messages[-1]` wins the status line
-# — so the sentence was routinely buried by "Recovered 2 QC result(s) from
-# LabCore." appended further down the SAME sync. That is the exact channel
-# failure `given_up` was promoted out of; these three needed the same
-# promotion.
+# They are retired (transfer v4 §3.2) — F3, F4 and F5 lost 100, 500 and 400
+# readings to them. What a reading can still come to that a person must act on
+# is a CONFLICT (a person's value in the cell, D1) or a REJECTION (LabCore
+# refused that cell by name three times). Those ride the channel the cap
+# notices were promoted to, because `messages[-1]` wins the status line and
+# "Recovered 2 QC result(s) from LabCore." is appended further down the SAME
+# sync.
 
-class TestALostReadingIsAlwaysSaidOutLoud:
+class CellGateway(Gateway):
+    """The identity read also answers the cell, as the combined read does."""
+
+    def __init__(self, cell_value, **kw):
+        super().__init__(**kw)
+        self.cell_value = cell_value
+
+    def read_sql(self, sql, args=None, **kw):
+        res = super().read_sql(sql, args, **kw)
+        if 'FROM "samples"' in sql and res.get("rows"):
+            res = dict(res, rows=[dict(r, sample_lab_id=r["lab_id"],
+                                       test_name="Density",
+                                       result=self.cell_value,
+                                       updated_at="2026-08-11 11:58:00",
+                                       operator="kim")
+                                  for r in res["rows"]])
+        return res
+
+
+class TestNothingIsDiscardedAndADecisionIsSaidOutLoud:
     def payload(self, module, messages):
         return {"machine": module._machine, "raw_prints": [], "rows": [],
                 "now": NOW, "messages": list(messages), "notice": "",
@@ -956,47 +1000,45 @@ class TestALostReadingIsAlwaysSaidOutLoud:
                 "evaluation": mod.MachineEvaluation(status=mod.STATUS_GREEN,
                                                     reason="")}
 
-    def test_the_held_queue_cap_reaches_the_status_line(self, bench):
+    def test_the_held_queue_keeps_every_reading(self, bench):
         gateway = Gateway(samples=[])
         module = bench(gateway)
         rows = [row(lab_id=str(30000 + i), Density="0.86") for i in range(120)]
         _, messages = store(module, gateway, rows)
-        # What the sync does next, every poll, after the results road has run.
-        messages.append("Recovered 2 QC result(s) from LabCore.")
-        module._show_outcome(self.payload(module, messages))
-        line = module._status_label.text()
-        assert "20 reading(s)" in line, line
-        assert line.index("20 reading(s)") < line.index("Recovered"), line
+        assert len(module._held_rows) == 120
+        assert module._take_losses() == []
+        assert not [m for m in messages if "stopped waiting" in m], messages
 
-    def test_it_names_the_queue_it_actually_came_from(self, bench):
-        """Not "the retry queue" — that is `_retry_ops`, ops LabCore refused.
-        Nothing in this queue has been refused by anybody; it is waiting for a
-        sample to be logged in, and saying otherwise sends whoever debugs it
-        looking for a write that was never attempted."""
-        gateway = Gateway(samples=[])
-        module = bench(gateway)
-        rows = [row(lab_id=str(30000 + i), Density="0.86") for i in range(120)]
-        _, messages = store(module, gateway, rows)
-        said = " ".join(messages)
-        assert "retry queue" not in said, said
-        assert "waiting for a sample to be logged in" in said, said
-
-    def test_the_parked_cap_reaches_the_status_line(self, bench):
+    def test_the_parked_list_keeps_every_reading(self, bench):
         module = bench(Gateway())
         messages = []
         module._park([row(lab_id=str(30000 + i), Density="0.86")
                       for i in range(140)], messages)
+        assert len(module._parked_rows) == 140
+        assert messages == [] and module._take_losses() == []
+
+    def test_a_conflict_reaches_the_status_line_ahead_of_routine_news(self,
+                                                                      bench):
+        """The analyst typed 0.7000; the instrument read 0.8654. The bench
+        does not overwrite (D1), and the operator must SEE that it did not."""
+        gateway = CellGateway("0.7000", samples=[CANONICAL])
+        module = bench(gateway)
+        _, messages = store(module, gateway, [row(Density="0.8654")])
+        assert gateway.cells() == []
         messages.append("Recovered 2 QC result(s) from LabCore.")
         module._show_outcome(self.payload(module, messages))
         line = module._status_label.text()
-        assert "40 reading(s)" in line, line
-        assert line.index("40 reading(s)") < line.index("Recovered"), line
+        assert "0.8654" in line and "0.7000" in line, line
+        assert "decision" in line, line
+        assert line.index("0.8654") < line.index("Recovered"), line
 
-    def test_the_news_is_said_once_and_not_every_poll_after(self, bench):
-        module = bench(Gateway())
-        module._park([row(lab_id=str(30000 + i)) for i in range(140)], [])
+    def test_the_decision_is_said_once_and_not_every_poll_after(self, bench):
+        gateway = CellGateway("0.7000", samples=[CANONICAL])
+        module = bench(gateway)
+        store(module, gateway, [row(Density="0.8654")])
         module._show_outcome(self.payload(module, []))
-        assert "40 reading(s)" in module._status_label.text()
+        assert "0.8654" in module._status_label.text()
+        store(module, gateway, [], now=NOW + timedelta(seconds=30))
         module._show_outcome(self.payload(module, ["Ready."]))
         assert module._status_label.text() == "Ready."
 

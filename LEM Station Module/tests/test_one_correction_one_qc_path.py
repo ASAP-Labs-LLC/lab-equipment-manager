@@ -65,15 +65,18 @@ class TestOneParseBoundary:
                 f"{forbidden!r} would double-apply the correction")
 
     @pytest.mark.parametrize("name", [
-        "build_result_cells", "run_log_detail", "write_latest_result",
-        "apply_csv_headers",
+        "build_result_cells", "row_cells", "run_log_detail",
+        "write_latest_result", "apply_csv_headers",
     ])
     def test_a_row_consumer_filters_on_the_reserved_keys(self, name):
         """Whatever a consumer does with a row, the bookkeeping is not a
         measurement — filtering on the Lab ID and timestamps alone is what let
         __raw__ out as a test name."""
         src = inspect.getsource(getattr(mod, name))
-        assert "RESERVED_ROW_KEYS" in src
+        # Delegating to `row_cells` — the one rule for which keys of a row are
+        # results, itself checked in this parametrisation — counts as
+        # filtering: two copies of the rule are how they drift apart.
+        assert "RESERVED_ROW_KEYS" in src or "row_cells(" in src
 
     @pytest.mark.parametrize("name", [
         "_publish_rows", "_results_can_accept", "_deliver_rows_to_results",
