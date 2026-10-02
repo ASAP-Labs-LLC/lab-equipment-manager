@@ -80,7 +80,7 @@
             }
         }
         const q = p.qc_out;
-        if (Number.isInteger(q) && q > 0) out.qc = { text: q + ' out of spec', badge: String(q) };
+        if (Number.isInteger(q) && q > 0) out.qc = { text: q + ' ' + plural(q, 'check', 'checks') + ' out of spec', badge: String(q) };
         return out;
     }
 
@@ -124,10 +124,16 @@
     // ── the live row ───────────────────────────────────────────────────────
 
     /** {state, text} for the live row and the strip. `state` is the dot:
-        fresh (Live), error (Reconnecting), connecting. */
-    function liveWords(st, now) {
+        fresh (Live), stale (LEM answers, but with a record LabCore has not
+        refreshed: the banner says why), error (Reconnecting), connecting.
+        `p`, the last live answer, is optional. */
+    function liveWords(st, now, p) {
         const text = LV.statusText(st, now);
         const state = text.startsWith('Live') ? 'fresh' : text.startsWith('Reconnecting') ? 'error' : 'connecting';
+        if (state === 'fresh' && p && (p.labcore_online === false || p.snapshot_stale) && p.snapshot_at) {
+            const at = clock(p.snapshot_at, now, p.lab_tz);
+            if (at) return { state: 'stale', text: 'Live · record as of ' + at };
+        }
         return { state, text };
     }
 
@@ -210,7 +216,7 @@
         const S = root.LEMShell;
         const now = Date.now();
         const st = LV.status();
-        const words = liveWords(st, now);
+        const words = liveWords(st, now, last);
         if (S && S.setStatus) S.setStatus({ live: words });
         const b = $('paused-banner');
         if (b) {

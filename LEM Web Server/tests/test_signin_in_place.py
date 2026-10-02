@@ -35,9 +35,15 @@ ROOT = Path(__file__).resolve().parent.parent
 T = ROOT / "templates"
 STATIC = ROOT / "static"
 
-SHELL_PAGES = ["/settings", "/help"]
+SHELL_PAGES = ["/settings", "/help", "/"]
 # the pages still drawn by _nav.html that have a Sign in of their own
-OLD_PAGES = ["/", "/checklists/edit", "/maintenance", "/logs"]
+# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
+# covers it); "/maintenance" redirects to its filter, and the old PM page
+# lives at /maintenance/classic until the record and Settings › Imports take
+# over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
+# round (a new shell page, tests/test_round_page.py); the old checklists
+# page, with the editor, answers at /checklists/edit.
+OLD_PAGES = ["/checklists/edit", "/maintenance/classic", "/logs"]
 
 
 class StubAuth:

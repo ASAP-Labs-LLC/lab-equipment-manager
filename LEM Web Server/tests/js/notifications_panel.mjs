@@ -74,4 +74,28 @@ t.eq([...N.loadDismissed(broken)], []);
 N.saveDismissed(new Set(['y']), broken);                       // no throw
 t.eq(N.DISMISS_KEY, 'lem.notes-dismissed');
 
+// A page that lists instruments' problems on its own rows folds the bell's
+// instrument lines (round 3's critic: on Instruments, "the bell lists the
+// row problems a second time, by name and cause"). Folded lines are neither
+// listed nor counted in the badge; the panel says, without a name or a
+// number, that they are on the page. Other pages fold nothing.
+const mixed = [
+  { id: 'notok:a:1', level: 'error', message: 'A is not OK to run.', ts: '2026-09-30T14:00:00', about: 'instruments' },
+  { id: 'caldue:a,b:1', level: 'warning', message: '2 instruments are overdue for calibration: A and B.', ts: '2026-09-30T13:00:00', about: 'instruments' },
+  { id: 'audit:1', level: 'warning', message: '2 audit rows waiting.', ts: '2026-09-30T12:00:00', about: null },
+  { id: 'round:1', level: 'warning', message: 'The morning round is overdue.', ts: '2026-09-30T11:00:00' },
+];
+t.eq(N.visible(mixed, new Set(), 'instruments').map(x => x.id), ['audit:1', 'round:1']);
+t.eq(N.visible(mixed, new Set()).map(x => x.id).length, 4);
+t.eq(N.visible(mixed, new Set(), '').length, 4);
+t.eq(N.folded(mixed, new Set(), 'instruments'), true);
+t.eq(N.folded(mixed, new Set(['notok:a:1', 'caldue:a,b:1']), 'instruments'), false);
+t.eq(N.folded(mixed, new Set(), ''), false);
+t.eq(N.foldNote('instruments'), 'Instrument problems are on this page, each on its own row.');
+// the empty sentence on a folding page does not claim "no notifications"
+t.eq(N.emptyText({ known: true, any: true, folded: true }), 'Nothing else. Instrument problems are on this page, each on its own row.');
+t.eq(N.emptyText({ known: true, any: false, folded: false }), 'No notifications. Instruments that stop being OK to run, overdue rounds and LabCore trouble will show here.');
+t.eq(N.emptyText({ known: false }), 'Checking for notifications…');
+t.eq(N.emptyText({ known: true, any: true, folded: false }), 'Nothing new. Everything here was dismissed on this computer.');
+
 console.log('notifications_panel.mjs: ' + n + ' checks passed');
