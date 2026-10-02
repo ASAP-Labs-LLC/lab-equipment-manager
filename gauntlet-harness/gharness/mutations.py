@@ -99,8 +99,15 @@ MUTATIONS = {
     "per_index_off": {
         "kind": "source", "owner": "P3", "pattern": None, "replace": None,
         "what": "per-index batch results ignored (B1 must fail)"},
+    # A bench whose journal is gone reads its file only once LEM has said
+    # where its record ends (P8, `_transfer_blind`). Off, a wiped bench
+    # reads its whole file from the top and sends it all again: T4/T4b's
+    # records_resent leaves 0.
     "blind_mode_off": {
-        "kind": "source", "owner": "P8", "pattern": None, "replace": None,
+        "kind": "source", "owner": "P8",
+        "pattern": r"if journal is None or not journal\.checkpoint_pending\(\):\n"
+                   r"(\s*)return False",
+        "replace": r"if True:\n\1return False",
         "what": "blind mode off: a wiped journal re-sends (T4 floods)"},
 }
 

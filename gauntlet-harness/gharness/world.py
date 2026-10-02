@@ -100,6 +100,9 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
     class World(Ctx):
         mutation = None          # set by the mutation runner
         batch_mode = "baseline"
+        # Road modes a World starts with when the scenario names none: a
+        # phase-1 scenario re-run on the legacy road (F1L, N2L) sets 404.
+        default_road_modes = None
 
         def __init__(self, source="single_csv", publish=True, batch_mode=None,
                      n_samples=None, road_modes=None):
@@ -129,6 +132,8 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 self.server.poll_thread = threading.get_ident()
                 # Roads as they are from before the bench exists (T1: "LAN
                 # dark throughout" means dark at enrolment too).
+                if road_modes is None:
+                    road_modes = type(self).default_road_modes
                 for road, road_mode in (road_modes or {}).items():
                     self.server.set_road(road, road_mode)
             if n_samples is not None:

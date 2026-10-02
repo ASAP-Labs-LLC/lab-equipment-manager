@@ -51,11 +51,31 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         sid = _baseline_id(fn.__name__)
         reg.add(sid, (lambda f: lambda: f())(fn), "baseline")
 
+    # ── the legacy road keeps its guards (v4 ships first on it, D8) ─────────
+    # A v2 bench no longer writes its machine log into LabCore, so phase 1's
+    # log-refusal scenarios (F1, N2) now measure the v2 sync — and the
+    # LabCore log drain that a v4 bench still uses against an OLD server went
+    # unexercised (two P0 mutations of it survived). F1L and N2L run the very
+    # same phase-1 functions with the server answering 404 from the start:
+    # the bench never speaks v2, and the old road must still lose nothing.
+    def on_legacy_road(fn):
+        def run():
+            keep = W.default_road_modes
+            W.default_road_modes = {"A": "404", "B": "404"}
+            try:
+                return fn()
+            finally:
+                W.default_road_modes = keep
+        return run
+
     def new(sid, kind="new"):
         def deco(fn):
             reg.add(sid, fn, kind)
             return fn
         return deco
+
+    reg.add("F1L", on_legacy_road(rf.f1_log_refused_once), "new")
+    reg.add("N2L", on_legacy_road(rf.n2_log_insert_raise_before), "new")
 
     # ── kills at named points (§3.3) ────────────────────────────────────────
     @new("K1b")

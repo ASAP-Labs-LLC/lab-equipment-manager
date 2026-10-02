@@ -19,12 +19,16 @@ SPEC_9 = ("S0 K1 K2 K3 K4 K5 K6 K7 K8 K9 K9c K9r N1 N2 N3 N4 N5 N6 F1 F2 F3 F4 F
           "K1b K7b K8r R6deep X1 X2 X3 X3r X4 R7p Q1 A1 A1w A3 A4 A5 B1 E0 E1 E2 E3 "
           "T1 T2 T3 T4 T4b T5 D1 CF1 CF2 L1 L2 U1 U2 U3 U4 U5 M1 M2 M3 M4 M5 M6 "
           "DG1 DG2 W1 W2 W2b W3 W4").split()
+# Beyond §9: phase-1 F1 and N2 re-run on the legacy road (a server answering
+# 404), added with P8 so the LabCore log drain a v4 bench still uses against
+# an old server keeps its guards (two P0 mutations of it would survive else).
+LEGACY_REPLAYS = ["F1L", "N2L"]
 
 BASELINE_19 = set("K1 K2 K3 K4 K5 K6 K7 K8 K9 N3 N4 F3 F4 F5 R2 R3 R4 R5 R6".split())
 
 
 def test_every_section_9_scenario_has_both_rows():
-    assert sorted(EXP) == sorted(SPEC_9)
+    assert sorted(EXP) == sorted(SPEC_9 + LEGACY_REPLAYS)
     for sid, row in EXP.items():
         assert "v3.9" in row and "v4" in row and row["v4"], sid
         assert row.get("v4_spec"), sid
