@@ -635,7 +635,7 @@ class TestTheLiveFloorEditorOffersTheWindow:
 
     @pytest.fixture
     def page(self, client):
-        r = client.get("/floor")
+        r = client.get("/floor/classic")
         assert r.status_code == 200
         return r.get_data(as_text=True)
 
@@ -659,4 +659,4 @@ class TestTheLiveFloorEditorOffersTheWindow:
         """Guards the sentence above: this is the LIVE editor, and /stations
         is not."""
         assert client.get("/stations").status_code in (301, 302)
-        assert client.get("/floor").status_code == 200
+        assert client.get("/floor/classic").status_code == 200

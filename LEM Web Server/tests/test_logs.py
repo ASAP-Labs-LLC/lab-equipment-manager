@@ -234,7 +234,7 @@ class TestTheLogsPage:
         assert client.get("/logs").status_code == 200
 
     def test_it_is_linked_from_the_floor(self, client):
-        assert 'href="/logs"' in client.get("/floor").get_data(as_text=True)
+        assert 'href="/logs"' in client.get("/floor/classic").get_data(as_text=True)
 
     def test_it_can_get_back(self, client):
         assert 'href="/"' in client.get("/logs").get_data(as_text=True)

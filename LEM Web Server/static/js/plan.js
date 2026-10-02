@@ -226,6 +226,18 @@
         return cut.replace(/[\s,·:;—-]+$/, '') + '…';
     }
 
+    /** A last word that is a number or one or two letters ("1", "S",
+        "NS") is glued to the word before it with a no-break space, so a
+        name that needs two lines breaks as "PAC / Flash 1", never
+        "PAC Flash / 1". A real word ("NIR") is left free to wrap. */
+    function glue(name) {
+        const s = String(name || '');
+        const i = s.lastIndexOf(' ');
+        const last = s.slice(i + 1);
+        if (i <= 0 || !(/^\d{1,3}$/.test(last) || /^[A-Za-z]{1,2}$/.test(last))) return s;
+        return s.slice(0, i) + '\u00a0' + last;
+    }
+
     /** With a cause chosen in the Needs-you column, the instruments without
         it step back; the ones with it stay at full strength. */
     function dimmed(r, cause) {
@@ -234,7 +246,7 @@
     }
 
     const api = { PITCH, bayIndex, coord, parseMapView, mapQuery, currentLevel, onLevel, layout,
-                  toSaved, occupant, isFree, canDrag, cellHeight, density, bayWords, dimmed, shortWord, cutAt,
+                  toSaved, occupant, isFree, canDrag, cellHeight, density, bayWords, dimmed, shortWord, cutAt, glue,
                   CELL_MIN, CELL_MAX, draw: null };
 
     // ── the DOM half ──────────────────────────────────────────────────────
@@ -253,7 +265,9 @@
         };
         /** Draw `lay` into `host` (an element that becomes the grid).
             opts: arranging, focus (uid), cause (key), picked (uid), saving
-            (Set of uids), cellH (px). In view mode a bay is a link to its
+            (Set of uids), cellH (px), details and detailsShort ({uid:
+            line}: the wall's own detail line and the shorter one it falls
+            back to before cutting, ui_wall.bay_details). In view mode a bay is a link to its
             record; in Arrange it is a button and the free cells are drop
             targets. Nothing in view mode can be dragged: links carry
             draggable="false" so even the browser's own link drag is off. */
@@ -292,9 +306,11 @@
                                 'aria-current': opts.focus === b.uid ? 'true' : null };
                 const glyph = el('span', { className: 'glyph ' + w.glyph, 'aria-hidden': 'true' });
                 const lines = [
-                    el('span', { className: 'b-name', text: w.name }),
+                    el('span', { className: 'b-name', text: glue(w.name) }),
                     el('span', { className: 'b-word' }, glyph, el('span', { className: 'b-wtext', text: w.word })),
-                    el('span', { className: 'b-detail', text: opts.saving && opts.saving.has(b.uid) ? 'Saving…' : (w.detail || (b.row.bench && b.row.bench.word) || '') }),
+                    el('span', { className: 'b-detail', 'data-short': (opts.detailsShort && opts.detailsShort[b.uid]) || null,
+                        text: opts.saving && opts.saving.has(b.uid) ? 'Saving…'
+                        : ((opts.details && opts.details[b.uid]) || w.detail || (b.row.bench && b.row.bench.word) || '') }),
                 ];
                 let node;
                 if (opts.arranging) {
@@ -342,7 +358,7 @@
                 const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
                 if (name) fitText(name, name.textContent, '', true);
                 if (word) fitText(word, word.textContent, shortWord(state), false);
-                if (det && det.textContent) fitText(det, det.textContent, '', false);
+                if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);
             }
         }
         api.fit = fit;

@@ -61,7 +61,7 @@
     <h1 class="sign">LEM <b>·</b> PM &amp; Calibration</h1>
     <span class="spacer"></span>
     <button class="tool on" id="fKind" data-kind="">All</button>
-    <a class="tool" href="/floor">Map</a>
+    <a class="tool" href="/floor/classic">Map</a>
     <span class="who" id="who" hidden></span>
     <a id="btnAuth" class="tool" data-signin href="{{ signin_href() }}">{{ 'Sign out' if session.get('user') else 'Sign in' }}</a>
   </header>
@@ -205,14 +205,14 @@ async function load() {
         <div class="nm"><span class="kind ${esc(t.kind)}">${
           t.kind === 'calibration' ? 'cal' : 'pm'}</span>${esc(t.name)}</div>
         <div class="meta">
-          <a href="/floor">${esc(t.machine_title)}</a>
+          <a href="/floor/classic">${esc(t.machine_title)}</a>
           · every ${t.interval_days} d · ${esc(t.reason)}</div>
       </div>
       <button class="tool" data-done="${esc(t.uid)}" data-gated="mark done">Mark done</button>
     </div>`).join('')
     : `<p class="empty">Nothing ${KIND ? 'of this kind ' : ''}scheduled
        anywhere. Add PMs and calibrations from an equipment record on the
-       <a href="/floor">map</a>.</p>`;
+       <a href="/floor/classic">map</a>.</p>`;
 
   // `done` is null when its fetch failed and nothing was cached (see lem.js).
   // "Nothing completed yet anywhere" is a compliance claim, so it may not be

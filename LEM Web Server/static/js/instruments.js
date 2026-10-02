@@ -45,7 +45,7 @@
         for (const r of (data && data.instruments) || []) hrefs[r.uid] = r.href;
     }
     function hrefFor(uid, section) {
-        const base = hrefs[uid] || '/floor';
+        const base = hrefs[uid] || '/floor/classic';
         return section && base.indexOf('/instruments/') === 0 ? base + '#' + section : base;
     }
 

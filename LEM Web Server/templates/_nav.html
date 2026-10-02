@@ -3,14 +3,14 @@
    full-colour and OS-specific, which fought the graphite/amber palette; these
    inherit the nav item's own colour, so they go ink-grey → amber with it. #}
 {% set nav_items = [
-  ('/floor',       'Map',        'map'),
+  ('/floor/classic', 'Map',      'map'),
   ('/checklists',  'Checklists', 'check'),
   ('/maintenance', 'PM & CAL',   'wrench'),
   ('/logs',        'Logs',       'log'),
   ('/qc',          'QC',         'chart'),
 ] %}
 {# QC sits beneath Logs, where Ryan asked for it. It is a wall display rather
-   than a page somebody works in — see templates/qc.html. #}
+   than a page somebody works in — see templates/wall_qc.html. #}
 {% macro nav_icon(kind) -%}
 <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor"
      stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"

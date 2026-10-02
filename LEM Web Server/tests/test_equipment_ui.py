@@ -58,14 +58,14 @@ def client():
 
 @pytest.fixture
 def floor(client):
-    return client.get("/floor").get_data(as_text=True)
+    return client.get("/floor/classic").get_data(as_text=True)
 
 
 # "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
 # covers it); "/maintenance" redirects to its filter, and the old PM page
 # lives at /maintenance/classic until the record and Settings › Imports take
 # over its two jobs (ia-final §3.1 #2, §3.7).
-PAGES = ("/floor", "/maintenance/classic", "/checklists", "/logs")
+PAGES = ("/floor/classic", "/maintenance/classic", "/checklists", "/logs")
 
 
 def visible_text(html):
@@ -530,7 +530,7 @@ class TestTheRename:
     #: `/checklists` is not one: its static markup is about checklists, and
     #: what it says about equipment it renders from JavaScript — which
     #: `visible_text` strips on purpose, and which floorboot is for.
-    NAMES_THE_THING = ("/floor", "/maintenance/classic", "/logs")
+    NAMES_THE_THING = ("/floor/classic", "/maintenance/classic", "/logs")
 
     @pytest.mark.parametrize("path", NAMES_THE_THING)
     def test_those_pages_use_the_new_word(self, client, path):

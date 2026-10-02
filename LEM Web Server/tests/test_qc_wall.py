@@ -210,15 +210,22 @@ class TestThePageIsReachableAndIsAMonitor:
         assert _client(_app(gw, tmp_path)).get("/qc").status_code == 200
 
     def test_it_is_in_the_nav_under_logs(self, gw, tmp_path):
-        body = _client(_app(gw, tmp_path)).get("/floor").get_data(as_text=True)
+        # the old pages' nav (the classic floor's); /floor is the wall now
+        body = _client(_app(gw, tmp_path)).get("/floor/classic").get_data(as_text=True)
         assert '/qc' in body
         assert body.index('/logs') < body.index('/qc'), (
             "the QC tab has to sit beneath Logs, which is where it was asked for")
 
     def test_the_page_refreshes_itself(self, gw, tmp_path):
-        """Nobody presses anything on a wall display."""
+        """Nobody presses anything on a wall display. Page code lives in
+        static/js since piece 13 (no inline script): the page loads the
+        wall's scripts, and they run a clock and refetch on their own."""
+        from pathlib import Path
         page = _client(_app(gw, tmp_path)).get("/qc").get_data(as_text=True)
-        assert "setInterval" in page
+        assert "/static/js/wall_qc.js" in page and "/static/js/wall.js" in page
+        js = Path(__file__).resolve().parent.parent / "static" / "js"
+        assert "setInterval" in (js / "wall.js").read_text(encoding="utf-8")
+        assert "/api/ui/wall/qc" in (js / "wall_qc.js").read_text(encoding="utf-8")
 
     def test_the_routes_are_registered(self, gw, tmp_path):
         rules = {str(r) for r in _app(gw, tmp_path).url_map.iter_rules()}
