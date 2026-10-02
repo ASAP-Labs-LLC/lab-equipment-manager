@@ -1158,6 +1158,72 @@ class BenchJournal:
             self._meta["last_v2_handshake"] = when or _local_ts()
             self._write_meta()
 
+    def v2_handshaken(self) -> bool:
+        """Has this bench ever completed a v2 sync? From then on it never
+        writes `lem_*` into LabCore again unless LEM answers 404 (§6.1)."""
+        with self._lock:
+            return bool(self._meta.get("last_v2_handshake"))
+
+    def forget_v2_handshake(self) -> None:
+        """A 404: the server has no v2 (a rollback). Legacy until re-probed."""
+        with self._lock:
+            if self._meta.get("last_v2_handshake"):
+                self._meta["last_v2_handshake"] = None
+                self._write_meta()
+
+    def last_seq(self) -> int:
+        with self._lock:
+            return self._seq
+
+    def records_after(self, acked: int, limit: int = 100,
+                      max_bytes: int = 192 * 1024) -> List[dict]:
+        """This epoch's records from seq `acked`+1, contiguous, AS WRITTEN —
+        each line's body with its `crc`, which is what the server checks.
+
+        Stops at `limit` records or `max_bytes` (at least one record always,
+        so one big record cannot wedge the sync). A hole in the numbering is
+        not skipped over: the records before it are returned and the server
+        is never told "contiguous" about a gap. A segment that cannot be read
+        raises — a failed read is not "nothing to send"."""
+        with self._lock:
+            acked = int(acked)
+            if acked >= self._seq:
+                return []
+            out: List[dict] = []
+            size = 0
+            want = acked + 1
+            for seg in self._segments:
+                if seg["seqs"].get(self.epoch, 0) < want:
+                    continue
+                try:
+                    with open(seg["path"], "rb") as f:
+                        data = f.read(seg["size"])
+                except OSError as exc:
+                    raise JournalError(f"cannot read {seg['path']}: {exc}") \
+                        from exc
+                for line in data.splitlines(True):
+                    if _line_body(line) is None:
+                        continue
+                    rec = json.loads(line.decode("utf-8"))
+                    if rec.get("epoch") != self.epoch or rec.get("seq") != want:
+                        continue
+                    if out and (len(out) >= limit or size + len(line) > max_bytes):
+                        return out
+                    out.append(rec)
+                    size += len(line)
+                    want += 1
+            return out
+
+    def mark_projected_through(self, acked: int) -> List[str]:
+        """LEM acked this epoch through `acked`: every reading at or below it
+        is in LEM's record — PROJECTED, in v2 terms. One fsync'd mark."""
+        with self._lock:
+            refs = [ref for ref, run in self._runs.items()
+                    if not run["projected"]
+                    and run["rec"].get("epoch") == self.epoch
+                    and int(run["rec"].get("seq") or 0) <= int(acked)]
+            return self._mark("projected", refs) if refs else []
+
     # ── reading back ─────────────────────────────────────────────────────────
 
     def _scan(self) -> List[dict]:
@@ -5955,6 +6021,309 @@ def floor_config_results(body, machine_uid: str) -> Optional[dict]:
 
 
 
+# ── Protocol v2: the bench's own world goes to LEM, not LabCore (§6) ────────
+#
+# Measured by the gate on this module before it spoke v2: a bench printing one
+# reading per poll cost LabCore 5.43 ops a poll, 3.0 more than the same bench
+# idle, and idle was already 2.4 a poll — heartbeats, the config, override,
+# QC-library and maintenance reads, status and spec writes, the machine-log
+# row. LabCore's queue runs every bench's reads and writes at about 1.5 ops/s,
+# so that is the cost that multiplies by every bench Ryan adds. A v2 bench
+# sends its journal records, status, specs and heartbeat to LEM in ONE sync per
+# poll and reads its configuration from LEM; the only LabCore traffic left is
+# the results road (one identity-and-cell read, one batch) — §6.3.
+#
+# Nothing here is ever allowed to fall back to writing `lem_*` into LabCore
+# once the bench has completed a v2 handshake: an unreachable LEM means the
+# journal holds the records until a road answers (§6.1). The ONLY signal that
+# sends a bench back to LabCore is a 404 — an old server with no v2 at all.
+
+#: Road A, the LAN (dark in production until port 5557 is opened, G2) and
+#: road B, the public tunnel. Compiled in; `config.json`/the canvas/`lem_meta`
+#: may put another address in front of them (§6.2).
+LEM_LAN_URL = "http://192.168.1.5:5557"
+LEM_PUBLIC_URL = "https://lem.asaplabs.net"
+#: Per-road timeouts: a silently dropped LAN must cost 1.5 s, not 10.
+V2_LAN_TIMEOUT = 1.5
+V2_PUBLIC_TIMEOUT = 10.0
+#: A road that failed is tried again at most this often (sticky selection).
+V2_ROAD_REPROBE_SECONDS = 600
+#: Both roads down: 30, 60, 120, then 300 s between attempts, capped.
+V2_BACKOFF_SECONDS = (30, 60, 120, 300)
+#: An old server (404) is asked again for v2 every 15 minutes.
+V2_OLD_SERVER_REPROBE_SECONDS = 900
+#: A person must approve this bench in LEM: asked again this often.
+V2_PENDING_REPROBE_SECONDS = 300
+#: Ryan's D2: a result is filed only with a correction factor LEM confirmed
+#: current within this long. Both LEM roads dark → results HOLD in the journal.
+V2_FACTOR_CONFIRM_SECONDS = 60
+#: Per sync (the server refuses more than 100 records or 256 KB).
+V2_SYNC_MAX_RECORDS = 100
+V2_SYNC_MAX_BYTES = 192 * 1024
+#: Catch-up after an outage: at most this many syncs in one poll.
+V2_SYNC_ROUNDS_PER_POLL = 10
+V2_PROTO = 2
+V2_ENROLL_PATH = "/api/v2/bench/{uid}/enroll"
+V2_SYNC_PATH = "/api/v2/bench/{uid}/sync"
+V2_CONFIG_PATH = "/api/v2/bench/{uid}/config"
+#: `_log_event` kinds the LEM store keeps as their own record kind.
+V2_EVENT_KINDS = ("comment", "override", "pm", "calibration", "config")
+
+
+def lem_user_agent(machine_uid: str) -> str:
+    """Cloudflare's browser-integrity check answers urllib's default agent with
+    1010; a `LEM-Station/...` agent is forwarded (§6.2, A's probe)."""
+    return f"LEM-Station/{MODULE_VERSION} ({machine_uid})"
+
+
+def v2_roads(preferred: str = "") -> List[tuple]:
+    """[(name, base url, timeout)] in the order a fresh bench tries them: an
+    address this bench was given first, then the LAN, then the tunnel."""
+    out, seen = [], set()
+    for base in (str(preferred or "").strip().rstrip("/"), LEM_LAN_URL,
+                 LEM_PUBLIC_URL):
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        public = base.startswith("https://")
+        out.append(("public" if public else "lan", base,
+                    V2_PUBLIC_TIMEOUT if public else V2_LAN_TIMEOUT))
+    return out
+
+
+class LemAnswer:
+    """One answer from LEM. `status` 0 means no road answered at all (refused,
+    timed out, DNS) — never confused with an HTTP answer, because only an
+    HTTP 404 may send a bench back to LabCore."""
+
+    def __init__(self, status: int, body=None, retry_after=None,
+                 road: str = "", why: str = "") -> None:
+        self.status = int(status)
+        self.body = body if isinstance(body, dict) else None
+        self.retry_after = retry_after
+        self.road = road
+        self.why = why
+
+    def __repr__(self) -> str:
+        return f"LemAnswer({self.status}, road={self.road!r}, why={self.why!r})"
+
+
+def _retry_after_header(headers) -> Optional[float]:
+    try:
+        value = headers.get("Retry-After") if headers is not None else None
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def lem_call(base: str, method: str, path: str, uid: str,
+             body: Optional[dict] = None, headers: Optional[dict] = None,
+             timeout: float = V2_PUBLIC_TIMEOUT, road: str = "") -> LemAnswer:
+    """One HTTP request to LEM. Total: every failure is an answer, never a
+    raise (this runs on the poll worker; a raise strands `_polling`)."""
+    hdrs = {"User-Agent": lem_user_agent(uid), "X-LEM-Proto": str(V2_PROTO),
+            "Accept": "application/json"}
+    hdrs.update(headers or {})
+    data = None
+    if body is not None:
+        data = json.dumps(body, separators=(",", ":"), default=str).encode("utf-8")
+        hdrs["Content-Type"] = "application/json"
+    try:
+        request = urllib.request.Request(base.rstrip("/") + path, data=data,
+                                         headers=hdrs, method=method)
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read() if callable(getattr(response, "read", None)) \
+                else b""
+            status = int(getattr(response, "status", 200) or 200)
+            try:
+                doc = json.loads(raw.decode("utf-8")) if raw else {}
+            except (UnicodeDecodeError, ValueError):
+                doc = None
+            return LemAnswer(status, doc, None, road)
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read() or b""
+            doc = json.loads(raw.decode("utf-8")) if raw else None
+        except Exception:                                  # noqa: BLE001
+            doc = None
+        return LemAnswer(exc.code, doc, _retry_after_header(exc.headers), road,
+                         str((doc or {}).get("error") or exc.reason or ""))
+    except Exception as exc:                               # noqa: BLE001
+        return LemAnswer(0, None, None, road,
+                         str(exc) or exc.__class__.__name__)
+
+
+class V2Link:
+    """The bench's two roads to LEM and what it knows about them.
+
+    Sticky: the road that last answered is tried first, the other within the
+    same call; a failed road is not tried again for V2_ROAD_REPROBE_SECONDS,
+    so a silently dropped LAN costs one 1.5 s timeout per ten minutes, not one
+    per poll (§6.2). Every clock here is the POLL's clock, so the gate's
+    simulated time and a test's are the time it runs on."""
+
+    def __init__(self, uid: str, roads: List[tuple]) -> None:
+        self.uid = uid
+        self.roads = list(roads)
+        self.sticky = 0
+        self.failed_at: Dict[str, datetime] = {}
+        # "unknown" until a handshake; "v2" after one (for good, until a 404);
+        # "old_server" after a 404; "pending" while a person must approve.
+        self.mode = "unknown"
+        self.retry_at: Optional[datetime] = None
+        self.failures = 0
+        self.last_ok: Optional[datetime] = None
+        self.healthy = False
+        self.road = ""
+        self.why = ""
+        self.config_rev: Optional[str] = None         # newest rev LEM named
+        self.applied_rev: Optional[str] = None        # rev of the config held
+        self.confirmed_at: Optional[datetime] = None  # applied == LEM's, when
+        self.enroll_key = secrets.token_urlsafe(24)
+
+    def waiting(self, now: datetime) -> bool:
+        return self.retry_at is not None and now < self.retry_at
+
+    def backoff(self, now: datetime, retry_after=None) -> None:
+        """Both roads failed: 30·2^n s, capped at 300, or LEM's Retry-After if
+        it is longer."""
+        step = V2_BACKOFF_SECONDS[min(self.failures, len(V2_BACKOFF_SECONDS) - 1)]
+        self.failures += 1
+        wait = max(float(step), float(retry_after or 0))
+        self.retry_at = now + timedelta(seconds=wait)
+        self.healthy = False
+
+    def answered(self, now: datetime) -> None:
+        self.failures = 0
+        self.retry_at = None
+        self.healthy = True
+        self.last_ok = now
+
+    def confirmed(self, now: datetime) -> bool:
+        """D2: is the factor this bench holds one LEM confirmed current in the
+        last V2_FACTOR_CONFIRM_SECONDS?"""
+        if self.confirmed_at is None:
+            return False
+        age = (now - self.confirmed_at).total_seconds()
+        return 0 <= age <= V2_FACTOR_CONFIRM_SECONDS
+
+    def note_rev(self, rev, now: datetime) -> bool:
+        """LEM named its current config rev. True when it is NOT the one this
+        bench applied — the config must be read again before a factor is
+        trusted."""
+        self.config_rev = rev if isinstance(rev, str) and rev else None
+        if self.config_rev is not None and self.config_rev == self.applied_rev:
+            self.confirmed_at = now
+            return False
+        return True
+
+    def call(self, method: str, path: str, now: datetime,
+             body: Optional[dict] = None,
+             headers: Optional[dict] = None) -> LemAnswer:
+        """Try the roads in sticky order. The first HTTP answer of ANY status
+        is LEM's answer; only "nobody answered" moves on to the next road."""
+        order = sorted(range(len(self.roads)), key=lambda i: (i != self.sticky, i))
+
+        def resting(i):
+            failed = self.failed_at.get(self.roads[i][1])
+            return failed is not None and \
+                0 <= (now - failed).total_seconds() < V2_ROAD_REPROBE_SECONDS
+        # Roads that failed in the last ten minutes sit out — unless every
+        # road has, and then the backoff (not this) is what spaces attempts.
+        candidates = [i for i in order if not resting(i)] or order
+        last = LemAnswer(0, None, None, "", "no road to LEM")
+        for i in candidates:
+            name, base, timeout = self.roads[i]
+            answer = lem_call(base, method, path, self.uid, body, headers,
+                              timeout, name)
+            if answer.status == 0:
+                self.failed_at[base] = now
+                last = answer
+                continue
+            self.failed_at.pop(base, None)
+            self.sticky = i
+            self.road = name
+            return answer
+        self.why = last.why
+        return last
+
+
+def journal_events_as_records(events) -> tuple:
+    """Queued machine-log events (`_log_event`'s (sql, args) entries) as v2
+    journal records, for a bench that sends its world to LEM.
+
+    Returns (records, kept): `kept` are entries that are NOT turned into a
+    record here — none today; the split exists so a kind the store cannot
+    hold is never silently thrown away. Entries tied to a journaled reading
+    (`.ref`) are the reading's own log rows, already inside its `run` record,
+    and are dropped. `status_change` is carried by the `state` record the sync
+    journals instead, and `held_expired` by the road's `given_up` record when
+    the reading had one."""
+    records, kept = [], []
+    for entry in events:
+        if getattr(entry, "ref", None):
+            continue
+        try:
+            _sql, args = entry
+            _uid, ts, kind, lab_id, test_name, value, detail = list(args)[:7]
+        except (TypeError, ValueError):
+            kept.append(entry)
+            continue
+        try:
+            detail = json.loads(detail) if isinstance(detail, str) and detail \
+                else (detail or {})
+        except ValueError:
+            detail = {"text": detail}
+        if kind == "status_change":
+            continue
+        rec = {"kind": kind if kind in V2_EVENT_KINDS else
+               ("given_up" if kind == "held_expired" else kind),
+               "lab_id": str(lab_id or ""), "test_name": str(test_name or ""),
+               "value": "" if value is None else str(value),
+               "detail": detail if isinstance(detail, dict) else {"value": detail},
+               "event_ts": str(ts or "")}
+        records.append(rec)
+    return records, kept
+
+
+def v2_spec_set(machine: Machine) -> List[dict]:
+    """The effective specs as a `specs` record carries them (the columns of
+    `build_effective_specs_publish`, by name)."""
+    out = []
+    for spec in sorted(machine.tests or [], key=lambda s: s.name):
+        low, high = spec_band(spec)
+        out.append({"test_name": spec.name, "sample_id": spec.sample_id,
+                    "expected": float(spec.expected),
+                    "std_dev": float(spec.std_dev), "k": float(spec.k),
+                    "units": spec.units, "low": low, "high": high,
+                    "last_qc_at": spec.last_qc_at or None,
+                    "last_qc_value": spec.last_qc_value,
+                    "last_qc_in_spec": (None if spec.last_qc_in_spec is None
+                                        else int(spec.last_qc_in_spec)),
+                    "correction": float(spec.correction or 0.0)})
+    return out
+
+
+def v2_last_qc_rows(entries) -> List[dict]:
+    """The v2 config's `last_qc` (newest verdict per series, from LEM's
+    effective record) in the row shape `last_qc_by_test` reads — so a v2
+    bench recovers its QC memory from LEM instead of the LabCore read v3.9
+    made (a v2 bench's QC rows are no longer in LabCore to be read)."""
+    rows = []
+    for e in entries or ():
+        if not isinstance(e, dict) or not e.get("test_name"):
+            continue
+        in_spec = e.get("in_spec")
+        if not isinstance(in_spec, bool):
+            verdict = str(e.get("verdict") or "").upper()
+            in_spec = True if verdict == "PASS" else \
+                False if verdict == "FAIL" else None
+        rows.append({"test_name": e.get("test_name"), "lab_id": e.get("lab_id"),
+                     "ts": e.get("ts"), "value": e.get("value"),
+                     "detail": json.dumps({"in_spec": in_spec})})
+    return rows
+
+
 # ── what this module is ACTUALLY checking ──────────────────────────────────
 # The two QC tables LabCore already had are both *inputs*: `lem_qc_specs` is a
 # human's per-machine override, `lem_machine_targets` is what was assigned from
@@ -6868,6 +7237,9 @@ class LEMStationModule:
         self._live_url = ""
         self._live_token = ""
         self._live_checked = False
+        # Protocol v2's link to LEM (see `_v2_engage`); None until this bench
+        # has a token to prove itself with.
+        self._v2 = None
         self._live_failures = 0
         # Whether the LAST push came back SPEAKING THE NOTE PROTOCOL — which is
         # a different question from `_live_failures`, and the one the refresh
@@ -7275,6 +7647,14 @@ class LEMStationModule:
         # just READ from it — no point echoing it straight back.
         if publish:
             self._publish_config(machine)
+        # Where LEM listens and the shared token a first enrolment proves
+        # itself with: read ONCE, here at bind (§6.2's mixed-fleet allowance),
+        # so the first poll can already speak v2 and costs LabCore nothing.
+        # Kept apart from the live road's own state: the v1 push adopts it
+        # instead of reading `lem_meta` a second time, but nothing on today's
+        # road changes WHEN it learns the address (see `_live_config`).
+        if not self._live_checked and getattr(self, "_live_hint", None) is None:
+            _in_thread(self._read_live_hint, lambda _answer: None)
 
     def _refresh_card(self) -> None:
         machine = self._machine
@@ -7688,9 +8068,12 @@ class LEMStationModule:
         if counts is None:
             counts = self._journal_unprojected = {}
         lock = self._journal_lock_or_new()
+        v2 = self._v2_active()
         for row, ref in zip(rows, refs[lead:]):
             row[JOURNAL_KEY] = ref
-            args_list = logs.get(id(row), [])
+            # In v2 the record IS the delivery: its log rows ride the sync
+            # inside it, and LEM's ack marks it projected. Nothing to queue.
+            args_list = [] if v2 else logs.get(id(row), [])
             if args_list:
                 # Counted BEFORE queued: a drain on another worker that lands
                 # an entry the instant it is queued must find its count.
@@ -7901,6 +8284,374 @@ class LEMStationModule:
                 # read finds the cell as this poll left it: a re-decided
                 # reading, never a lost or doubled one.
                 pass
+
+    # ── Protocol v2 (§6): this bench's own world goes to LEM ─────────────────
+    #
+    # Four touch points, every one of them a place a LabCore op used to be:
+    #
+    #   top of the poll   `_v2_engage`: enrol once, handshake once; then the
+    #                     config (corrections, QC library, override, PM) comes
+    #                     from `GET /api/v2/bench/<uid>/config` when it is due
+    #                     or when a sync named a rev this bench has not applied
+    #   the sync step     status, specs and machine-log events become journal
+    #                     records (`state`, `specs`, `comment`, ...) instead of
+    #                     LabCore writes; the results road stays on LabCore
+    #   end of the sync   `_v2_sync`: ONE `POST .../sync` carries every record
+    #                     from acked+1 plus the live block — the heartbeat too
+    #   the pulse         a sync when one is due, never a LabCore heartbeat
+    #
+    # The journal is the custody throughout: a record is PROJECTED when LEM
+    # acks its seq, and nothing is ever re-sent to LabCore because LEM is dark.
+
+    def _v2_active(self) -> bool:
+        link = getattr(self, "_v2", None)
+        return link is not None and link.mode == "v2"
+
+    def _v2_link_for(self, machine, journal) -> Optional["V2Link"]:
+        """This bench's link to LEM, or None when it has nothing to prove who
+        it is with — no bench.key yet and no shared token from `lem_meta` or
+        the canvas. Such a bench makes no request at all (and behaves exactly
+        as v3.9 did)."""
+        uid = str(getattr(machine, "uid", "") or "")
+        link = getattr(self, "_v2", None)
+        if link is not None and link.uid == uid:
+            return link
+        try:
+            key = journal.read_bench_key()
+        except JournalError:
+            key = None
+        url, shared = self._v2_address()
+        if not key and not shared:
+            self._v2 = None
+            return None
+        link = V2Link(uid, v2_roads(url))
+        if journal.v2_handshaken():
+            # Once a v2 bench, always one until LEM says 404: a restart while
+            # LEM is dark must hold records in the journal, not send them to
+            # LabCore (§6.1 "never falls back").
+            link.mode = "v2"
+        self._v2 = link
+        return link
+
+    def _v2_engage(self, machine, now: datetime, messages: List[str]) -> bool:
+        """Top of every poll. True when this poll runs in v2 mode.
+
+        A bench that has never completed a handshake stays on today's road
+        (legacy projection) until one succeeds; once it has, LEM being dark is
+        a reason to hold records in the journal, never to write `lem_*` into
+        LabCore. Total: a raise here would strand the worker."""
+        self._v2_poll_now = now
+        try:
+            if machine is None or not str(machine.uid or "").strip():
+                return False
+            journal = self._journal_for(machine)
+            if journal is None:
+                return False         # the records live in the journal
+            link = self._v2_link_for(machine, journal)
+            if link is None:
+                return False
+            if link.mode != "v2":
+                if link.waiting(now):
+                    return False
+                if not self._v2_enrol(link, journal, now, messages):
+                    return False
+                if not self._v2_sync(machine, journal, now, None, messages):
+                    return False
+            if getattr(self, "_v2_config_stale", True) or self._config_due(now) \
+                    or self._corrections_due(now) or self._override_due(now):
+                if self._v2_config(machine) is not None:
+                    # One answer applies everything it carries, this poll:
+                    # the factor before the parse, the QC library, override
+                    # and PM in the sync step.
+                    self._corrections_read_at = None
+                    self._config_read_at = None
+                    self._override_read_at = None
+            return True
+        except Exception as exc:                          # noqa: BLE001
+            messages.append(f"LEM sync error: {exc}")
+            return self._v2_active()
+
+    def _v2_token(self, journal) -> Optional[str]:
+        try:
+            return journal.read_bench_key()
+        except JournalError:
+            return None
+
+    def _v2_enrol(self, link, journal, now, messages) -> bool:
+        """bench.key, or enrolment with the shared token (§6.4)."""
+        if self._v2_token(journal):
+            return True
+        answer = link.call(
+            "POST", V2_ENROLL_PATH.format(uid=urllib.parse.quote(link.uid, safe="")),
+            now, {"machine_uid": link.uid, "module_version": MODULE_VERSION,
+                  "enroll_key": link.enroll_key},
+            {"X-LEM-Token": str(self._v2_address()[1] or "")})
+        token = (answer.body or {}).get("token") if answer.status == 200 else None
+        if isinstance(token, str) and token.strip():
+            try:
+                journal.write_bench_key(token)
+            except JournalError as exc:
+                messages.append(f"LEM enrolled this bench but its key could "
+                                f"not be kept ({exc}); staying on LabCore.")
+                link.backoff(now)
+                return False
+            return True
+        if answer.status == 202:
+            link.mode = "pending"
+            link.retry_at = now + timedelta(seconds=V2_PENDING_REPROBE_SECONDS)
+            messages.append("LEM is waiting for a person to approve this bench "
+                            "(Settings › Transfer); until then it reports "
+                            "through LabCore as before.")
+            return False
+        if answer.status == 404:
+            self._v2_old_server(journal, now, messages)
+            return False
+        if answer.status == 0 or answer.status >= 500:
+            link.backoff(now, answer.retry_after)
+            return False
+        link.why = answer.why or f"HTTP {answer.status}"
+        link.retry_at = now + timedelta(seconds=V2_OLD_SERVER_REPROBE_SECONDS)
+        messages.append(f"LEM refused to enrol this bench ({link.why}).")
+        return False
+
+    def _v2_old_server(self, journal, now: datetime, messages) -> None:
+        """404: this server has no v2 (§6.1's ONLY fallback signal). Back to
+        legacy projection, re-probed every 15 minutes. Readings LEM never acked
+        go out to LabCore through the owed-row check, which asks LabCore what
+        already landed before it sends anything (no doubles)."""
+        link = self._v2
+        was_v2 = link is not None and link.mode == "v2"
+        if link is not None:
+            link.mode = "old_server"
+            link.healthy = False
+            link.retry_at = now + timedelta(seconds=V2_OLD_SERVER_REPROBE_SECONDS)
+        if journal is None or not was_v2:
+            return
+        try:
+            journal.forget_v2_handshake()
+        except JournalError:
+            pass
+        counts = getattr(self, "_journal_unprojected", None)
+        if counts is None:
+            counts = self._journal_unprojected = {}
+        owed = []
+        for run in journal.open_runs():
+            if run["projected"]:
+                continue
+            logs = [a for a in run["rec"].get("log") or () if isinstance(a, list)]
+            if logs:
+                owed.extend(_log_entry(args, run["ref"]) for args in logs)
+                counts[run["ref"]] = len(logs)
+        if owed:
+            self._journal_owed = list(getattr(self, "_journal_owed", None)
+                                      or []) + owed
+        messages.append("LEM answered 404 (an older server): this bench reports "
+                        "through LabCore again and asks LEM for v2 every 15 "
+                        "minutes.")
+
+    def _v2_config(self, machine) -> Optional[dict]:
+        """This bench's configuration from LEM, LabCore-shaped (see
+        `floor_config_results`), at most one GET per poll. None means no
+        answer — and in v2 the caller then keeps what it has; it never asks
+        LabCore instead."""
+        link = getattr(self, "_v2", None)
+        now = getattr(self, "_v2_poll_now", None) or datetime.now()
+        cached = getattr(self, "_v2_config_cache", None)
+        if cached is not None and cached[0] == now:
+            return cached[1]
+        result = None
+        journal = self._journal_for(machine)
+        token = self._v2_token(journal) if journal is not None else None
+        if link is not None and token and not link.waiting(now):
+            answer = link.call(
+                "GET", V2_CONFIG_PATH.format(
+                    uid=urllib.parse.quote(link.uid, safe="")), now, None,
+                {"X-LEM-Bench-Token": token})
+            if answer.status == 200 and answer.body is not None:
+                result = floor_config_results(answer.body, machine.uid)
+                if result is not None:
+                    result["last_qc"] = {"rows": v2_last_qc_rows(
+                        answer.body.get("last_qc"))}
+                    rev = answer.body.get("config_rev")
+                    link.applied_rev = rev if isinstance(rev, str) and rev else None
+                    link.config_rev = link.applied_rev
+                    link.confirmed_at = now if link.applied_rev else None
+                    self._v2_config_stale = False
+            elif answer.status == 404:
+                self._v2_old_server(journal, now, [])
+            elif answer.status == 0:
+                link.backoff(now, answer.retry_after)
+        self._v2_config_cache = (now, result)
+        return result
+
+    def _v2_journal(self, journal, records: List[dict], now: datetime,
+                    messages: List[str]) -> bool:
+        if not records:
+            return True
+        try:
+            journal.append(records, ts=_poll_ts(now))
+            return True
+        except JournalError as exc:
+            messages.append(f"Bench journal write failed ({exc}); this bench's "
+                            "status for LEM is retried next poll.")
+            return False
+
+    def _v2_journal_events(self, journal, now: datetime,
+                           messages: List[str]) -> None:
+        """The machine-log queue, as journal records (one fsync). A failed
+        write puts every entry back: the queue is the record until it lands."""
+        batch = []
+        while self._pending_events:
+            try:
+                batch.append(self._pending_events.popleft())
+            except IndexError:
+                break
+        if not batch:
+            return
+        records, kept = journal_events_as_records(batch)
+        if not self._v2_journal(journal, records, now, messages):
+            self._pending_events.extendleft(reversed(batch))
+            return
+        if kept:
+            self._pending_events.extendleft(reversed(kept))
+
+    def _v2_live_block(self, machine, evaluation, now: datetime) -> dict:
+        evaluation = evaluation or getattr(self, "_evaluation", None)
+        if evaluation is None:
+            return {"status": STATUS_UNKNOWN, "reason": "",
+                    "at": now.isoformat(),
+                    "interval_seconds": int(getattr(self, "_poll_seconds", 30) or 0)}
+        body = build_live_payload(machine, evaluation, now,
+                                  getattr(self, "_poll_seconds", 30),
+                                  getattr(self, "_v2_rows", None) or [])
+        body.pop("machine_uid", None)
+        return body
+
+    def _v2_sync(self, machine, journal, now: datetime, evaluation,
+                 messages: List[str]) -> bool:
+        """`POST /api/v2/bench/<uid>/sync`: every record from acked+1, the live
+        block, the stats. Adopts the `acked` of ANY 200 or 409 — even one
+        ahead of the bench's own (N3: the answer to an earlier sync was lost).
+        True when LEM answered 200 (the last round)."""
+        lock = getattr(self, "_v2_lock", None)
+        if lock is None:
+            lock = self._v2_lock = threading.RLock()
+        # One sync at a time per bench: the pulse and a poll could otherwise
+        # race two answers into `acked` out of order.
+        with lock:
+            return self._v2_sync_locked(machine, journal, now, evaluation,
+                                        messages)
+
+    def _v2_sync_locked(self, machine, journal, now: datetime, evaluation,
+                        messages: List[str]) -> bool:
+        link = getattr(self, "_v2", None)
+        token = self._v2_token(journal)
+        if link is None or not token:
+            return False
+        if link.mode == "v2" and link.waiting(now):
+            return False
+        path = V2_SYNC_PATH.format(uid=urllib.parse.quote(link.uid, safe=""))
+        with self._results_lock:
+            held = len(self._held_rows) + len(self._identity_backlog)
+        for _round in range(V2_SYNC_ROUNDS_PER_POLL):
+            try:
+                acked = journal.acked
+                records = journal.records_after(acked, V2_SYNC_MAX_RECORDS,
+                                                V2_SYNC_MAX_BYTES)
+                try:
+                    digest = journal.digest(acked)
+                except JournalError:
+                    digest = None          # pruned past it: say nothing
+            except JournalError as exc:
+                messages.append(f"The bench journal could not be read for LEM "
+                                f"({exc}); nothing was sent, retrying next poll.")
+                return False
+            last = journal.last_seq()
+            stats = {"unacked": max(0, last - acked), "records_total": last,
+                     "road": link.road or None, "held": held,
+                     "conflicts_open": len(journal.conflicts),
+                     "rejected": len(journal.rejected),
+                     "config_rev_applied": link.applied_rev}
+            if digest is not None:
+                stats["digest"] = digest
+                stats["digest_seq"] = acked
+            body = {"machine_uid": link.uid, "epoch": journal.epoch,
+                    "proto": V2_PROTO, "module_version": MODULE_VERSION,
+                    "from_seq": acked + 1, "records": records,
+                    "live": self._v2_live_block(machine, evaluation, now),
+                    "bench_clock": _local_ts(), "sources": [], "stats": stats}
+            answer = link.call("POST", path, now, body,
+                               {"X-LEM-Bench-Token": token})
+            got = (answer.body or {}).get("acked")
+            if answer.status in (200, 409) and isinstance(got, int) \
+                    and not isinstance(got, bool) and got >= 0:
+                durable = (answer.body or {}).get("durable")
+                try:
+                    journal.set_acked(got, durable if isinstance(durable, int)
+                                      and not isinstance(durable, bool) else None)
+                    journal.mark_projected_through(got)
+                except JournalError as exc:
+                    messages.append(f"LEM acked through seq {got} but the "
+                                    f"journal could not note it ({exc}); the "
+                                    "next sync re-sends and LEM keeps one.")
+                    return False
+                if answer.status == 409:
+                    continue               # LEM restored from a backup (T3)
+                link.answered(now)
+                if link.mode != "v2":
+                    link.mode = "v2"
+                    try:
+                        journal.note_v2_handshake()
+                    except JournalError:
+                        pass
+                    messages.append("This bench now reports to LEM (protocol "
+                                    "v2); LabCore carries its results only.")
+                if link.note_rev(answer.body.get("config_rev"), now):
+                    self._v2_config_stale = True
+                # `last` is what this round offered; the `projected` mark the
+                # ack just wrote rides the NEXT poll's sync rather than costing
+                # a second request now.
+                if not records or got >= last:
+                    return True
+                continue
+            if answer.status == 404:
+                self._v2_old_server(journal, now, messages)
+                return False
+            if answer.status == 401:
+                link.why = "LEM does not recognise this bench: re-enrol"
+                messages.append(f"{link.why}. Records stay in the journal.")
+            elif answer.status == 400:
+                link.why = answer.why or "LEM refused the sync as malformed"
+                messages.append(f"LEM refused this bench's sync ({link.why}); "
+                                "records stay in the journal.")
+            else:
+                link.why = answer.why or f"HTTP {answer.status}"
+            link.backoff(now, answer.retry_after)
+            return False
+        return True
+
+    def _v2_factor_confirmed(self, now: datetime) -> bool:
+        link = getattr(self, "_v2", None)
+        return link is not None and link.confirmed(now)
+
+    def _v2_hold_results(self, rows: List[dict], messages: List[str]) -> dict:
+        """D2: LEM has not confirmed this bench's correction factors within a
+        minute — both roads dark, or LEM's config not readable. The readings
+        are journaled already; they wait in the results backlog and file the
+        first poll LEM confirms. Never filed with a factor nobody confirmed."""
+        rows = [r for r in rows if isinstance(r, dict)]
+        with self._results_lock:
+            self._identity_backlog = list(self._identity_backlog) + rows
+            waiting = len(self._identity_backlog) + len(self._held_rows)
+        notice = (f"Holding {waiting} result(s): LEM has not confirmed this "
+                  "bench's correction factors in the last minute, so nothing is "
+                  "filed to LabCore until it does. Every reading is in the "
+                  "bench journal.") if waiting else ""
+        if notice:
+            messages.append(notice)
+        self._held_notice = notice
+        return {"identities": {}, "filed": [], "stored": True,
+                "notice": notice, "given_up": ""}
 
     # ── Ingestion (thread-safe half: no widget access) ────────────────────
 
@@ -8240,6 +8991,11 @@ class LEMStationModule:
         if floor is not None:
             answered, wanted = True, parse_correction_rows(
                 floor["corrections"]["rows"])
+        elif self._v2_active():
+            # v2 never reads LabCore for its own world (§6.3): no answer from
+            # LEM keeps the factor this bench holds, unstamped, and D2 holds
+            # the results until LEM confirms it.
+            return False
         else:
             answered, wanted = fetch_corrections(
                 machine.uid, globals().get("labcore_read_sql"))
@@ -8311,6 +9067,13 @@ class LEMStationModule:
         """
         if self._live_checked and self._live_failures < LIVE_RETRY_AFTER:
             return self._live_url, self._live_token
+        hint = getattr(self, "_live_hint", None)
+        if not self._live_checked and hint is not None:
+            # Read at bind; the same answer, not a second LabCore read.
+            self._live_hint = None
+            self._live_checked = True
+            self._live_url, self._live_token = hint
+            return self._live_url, self._live_token
         self._live_checked = True
         self._live_failures = 0
         read_sql = globals().get("labcore_read_sql")
@@ -8324,6 +9087,29 @@ class LEMStationModule:
             self._live_url, self._live_token = parse_live_config(
                 result.get("rows") or [])
         return self._live_url, self._live_token
+
+    def _read_live_hint(self) -> Optional[tuple]:
+        """`lem_meta`'s (url, token), read once at bind. None when LabCore
+        could not answer — then nothing is known, and the live road reads it
+        itself as it always has."""
+        read_sql = globals().get("labcore_read_sql")
+        if not callable(read_sql):
+            return None
+        try:
+            result = read_sql(*build_live_config_query())
+        except Exception:                                  # noqa: BLE001
+            return None
+        if not isinstance(result, dict) or result.get("error"):
+            return None
+        self._live_hint = parse_live_config(result.get("rows") or [])
+        return self._live_hint
+
+    def _v2_address(self) -> tuple:
+        """(url, shared token) for protocol v2: what the live road holds, else
+        what bind read from `lem_meta`."""
+        hint = getattr(self, "_live_hint", None) or ("", "")
+        return (getattr(self, "_live_url", "") or hint[0],
+                getattr(self, "_live_token", "") or hint[1])
 
     def _live_channel_healthy(self) -> bool:
         """Is the note channel actually delivering right now?
@@ -8353,6 +9139,10 @@ class LEMStationModule:
         re-reads, so the counter alone drops back under the threshold and would
         re-open the window on a floor that is still dead. See `_live_delivering`.
         """
+        if self._v2_active():
+            # Every sync names the config rev, so a change made in LEM reaches
+            # this bench within one poll while the sync is answering.
+            return bool(self._v2.healthy)
         return (bool(self._live_url)
                 and self._live_delivering
                 and self._live_failures < LIVE_RETRY_AFTER)
@@ -8393,6 +9183,8 @@ class LEMStationModule:
         DEPEND on that — the guarantee has to hold at the seam as well as
         inside it.
         """
+        if machine is not None and self._v2_active():
+            return self._v2_config(machine)
         if machine is None or not self._live_channel_healthy():
             return None
         try:
@@ -8442,6 +9234,8 @@ class LEMStationModule:
             evaluation = payload.get("evaluation")
             if machine is None or evaluation is None:
                 return
+            if self._v2_active():
+                return          # the live block rode this poll's v2 sync
             url, token = self._live_config()
             if not url:
                 return
@@ -8618,7 +9412,13 @@ class LEMStationModule:
         # a floor too old to speak the note protocol all leave the flag exactly
         # as it was, and the reads below fall back to LabCore precisely as they
         # do today. See `_probe_live_channel`.
-        self._probe_live_channel(machine)
+        # Protocol v2 first (§6): enrol and handshake once, and read this
+        # bench's configuration from LEM when it is due, so the corrections
+        # step below takes its factor from LEM and nothing on this poll asks
+        # LabCore for the bench's own world.
+        self._v2_rows = []
+        if not self._v2_engage(machine, now, messages):
+            self._probe_live_channel(machine)
 
         # Before anything is parsed: the factor applied to a measurement must be the
         # one in force when it was made. Moved here from the LabCore sync (which runs
@@ -9492,9 +10292,12 @@ class LEMStationModule:
             # Named, not counted: "1 reading(s)" tells an operator nothing they
             # can act on, and this is the last time anybody hears about it.
             for row in expired:
-                self._log_event("held_expired",
-                                lab_id=str(row.get(LAB_ID_KEY) or "").strip(),
-                                detail=run_log_detail(row), now=now)
+                # In v2 the `given_up` record below IS the held_expired row in
+                # LEM's log; queuing the event too would write it twice.
+                if not (row.get(JOURNAL_KEY) and self._v2_active()):
+                    self._log_event("held_expired",
+                                    lab_id=str(row.get(LAB_ID_KEY) or "").strip(),
+                                    detail=run_log_detail(row), now=now)
                 # The journal's own record of the decision: no sample in seven
                 # days. It reaches the LEM store as a `held_expired` row.
                 if row.get(JOURNAL_KEY):
@@ -10285,6 +11088,11 @@ class LEMStationModule:
         """
         if self._held_restored or machine is None:
             return
+        if self._v2_active():
+            # The journal is this bench's custody; v2 never reads the
+            # LabCore mirror (§6.3).
+            self._held_restored = True
+            return
         try:
             result = read_sql(HELD_QUERY, [machine.uid])
         except Exception:
@@ -10370,6 +11178,8 @@ class LEMStationModule:
         """
         if machine is None or not callable(run_sql) or not self._held_restored:
             return
+        if self._v2_active():
+            return       # v2: the journal is the custody, never a LabCore row
         with self._results_lock:
             rows = list(self._held_rows if rows is None else rows)
             rows, evicted = cap_held_rows(rows)
@@ -10703,6 +11513,16 @@ class LEMStationModule:
         is_running = globals().get("labcore_is_running")
         if callable(is_running) and not is_running():
             messages.append("LabCore not reachable — data kept locally.")
+            if store and self._v2_active():
+                # LEM does not need LabCore: the readings, status and
+                # heartbeat still go to LEM this poll.
+                journal = self._journal_for(machine)
+                if journal is not None:
+                    self._v2_journal_events(journal, now, messages)
+                    self._v2_rows = rows
+                    if self._v2_sync(machine, journal, now, evaluation,
+                                     messages):
+                        self._last_heartbeat = now
             # "Locally" used to mean the history list and nothing else, so a
             # LabCore that was down for one poll cost every print in it. The
             # readings are parked instead and join the held queue on the poll
@@ -10716,14 +11536,29 @@ class LEMStationModule:
             if store:
                 self._last_storage = self._parked_storage(kept)
             return evaluation
+        # Protocol v2 (§6.3): this bench's own world — heartbeat, status,
+        # specs, the machine log, its configuration — goes to LEM, and LabCore
+        # carries the results road only. Every LabCore read of the bench's
+        # world below goes through `lc_read`, which in v2 is an answer of "not
+        # asked" (an error, so nothing is stamped as read) rather than a call.
+        v2 = self._v2_active()
+        journal = self._journal_for(machine) if v2 else None
+        if v2 and journal is None:
+            v2 = False
+
+        def not_asked(*_a, **_k):
+            return {"error": "v2: LabCore is not asked for this bench's own "
+                             "world; LEM did not answer this poll"}
+        lc_read = not_asked if v2 else read_sql
         try:
-            self._declare_tables(run_sql, now)
+            if not v2:
+                self._declare_tables(run_sql, now)
 
             # Prove the module is alive even when the bench is quiet. One gate,
             # shared with the pulse timer through `_last_heartbeat`, so however
             # many roads want to check in the bench emits at most one beat per
             # HEARTBEAT_SECONDS — see `_send_pulse`.
-            if self._heartbeat_due(now):
+            if not v2 and self._heartbeat_due(now):
                 sql, args = build_heartbeat_upsert(machine, now, polling=True)
                 # Only a beat LabCore ACCEPTED closes the window. Marking the
                 # gate on a refusal made one busy moment cost the whole
@@ -10771,13 +11606,13 @@ class LEMStationModule:
                      if (config_due or override_due) else None)
 
             samples_result = ((floor["qc_samples"] if floor
-                               else read_sql(QC_SAMPLES_QUERY))
+                               else lc_read(QC_SAMPLES_QUERY))
                               if config_due else {})
             if config_due and not samples_result.get("error"):
                 answered.append(True)
                 got_qc_config = True
                 targets_result = (floor["targets"] if floor else
-                                  read_sql(QC_TARGETS_QUERY, [machine.uid]))
+                                  lc_read(QC_TARGETS_QUERY, [machine.uid]))
                 answered.append(not targets_result.get("error"))
                 targets = [] if targets_result.get("error") else [
                     {"sample": r.get("sample_name"), "test": r.get("test_name")}
@@ -10789,7 +11624,7 @@ class LEMStationModule:
                 answered.append(False)
 
             specs_result = ((floor["qc_specs"] if floor
-                             else read_sql(QC_SPECS_QUERY))
+                             else lc_read(QC_SPECS_QUERY))
                             if config_due else {})
             if config_due:
                 answered.append(not specs_result.get("error"))
@@ -10834,7 +11669,13 @@ class LEMStationModule:
             # pristine code's worst case was two hundred records. Nothing about
             # that click is waiting on these records and the next poll takes
             # them.
-            if store:
+            if store and v2:
+                # The journal already holds every reading's record; what LEM
+                # has not acked goes in this poll's sync. Owed rows a previous
+                # process left are the same records — nothing to re-check.
+                self._journal_owed = []
+                self._v2_journal_events(journal, now, messages)
+            elif store:
                 self._journal_verify_owed(machine, read_sql, messages)
                 self._drain_events(run_sql, messages)
 
@@ -10851,7 +11692,9 @@ class LEMStationModule:
             # going to log in, and the operator was told so. On a `manual` bench
             # every row IS a QC reading, so every restart began by holding the
             # whole poll and saying the readings were unmatched.
-            if store:
+            if store and v2 and not self._v2_factor_confirmed(now):
+                self._last_storage = self._v2_hold_results(rows, messages)
+            elif store:
                 self._last_storage = self._store_results(
                     machine, rows, read_sql, run_sql, write, messages, now)
 
@@ -10865,7 +11708,9 @@ class LEMStationModule:
             # congestion being reported — 50 a minute across ten benches — and
             # it contradicts the backoff the refusal path exists to honour.
             # These records go out on the next poll with everything else.
-            if store and self._log_road_open:
+            if store and v2:
+                self._v2_journal_events(journal, now, messages)
+            elif store and self._log_road_open:
                 self._drain_events(run_sql, messages)
 
             # Read this machine's own QC verdicts back, so a LabStation restart
@@ -10900,7 +11745,8 @@ class LEMStationModule:
                        if not s.last_qc_at and s.name not in self._qc_tried]
             if pending:
                 sql, args = build_last_qc_query(machine.uid)
-                past = read_sql(sql, args)
+                past = (floor["last_qc"] if v2 and floor and "last_qc" in floor
+                        else lc_read(sql, args))
                 if not past.get("error"):
                     self._qc_tried.update(pending)
                     self._qc_memory.update(last_qc_by_test(past.get("rows") or []))
@@ -10918,7 +11764,13 @@ class LEMStationModule:
             # Publish what we are actually checking, so the floor can draw the
             # band instead of saying "No QC assigned" about a live instrument.
             fingerprint = effective_specs_fingerprint(machine)
-            if fingerprint != self._published_specs:
+            if fingerprint != self._published_specs and v2:
+                # One `specs` record: LEM replaces the set whole (§7).
+                if self._v2_journal(journal, [{"kind": "specs", "specs":
+                                               v2_spec_set(machine)}],
+                                    now, messages):
+                    self._published_specs = fingerprint
+            elif fingerprint != self._published_specs:
                 ok = run_sql is not None
                 if ok:
                     for sql, args in build_effective_specs_publish(machine, now):
@@ -10933,7 +11785,7 @@ class LEMStationModule:
                     self._published_specs = fingerprint
 
             maint = ((floor["maint"] if floor
-                      else read_sql(MAINTENANCE_QUERY, [machine.uid]))
+                      else lc_read(MAINTENANCE_QUERY, [machine.uid]))
                      if config_due else {})
             if config_due:
                 answered.append(not maint.get("error"))
@@ -10976,8 +11828,8 @@ class LEMStationModule:
                 # `config_due`, so the two questions are asked before the floor
                 # is, and one answer serves both.
                 control = (floor["override"] if floor else
-                           read_sql("SELECT machine_uid, manual_override "
-                                    "FROM lem_machine_control"))
+                           lc_read("SELECT machine_uid, manual_override "
+                                   "FROM lem_machine_control"))
                 if not control.get("error"):
                     # Stamped only on an ANSWER. A busy LabCore replies with an
                     # error DICT rather than raising, and stamping that would
@@ -10996,7 +11848,20 @@ class LEMStationModule:
             # sync ticks must not hammer LabCore's write queue.
             snapshot = (machine.uid, evaluation.status, evaluation.reason,
                         tuple(sorted((evaluation.sub_statuses or {}).items())))
-            if snapshot != self._last_status_pushed:
+            if snapshot != self._last_status_pushed and v2:
+                previous = self._last_status_pushed
+                sub = evaluation.sub_statuses or {}
+                if self._v2_journal(journal, [{
+                        "kind": "state", "status": evaluation.status,
+                        "reason": evaluation.reason or "",
+                        "from": previous[1] if previous else "",
+                        "sub": {"qc": sub.get("qc", STATUS_UNKNOWN),
+                                "pm": sub.get("pm", STATUS_UNKNOWN),
+                                "calibration": sub.get("calibration",
+                                                       STATUS_UNKNOWN)}}],
+                        now, messages):
+                    self._last_status_pushed = snapshot
+            elif snapshot != self._last_status_pushed:
                 sql, args = build_status_upsert(machine, evaluation, now)
                 refused = refusal_reason(run_sql(sql, args,
                                                  source="LEM Station"))
@@ -11022,6 +11887,13 @@ class LEMStationModule:
                         f"LabCore refused the status write ({refused}); "
                         "the floor still shows the previous status and this "
                         "retries on the next poll.")
+            if v2 and store:
+                # ONE sync per poll, last: it carries this poll's readings,
+                # the road's decisions, status and specs — and is the
+                # heartbeat. LEM dark: it all waits in the journal.
+                self._v2_rows = rows
+                if self._v2_sync(machine, journal, now, evaluation, messages):
+                    self._last_heartbeat = now
         except Exception as exc:  # sync must never break local operation
             messages.append(f"LabCore sync error: {exc}")
         return evaluation
@@ -11191,6 +12063,17 @@ class LEMStationModule:
         _in_thread(self._flush_events_worker, done)
 
     def _flush_events_worker(self) -> Optional[str]:
+        if self._v2_active():
+            # An operator's note, override or PM: journaled, then sent to LEM.
+            machine = self._machine
+            journal = self._journal_for(machine) if machine is not None else None
+            if journal is None:
+                return None
+            messages: List[str] = []
+            now = datetime.now()
+            self._v2_journal_events(journal, now, messages)
+            self._v2_sync(machine, journal, now, None, messages)
+            return None
         run_sql = globals().get("labcore_sql")
         if not callable(run_sql):
             return None
@@ -11913,6 +12796,25 @@ class LEMStationModule:
             return
         polling = self._polling
         now = now or datetime.now()
+        if self._v2_active():
+            # v2: the heartbeat is a sync, and LabCore is not asked whether
+            # the config still exists — only LEM's explicit "retired" answer
+            # could ever say so (§6.6), never an outage.
+            if not self._heartbeat_due(now):
+                return
+
+            def beat():
+                journal = self._journal_for(machine)
+                if journal is not None and self._v2_sync(machine, journal, now,
+                                                         None, []):
+                    return now
+                return None
+
+            def beaten(sent):
+                if sent is not None:
+                    self._last_heartbeat = sent
+            _in_thread(beat, beaten)
+            return
         if not self._heartbeat_due(now):
             # Somebody has already checked in for this bench inside the window.
             # Still worth the tick for the config check below, which costs a

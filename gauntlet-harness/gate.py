@@ -34,6 +34,7 @@ verdict. On --target v4, the v3.9 drift check runs first, in a subprocess,
 because one process cannot import two versions of the module.
 """
 import argparse
+import functools
 import json
 import os
 import subprocess
@@ -127,6 +128,12 @@ def run(args):
     import web_app
     _create_app = web_app.create_app
 
+    # `functools.wraps`, because servers.py reads the factory's SIGNATURE to
+    # tell a v4 server (`create_app(store, labcore=...)`) from v3.9's. A bare
+    # `*a, **k` wrapper hid `labcore`, so every v4 target was built in the
+    # v3.9 shape — LabCore as its store — and any bench that called it got a
+    # server with no store at all.
+    @functools.wraps(_create_app)
     def create_app(*a, **k):
         k.setdefault("documents_root", os.path.join(tmp_root, "data", "documents"))
         return _create_app(*a, **k)
