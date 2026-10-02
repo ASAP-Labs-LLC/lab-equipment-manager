@@ -186,8 +186,12 @@ class TestModuleLabCoreSync:
         ops = batches[0][1]["operations"]
         assert [op["operation"] for op in ops] == ["update_cell"], (
             "LEM must emit update_cell and nothing else — no invented samples")
+        # `expect` is what the guard read found in the cell (empty here) and
+        # `source` names the bench in LabCore's result history (transfer v4
+        # §8.3); LabCore ignores the one and stores the other.
         assert ops[0]["params"] == {"lab_id": "QC1", "test_name": "RON",
-                                    "value": "91.2"}
+                                    "value": "91.2", "expect": "",
+                                    "source": "LEM Station:m1"}
         assert batches[0][2] == "LEM Station"
         m.shutdown()
 

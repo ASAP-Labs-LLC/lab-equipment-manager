@@ -312,6 +312,9 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         t["failing_cell_sends"] = sum(n for (l, tn, v), n in c.gw.cell_sends.items()
                                       if l == bad and tn == "Density")
         t["failing_cell_errors"] = c.gw.per_index_errors[(bad, "Density")]
+        # "0 filed for that cell" (§9.2) as the bench's own record says it,
+        # not only as the empty cell implies it.
+        t["failing_cell_filed"] = c.filed_cells(bad)
         return t
 
     # ── economy (§9.2 E0–E3; phase 1's run_economy.py, re-run here) ─────────
@@ -336,8 +339,16 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         r = economy("single_csv", 1)
         idle = economy("single_csv", 0)
         polls = r["steady_polls"]
+        # The results road's own share, by category: the identity/guard read
+        # (`read:identity` — it reads "samples"), the key lookup on
+        # sample_tests for a cached sample, and the batch. The rest of
+        # "extra" is the machine-log row, which v2 mode sends to LEM (P8).
+        road = sum(n for cat, n in r["steady_by_cat"].items()
+                   if cat == "read:identity" or cat == "write:batch"
+                   or (cat.startswith("read:") and "SAMPLE_TESTS" in cat.upper()))
         return {"labcore_ops_per_filing_poll": round(r["steady_ops"] / polls, 4),
                 "extra_ops_per_filing_poll": round((r["steady_ops"] - idle["steady_ops"]) / polls, 4),
+                "results_road_ops_per_filing_poll": round(road / polls, 4),
                 "v2_syncs": r["v2_syncs"]}
 
     @new("E2")
@@ -558,5 +569,6 @@ def _economy_run(GateGateway, server_factory, mod, lh, source_type, prints, road
             "steady_split_per_min": {k: round(v / steady_min, 3) for k, v in split(steady).items()},
             "prints": n, "log_rows": sum(gw.log_runs().values()),
             "steady_ops": sum(steady.values()),
+            "steady_by_cat": dict(steady),
             "steady_polls": steps - int(warm_minutes * 60 / POLL),
             "v2_syncs": server.v2_syncs()}

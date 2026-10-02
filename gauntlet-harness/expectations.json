@@ -1981,9 +1981,11 @@
    },
    "v4": {
     "res_lost": 1,
-    "failing_cell_sends": 3
+    "failing_cell_sends": 3,
+    "rejected": 1,
+    "failing_cell_filed": 0
    },
-   "v4_spec": "0 filed for that cell; parked after 3 tries; visible"
+   "v4_spec": "0 filed for that cell; parked after 3 tries; visible (1 rejected record)"
   },
   "E0": {
    "v3.9_source": "measured by this harness on v3.9.0 (no phase-1 number)",
@@ -2013,6 +2015,9 @@
     },
     "v2_syncs": {
      "ge": 1
+    },
+    "results_road_ops_per_filing_poll": {
+     "le": 2
     }
    },
    "v4_spec": "≤ 2 LabCore ops per filing poll, v2 mode (today +3)"
