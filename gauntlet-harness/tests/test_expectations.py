@@ -34,7 +34,7 @@ ROUND_2 = ["CF2r", "N404", "N503"]
 ROUND_3 = ["T2L", "CF2u"]
 # T-P5: K6 and A1 re-run on the legacy road — module v4 ships first on
 # today's server (D8), so the two restart faults must end there too.
-LEGACY_PROJECTION = ["K6L", "A1L", "M6r"]
+LEGACY_PROJECTION = ["K6L", "A1L", "M6r", "DG2C", "M5R"]
 
 BASELINE_19 = set("K1 K2 K3 K4 K5 K6 K7 K8 K9 N3 N4 F3 F4 F5 R2 R3 R4 R5 R6".split())
 

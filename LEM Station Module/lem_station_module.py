@@ -8465,6 +8465,9 @@ class LEMStationModule:
         # {journal ref: log rows of that reading still to land}; at zero the
         # reading is marked PROJECTED.
         self._journal_unprojected: dict = {}
+        # Refs whose log rows are ON the queue right now (pending, owed, or a
+        # batch in flight) — at most once each (`_queue_once`).
+        self._queued_refs: set = set()
         # Refs a cap threw out of the results road this process: NOT settled.
         self._journal_dropped: set = set()
         # Frames a previous process journaled and no poll consumed.
@@ -9127,11 +9130,11 @@ class LEMStationModule:
             rec, ref = run["rec"], run["ref"]
             if not run["projected"]:
                 logs = [a for a in rec.get("log") or () if isinstance(a, list)]
-                if logs:
+                if not logs:
+                    no_logs.append(ref)
+                elif not _v2(self) and self._queue_once(ref):
                     entries.extend(_log_entry(args, ref) for args in logs)
                     counts[ref] = len(logs)
-                else:
-                    no_logs.append(ref)
             if not run["settled"]:
                 row = rec.get("row")
                 if rec.get("origin") == "recovered":
@@ -9293,6 +9296,8 @@ class LEMStationModule:
                 # an entry the instant it is queued must find its count.
                 with lock:
                     counts[ref] = len(args_list)
+            if args_list and not self._queue_once(ref):
+                continue
             for args in args_list:
                 if len(self._pending_events) >= LOG_EVENT_LIMIT:
                     # Refused, as `_log_event` refuses — but kept: the count
@@ -9340,6 +9345,9 @@ class LEMStationModule:
                 if counts[ref] <= 0:
                     del counts[ref]
                     done.append(ref)
+                    queued = getattr(self, "_queued_refs", None)
+                    if queued:
+                        queued.discard(ref)
                     events = getattr(self, "_proj_events", None)
                     if events:
                         events.discard(ref)
@@ -9588,7 +9596,7 @@ class LEMStationModule:
             if run["projected"]:
                 continue
             logs = [a for a in run["rec"].get("log") or () if isinstance(a, list)]
-            if logs:
+            if logs and self._queue_once(run["ref"]):
                 entries.extend(_log_entry(args, run["ref"]) for args in logs)
                 counts[run["ref"]] = len(logs)
         if entries:
@@ -9622,9 +9630,19 @@ class LEMStationModule:
     #: records, which the legacy road re-derives or handles below. A `state`
     #: record IS projected: it is the status change the v4 server would have
     #: written into the log, and the floor's history needs it.
+    #:
+    #: Nor are the results road's decisions and the journal's own marks —
+    #: `filed`, `conflict`, `rejected` (what became of a reading's cells),
+    #: `settled` and `projected` (marks over other records) — nor `adoption`
+    #: (a source taken over at the first v4 start). v3.9 never wrote a log
+    #: row for any of them, and projected they showed on the floor's history
+    #: as machine events (critic round 2: M5 left 3 `filed` and 1 `settled`
+    #: row in LabCore). A `given_up` decision IS an event: it is the
+    #: held_expired row v3.9 wrote.
     _V2_NOT_EVENTS = frozenset({
         "run", "frame", "consumed", "known", "specs", "config",
-        "periodic", "rotation_overlap", "no_snapshot", "ambiguity"})
+        "periodic", "rotation_overlap", "no_snapshot", "ambiguity",
+        "filed", "settled", "conflict", "rejected", "projected", "adoption"})
 
     @staticmethod
     def _record_rows(uid: str, rec: dict) -> List[list]:
@@ -14552,6 +14570,32 @@ class LEMStationModule:
             self._legacy_owe_event(ref, [args])
         return True
 
+    def _queue_once(self, ref: str) -> bool:
+        """Claim `ref`'s place on the machine-log queue: True if its rows are
+        not on it already (the caller then queues them), False if they are.
+
+        THE QUEUE HOLDS EACH RECORD'S ROWS AT MOST ONCE. The exact key stops
+        a row sent AGAIN — in a later statement, where NOT EXISTS sees the
+        first copy — and by design not a row sent TWICE in one statement:
+        rows inside one INSERT ... SELECT do not see each other, which is
+        what lets two genuine prints of one sample both land (L2). So a
+        record offered twice in one process — the restart walk
+        (`_journal_recover_once`) and a fall-back (`_v2_fell_back`), or a
+        second fall-back before the first drained — must not be queued
+        twice, or the first drain lands it twice (critic round 2: a bench
+        restarted during a rollback wrote its DG2 verdict, its status
+        changes and an unacked note twice). The claim is released when the
+        record's last row lands (`_journal_landed`); a refused or failed
+        batch goes back on the queue and keeps it."""
+        queued = getattr(self, "_queued_refs", None)
+        if queued is None:
+            queued = self._queued_refs = set()
+        with self._journal_lock_or_new():
+            if ref in queued:
+                return False
+            queued.add(ref)
+            return True
+
     def _legacy_owe_event(self, ref: str, rows: list, front: bool = False
                           ) -> None:
         """Queue an event record's rows for LabCore, keyed by its ref, and
@@ -14563,9 +14607,13 @@ class LEMStationModule:
         owed = getattr(self, "_proj_events", None)
         if owed is None:
             owed = self._proj_events = set()
+        if not self._queue_once(ref):
+            # Already on the queue (or in flight): offered again by a second
+            # walk in this process — the restart's and the fall-back's, say.
+            # Queued twice, both copies went out in ONE keyed statement, whose
+            # rows do not see each other, and both landed.
+            return
         entries = [_log_entry(args, ref) for args in rows]
-        # Set, not added to: a record re-queued (a restart, a second
-        # fall-back) is owed its rows once, however often it is offered.
         counts[ref] = len(entries)
         owed.add(ref)
         if front:

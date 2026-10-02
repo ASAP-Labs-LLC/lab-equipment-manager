@@ -2619,9 +2619,24 @@
     "lost": 0,
     "effective_dup": 0,
     "went_legacy": true,
+    "back_on_v2": true,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0
+   },
+   "v4_spec": "0 lost; 0 effective dup across every hand-over; LabCore holds no row twice and no journal bookkeeping (filed, settled, ...) as a machine event"
+  },
+  "M5R": {
+   "v3.9_source": "none: the scenario is a v4 bench rolled back with a v4 server (v3.9 has no rollback to measure)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "effective_dup": 0,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0,
+    "went_legacy": true,
     "back_on_v2": true
    },
-   "v4_spec": "0 lost; 0 effective dup across every hand-over"
+   "v4_spec": "M5 with LabStation restarted mid-rollback (T-P5 round 2): the restart walk and the fall-back offer the same records in one process; 0 lost, 0 effective dup in the store, 0 exact-duplicate and 0 bookkeeping rows in LabCore"
   },
   "M6": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2668,9 +2683,29 @@
      "ge": 1
     },
     "runs_copied_back": 0,
+    "back_on_v2": true,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0
+   },
+   "v4_spec": "v3.9 floor gets the last 24 h of qc/state through projection; 0 dup on re-upgrade; LabCore holds every copied row once and no journal bookkeeping row"
+  },
+  "DG2C": {
+   "v3.9_source": "none: the scenario needs a v4 server rolled back (v3.9 has no rollback to measure)",
+   "v3.9": null,
+   "v4": {
+    "dup_on_reupgrade": 0,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0,
+    "qc_copied_back": {
+     "ge": 1
+    },
+    "state_copied_back": {
+     "ge": 1
+    },
+    "runs_copied_back": 0,
     "back_on_v2": true
    },
-   "v4_spec": "v3.9 floor gets the last 24 h of qc/state through projection; 0 dup on re-upgrade"
+   "v4_spec": "DG2 with LabStation restarted while the server answers 404 (T-P5 round 2: the critic's DG2C, 3 doubled rows): the last 24 h of qc/state copied back once each — 0 exact-duplicate and 0 bookkeeping rows in LabCore, 0 dup on re-upgrade"
   },
   "W1": {
    "v3.9_source": "baseline/web.json (phase 1, v3.9.0), verbatim",

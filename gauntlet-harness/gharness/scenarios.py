@@ -512,6 +512,22 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
             _unsupported("DG2", "a LEM store (P6) and its bridge (P9)")
         return _lp.dg2(W, rf, mod)
 
+    # The same two rollbacks with LabStation restarted while the server
+    # answers 404 (critic, T-P5 round 2): the restart's walk and the
+    # fall-back offered the same records in one process, both copies went
+    # out in one keyed statement, and LabCore held them twice.
+    @new("DG2C")
+    def dg2c():
+        if not _has_store():
+            _unsupported("DG2C", "a LEM store (P6) and its bridge (P9)")
+        return _lp.dg2(W, rf, mod, restart=True)
+
+    @new("M5R")
+    def m5r():
+        if not _has_store():
+            _unsupported("M5R", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m5(W, rf, mod, restart=True)
+
     # ── roads (§6.2) ────────────────────────────────────────────────────────
     v2_target = hasattr(mod, "BenchUploader")
 

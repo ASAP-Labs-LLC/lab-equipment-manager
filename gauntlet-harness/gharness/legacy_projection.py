@@ -19,6 +19,16 @@
        (the v3.9 floor's only source), and on the re-upgrade the bridge
        recognises every one of them by `detail.jk` — 0 doubled.
 
+  DG2C DG2 with LabStation restarted WHILE the server answers 404 — the
+       restart's walk and the fall-back both offer the same records in one
+       process (critic, round 2: 3 doubled rows in LabCore).
+  M5R  M5 with the same restart mid-rollback.
+
+Every rollback scenario also counts LabCore itself — the v3.9 floor's only
+record — by exact duplicate row and by bookkeeping kind (`filed`, `settled`,
+... are the journal's notes to itself, never machine events): the store
+tally alone cannot see a doubled or a bogus row on the old floor.
+
 Each needs the target's bridge and import tool (P9) for the v4 server's
 side; `Unsupported` otherwise.
 """
@@ -101,6 +111,38 @@ def _labcore_rows(c, kind):
             return []
         raise RuntimeError("ground-truth read failed: " + res["error"])
     return res["rows"]
+
+
+#: Journal kinds that are the bench's bookkeeping, not machine events: none
+#: may ever be a lem_machine_log row (v3.9 wrote none of them).
+BOOKKEEPING_KINDS = ("filed", "settled", "conflict", "rejected", "projected",
+                     "adoption", "frame", "consumed", "known", "specs",
+                     "periodic", "rotation_overlap", "no_snapshot", "ambiguity")
+
+
+def _labcore_all(c):
+    res = c.gw.fake.read_sql("SELECT * FROM lem_machine_log WHERE machine_uid "
+                             "= ? ORDER BY rowid", [c.uid])
+    if res.get("error"):
+        if "no such table" in res["error"]:
+            return []
+        raise RuntimeError("ground-truth read failed: " + res["error"])
+    return res["rows"]
+
+
+def labcore_audit(c):
+    """LabCore's log as the v3.9 floor reads it: rows held more than once
+    (exactly the same row — every projected row names its record, so two
+    copies of one are never two genuine events), and rows of the journal's
+    own bookkeeping kinds."""
+    rows = _labcore_all(c)
+    seen = Counter((r["ts"], r["kind"], r["lab_id"], r["test_name"],
+                    r["value"], r["detail"]) for r in rows)
+    kinds = Counter(r["kind"] for r in rows)
+    return {"labcore_exact_dup": sum(n - 1 for n in seen.values() if n > 1),
+            "labcore_bookkeeping_rows": sum(kinds[k] for k in
+                                            BOOKKEEPING_KINDS),
+            "labcore_kinds": dict(sorted(kinds.items()))}
 
 
 def _jk(row):
@@ -193,7 +235,7 @@ def m6r(W, rf, mod):
             "printed": t["printed"]}
 
 
-def m5(W, rf, mod):
+def m5(W, rf, mod, restart=False):
     _need_bridge()
     c = W()
     store = _verified_store(c)
@@ -201,21 +243,30 @@ def m5(W, rf, mod):
         c.emit(3); c.poll()
     synced = c.server.v2_syncs()
     c.server.set_roads("404")                                    # rollback
-    c.emit(3); c.poll()
+    c.emit(3)
+    if restart:
+        # LabStation closed and reopened mid-rollback, before any poll took
+        # the old road: the new process hears the 404, falls back AND runs
+        # its restart walk over the same journal.
+        c.restart()
+    c.poll()
     c.emit(2)
     c.gw.plan = rf.nth("sql:machine_log", 1, "raise_after")     # N3 on it
     c.poll()
     c.poll()
     went_legacy = c.m._transfer.mode == "legacy"
     projected = len([r for r in _labcore_rows(c, "run") if _jk(r)])
+    audit = labcore_audit(c)
     c.server.set_roads("up")                                     # re-upgrade
     for _ in range(REPROBE_POLLS):
         c.poll()
     c.emit(2); c.poll()
     _pull_all(store, c)
     c.poll()
-    t = c.tally("M5 single_csv", "v4 server rolled back to v3.9, then v4")
-    return {"lost": t["lost"], "effective_dup": t["dup"],
+    t = c.tally("M5R single_csv" if restart else "M5 single_csv",
+                "v4 server rolled back to v3.9, then v4"
+                + (" (LabStation restarted mid-rollback)" if restart else ""))
+    return {"lost": t["lost"], "effective_dup": t["dup"], **audit,
             "went_legacy": went_legacy, "back_on_v2":
                 c.m._transfer.mode == "v2",
             "labcore_rows_projected_in_rollback": projected,
@@ -223,7 +274,7 @@ def m5(W, rf, mod):
             "printed": t["printed"]}
 
 
-def dg2(W, rf, mod):
+def dg2(W, rf, mod, restart=False):
     _need_bridge()
     c = W()
     store = _verified_store(c)
@@ -238,8 +289,13 @@ def dg2(W, rf, mod):
     c.emit(1); c.poll()
     store_qc_before = _store_count(store, c.uid, "qc")
     c.server.set_roads("404")                                    # rollback
+    if restart:
+        # Restarted while the server answers 404, before the back-fill
+        # landed: restore_state -> 404 -> fall-back, AND the restart walk.
+        c.restart()
     c.poll()
     c.poll()
+    audit = labcore_audit(c)
     qc_back = [r for r in _labcore_rows(c, "qc") if _jk(r)]
     state_back = [r for r in _labcore_rows(c, "status_change") if _jk(r)]
     runs_back = [r for r in _labcore_rows(c, "run") if _jk(r)]
@@ -257,7 +313,7 @@ def dg2(W, rf, mod):
     qc = _store_rows(store, c.uid, "qc")
     states = _store_rows(store, c.uid, "status_change")
     dup = _dups(qc) + _dups(states)
-    return {"dup_on_reupgrade": dup,
+    return {"dup_on_reupgrade": dup, **audit,
             "qc_copied_back": len(qc_back), "state_copied_back": len(state_back),
             "runs_copied_back": len(runs_back),
             "qc_rows_after_second_fallback": qc_again,

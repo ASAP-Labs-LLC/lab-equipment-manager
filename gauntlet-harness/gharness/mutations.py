@@ -228,6 +228,24 @@ MUTATIONS = {
         "pattern": r"if due <= 0:\n(\s*)return 0",
         "replace": r"if True:\n\1return 0",
         "what": "a rollback does not copy the last 24 h of QC and status back"},
+    # The queue's once-per-record claim off: a record offered by both the
+    # restart walk and the fall-back is queued twice, and both copies go out
+    # in ONE keyed statement, whose rows do not see each other (DG2C, M5R
+    # must go red: LabCore holds rows twice).
+    "queue_once_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"if ref in queued:\n(\s*)return False",
+        "replace": r"if False:\n\1return False",
+        "what": "a record offered twice is queued twice (DG2C/M5R LabCore dup)"},
+    # The journal's bookkeeping back among the projected events: `filed`,
+    # `settled` ... become machine-log rows on a fall-back (M5, DG2, DG2C,
+    # M5R must go red on labcore_bookkeeping_rows).
+    "bookkeeping_projected": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r'"filed", "settled", "conflict", "rejected", "projected", '
+                   r'"adoption"\}\)',
+        "replace": "})",
+        "what": "a fall-back writes filed/settled/... into lem_machine_log"},
 }
 
 CODE_DIRS = ("LEM Station Module", "LEM Web Server")

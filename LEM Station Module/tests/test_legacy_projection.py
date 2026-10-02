@@ -616,3 +616,125 @@ def test_a_v2_side_note_reaches_labcore_when_the_404_came_just_before_a_restart(
     assert len(rows) == 1
     assert json.loads(rows[0]["detail"]) == {
         "note": "column swapped", "jk": "%s:%d" % (rec["epoch"], rec["seq"])}
+
+
+# ── a restart DURING the rollback: each record queued once ───────────────────
+#
+# Round 2 of the critic. Rows inside ONE keyed INSERT ... WHERE NOT EXISTS do
+# not see each other — that is exactly what lets two genuine prints of one
+# sample both land (L2). So the key protects against a row sent AGAIN, in a
+# later statement, and not against the same row sent TWICE in one. The queue
+# must therefore hold each record's rows at most once. It did not: a bench
+# restarted while LEM answers 404 runs both the restart walk
+# (`_journal_recover_once`) and the fall-back (`_v2_fell_back`) in one
+# process, each offered the same records, each appended them, and the first
+# drain sent both copies in one statement: the DG2 verdict and status changes
+# landed twice, so did a v2-side note and a reading LEM never acked. The
+# scripted gate never restarts mid-rollback and never counts LabCore rows by
+# exact duplicate; these do both.
+
+def _exact_dups(rows):
+    seen, dups = set(), 0
+    for r in rows:
+        key = tuple(r[k] for k in ("machine_uid", "ts", "kind", "lab_id",
+                                   "test_name", "value", "detail"))
+        dups += key in seen
+        seen.add(key)
+    return dups
+
+
+@pytest.mark.parametrize("explicit", [True, False],
+                         ids=["fall-back-then-poll", "restart-poll-only"])
+def test_DG2_a_restart_while_the_server_answers_404_doubles_nothing(
+        qapp, tmp_path, monkeypatch, explicit):
+    """The DG2C variant: rolled back, then LabStation restarted before the
+    back-fill landed. The restart's walk and its fall-back both offer the
+    QC verdict and the status changes; LabCore must hold each once."""
+    note = {"kind": "comment", "lab_id": "", "test_name": "", "value": "",
+            "detail": {"note": "column swapped"}, "ts": _aware(NOW)}
+    later = [_sample_run(timedelta(minutes=5), 7), note]
+    b, j = _rolled_back_bench(tmp_path, monkeypatch, unacked=later)
+    monkeypatch.setattr(mod, "bench_now", lambda: NOW)
+    if explicit:
+        # The critic's module-level repro: the fall-back, then the restart
+        # walk of the first poll, in one process.
+        b.restart()
+        b.m._v2_fell_back(b.m.machine(), b.m._journal_for(b.m.machine()), [])
+    else:
+        # The real road: the new process starts unsure (the journal says v2),
+        # its uploader hears LEM's 404, and the poll falls back AND runs the
+        # restart walk.
+        from fake_lem_v2 import FakeLem
+        lem = FakeLem(uid=UID).install(monkeypatch)
+        lem.modes = {"lan": "404", "public": "404"}
+        b.restart()
+        assert b.m._v2_was_active
+        b.m._uploader_wake()
+        assert b.m._uploader_wait_idle(10)
+        assert b.m._transfer.mode == "legacy"
+    b.poll()
+    b.poll()
+    qc = [json.loads(r["detail"])["n"] for r in b.lab.rows("qc")]
+    if explicit:
+        assert qc == [2]
+    else:
+        # The poll's clock is the harness's (a day before NOW), so its 24 h
+        # window also takes the 30 h-old verdict; once each is the claim.
+        assert sorted(qc) == [0, 2]
+    keyed = [json.loads(r["detail"]).get("jk") for r in b.lab.rows()]
+    keyed = [k for k in keyed if k]
+    assert len(keyed) == len(set(keyed)), "a record landed twice"
+    assert len(b.lab.rows("comment")) == 1
+    assert [r["lab_id"] for r in b.lab.rows("run")].count(lab_id(7)) == 1
+    assert _exact_dups(b.lab.rows()) == 0
+    assert b.journal().meta("dg2_due") is None
+
+
+def test_offering_a_record_twice_queues_its_rows_once(qapp, tmp_path,
+                                                      monkeypatch):
+    """The invariant itself, at the queue: a ref whose rows are already
+    waiting (or in flight) is not queued again, whoever offers it — and once
+    they have landed it may be offered again harmlessly (the key drops it)."""
+    b = legacy_bench(tmp_path, monkeypatch)
+    b.poll()
+    row = mod.build_log_insert(UID, "comment", datetime.now(),
+                               detail={"note": "x"})[1]
+    before = len(b.m._pending_events)
+    with b.m._journal_lock_or_new():
+        b.m._legacy_owe_event("e:99", [row])
+        b.m._legacy_owe_event("e:99", [row])
+        b.m._legacy_owe_event("e:99", [row], front=True)
+    assert len(b.m._pending_events) == before + 1
+    assert b.m._journal_unprojected["e:99"] == 1
+
+
+def test_the_fall_back_projects_events_not_the_journals_bookkeeping(
+        qapp, tmp_path, monkeypatch):
+    """`filed`, `settled`, `conflict`, `rejected`, `projected` and `adoption`
+    are the journal's notes to itself about what became of a reading — v3.9
+    never wrote a machine-log row for any of them, and the floor's history
+    would show them as machine events. The fall-back walk projected every
+    kind it did not know to skip, so the critic's M5 left LabCore holding
+    3 `filed` and 1 `settled` row. Only operator events and status changes
+    go across."""
+    book = [{"kind": "filed", "of": ["x:1"], "cells": [["L", "RON", "91"]]},
+            {"kind": "settled", "of": ["x:1"]},
+            {"kind": "conflict", "of": ["x:2"], "uid": UID, "cells": []},
+            {"kind": "rejected", "of": ["x:3"], "cell": ["L", "RON", "9"],
+             "error": "e", "tries": 5},
+            {"kind": "projected", "of": ["x:4"]},
+            {"kind": "adoption", "src": "file:x", "lines": 3},
+            {"kind": "comment", "lab_id": "", "test_name": "", "value": "",
+             "detail": {"note": "kept"}}]
+    for r in book:
+        r["ts"] = _aware(NOW - timedelta(minutes=1))
+    b, j = _rolled_back_bench(tmp_path, monkeypatch, unacked=book)
+    monkeypatch.setattr(mod, "bench_now", lambda: NOW)
+    b.m._v2_fell_back(b.m.machine(), j, [])
+    b.poll()
+    kinds = {r["kind"] for r in b.lab.rows()}
+    assert not kinds & {"filed", "settled", "conflict", "rejected",
+                        "projected", "adoption"}, kinds
+    assert [json.loads(r["detail"])["note"] for r in b.lab.rows("comment")] \
+        == ["kept"]
+    assert _exact_dups(b.lab.rows()) == 0
