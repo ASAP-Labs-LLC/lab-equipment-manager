@@ -473,15 +473,26 @@ def classify(rows: Iterable[LogRow],
 
             for k, (orig, why) in resent.items():
                 put(k, "resend", why, orig)
+            in_poll: Dict[Tuple[str, ...], int] = {}
             for k in rest:
                 r = poll[k]
+                f = fingerprint(r)
                 if k in twin_of:
                     if replay:
                         put(k, "replay_duplicate", rule, twin_of[k])
+                        in_poll.setdefault(f, r.id)
                         continue
                     put(k, "probable_duplicate", "twin_not_in_burst",
                         twin_of[k])
-                kept[fingerprint(r)].append(r.id)
+                elif f in in_poll:
+                    # The same reading again in this poll with nothing to
+                    # prove a second INSERT: content as far as anybody can
+                    # tell, so it counts -- and it is LISTED, beside the
+                    # visible copy (or the poll's first), for a person.
+                    put(k, "probable_duplicate", "repeat_in_poll",
+                        kept[f][0] if kept[f] else in_poll[f])
+                in_poll.setdefault(f, r.id)
+                kept[f].append(r.id)
             for k in range(n):
                 r = poll[k]
                 if (r.lab_id in MISREAD_LAB_IDS and r.is_imported()

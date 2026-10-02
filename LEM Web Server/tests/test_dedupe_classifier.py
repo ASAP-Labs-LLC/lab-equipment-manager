@@ -145,7 +145,10 @@ class TestEachRule:
         lab = SimLab()
         line = SimLab.run_line("A", {"v": "1"})
         ids = lab.poll("t", [line, line], [GENUINE, GENUINE])
-        assert set(ids) & set(self._classify(lab).candidates) == set()
+        got = self._classify(lab).candidates
+        assert ids[0] not in got
+        assert (got[ids[1]].label, got[ids[1]].rule) == \
+            ("probable_duplicate", "repeat_in_poll")      # listed, visible
 
     def test_operator_and_calibration_do_not_make_a_replay_new(self):
         lab = SimLab()
@@ -279,7 +282,9 @@ class TestAResendIsAnInsertThatLandedTwice:
         lines = before + two + two + after
         ids = lab.poll("arch", lines, [GENUINE] * len(lines))
         got = self._classify(lab).candidates
-        assert [got.get(i) for i in ids[7:11]] == [None] * 4
+        assert [got.get(i) for i in ids[7:9]] == [None] * 2
+        # the second print is listed for review, and stays visible
+        assert {got[i].label for i in ids[9:11]} == {"probable_duplicate"}
 
     def test_a_qc_repeat_with_a_status_change_between(self):
         """qc, status_change, qc — the standard read the same twice and the
@@ -371,3 +376,19 @@ class TestAResendIsAnInsertThatLandedTwice:
         ids = lab.poll("full", rows + rows, [GENUINE] * 100 + [DUP] * 100)
         got = self._classify(lab).candidates
         assert [got[i].label for i in ids[100:]] == ["resend"] * 100
+
+    def test_an_unproven_repeat_in_one_poll_is_listed_for_review(self):
+        """Visible is not unremarked. One sample's lines printed twice (or a
+        one-row batch re-sent with nothing landing between: the two cannot
+        be told apart) stay in the record, and are LISTED as probable
+        duplicates beside the row they repeat, so a person can look."""
+        lab = SimLab()
+        two = [SimLab.run_line("S9", {"IBP": "150.2"}),
+               SimLab.run_line("S9", {"FBP": "350.9"})]
+        ids = lab.poll("pp", two + two, [GENUINE] * 4)
+        got = self._classify(lab).candidates
+        assert ids[0] not in got and ids[1] not in got
+        assert [(got[i].label, got[i].rule, got[i].dup_of)
+                for i in ids[2:]] == [
+            ("probable_duplicate", "repeat_in_poll", ids[0]),
+            ("probable_duplicate", "repeat_in_poll", ids[1])]
