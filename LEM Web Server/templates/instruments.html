@@ -86,12 +86,12 @@
     {#- until each record carries its schedule (piece 6) and Settings has
         Imports (piece 11), marking a task done and importing PM history are
         on the old page; the Maintenance view is its door -#}
-    <p class="view-note" id="maint-note" data-testid="maint-note" hidden><span class="ico ico-info" aria-hidden="true"></span>To mark a task done or import PM history, open the <a class="link" href="/maintenance/classic">PM and calibration page</a>.</p>
+    <p class="view-note" id="maint-note" data-testid="maint-note" hidden><span class="ico ico-info" aria-hidden="true"></span><span>To mark a task done or import PM history, open the <a class="link" href="/maintenance/classic">PM and calibration page</a>.</span></p>
     <table class="tbl inst" id="inst-tbl">
       <thead><tr>
         <th scope="col" class="c-name">Instrument</th>
         <th scope="col" class="c-run">Can it run?</th>
-        <th scope="col" class="c-qc">Last QC</th>
+        <th scope="col" class="c-qc" id="col-third">Last QC</th>
         <th scope="col" class="c-bench">Bench</th>
         <th scope="col" class="c-where">Where</th>
       </tr></thead>

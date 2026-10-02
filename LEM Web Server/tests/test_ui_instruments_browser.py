@@ -129,7 +129,7 @@ def test_t1_the_verdict_is_on_screen_with_no_click(drv, server, size):
 @pytest.mark.parametrize("theme", ["light", "dark"])
 @pytest.mark.parametrize("size", [(820, 1180), (390, 844)], ids=lambda s: "%dx%d" % s)
 def test_no_horizontal_page_scroll(drv, server, size, theme):
-    for path in ("/", "/?filter=needs", "/?cause=ok_but-cal"):
+    for path in ("/", "/?filter=needs", "/?cause=ok_but-cal", "/maintenance"):
         _open(drv, server.base, path, size=size, theme=theme)
         sw, cw = drv.execute_script(
             "return [document.documentElement.scrollWidth, document.documentElement.clientWidth]")
@@ -230,6 +230,27 @@ def test_a_tiles_view_shows_everyone_with_the_problem(drv, server, path, want):
     view that showed 2 of 3 PMs keyed on each instrument's worst cause."""
     _open(drv, server.base, path)
     assert len(drv.find_elements("css selector", "tr.irow")) == want
+
+
+@pytest.mark.parametrize("size", [(1440, 900), (390, 844)], ids=lambda s: "%dx%d" % s)
+def test_the_maintenance_view_is_not_the_whole_list_again(drv, server, size):
+    """/maintenance became this view. With every seeded instrument scheduled
+    it was the All list, in the All order, with the All columns. Now it is
+    ordered by what falls due (OptiMPP 2's PM overdue since 19 Sep is above
+    Koehler's next PM on 29 Oct), its third column is Next due, and that
+    column never says "overdue": the row's Can it run? line already does.
+    On a phone the Next due line stays (the other columns fold away)."""
+    _open(drv, server.base, "/maintenance", size=size)
+    got = drv.execute_script("""
+        const rows = [...document.querySelectorAll('tr.irow')];
+        return {head: document.getElementById('col-third').textContent,
+                order: rows.map(r => r.dataset.uid),
+                due: rows.map(r => r.querySelector('.c-due').innerText),
+                shown: rows.map(r => r.querySelector('.c-due').getBoundingClientRect().height > 0)};""")
+    assert got["head"] == "Next due"
+    assert got["order"].index("optimpp-2") < got["order"].index("koehler-visc"), got["order"]
+    assert all("overdue" not in t.lower() for t in got["due"]), got["due"]
+    assert all(got["shown"]), "the Next due line is drawn at every width"
 
 
 def test_on_a_phone_every_chip_is_on_screen(drv, server):

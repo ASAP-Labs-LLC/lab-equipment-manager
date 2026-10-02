@@ -216,5 +216,32 @@ check('nothing needs you: no caption (the empty line says it)', L.needsCaption({
 check('a failed refresh is said, not hidden',
       L.needsCaption({ count: 4 }, '2026-10-01T09:05:00', 0).startsWith('Couldn’t refresh since '), true);
 
+// ── the Maintenance view orders by what falls due, and says what comes next ──
+// /maintenance became this view. With every seeded instrument scheduled it
+// showed the same rows, in the same order, with the same Last QC column as
+// All: a door into the room you were already in. In this view the rows sort
+// by their earliest due date (overdue first, it is the earliest), and the
+// Last QC column becomes "Next due": the next task that is NOT overdue. The
+// overdue ones are on the row's Can it run? line already; saying them again
+// here is the "repeats problems" defect.
+{
+  const sch = (order, next, tasks) => ({ schedule: { tasks: tasks || 2, next, order }, maintenance: tasks || 2 });
+  const rows = [
+    row('m1', 'ok', sch('2026-11-07', { name: 'Annual calibration', due: '7 Nov', soon: false })),
+    row('m2', 'not_ok', sch('2026-08-08', { name: 'Monthly PM', due: '26 Oct', soon: false })),
+    row('m3', 'ok_but', sch('2026-06-17', null)),
+    row('m4', 'ok_but', sch('2026-10-01', { name: 'Monthly PM', due: '1 Oct', soon: true })),
+    row('m5', 'ok', { maintenance: 0 }),
+  ];
+  check('maintenance view: earliest due first', uids(L.filterRows(rows, { filter: 'maintenance' })), ['m3', 'm2', 'm4', 'm1']);
+  check('every other view keeps the server\'s worst-first order', uids(L.filterRows(rows, {})), ['m1', 'm2', 'm3', 'm4', 'm5']);
+  check('the column is Last QC elsewhere', L.thirdColumn({ filter: '' }), 'Last QC');
+  check('the column is Next due in the maintenance view', L.thirdColumn({ filter: 'maintenance' }), 'Next due');
+  check('next due: the task and its day', L.nextDue(rows[0]), { main: 'Annual calibration', sub: '7 Nov', soon: false });
+  check('due soon is said in words, not colour alone', L.nextDue(rows[3]), { main: 'Monthly PM', sub: 'Due soon · 1 Oct', soon: true });
+  check('all overdue: nothing else is due, and "overdue" is not said again',
+        L.nextDue(rows[2]), { main: 'Nothing else due', sub: '', soon: false });
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

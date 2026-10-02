@@ -169,9 +169,19 @@
         const run = h('td', { className: 'c-run' },
             h('span', { className: 'verdict s-' + rd.state }, glyph(rd.glyph), h('span', { text: rd.word })),
             rd.detail ? sub(rd.detail) : null);
-        const qc = h('td', { className: 'c-qc' },
-            lq.at ? h('span', {}, L.when(lq.at, now)) : h('span', { className: 'none' }, lq.word || ''),
-            lq.at ? sub(lq.test + (lq.checks > 1 ? ' · ' + lq.checks + ' checks' : '')) : null);
+        let qc;
+        if (view.filter === 'maintenance') {
+            const nd = L.nextDue(r);
+            qc = h('td', { className: 'c-qc c-due' },
+                h('span', { className: 'fold-label' }, 'Next due: '),
+                h('span', { className: nd.sub ? (nd.soon ? 'due-soon' : '') : 'none' },
+                    nd.soon ? glyph('half') : null, h('span', { text: nd.main })),
+                nd.sub ? sub(nd.sub) : null);
+        } else {
+            qc = h('td', { className: 'c-qc' },
+                lq.at ? h('span', {}, L.when(lq.at, now)) : h('span', { className: 'none' }, lq.word || ''),
+                lq.at ? sub(lq.test + (lq.checks > 1 ? ' · ' + lq.checks + ' checks' : '')) : null);
+        }
         const bench = h('td', { className: 'c-bench' },
             h('span', { className: 'bstate' }, glyph(b.glyph || 'never'), h('span', { text: b.word || '' })),
             benchWhen ? sub(b.state === 'in' ? 'last poll ' + benchWhen : 'since ' + benchWhen) : null);
@@ -204,6 +214,7 @@
             none.replaceChildren('LabCore answered with no instruments. They are added in LabStation › LEM module › New machine…');
         }
         $('maint-note').hidden = view.filter !== 'maintenance';
+        $('col-third').textContent = L.thirdColumn(view);
         $('inst-shown').textContent = (rows.length !== all) ? 'Showing ' + rows.length + ' of ' + all : '';
     }
 

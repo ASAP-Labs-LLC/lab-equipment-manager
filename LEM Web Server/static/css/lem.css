@@ -309,9 +309,13 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .tbl.inst .c-run .sub { padding-left: 18px; }
 .tbl.inst .c-bench .sub { padding-left: 18px; }
 .tbl.inst .none { color: var(--text-muted); }
+/* the Maintenance view's Next due cell: due soon is a half glyph + words */
+.tbl.inst .fold-label { display: none; }
+.tbl.inst .c-due .due-soon { display: inline-flex; align-items: center; gap: var(--s2); }
 .view-note { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s3) var(--s4);
     border-bottom: 1px solid var(--border-light); font-size: var(--fs-sm); color: var(--text-muted); }
 .view-note a { color: var(--text); }
+.view-note .ico { flex: none; }
 .table-empty { margin: var(--s4) var(--s5); font-size: var(--fs-sm); color: var(--text-muted); }
 .table-foot { margin: 0; padding: var(--s3) var(--s4); border-top: 1px solid var(--border-light); }
 
@@ -371,6 +375,12 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
     .tbl.inst .c-run .verdict { grid-column: 2; grid-row: 1; justify-self: end; font-size: var(--fs-sm); white-space: nowrap; }
     .tbl.inst .c-run .sub { grid-column: 1 / -1; grid-row: 2; padding-left: 0; }
     .tbl.inst .irow:hover td { background: transparent; }
+    /* in the Maintenance view the phone row keeps its Next due line */
+    .tbl.inst .c-qc.c-due { display: block; grid-column: 1 / -1; grid-row: 3; margin-top: var(--s1);
+                            font-size: var(--fs-xs); color: var(--text-muted); }
+    .tbl.inst .c-due .fold-label { display: inline; }
+    .tbl.inst .c-due .sub { display: inline; margin: 0 0 0 var(--s1); }
+    .tbl.inst .c-due .sub::before { content: "· "; }
 }
 
 /* ── Settings, all sections (piece 11; templates/settings.html) ──────────

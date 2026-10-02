@@ -573,6 +573,65 @@ class TestFiltersAreViewsNotCounts:
         assert build([machine("a")])["has_maintenance"] is False
         assert build([machine("a", maint=[task("pm", "GREEN")])])["has_maintenance"] is True
 
+class TestTheMaintenanceViewSaysWhatComesNext:
+    """`/maintenance` became `/instruments?filter=maintenance` (§1). In the
+    seed every instrument has a schedule, so the view showed the same 13 rows
+    as All, with the same Last QC column: a door to a room identical to the
+    one you were in. The view exists to answer "what PM or calibration comes
+    next, and on what?", so each row carries its schedule, and the view
+    orders by it.
+
+    It must not say an overdue task a second time: the row's Can it run?
+    line already says "Calibration overdue since 24 Jul". So the schedule's
+    `next` is the next task that is NOT overdue, and `order` (the earliest
+    due date of any task) only sorts; it is never drawn."""
+
+    def _t(self, kind, status, due, name):
+        return {"uid": "t-" + kind, "kind": kind, "status": status, "name": name,
+                "next_due": due, "reason": ""}
+
+    def test_next_is_the_soonest_task_that_is_not_overdue(self):
+        p = build([machine("a", maint=[self._t("pm", "GREEN", "2026-10-26", "Monthly PM"),
+                                       self._t("calibration", "RED", "2026-07-24", "Annual calibration")])])
+        s = row(p, "a")["schedule"]
+        assert s["tasks"] == 2
+        assert s["next"] == {"name": "Monthly PM", "due": "26 Oct", "soon": False}
+        assert s["order"] == "2026-07-24", "the overdue task sorts the row to the top"
+
+    def test_due_soon_is_marked(self):
+        p = build([machine("a", maint=[self._t("pm", "YELLOW", "2026-10-01", "Monthly PM"),
+                                       self._t("calibration", "GREEN", "2027-01-01", "Annual calibration")])])
+        assert row(p, "a")["schedule"]["next"] == {"name": "Monthly PM", "due": "1 Oct", "soon": True}
+
+    def test_a_day_in_another_year_says_its_year(self):
+        """GC-1's next annual calibration is next July: "22 Jul" alone read
+        as two months ago, beside rows that say "overdue since 17 May"."""
+        p = build([machine("a", maint=[self._t("calibration", "GREEN", "2099-03-02", "Annual calibration")])])
+        assert row(p, "a")["schedule"]["next"]["due"] == "2 Mar 2099"
+
+    def test_every_task_overdue_leaves_nothing_next(self):
+        """Not "Calibration overdue" again: the row already says it."""
+        p = build([machine("a", maint=[self._t("pm", "RED", "2026-09-19", "Monthly PM"),
+                                       self._t("calibration", "RED", "2026-06-17", "Annual calibration")])])
+        s = row(p, "a")["schedule"]
+        assert s["next"] is None and s["tasks"] == 2 and s["order"] == "2026-06-17"
+
+    def test_no_schedule(self):
+        assert row(build([machine("a")]), "a")["schedule"] == {"tasks": 0, "next": None, "order": ""}
+
+    def test_the_seed_view_is_ordered_by_what_falls_due(self, tmp_path):
+        app, gw = _seeded(tmp_path)
+        data = app.test_client().get("/api/ui/instruments").get_json()
+        orders = [r["schedule"]["order"] for r in data["instruments"] if r["schedule"]["tasks"]]
+        assert orders, "the seed schedules PM and calibration"
+        # every 'next' is a task that is not overdue (the row says those)
+        for r in data["instruments"]:
+            nxt = r["schedule"]["next"]
+            if nxt:
+                assert "overdue" not in nxt["name"].lower()
+
+
+class TestWhereAndMore:
     def test_where_says_not_on_the_map(self):
         p = build([machine("a", pos=None), machine("b")])
         assert row(p, "a")["where"] == {"level": "Ground Floor", "placed": False}

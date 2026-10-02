@@ -31,6 +31,7 @@ times"):
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Callable, Dict, List, Optional
 
 import ui_live
@@ -67,6 +68,14 @@ def _day(iso: str) -> str:
         return "%d %s" % (d, _MONTHS[mo - 1])
     except (ValueError, IndexError):
         return ""
+
+def _day_in_year(iso: str) -> str:
+    """_day, plus the year when it is not this year: "22 Jul 2027"."""
+    day = _day(iso)
+    if day and str(iso)[:4] != str(date.today().year):
+        day += " " + str(iso)[:4]
+    return day
+
 
 Href = Callable[[str, str], str]
 
@@ -317,6 +326,26 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
     return tiles
 
 
+def schedule(m: dict) -> dict:
+    """What the Maintenance view draws for a row: the next task that is NOT
+    overdue (the row's Can it run? line already says the overdue ones, and
+    saying them twice is the defect this page was rebuilt to remove), and
+    `order`, the earliest due date of any task, which only sorts the view so
+    what falls due first is on top."""
+    tasks = [t for t in (m.get("maintenance") or []) if isinstance(t, dict)]
+    due = sorted((str(t.get("next_due") or ""), str(t.get("name") or "")) for t in tasks
+                 if t.get("next_due"))
+    ahead = sorted(((str(t.get("next_due") or "9999"), t) for t in tasks
+                    if t.get("status") != "RED"), key=lambda x: (x[0], str(x[1].get("name") or "")))
+    nxt = None
+    if ahead:
+        t = ahead[0][1]
+        nxt = {"name": str(t.get("name") or t.get("kind") or "Task"),
+               "due": _day_in_year(str(t.get("next_due") or "")),
+               "soon": t.get("status") == "YELLOW"}
+    return {"tasks": len(tasks), "next": nxt, "order": due[0][0] if due else ""}
+
+
 def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: Href) -> dict:
     uid = m["machine_uid"]
     ready = ui_live.readiness(m, override)
@@ -343,6 +372,7 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
         "where": {"level": levels.get(m.get("level_uid") or "") or "No level",
                   "placed": m.get("pos") is not None},
         "maintenance": len(m.get("maintenance") or []),
+        "schedule": schedule(m),
     }
 
 

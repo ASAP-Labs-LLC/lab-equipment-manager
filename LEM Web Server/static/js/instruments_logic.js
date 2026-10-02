@@ -4,7 +4,8 @@
 // textContent.
 //
 //   parseView(search) / viewQuery(view)   the address bar is the view (§1)
-//   filterRows(rows, view)                which instruments a view shows
+//   filterRows(rows, view)                which instruments a view shows, in its order
+//   thirdColumn(view) / nextDue(row)      Last QC, or Next due in the Maintenance view
 //   chips(data, view, causeWords)         the view chips: places and views, never counts
 //   tileWords(tile, view)                 what a Needs-you tile draws: cause, next step, link
 //   needsCaption(needsYou, failedAt)      the card's caption: never a count
@@ -80,7 +81,26 @@
 
     function filterRows(rows, view) {
         const v = Object.assign({ filter: '', level: '', cause: '' }, view || {});
-        return (rows || []).filter(r => _matches(r, v));
+        const out = (rows || []).filter(r => _matches(r, v));
+        if (v.filter !== 'maintenance') return out;          // the server's worst-first order
+        // the Maintenance view: what falls due first is on top (overdue is
+        // earliest); a stable sort keeps worst-first among equal dates
+        const key = (r) => (r.schedule && r.schedule.order) || '9999';
+        return out.map((r, i) => [key(r), i, r])
+            .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] - b[1])).map(x => x[2]);
+    }
+
+    /** The table's third column: Last QC, or Next due in the Maintenance view. */
+    function thirdColumn(view) {
+        return view && view.filter === 'maintenance' ? 'Next due' : 'Last QC';
+    }
+
+    /** A row's Next due cell. The next task that is NOT overdue; an overdue
+        task is said on the row's Can it run? line and never again here. */
+    function nextDue(r) {
+        const n = r && r.schedule && r.schedule.next;
+        if (!n) return { main: 'Nothing else due', sub: '', soon: false };
+        return { main: n.name, sub: n.soon ? 'Due soon · ' + n.due : n.due, soon: !!n.soon };
     }
 
     const VIEW_LABELS = { '': 'All', needs: 'Needs you', noqc: 'No QC assigned', maintenance: 'Maintenance' };
@@ -242,7 +262,7 @@
             String(ev.key || '').toLowerCase() === 'k';
     }
 
-    const api = { parseView, viewQuery, filterRows, hasProblem, problemWords, currentTile, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
+    const api = { parseView, viewQuery, filterRows, thirdColumn, nextDue, hasProblem, problemWords, currentTile, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
                   searchRows, showLoading, isFindKey, LOADING_AFTER_MS };
     root.LEMInstruments = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
