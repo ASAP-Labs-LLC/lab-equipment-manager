@@ -4,7 +4,8 @@
 
    What lives here and nowhere else:
 
-     liveState    the stale rule. No answer from /api/ui/live for 90 s and
+     liveState    the stale rule. No answer from /api/ui/live for 85 s (so
+                  that the wall is never Live 90 s after the feed stops) and
                   the wall says "Not live · last update 13:15" and dims; a
                   snapshot the server says is stale is "Not current". A wall
                   that froze at green must not look like a wall that is green.
@@ -20,7 +21,17 @@
 (function (root) {
     'use strict';
 
+    // The promise (§3.8): never "Live" more than 90 s after LEM stops
+    // answering. The page cannot see the stop, only its last good answer,
+    // which lands up to one poll (live.js VISIBLE_MS) before it, and it
+    // looks once a second (TICK_MS). So the trigger fires that much under
+    // the promise, plus a second for a late timer. A strict "> 90 s since
+    // the last answer" always landed at 90-91 s after the stop (round 4
+    // critic: 90.6 s on /floor, 91.2 s on /qc).
     const STALE_MS = 90000;
+    const POLL_MS = 3000;
+    const TICK_MS = 1000;
+    const STALE_AFTER_MS = STALE_MS - (POLL_MS + TICK_MS + 1000);
     // a data request that has not answered in this long has failed: a fetch
     // with no deadline that hangs (half-open socket, a proxy holding it)
     // would otherwise never fail, and the wall would say "Live" on frozen
@@ -104,7 +115,7 @@
         o = o || {};
         const now = typeof o.nowMs === 'number' ? o.nowMs : Date.now();
         const heard = Math.max(o.lastOkMs || 0, o.loadedMs || 0);
-        if (now - heard > STALE_MS) {
+        if (now - heard > STALE_AFTER_MS) {
             return { kind: 'lost', dim: true,
                      headline: 'Not live · last update ' + clock(heard, o.tz, false),
                      footer: 'Not live · last update ' + clock(heard, o.tz, true) + ' · stale' };
@@ -286,7 +297,7 @@
         return best;
     }
 
-    const api = { STALE_MS, FETCH_TIMEOUT_MS, overdue, wallLayout, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
+    const api = { STALE_MS, STALE_AFTER_MS, POLL_MS, TICK_MS, FETCH_TIMEOUT_MS, overdue, wallLayout, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
     root.LEMWallLogic = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

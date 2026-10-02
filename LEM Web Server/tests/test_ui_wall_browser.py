@@ -248,6 +248,44 @@ def test_the_stale_rule(server, drv, path):
         timeout=40)
 
 
+@pytest.mark.parametrize("path", ["/floor", "/qc"])
+def test_the_stale_rule_in_real_time(server, drv, path):
+    """The promise is "never Live after 90 s", measured from the moment the
+    feed stops, in real time, with no clock moved.
+
+    Round 4: the rule fired at "more than 90 s since the last good answer",
+    and the page only looks once a second, so it always landed at or after
+    90 s past the stop (the critic measured 90.6 s on /floor and 91.2 s on
+    /qc, which said "Live" the whole time). The test above moved the clock
+    95 s on and so could never see that. Here the feed is cut the instant a
+    fresh answer lands (the worst case: the last good answer is as late as
+    it can be), and the wall must say "Not live" within 90 s of the cut."""
+    shape(server, "demo")
+    _open(drv, server.base, path, (1440, 900), "light")
+    view = "wf" if path == "/floor" else "wq"
+    foot = lambda: drv.execute_script(  # noqa: E731
+        "return document.getElementById(arguments[0]).textContent", view + "-live")
+    assert _wait(lambda: foot().startswith("Live"))
+    first = foot()
+    # a fresh answer has just landed (the footer's seconds moved): cut now
+    assert _wait(lambda: foot() != first and foot().startswith("Live"), timeout=10)
+    drv.execute_cdp_cmd("Network.setBlockedURLs", {"urls": ["*/api/ui/live*"]})
+    cut = time.time()
+    head = lambda: drv.execute_script(  # noqa: E731
+        "return document.getElementById(arguments[0]).textContent", view + "-headline-text")
+    got = _wait(lambda: head().startswith("Not live"), timeout=95)
+    took = time.time() - cut
+    try:
+        assert got, f"{path} still said {head()!r} / {foot()!r} {took:.1f} s after the feed stopped"
+        assert took <= 90.0, f"{path} went Not live {took:.1f} s after the feed stopped"
+        # and it was not jumpy: a feed that is answering never reads stale,
+        # so nothing earlier than the poll-backoff window may trigger it
+        assert took >= 60.0, f"{path} went Not live only {took:.1f} s after the stop"
+    finally:
+        drv.execute_cdp_cmd("Network.setBlockedURLs", {"urls": []})
+    print(f"{path}: Not live {took:.1f} s after the feed stopped")
+
+
 def test_rotation_pauses_on_pointer(server, drv):
     """At 1280x720 the demo's three levels cannot all be drawn at a
     readable size, so the wall rotates them, and a pointer holds it."""

@@ -53,8 +53,45 @@ check('a naive server stamp is the lab\'s local time, not UTC',
 // ── the stale rule ────────────────────────────────────────────────────────
 const live = (o) => W.liveState(Object.assign({ loadedMs: T0, lastOkMs: T0, nowMs: T0, tz: TZ }, o));
 check('fresh is live', live({ nowMs: T0 + 5000 }).kind, 'live');
-check('89 s is still live', live({ nowMs: T0 + 89000 }).kind, 'live');
-check('90 s and one is not', live({ nowMs: T0 + 90001 }).kind, 'lost');
+// Round 4: the rule used to fire at "more than 90 s since the last good
+// answer". The last good answer lands at or just before the feed stops, and
+// the wall redraws once a second, so a strict 90 s threshold always fired
+// at 90 s or LATER after the stop: the critic measured 90.6 s on /floor and
+// 91.2 s on /qc, with /qc still saying "Live" past the promise. The promise
+// is "never Live after 90 s"; the trigger sits under it by the visible poll
+// period plus the redraw tick plus a second of timer slack.
+check('the promise is 90 s', W.STALE_MS, 90000);
+check('the trigger sits under the promise by poll + tick + slack',
+      W.STALE_AFTER_MS, W.STALE_MS - (W.POLL_MS + W.TICK_MS + 1000));
+check('a healthy feed\'s gaps never read as stale (one poll timed out and backed off)',
+      live({ nowMs: T0 + 15000 + 12000 + 3000 }).kind, 'live');
+// the margin is only honest while it matches what the page really does:
+// live.js's visible poll period and wall.js's redraw interval
+{
+  const liveSrc = fs.readFileSync(new URL('../../static/js/live.js', import.meta.url), 'utf8');
+  const wallSrc = fs.readFileSync(new URL('../../static/js/wall.js', import.meta.url), 'utf8');
+  check('POLL_MS is live.js\'s visible poll', +(/const VISIBLE_MS = (\d+);/.exec(liveSrc) || [])[1], W.POLL_MS);
+  check('the wall redraws every TICK_MS', /\}, L\.TICK_MS\);/.test(wallSrc), true);
+}
+check('80 s is still live', live({ nowMs: T0 + 80000 }).kind, 'live');
+check('just past the trigger is not', live({ nowMs: T0 + W.STALE_AFTER_MS + 1 }).kind, 'lost');
+check('89 s is already not live', live({ nowMs: T0 + 89000 }).kind, 'lost');
+// The worst case, simulated the way the page runs it: the feed stops at
+// `stop`; its last good answer came 0..one poll before; the page redraws on
+// a 1 s tick of any phase, and a tick can run up to 250 ms late. The first
+// redraw that says "Not live" must come no later than 90 s after the stop.
+{
+  let worst = 0;
+  const stop = T0 + 500000;
+  for (let lastOkAgo = 0; lastOkAgo <= W.POLL_MS; lastOkAgo += 250) {
+    for (let phase = 0; phase < W.TICK_MS; phase += 50) {
+      let t = stop + phase;
+      while (W.liveState({ loadedMs: T0, lastOkMs: stop - lastOkAgo, nowMs: t, tz: TZ }).kind === 'live') t += W.TICK_MS;
+      worst = Math.max(worst, t + 250 - stop);
+    }
+  }
+  check('worst case, measured from the stop: Not live within 90 s (' + worst + ' ms)', worst <= 90000, true);
+}
 check('the headline says when', live({ nowMs: T0 + 95000 }).headline, 'Not live · last update 13:15');
 // round 3: the shooter read "Not live · last update 12:32" in the headline
 // and "Stale · last update 12:32:37 PDT" in the footer, two different words
@@ -78,7 +115,6 @@ check('…and its footer says so',
       'Record from 13:02:11 PDT · LabCore not answering');
 check('losing LEM outranks an old record',
       live({ nowMs: T0 + 95000, snapshotStale: true, builtAt: '2026-10-01T13:02:11-07:00' }).kind, 'lost');
-check('the limit is 90 s', W.STALE_MS, 90000);
 
 // ── kiosk parameters ──────────────────────────────────────────────────────
 check('defaults', W.parseKiosk(''), { theme: '', level: '', rotate: true, show: ['floor', 'qc'], every: 60 });

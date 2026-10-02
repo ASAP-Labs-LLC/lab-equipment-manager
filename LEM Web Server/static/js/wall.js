@@ -42,7 +42,7 @@
                 seq[current].show();
             }
             seq[current].tick(now);
-        }, 1000);
+        }, L.TICK_MS);
     }
 
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
