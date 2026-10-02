@@ -1,0 +1,36 @@
+{#- The instrument's "Data transfer" section (transfer §14), GC hub's
+    /instruments/<id> anatomy: the title, an icon and ONE sentence on the left,
+    hairline rows on the right. Include it on the record page with
+      {% set t = transfer_section(uid) %}{% include "_transfer_section.html" %}
+    (`t` None means LEM has no such instrument; the page says that itself).
+
+    The first paint is the server's (every row's words come from
+    ui_transfer.section); static/js/transfer_section.js keeps it live with a
+    GET every 15 s while the tab is visible and ticks "Last delivered" every
+    second. It never POSTs. Every row a bench cannot answer says "Not reported
+    by this bench's module version", never 0. -#}
+{%- set rows = (t.rows if t else []) %}
+<section class="sec" id="transfer" data-testid="section-transfer" aria-labelledby="transfer-h"
+         data-uid="{{ (t.uid if t else uid) or '' }}" data-mode="{{ t.mode if t else '' }}">
+  <div class="about">
+    <h2 id="transfer-h"><span class="sec-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="6" r="2.2"/><path d="M8.2 18H15a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h6.8"/></svg></span>Data transfer</h2>
+    <p id="transfer-intro">How this bench's readings reach LEM and LabCore. Nothing is dropped: anything waiting is listed here.</p>
+  </div>
+  <div class="body">
+    <p class="tr-state load-state" id="transfer-state" role="status" data-state="{{ 'error' if (t and t.error) else 'ok' }}"{% if not (t and t.error) %} hidden{% endif %}>
+      <span class="glyph error" aria-hidden="true"></span><span id="transfer-state-text">{% if t and t.error %}Part of this could not be read from LEM's store ({{ t.error }}). Rows that depend on it say so.{% endif %}</span>
+      <button type="button" class="btn btn-sm" id="transfer-retry" hidden>Try again</button>
+    </p>
+    <div class="kv tr-kv" id="transfer-rows" data-testid="transfer-rows" aria-live="polite">
+      {%- for r in rows %}
+      <div class="k" data-key="{{ r.key }}">{{ r.label }}</div>
+      <div class="v" data-key="{{ r.key }}"{% if r.age_s is defined %} data-age="{{ r.age_s }}"{% endif %}>
+        <span class="tr-line"><span class="glyph {{ r.glyph }}" aria-hidden="true"></span><span class="val">{{ r.value }}</span>
+        {%- if r.href and r.action %}<a class="tr-act" href="{{ r.href }}">{{ r.action }}</a>{% endif %}</span>
+        {%- if r.note %}<span class="caption">{{ r.note }}</span>{% endif %}
+      </div>
+      {%- endfor %}
+    </div>
+    <p class="caption tr-foot">Instruments are added and set up in LabStation's LEM module. Results are filed into LabCore by LabStation, never by this server.</p>
+  </div>
+</section>

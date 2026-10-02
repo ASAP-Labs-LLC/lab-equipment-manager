@@ -596,6 +596,11 @@ class TestBridgeOff:
                                                bench, clock):
         _sign_in(client)
         bench.journal(1).sync()
+        # Bridge-off has a bench half too (§12.1 step 5, Settings › Transfer):
+        # every registered bench on v2 for 7 days. This test is about the
+        # custody half, so the one bench here has been on v2 for 8 days.
+        store.sql("UPDATE bench_cursor SET first_seen = ?",
+                  [(clock() - custody.timedelta(days=8)).isoformat()])
         cust.backup_now()
         cust.offsite_now()
         clock.advance(hours=25, minutes=59)
@@ -639,7 +644,10 @@ class TestBridgeOff:
                   "'offsite_last_ok'",
                   [(clock() + custody.timedelta(seconds=30)).isoformat()])
         cust.hydrate()
-        assert cust.bridge_off_refusals() == []
+        # custody's own half says nothing; the bench half (a registered bench
+        # that never synced v2) is Settings › Transfer's, not this test's
+        assert [r for r in cust.bridge_off_refusals()
+                if "off-host" in r or "future" in r] == []
 
     def test_a_stored_offsite_time_that_cannot_be_read_refuses(
             self, client, store, cust):

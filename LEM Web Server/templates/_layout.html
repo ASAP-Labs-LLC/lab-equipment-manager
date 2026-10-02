@@ -55,6 +55,8 @@
         <span class="rs-item" id="rs-record" data-at="{{ S.record_at or '' }}" data-labcore="{{ S.labcore }}"><span class="live-dot" id="rs-dot" data-state="{{ S.record_state }}" aria-hidden="true"></span><span id="rs-record-text">{{ S.record_text }}</span></span>
         <span class="rs-sep optional" aria-hidden="true"{% if not S.fleet_text %} hidden{% endif %}>·</span>
         <a class="rs-item optional" id="rs-fleet" href="/?filter=quiet"{% if not S.fleet_text %} hidden{% endif %}>{{ S.fleet_text or '' }}</a>
+        <span class="rs-sep optional" aria-hidden="true"{% if not S.data_line %} hidden{% endif %}>·</span>
+        <a class="rs-item optional" id="rs-data" href="{{ S.data_line.href if S.data_line else '/settings#transfer' }}"{% if not S.data_line %} hidden{% endif %}>{{ S.data_line.text if S.data_line else '' }}</a>
         <span class="rs-sep optional" aria-hidden="true" hidden>·</span>
         <span class="rs-item optional rs-job" id="rs-job" hidden></span>
       </div>

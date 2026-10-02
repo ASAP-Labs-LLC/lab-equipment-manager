@@ -35,8 +35,9 @@
     <a href="#hours">Lab hours{{ lock() }}</a>
     <a href="#imports">Imports{{ lock() }}</a>
     <a href="#exports">Records and exports</a>
+    <a href="#transfer">Transfer{{ lock() }}</a>
     {%- if custody %}
-    {%- set cust_bad = custody.rows | selectattr("glyph", "in", ["error", "held"]) | list %}
+    {%- set cust_bad = custody.rows | rejectattr("key", "equalto", "bridge") | selectattr("glyph", "in", ["error", "held"]) | list %}
     <a href="#backups">Backups{% if cust_bad %}<span class="glyph {{ 'error' if cust_bad | selectattr('glyph', 'equalto', 'error') | list else 'held' }} nav-glyph" id="cust-nav-glyph" aria-hidden="true"></span>{% endif %}</a>
     {%- endif %}
     <a href="#diagnostics">Diagnostics<span class="glyph {{ diag.summary.glyph if diag.summary.glyph in ('error', 'held') else '' }} nav-glyph" id="diag-nav-glyph" aria-hidden="true"></span></a>
@@ -202,6 +203,63 @@
       </div>
     </section>
 
+    {#- ── Transfer (transfer §14): how readings reach LEM and LabCore ─── -#}
+    <section class="sec" id="transfer" data-testid="section-transfer-settings">
+      <div class="about"><h2>Transfer</h2>
+        <p class="intro">How each bench's readings reach LEM, the bridge that still copies LEM's record into LabCore, and the tools for when a bench cannot reach LEM. Reading is open; changing needs a sign-in.</p>
+        {{ chip("change the transfer") }}</div>
+      <div class="body">
+        <div class="load-state" id="tr-state" role="status" data-state="loading"><span class="glyph working" aria-hidden="true"></span><span id="tr-state-text">Reading the benches from LEM's store…</span><button type="button" class="btn btn-sm" id="tr-retry" hidden>Try again</button></div>
+
+        <div class="tr-block" id="tr-benches-block" hidden>
+          <h3 class="sub-h" id="tr-benches-h">Benches on module 4</h3>
+          <table class="tbl tr-tbl" id="tr-benches" data-testid="transfer-benches" aria-labelledby="tr-benches-h">
+            <thead><tr><th scope="col">Instrument</th><th scope="col" class="tr-c-road">Road</th><th scope="col">Last delivered</th><th scope="col" class="tr-c-wait">Waiting</th><th scope="col"><span class="sr-only">Action</span></th></tr></thead>
+            <tbody id="tr-benches-body"></tbody>
+          </table>
+          <p class="load-state" id="tr-v4-empty" data-state="empty" hidden>No bench runs module 4 yet. Each one appears here after its first sync.</p>
+          <div class="kv tr-kv" id="tr-older" data-testid="transfer-older"></div>
+          <p class="msg" id="tr-bench-msg" role="status"></p>
+        </div>
+
+        <div class="tr-block" id="tr-bridge-block" hidden>
+          <h3 class="sub-h">Bridge to LabCore</h3>
+          <div class="set-row tr-bridge">
+            <div><b id="tr-bridge-state" data-testid="bridge-state"></b><p class="caption" id="tr-bridge-why"></p>
+              <ul class="tr-reasons" id="tr-bridge-reasons" data-testid="bridge-reasons"></ul></div>
+            {%- if custody %}
+            <button type="button" class="btn btn-sm" id="cust-bridge" data-testid="bridge-off" data-gated="turn the bridge off" data-on="{{ 'true' if custody.bridge_on else 'false' }}">{{ "Turn the bridge off…" if custody.bridge_on else "Turn the bridge back on" }}</button>
+            {%- endif %}
+          </div>
+          <p class="msg" id="tr-bridge-msg" role="status"></p>
+        </div>
+
+        <div class="tr-block" id="tr-journal-block">
+          <h3 class="sub-h">Import a journal folder</h3>
+          <div class="set-row">
+            <div><b>When a bench cannot reach LEM for a day or more</b><p class="caption">Copy the bench's <code>lem_journal\&lt;instrument&gt;</code> folder from its PC and choose it here. Each line is checked; nothing LEM already holds is added twice.</p></div>
+            <label class="btn btn-sm file-btn tr-file"><input type="file" id="tr-journal-files" multiple webkitdirectory accept=".jsonl"><span class="ico ico-file" aria-hidden="true"></span>Choose folder…</label>
+          </div>
+          <div class="preview" id="tr-journal-out" hidden></div>
+          <div class="go-row" id="tr-journal-go-row" hidden>
+            <button type="button" class="btn btn-primary" id="tr-journal-go" data-gated="import the journal"></button>
+            <button type="button" class="btn btn-ghost" id="tr-journal-cancel">Choose another folder</button>
+          </div>
+          <p class="msg" id="tr-journal-msg" role="status"></p>
+        </div>
+
+        <div class="tr-block" id="tr-dedupe-block">
+          <h3 class="sub-h">Re-read readings to hide</h3>
+          <div class="set-row">
+            <div><b>Rows a restart wrote twice</b><p class="caption">The dry run lists them per bench with what hiding them would change in QC. Nothing is hidden until the approver signs for a bench, and a hidden row can be brought back.</p></div>
+            <button type="button" class="btn btn-sm" id="tr-dedupe-run" data-gated="run the dedupe dry run">Run the dry run</button>
+          </div>
+          <div id="tr-dedupe-out" aria-live="polite"></div>
+          <p class="msg" id="tr-dedupe-msg" role="status"></p>
+        </div>
+      </div>
+    </section>
+
     {%- if custody %}
     {#- ── Backups (transfer §11: custody of the record) ───────────────── -#}
     <section class="sec" id="backups" data-testid="section-backups">
@@ -209,7 +267,7 @@
         <p class="intro">The record lives in this server's store, so its safety is here: an hourly checked copy, a nightly copy off this machine, and a monthly drill that proves a copy restores.</p></div>
       <div class="body">
         <div class="kv cust-kv" id="cust-rows" data-testid="custody-rows" aria-live="polite">
-          {%- for row in custody.rows %}
+          {%- for row in custody.rows if row.key != "bridge" %}
           <div class="k">{{ row.label }}</div>
           <div class="v" data-key="{{ row.key }}"><span class="line"><span class="glyph {{ row.glyph }}" aria-hidden="true"></span><span class="val">{{ row.value }}</span></span>{% if row.note %}<span class="caption">{{ row.note }}</span>{% endif %}</div>
           {%- endfor %}
@@ -217,8 +275,6 @@
         <div class="cust-actions" role="group" aria-label="Backup actions">
           <button type="button" class="btn btn-sm" id="cust-backup" data-gated="back up the store">Back up now</button>
           <button type="button" class="btn btn-sm" id="cust-drill" data-gated="run the restore drill"{% if custody.drill_running %} disabled{% endif %}>Run the restore drill</button>
-          <span class="spacer"></span>
-          <button type="button" class="btn btn-sm btn-ghost" id="cust-bridge" data-testid="bridge-off" data-gated="turn the bridge off" data-on="{{ 'true' if custody.bridge_on else 'false' }}">{{ "Turn the bridge off…" if custody.bridge_on else "Turn the bridge back on" }}</button>
         </div>
         <p class="msg" id="cust-msg" role="status"></p>
       </div>
@@ -279,6 +335,23 @@
 
   </main>
 </div>
+<dialog class="sheet" id="tr-sheet" aria-labelledby="tr-sheet-title" data-testid="transfer-sheet">
+  <form class="form" id="tr-sheet-form" method="dialog" novalidate>
+    <h2 id="tr-sheet-title"></h2>
+    <p id="tr-sheet-why"></p>
+    <label class="field" id="tr-sheet-field" hidden><span id="tr-sheet-label"></span><input id="tr-sheet-input" autocomplete="off"></label>
+    <fieldset class="choice" id="tr-sheet-decision" hidden>
+      <legend class="visually-hidden">Decision</legend>
+      <label class="check"><input type="radio" name="tr-decision" value="approved" checked> Approve: hide these rows</label>
+      <label class="check"><input type="radio" name="tr-decision" value="rejected"> Reject: keep them counted</label>
+    </fieldset>
+    <p class="errline" id="tr-sheet-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="tr-sheet-go"></button>
+    </div>
+  </form>
+</dialog>
 {% endblock %}
 {% block scripts %}
 <script src="/static/js/settings_logic.js?v={{ v('js/settings_logic.js') }}"></script>
@@ -286,6 +359,8 @@
 {%- if custody %}
 <script src="/static/js/settings_custody.js?v={{ v('js/settings_custody.js') }}"></script>
 {%- endif %}
+<script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
+<script src="/static/js/settings_transfer.js?v={{ v('js/settings_transfer.js') }}"></script>
 {%- if dev_tools %}
 <script src="/static/js/settings_dev.js?v={{ v('js/settings_dev.js') }}"></script>
 {%- endif %}

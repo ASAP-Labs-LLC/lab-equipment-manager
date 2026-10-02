@@ -50,6 +50,12 @@
     {%- set fleet = S.fleet_text %}
     <a class="sb-gcs" id="fleet" href="/?filter=quiet" data-testid="fleet"{% if S.fleet %} data-all="{{ 'true' if S.fleet.checking == S.fleet.total else 'false' }}"{% endif %}{% if not fleet %} hidden{% endif %}>
       <span class="fleet-glyph" aria-hidden="true"></span><span class="sb-label" id="fleet-text">{{ fleet or '' }}</span></a>
+    {#- where the readings are (transfer §14): "Data · 15 of 17 benches
+        reporting · 0 waiting". Its items join the bell; the line opens
+        Settings › Transfer, where every bench is listed. -#}
+    {%- set dl = S.data_line %}
+    <a class="sb-gcs sb-data" id="data-line" href="{{ dl.href if dl else '/settings#transfer' }}" data-testid="data-line"{% if dl and dl.full %} aria-label="{{ dl.full }} Open Settings, Transfer." title="{{ dl.full }}"{% endif %}{% if not dl %} hidden{% endif %}>
+      <span class="glyph {{ dl.glyph if dl else 'never' }}" id="data-glyph" aria-hidden="true"></span><span class="sb-label" id="data-text">{{ dl.text if dl else '' }}</span></a>
     <div class="live-row" data-testid="live-status">
       <span class="live-dot" id="live-dot" data-state="{{ S.record_state }}" aria-hidden="true"></span>
       <span class="sb-label" id="live-text" role="status">{{ S.record_text }}</span>
