@@ -457,6 +457,45 @@ class TestReadiness:
                                         effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False}]), "")
         assert failed["state"] == ui_live.NOT_OK, "QC out of spec still says No"
 
+    def test_a_silent_bench_is_cant_tell_even_with_a_warning(self):
+        """"OK to run, but…" says the instrument may run. Saying that needs a
+        bench that is vouching for it now. Round 5's critic found Multitek S
+        (dev seed) reading "OK to run, but… Calibration overdue" while its
+        head and Bench tile said "Bench never checked in": the warning ranked
+        above Can't tell, so the page told an analyst it could run off a
+        bench nobody has heard from. A warning (calibration, PM, QC due) is
+        something to do; it is not evidence the instrument reads true. So a
+        bench that is not checking in reads Can't tell, whatever the
+        warnings, and the warnings are still said behind it (``problems``).
+        Only a failed QC (a stop stands until somebody reruns it) and an
+        override rank above it."""
+        quiet = dict(self.BASE, module_running=False, module_state="unknown", last_poll=None)
+        cal = [{"kind": "calibration", "status": "RED"}]
+        pm = [{"kind": "pm", "status": "RED"}]
+        r = ui_live.readiness(dict(quiet, maintenance=cal), "")
+        assert r == {"state": ui_live.CANT_TELL, "reason": "Bench never checked in"}
+        assert ui_live.readiness(dict(quiet, maintenance=pm), "")["state"] == ui_live.CANT_TELL
+        stopped = dict(quiet, module_state="stopped", last_poll="2026-09-30T10:00:00")
+        due = ui_live.readiness(dict(stopped, effective_specs=[
+            {"test_name": "IBP", "last_qc_in_spec": None}]), "")
+        assert due == {"state": ui_live.CANT_TELL, "reason": "Bench stopped"}
+        # the verdict's own fact first, every other one still said behind it
+        assert ui_live.problems(dict(quiet, maintenance=cal + pm), "") == [
+            "cant_tell-never", "ok_but-cal", "ok_but-pm"]
+        # a failed QC and an override still outrank it
+        assert ui_live.readiness(dict(quiet, effective_specs=[
+            {"test_name": "IBP", "last_qc_in_spec": False}]), "")["state"] == ui_live.NOT_OK
+        assert ui_live.readiness(dict(quiet, maintenance=cal), "SERVICE")["state"] == ui_live.OFF_LINE
+        # A shut lab is not silence: the bench vouched until closing time and
+        # rests on purpose, so its warning is still the answer overnight and
+        # "Lab closed" only when there is nothing else to say.
+        closed = dict(quiet, module_state="closed", last_poll="2026-10-01T17:00:00")
+        assert ui_live.readiness(dict(closed, maintenance=cal), "") == {
+            "state": ui_live.OK_BUT, "reason": "Calibration overdue"}
+        assert ui_live.problems(dict(closed, maintenance=cal), "") == ["ok_but-cal"]
+        assert ui_live.readiness(closed, "") == {"state": ui_live.CANT_TELL, "reason": "Lab closed"}
+        assert ui_live.problems(closed, "") == ["cant_tell-closed"]
+
     def test_a_superseded_failure_is_not_a_failure(self):
         """A failure against the OLD standard says nothing about the new one,
         so it is not a stop. Nor is it a pass: the new standard has not been

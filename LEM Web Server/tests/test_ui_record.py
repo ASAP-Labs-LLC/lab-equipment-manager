@@ -687,6 +687,19 @@ class TestNoRedAnywhere:
             if re.search(r"(background|border)[a-z-]*\s*:[^;]*(--st-error|--bad|--pill-error)", line):
                 pytest.fail("red fill/border in the record's CSS: " + line.strip())
 
+    def test_the_bell_badge_is_ink_not_a_red_pill(self):
+        """The bar for this page is "no red fill anywhere", and round 5's
+        shooter found exactly one on every record: the shell's bell count, a
+        red pill (GC hub's own style, ported as it was). The count is a
+        number to read, not a verdict, and the rail badge already says it in
+        ink (test_ui_contrast's LEM_PAIRS: --ink-fg on --ink). The bell says
+        it the same way, so red stays a word and a glyph."""
+        css = (ROOT / "static" / "css" / "shell.css").read_text()
+        rule = css[css.index(".bell-count {"):]
+        rule = rule[:rule.index("}")]
+        assert "--st-error" not in rule, rule
+        assert "background: var(--ink)" in rule and "color: var(--ink-fg)" in rule, rule
+
 
 class TestEveryStateIsAShellPage:
     """The record, "no such instrument" and "could not ask" are all shell
@@ -832,16 +845,36 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         assert _qc_tile(rec)["detail"] == "Bench stopped"
         assert rec["qc"]["checks"][0]["verdict"]["detail"] == "bench stopped"
 
-    def test_a_stopped_bench_behind_a_warning_is_said_too(self):
-        """Calibration overdue AND the bench stopped: the card's verdict is
-        the warning, and the stopped bench (which is why the rows have no
-        verdict) is in the same sentence."""
+    def test_a_warning_behind_a_stopped_bench_is_said_too(self):
+        """Calibration overdue AND the bench stopped. Until round 5 the card
+        said "OK to run, but… Calibration overdue" with the stopped bench as
+        a "too"; the critic found that on Multitek S (never checked in) and
+        called it the record's weakest honesty point: the page told an
+        analyst the instrument may run while nothing was vouching for it.
+        Now the verdict is Can't tell, and the overdue calibration, which is
+        still true and still needs doing, is in the same sentence."""
         m = dict(prod("Viscocity"), maintenance=[
             {"uid": "t1", "name": "Calibration", "kind": "calibration", "status": "RED",
              "next_due": "2026-09-01", "last_done": "2025-09-01", "interval_days": 365}])
         rec = record(m)
-        assert rec["readiness"]["word"] == "OK to run, but…"
-        assert "bench stopped checking in too" in rec["readiness"]["caption"]["too"]
+        assert rec["readiness"]["word"] == "Can't tell"
+        cap = rec["readiness"]["caption"]
+        assert cap["lead"] == "Its bench stopped checking in, so nothing new is judged"
+        assert cap["too"] == "calibration overdue since 1 Sep too"
+        assert rec["readiness"]["primary"] is None, "Can't tell has no primary button (§3.1)"
+        assert [c["verdict"]["word"] for c in rec["qc"]["checks"]] == ["No verdict yet"]
+
+    def test_a_check_never_run_on_a_silent_bench_is_no_verdict_yet(self):
+        """A check with no result on a bench that is not checking in used to
+        read "QC due · bench stopped" under a card that, from round 5, says
+        Can't tell: "QC due" asks for a run that nothing would pick up. The
+        row says what the card says."""
+        m = prod("Viscocity")
+        s = dict(m["effective_specs"][0], last_qc_in_spec=None, last_qc_at=None, last_qc_value=None)
+        rec = record(dict(m, effective_specs=[s]))
+        assert rec["readiness"]["word"] == "Can't tell"
+        (c,) = rec["qc"]["checks"]
+        assert (c["verdict"]["word"], c["verdict"]["detail"]) == ("No verdict yet", "bench stopped")
 
     def test_the_home_row_names_the_same_due_checks(self):
         """ui_instruments says the home's row from the same rule, so the row
@@ -869,6 +902,32 @@ class TestEveryCheckIsJudgedByTheCardsRule:
                 assert "due" in keys, (r["title"], keys)
             if rec["readiness"]["state"] == "cant_tell":
                 assert "in" not in keys, r["title"]
+
+
+class TestASilentBenchIsCantTell:
+    def test_multitek_s_in_the_dev_seed(self, tmp_path):
+        """Round 5's critic, on this seed: Multitek S's head and Bench tile
+        said "Bench never checked in", and the card said "OK to run, but…"
+        because an overdue calibration outranked Can't tell. The page told an
+        analyst it may run off a bench nobody has heard from. Now the card
+        says Can't tell, the calibration is still said in the same sentence,
+        the QC row and tile say No verdict yet, and there is no primary
+        button (§3.1: Can't tell -> nothing). The home's row agrees."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        rec = c.get("/api/ui/instruments/multitek-s").get_json()
+        r = rec["readiness"]
+        assert (r["state"], r["word"]) == ("cant_tell", "Can't tell"), r
+        assert r["caption"]["lead"] == "Its bench has never checked in, so nothing is judged"
+        assert r["caption"]["too"].startswith("calibration overdue since "), r["caption"]
+        assert r["caption"]["next"] == "Start the LEM module in LabStation on its computer"
+        assert r["primary"] is None
+        assert [x["verdict"]["word"] for x in rec["qc"]["checks"]] == ["No verdict yet"]
+        assert _qc_tile(rec)["word"] == "No verdict yet"
+        row = next(x for x in c.get("/api/ui/instruments").get_json()["instruments"]
+                   if x["uid"] == "multitek-s")
+        assert row["readiness"]["word"] == "Can't tell"
+        assert [p["key"] for p in row["problems"]] == ["cant_tell-never", "ok_but-cal"]
 
 
 class TestTheFloorPanelUsesFmtQC:

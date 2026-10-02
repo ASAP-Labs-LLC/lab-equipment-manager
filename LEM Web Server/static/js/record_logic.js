@@ -88,7 +88,9 @@
         const t = Date.parse(iso || '');
         if (isNaN(t)) return '';
         const d = new Date(t);
-        return d.getDate() + ' ' + MONTHS[d.getMonth()];
+        // another year names its year, as stamp() and dayIn() do
+        return d.getDate() + ' ' + MONTHS[d.getMonth()] +
+            (d.getFullYear() === new Date().getFullYear() ? '' : ' ' + d.getFullYear());
     }
     /** A schedule's calendar day: "22 Jul", with its year when that is not
         this year ("22 Jul 2027"), so a due date a year on does not read as
@@ -110,18 +112,21 @@
         if (!pts.length) return RANGE_EMPTY[range] || RANGE_EMPTY['24'];
         const n = pts.length;
         const f = Number(series.failures) || 0;
+        // The row's run is what LabCore holds for the check (the spec row
+        // the module writes). Said as LabCore's, never "the bench's status":
+        // round 5's critic found that under "Bench never checked in".
         if (series.from_status && !series.logged) {
             return '1 run on ' + day(pts[n - 1].ts) + (f ? ' · outside the limits' : '') +
-                ' · from the bench\'s status, none in LEM\'s QC log yet';
+                ' · LabCore\'s latest result for this check, none in LEM\'s QC log yet';
         }
         const head = (range === 'all' ? 'All ' : '') + n + (n === 1 ? ' run' : ' runs') + ' since ' + day(pts[0].ts);
         return head + ' · ' + (f ? f + ' outside the limits' : 'none outside the limits') +
-            (series.from_status ? ' · newest from the bench\'s status' : '');
+            (series.from_status ? ' · newest from LabCore, not yet in LEM\'s QC log' : '');
     }
 
     /** The chart and the row above it tell one story (round 4's critic).
 
-        The row's Last and When are the bench's status (the spec it publishes
+        The row's Last and When are LabCore's copy of the spec the module publishes
         with every poll); the chart is LEM's QC log. Two reads of the same
         runs, and the log can lag or (a fresh bench, the dev seed) hold none
         yet. Drawing only the log then put "No runs of this check on file"
@@ -158,6 +163,18 @@
         pts.push({ ts: c.at || null, value: v, in_spec: !outside, from: 'status' });
         out.from_status = true;
         if (outside) out.failures += 1;
+        // "24 runs" draws 24 (round 5: it drew 25). The oldest logged run
+        // makes way; the findings' indices move with the points, a finding
+        // about only that run goes, one through it keeps its own count.
+        if (range === '24' && pts.length > 24) {
+            const gone = pts.shift();
+            out.logged -= 1;
+            if (gone.in_spec === false && out.failures > 0) out.failures -= 1;
+            out.violations = out.violations.map((x) => {
+                const idx = (x.indices || []).filter((i) => i > 0).map((i) => i - 1);
+                return idx.length ? Object.assign({}, x, { indices: idx, count: x.count || (x.indices || []).length }) : null;
+            }).filter(Boolean);
+        }
         return out;
     }
 
@@ -166,9 +183,12 @@
         "07:30" beside "Thu 07:49" read as the older of the two). `lower`
         for the middle of a sentence. */
     function stamp(iso, nowMs, lower) {
-        const w = when(iso, nowMs);
-        if (!w) return '';
+        // Self-contained (round 5: built on instruments_logic's when(), it
+        // said nothing at all when that file had not loaded), and an older
+        // year names its year (round 5: 2 Oct 2025 read "2 Oct", today).
+        if (!iso || typeof iso !== 'string') return '';
         const t = Date.parse(iso);
+        if (isNaN(t)) return '';
         const d = new Date(t), n = new Date(nowMs === undefined ? Date.now() : nowMs);
         const day0 = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
         const days = Math.round((day0(n) - day0(d)) / 86400000);
@@ -176,14 +196,16 @@
         // only the words are lowered: a weekday keeps its capital
         if (days === 0) return (lower ? 'today ' : 'Today ') + hmS;
         if (days === 1) return (lower ? 'yesterday ' : 'Yesterday ') + hmS;
-        return w;
+        if (days > 1 && days < 7) return WEEKDAYS[d.getDay()] + ' ' + hmS;
+        return d.getDate() + ' ' + MONTHS[d.getMonth()] + (d.getFullYear() === n.getFullYear() ? '' : ' ' + d.getFullYear());
     }
+    const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
     /** A statistical-control finding, as a caption marked provisional: never
         a second verdict (judge J3: one verdict column). The newest finding is
         said; the others are counted. In control: nothing. */
     function controlPhrase(v) {
-        const n = (v.indices || []).length;
+        const n = v.count || (v.indices || []).length;
         const side = v.side === 'above' ? 'above' : v.side === 'below' ? 'below' : '';
         switch (v.rule) {
             case '1_3s': return n + (n === 1 ? ' run' : ' runs') + ' beyond 3s' + (side ? ', ' + side + ' the mean' : '');

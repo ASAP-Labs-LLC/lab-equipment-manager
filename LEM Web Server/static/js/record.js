@@ -282,7 +282,7 @@
         // between: the seg would be a control that does nothing (round 3).
         // An empty 90 days keeps it, to go back to 24 runs or All.
         const empty = !s || !(s.points || []).length;
-        // the same for a chart whose one run is the bench's status: there is
+        // the same for a chart whose one run is LabCore's latest result: there is
         // no logged history for 24 runs / 90 days / All to choose between
         $('chart-range').hidden = (empty || !s.logged) && range !== '90d';
         if (empty) {
@@ -333,9 +333,9 @@
             const tip = svg('title', {});
             tip.textContent = R.stamp(p.ts) + ' · ' + R.fmtQC(p.value, c) + (c.units ? ' ' + c.units : '') + (p.outside ? ' · outside the limits' : '');
             if (p.from === 'status') {
-                // drawn hollow: a run the bench reported, not yet in LEM's QC log
+                // drawn hollow: LabCore's latest result, not yet in LEM's QC log
                 el.setAttribute('class', el.getAttribute('class') + ' status');
-                tip.textContent += ' · from the bench\'s status, not yet in LEM\'s QC log';
+                tip.textContent += ' · from LabCore, not yet in LEM\'s QC log';
             }
             el.appendChild(tip);
             box.appendChild(el);

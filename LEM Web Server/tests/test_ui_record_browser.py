@@ -193,7 +193,8 @@ def test_the_chart_never_says_no_runs_under_a_row_that_shows_one(server, drv):
         assert drv.execute_script("return document.querySelectorAll('#chart-plot .qpt').length") >= 1, r["title"]
         cap = drv.find_element("id", "chart-cap").text
         if drv.execute_script("return document.querySelectorAll('#chart-plot .qpt.status').length"):
-            assert "bench's status" in cap, cap
+            # named as LabCore's: the bench may never have checked in (round 5)
+            assert "LabCore" in cap and "bench" not in cap, cap
             if drv.execute_script("return document.querySelectorAll('#chart-plot .qpt:not(.status)').length") == 0:
                 # nothing logged: a 24 runs / 90 days / All seg would choose between nothing
                 assert not _visible(drv, "#chart-range"), r["title"]

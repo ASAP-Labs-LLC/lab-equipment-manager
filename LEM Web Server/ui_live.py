@@ -181,6 +181,9 @@ def check_verdict(spec: Optional[dict], machine: dict) -> dict:
 
     * a failed result is **Out of spec**, whatever the bench is doing: a
       stop stands until somebody reruns the standard;
+    * on a bench that is stopped or never checked in (not a shut lab),
+      every other check is **No verdict yet · bench stopped**: the card says
+      Can't tell, and "QC due" would ask for a run nothing would pick up;
     * an assigned check with no verdict in the window is **QC due**: that is
       what makes the card say "OK to run, but… QC due on X". A check whose
       band is not published yet counts once its bench is checking in, since
@@ -203,6 +206,12 @@ def check_verdict(spec: Optional[dict], machine: dict) -> dict:
     ok = None if spec is None or moved else spec.get("last_qc_in_spec")
     if ok is False:
         return {"key": "out", "word": "Out of spec", "glyph": "error", "detail": ""}
+    if _silent(machine):
+        # Nobody is vouching for this bench now, so the card says Can't tell
+        # (``readiness``) and no row may say "QC due" under it as if a run
+        # would settle it: the bench has to check in first.
+        return {"key": "none", "word": "No verdict yet", "glyph": "never",
+                "detail": _bench_word(machine)}
     if spec is not None and ok is None or spec is None and running:
         ran = spec is not None and spec.get("last_qc_at") and not moved
         parts = ["no verdict in the window" if ran else
@@ -266,6 +275,18 @@ def _checking_in(machine: dict) -> bool:
     return bool(machine.get("live") or machine.get("module_running"))
 
 
+def _silent(machine: dict) -> str:
+    """"Bench stopped" / "Bench never checked in" for a bench that is not
+    vouching for anything now, "" for one checking in or resting because
+    the lab is shut."""
+    if _checking_in(machine):
+        return ""
+    st = machine.get("module_state") or "unknown"
+    if st == "closed":
+        return ""
+    return "Bench stopped" if st == "stopped" else "Bench never checked in"
+
+
 def readiness(machine: dict, override: Optional[str] = None) -> dict:
     """``{state, reason}`` for one merged machine (ia-final §3.1).
 
@@ -285,6 +306,19 @@ def readiness(machine: dict, override: Optional[str] = None) -> dict:
     if bad:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in bad}))
         return {"state": NOT_OK, "reason": "QC out of spec: " + names}
+    # "OK to run, but…" says it MAY run, which needs a bench vouching for it
+    # now. A bench that is not checking in is Can't tell whatever the
+    # warnings (round 5's critic: Multitek S read "OK to run, but…
+    # Calibration overdue" under "Bench never checked in"). The warnings are
+    # still said behind it (``problems``). A failed QC stands above it: a
+    # stop holds until somebody reruns the standard. A shut lab is not this:
+    # the bench was vouching until closing time and rests on purpose, so
+    # there its warnings still come first and "Lab closed" only when it is
+    # all there is to say (as before, so the home does not fill with "Lab
+    # closed" every night).
+    quiet = _silent(machine)
+    if quiet:
+        return {"state": CANT_TELL, "reason": quiet}
     # Ryan, 2026-10-01: only QC (and an override) can make the answer No.
     # An overdue calibration is a warning, like an overdue PM; the QC check
     # against the certificate band is what says whether it still reads true.
@@ -297,9 +331,7 @@ def readiness(machine: dict, override: Optional[str] = None) -> dict:
     if _overdue(machine, "pm"):
         return {"state": OK_BUT, "reason": "PM overdue"}
     if not _checking_in(machine):
-        st = machine.get("module_state") or "unknown"
-        return {"state": CANT_TELL, "reason": "Bench stopped" if st == "stopped"
-                else "Lab closed" if st == "closed" else "Bench never checked in"}
+        return {"state": CANT_TELL, "reason": "Lab closed"}
     if not (machine.get("effective_specs") or machine.get("qc_targets")):
         return {"state": NO_QC, "reason": "No QC assigned"}
     return {"state": OK, "reason": ""}
@@ -334,15 +366,19 @@ def problems(machine: dict, override: Optional[str] = None) -> List[str]:
     tasks = (["ok_but-cal"] if cal else []) + (["ok_but-pm"] if pm else [])
     if state == OFF_LINE:
         return tasks
-    out = (["not_ok-qc"] if _out_of_spec(machine) else []) \
-        + (["ok_but-qc"] if _qc_due(machine) else []) + tasks
+    rest = (["ok_but-qc"] if _qc_due(machine) else []) + tasks
+    out = ["not_ok-qc"] if _out_of_spec(machine) else []
     if not _checking_in(machine):
         st = machine.get("module_state") or "unknown"
         slug = {"stopped": "stopped", "closed": "closed"}.get(st, "never")
-        # "Lab closed" is a problem only when it is all there is to say
-        if slug != "closed" or not out:
+        # A silent bench outranks every warning (``readiness``), so it comes
+        # before them. "Lab closed" is a problem only when it is all there
+        # is to say.
+        if slug != "closed":
             out.append("cant_tell-" + slug)
-    return out
+        elif not (out or rest):
+            rest.append("cant_tell-closed")
+    return out + rest
 
 
 def overrides_from_tables(tables: Optional[dict]) -> Optional[Dict[str, str]]:

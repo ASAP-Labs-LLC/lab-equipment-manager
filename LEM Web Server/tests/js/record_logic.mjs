@@ -176,10 +176,35 @@ check('the same run a few seconds apart in the two reads is one run',
   R.withLatest({ points: [{ ts: '2026-10-02T07:29:58', value: 0.0018 }] }, row, '24', NOW4).points.length, 1);
 check('the chart model keeps which runs came from the status',
   R.chartModel(Object.assign({}, b2, { low: 0.0011, high: 0.0019, expected: 0.0015 }), { w: 600, h: 200 }).points.map(p => p.from), ['log', 'status']);
+// Round 5's critic: on Multitek S the head said "Bench never checked in" and
+// the caption said the run was "from the bench's status": a source the same
+// page says never reported. The row's Last is what LabCore holds for the
+// check (lem_machine_specs, the spec row the module writes), so the caption
+// names LabCore, which is true whether or not the bench is checking in now.
 check('the caption says where the newest run came from when the log is behind',
-  R.rangeCaption(b2, '24'), '2 runs since 1 Oct · none outside the limits · newest from the bench\'s status');
-check('the caption for a log with nothing in it says the run is the bench\'s',
-  R.rangeCaption(empty, '24'), '1 run on 2 Oct · from the bench\'s status, none in LEM\'s QC log yet');
+  R.rangeCaption(b2, '24'), '2 runs since 1 Oct · none outside the limits · newest from LabCore, not yet in LEM\'s QC log');
+check('the caption for a log with nothing in it names LabCore as the run\'s source',
+  R.rangeCaption(empty, '24'), '1 run on 2 Oct · LabCore\'s latest result for this check, none in LEM\'s QC log yet');
+check('no caption names the bench as a source',
+  [R.rangeCaption(b2, '24'), R.rangeCaption(empty, '24')].some(t => /bench/.test(t)), false);
+
+// Round 5's critic: under "24 runs" a log of 24 plus the row's run drew 25
+// ("25 runs since 5 Sep"). The selector is a promise about how many runs are
+// drawn, so the oldest logged run makes way, and the control findings'
+// indices move with it. A finding about only the dropped run goes; one that
+// ran through it keeps saying how many runs it found ("3 in a row"), since
+// that is what the control rules found in the log.
+const full = { points: Array.from({ length: 24 }, (_, i) => ({ ts: new Date(Date.parse('2026-09-05T08:00:00') + i * 86400000).toISOString(), value: 0.0015 })),
+  failures: 0, violations: [{ rule: 'shift', indices: [0, 1, 2] }, { rule: '1_3s', indices: [0] }] };
+const capped = R.withLatest(full, row, '24', NOW4);
+check('24 runs never draws 25', capped.points.length, 24);
+check('the run that made way is the oldest, the row\'s run is the newest',
+  [capped.points[0].ts, capped.points[23].from], [full.points[1].ts, 'status']);
+check('the findings move with the points and a finding about only the dropped run goes',
+  capped.violations, [{ rule: 'shift', indices: [0, 1], count: 3 }]);
+check('and its caption still says 3', R.controlCaption(capped).includes('3 in a row'), true);
+check('and the logged count says 23 of the 24 are from the log', capped.logged, 23);
+check('All is not capped', R.withLatest(full, row, 'all', NOW4).points.length, 25);
 
 // ── a time always carries its day on the record (round 4's critic) ─────────
 // "When 07:30" next to "Last result Thu 07:49" read as if the older one were
@@ -191,6 +216,18 @@ check('older names the date', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
 check('inside a sentence it is lower case', R.stamp('2026-10-02T07:30:00', NOW4, true), 'today 07:30');
 check('a weekday keeps its capital mid-sentence', R.stamp('2026-09-29T15:04:00', NOW4, true), 'Tue 15:04');
 check('no time is nothing, never a made-up one', R.stamp(null, NOW4), '');
+// Round 5's critic: a result from 2025-10-02 read "2 Oct", the same as today.
+check('another year names its year', R.stamp('2025-10-02T07:30:00', NOW4), '2 Oct 2025');
+check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
+// and stamp() returned '' when instruments_logic.js had not loaded, dropping
+// the time from "In spec (STD-1, today 07:30)" without a word.
+{
+  const bare = {};
+  new Function('window', 'module', load('record_logic.js'))(bare, undefined);
+  check('stamp does not depend on another file having loaded',
+    [bare.LEMRecord.stamp('2026-10-02T07:30:00', NOW4), bare.LEMRecord.stamp('2026-09-29T15:04:00', NOW4)],
+    ['Today 07:30', 'Tue 15:04']);
+}
 
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');
