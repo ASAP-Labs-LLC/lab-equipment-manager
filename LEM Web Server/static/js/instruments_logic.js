@@ -50,8 +50,32 @@
             default: break;
         }
         if (view.level && r.level_uid !== view.level) return false;
-        if (view.cause && !(r.cause && r.cause.key === view.cause)) return false;
+        if (view.cause && !hasProblem(r, view.cause)) return false;
         return true;
+    }
+
+    /** Does row `r` have problem `key`? Every problem it has, not only the
+        worst: a tile's view is about everyone with its problem. */
+    function hasProblem(r, key) {
+        if (Array.isArray(r.problems)) return r.problems.some(p => p && p.key === key);
+        return !!(r.cause && r.cause.key === key);
+    }
+
+    /** key -> words, from every row's problems (names a cause view's chip). */
+    function problemWords(rows) {
+        const out = {};
+        for (const r of rows || []) {
+            for (const p of r.problems || []) if (p && p.key && !out[p.key]) out[p.key] = p.words;
+            if (r.cause && r.cause.key && !out[r.cause.key]) out[r.cause.key] = r.cause.words;
+        }
+        return out;
+    }
+
+    /** The index of the tile whose cause is the view, or -1. No tile is
+        current on the whole list: an inked tile there reads as selected. */
+    function currentTile(tiles, view) {
+        if (!view || !view.cause) return -1;
+        return (tiles || []).findIndex(t => t && t.key === view.cause);
     }
 
     function filterRows(rows, view) {
@@ -218,7 +242,7 @@
             String(ev.key || '').toLowerCase() === 'k';
     }
 
-    const api = { parseView, viewQuery, filterRows, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
+    const api = { parseView, viewQuery, filterRows, hasProblem, problemWords, currentTile, chips, tileWords, needsCaption, when, searchNote, searchEmpty, searchFailed,
                   searchRows, showLoading, isFindKey, LOADING_AFTER_MS };
     root.LEMInstruments = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;

@@ -39,11 +39,14 @@
 {% endblock %}
 {% block content %}
 <main class="content inst-home" id="main" tabindex="-1" data-testid="instruments-page"
+      data-bell-folds="instruments"
       data-has-quality="{{ 'true' if has_quality else 'false' }}">
   <header class="page-head" aria-label="The fleet">
     <div class="meta" id="inst-meta" data-testid="inst-meta">
       {%- if data.state == 'ready' %}
+      {%- if data.fleet.pill %}
       <span class="pill {{ data.fleet.pill.level }}" id="fleet-pill" data-testid="fleet-pill"><span class="glyph {{ data.fleet.pill.glyph }}" aria-hidden="true"></span>{{ data.fleet.pill.text }}</span>
+      {%- endif %}
       <span id="fleet-count">{{ data.fleet.total }} {{ 'instrument' if data.fleet.total == 1 else 'instruments' }}</span>
       {%- if data.levels %}<span class="sep" aria-hidden="true">·</span><span id="fleet-levels">on {{ data.levels|length }} levels</span>{% endif %}
       {%- endif %}

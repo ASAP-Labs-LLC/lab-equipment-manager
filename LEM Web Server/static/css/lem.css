@@ -233,8 +233,8 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .find-note:empty { display: none; }
 
 /* the page-head is the fleet line only: the title is in the topbar */
-.content.inst-home { padding-top: var(--s5); }
-.inst-home .page-head { margin-bottom: var(--s4); }
+.content.inst-home { padding-top: var(--s4); }
+.inst-home .page-head { margin-bottom: var(--s3); }
 .inst-home .page-head .meta { min-height: 26px; }
 .unread { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s4) var(--s5); margin-bottom: var(--s6); }
 .unread .glyph { margin-top: 6px; }
@@ -242,26 +242,30 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 
 /* Needs you: GC's checklist card with glyph-circle tiles. A tile is a cause
    and its next step; it names nobody (the rows do) and counts nothing. The
-   current tile (the worst, or the cause the table is filtered to) has GC's
-   1.5px ink border. No red fill, no red border: status colour lives only in
-   the glyph and its word (§0.1). */
+   current tile (only the cause the table is filtered to; none on the whole
+   list) has GC's 1.5px ink border. No red fill, no red border, no red title:
+   on a tile, status colour lives only in the glyph (§0.1); the row's verdict
+   is the one glyph-and-word in colour. The glyph sits beside the words, not
+   above them, so the card costs the table one line less. */
+.inst-home .needs { padding: var(--s4) var(--s5) var(--s5); margin-bottom: 0; }
 .needs .bar { margin-bottom: var(--s3); }
 .needs .bar .caption { font-size: var(--fs-xs); }
 .ntiles { display: grid; grid-template-columns: repeat(var(--cols, 6), minmax(0, 1fr)); gap: var(--s2); }
 .ntile {
-    display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s4);
+    display: grid; grid-template-columns: 22px minmax(0, 1fr); grid-template-rows: auto auto 1fr;
+    column-gap: var(--s3); row-gap: 2px; min-width: 0; padding: var(--s3) var(--s3) var(--s3) var(--s3);
     border-radius: var(--radius-md); background: var(--bg-sunken); border: 1.5px solid transparent;
     text-decoration: none; color: var(--text);
     transition: border-color var(--t-fast) var(--ease-std), background var(--t-fast) var(--ease-std);
 }
 .ntile:hover { border-color: var(--border-strong); }
 .ntile.current { background: var(--bg-card); border-color: var(--ink); }
-.ntile .tglyph { width: 22px; height: 22px; flex: none; margin-bottom: var(--s2); }
-.ntile .t-word { font-size: var(--fs-md); font-weight: 600; line-height: 1.3; }
+.ntile .tglyph { width: 22px; height: 22px; grid-row: 1 / span 3; }
+.ntile .t-word, .ntile .t-word[class*="s-"] { font-size: var(--fs-md); font-weight: 600; line-height: 22px; color: var(--text); }
 .ntile .t-word.s-more { color: var(--text); }
 .ntile .t-next { font-size: var(--fs-xs); color: var(--text-muted-sunken); line-height: 1.4; }
 .ntile.current .t-next { color: var(--text-muted); }
-.ntile .t-link { margin-top: auto; padding-top: var(--s2); font-size: var(--fs-xs); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
+.ntile .t-link { align-self: end; padding-top: var(--s1); font-size: var(--fs-xs); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 .needs-empty { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s3) var(--s4); border-radius: var(--radius-md);
     background: var(--bg-sunken); color: var(--text-muted-sunken); font-size: var(--fs-sm); }
 
@@ -281,17 +285,16 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .s-not_ok { color: var(--st-error); }
 .s-ok_but { color: var(--pill-held-fg); }
 .verdict.s-off_line, .verdict.s-cant_tell, .verdict.s-no_qc, .verdict.s-ok { color: var(--text); }
-.ntile .t-word.s-cant_tell { color: var(--text); }
 
 /* the table */
-.inst-table { margin-top: var(--s6); }
+.inst-table { margin-top: var(--s5); }
 .inst-table .table-head { align-items: center; padding: var(--s3) var(--s4); }
 .inst-table .chips { gap: var(--s2); align-items: center; }
 .inst-table .chip { display: inline-flex; align-items: center; gap: 6px; }
 .inst-table .chip .x { font-size: 15px; line-height: 1; }
 .chip-sep { width: 1px; height: 20px; background: var(--border-light); margin: 0 var(--s1); }
 .tbl.inst th { padding: 10px var(--s4); }
-.tbl.inst td { padding: 11px var(--s4); vertical-align: top; }
+.tbl.inst td { padding: 10px var(--s4); vertical-align: top; }
 .tbl.inst tbody tr:last-child td { border-bottom: 0; }
 .tbl.inst .irow { cursor: pointer; }
 .tbl.inst .irow:hover td { background: var(--bg-hover); }
@@ -302,7 +305,7 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .tbl.inst .fold-bench { display: none; }
 .tbl.inst .verdict, .tbl.inst .bstate { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
 .tbl.inst .bstate { font-weight: 500; }
-.tbl.inst .c-run { width: 32%; }
+.tbl.inst .c-run { width: 40%; }
 .tbl.inst .c-run .sub { padding-left: 18px; }
 .tbl.inst .c-bench .sub { padding-left: 18px; }
 .tbl.inst .none { color: var(--text-muted); }
@@ -321,12 +324,13 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 @media (max-width: 1099px) {
     .find-box { width: 300px; }
     .tbl.inst .c-where, .tbl.inst .c-bench { display: none; }
-    .tbl.inst .src { display: none; }
     .tbl.inst .fold-bench { display: block; }
     .tbl.inst .c-run { width: 42%; }
 }
 @media (max-width: 860px) {
     .ntiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    /* an odd last tile takes the row rather than leave half of it empty */
+    .ntile:last-child:nth-child(odd) { grid-column: 1 / -1; }
 }
 /* the phone: the seg goes (the floor map is a desk tool), the find box is a
    button that opens across the bar, tiles are compact rows, and the table
@@ -340,16 +344,20 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
     .find.open .find-box kbd, .find.open .find-open { display: none; }
     .find-pop { width: 100%; }
     .needs { padding: var(--s4); }
-    .ntiles { grid-template-columns: 1fr; gap: var(--s2); }
-    .ntile { min-height: 0; display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: var(--s3); row-gap: 2px; padding: var(--s3); }
-    .ntile .tglyph { grid-row: 1 / span 3; margin: 0; }
-    .ntile .t-link { margin-top: 0; padding-top: 2px; }
+    .ntiles { grid-template-columns: 1fr; gap: var(--s1); }
+    /* compact rows (§6): the problem and its link on one line; the next
+       step is on the record and on the wider screens */
+    .ntile { grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-rows: auto; align-items: center;
+             padding: 10px var(--s3); min-height: 44px; }
+    .ntile .tglyph { grid-row: 1; }
+    .ntile .t-next { display: none; }
+    .ntile .t-link { grid-column: 3; grid-row: 1; align-self: center; padding-top: 0; }
+    .inst-home .needs { padding: var(--s3) var(--s3) var(--s3); }
     .inst-table .table-head { padding: var(--s3); }
-    /* the chips scroll inside their row; the fade says there is more */
-    .inst-table .chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; max-width: 100%; padding-bottom: 2px;
-        -webkit-mask-image: linear-gradient(90deg, var(--ink) calc(100% - 28px), transparent);
-        mask-image: linear-gradient(90deg, var(--ink) calc(100% - 28px), transparent); padding-right: 24px; }
-    .inst-table .chips::-webkit-scrollbar { display: none; }
+    /* the chips wrap onto a second line: every view is on screen, none
+       hides past the edge of a strip that may or may not scroll */
+    .inst-table .chips { flex-wrap: wrap; row-gap: var(--s2); max-width: 100%; }
+    .inst-table .chip-sep { display: none; }
     .inst-table .table-head .spacer, .inst-table #inst-shown { display: none; }
     .tbl.inst thead { display: none; }
     .tbl.inst, .tbl.inst tbody { display: block; }

@@ -176,16 +176,27 @@ def _cause(m: dict, ready: dict) -> tuple:
     return ("", "", "")
 
 
-def _detail(m: dict, ready: dict) -> str:
-    """The one line under a verdict: what exactly, and since when."""
+def _too(m: dict, keys: List[str]) -> str:
+    """The problems behind the verdict's own, said on the row once each:
+    " · QC due on Density too · calibration and PM overdue too". The bench
+    is not among them: the row's Bench column says it."""
+    out = []
+    if "ok_but-qc" in keys:
+        due = [s for s in _specs(m) if s.get("last_qc_in_spec") is None]
+        out.append("QC due on %s too" % _tests(due))
+    tasks = [w for k, w in (("ok_but-cal", "calibration"), ("ok_but-pm", "PM")) if k in keys]
+    if tasks:
+        out.append("%s overdue too" % _and(tasks))
+    return "".join(" · " + x for x in out)
+
+
+def _primary(m: dict, ready: dict) -> str:
+    """What the verdict itself is about: what exactly, and since when."""
     state, reason = ready["state"], str(ready.get("reason") or "")
     specs = _specs(m)
-    # One cause per instrument reaches the card and the bell, the worst. An
-    # overdue calibration behind QC is on neither, so its row says it, once.
-    also = (" · calibration overdue too" if ui_live._overdue(m, "calibration") else "")
     if state == NOT_OK:
         bad = [s for s in specs if s.get("last_qc_in_spec") is False]
-        return "%s out of spec" % _tests(bad) + also
+        return "%s out of spec" % _tests(bad)
     if state == OK_BUT and reason.startswith("Calibration"):
         cal = [t for t in m.get("maintenance") or []
                if str(t.get("kind") or "").lower() == "calibration" and t.get("status") == "RED"]
@@ -193,7 +204,7 @@ def _detail(m: dict, ready: dict) -> str:
         return "Calibration overdue" + (" since %s" % _day(due) if _day(due) else "")
     if state == OK_BUT and reason.startswith("QC due"):
         due = [s for s in specs if s.get("last_qc_in_spec") is None]
-        return "QC due on %s" % _tests(due) + also
+        return "QC due on %s" % _tests(due)
     if state == OK_BUT:
         return "PM overdue"
     if state == OFF_LINE:
@@ -205,6 +216,14 @@ def _detail(m: dict, ready: dict) -> str:
         return "Nothing assigned to judge it by"
     n = len([s for s in specs if s.get("last_qc_in_spec") is True])
     return "%d %s in spec" % (n, "check" if n == 1 else "checks") if n else ""
+
+
+def _detail(m: dict, ready: dict, keys: List[str]) -> str:
+    """The one line under a verdict: what it is about, then every other
+    problem the instrument has (round 3: OptiMPP 2's overdue PM, behind its
+    calibration, was on no row, no tile and in no bell line)."""
+    behind = keys if ready["state"] == OFF_LINE else keys[1:]
+    return _primary(m, ready) + _too(m, behind)
 
 
 def _next(m: dict, ready: dict, href: Href) -> Optional[dict]:
@@ -303,17 +322,21 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
     ready = ui_live.readiness(m, override)
     state = ready["state"]
     key, cause, section = _cause(m, ready)
+    keys = ui_live.problems(m, override)
     return {
         "uid": uid,
         "title": m.get("title") or uid,
         "source": source_caption(m.get("watching")),
         "href": href(uid, ""),
         "readiness": {"state": state, "word": WORDS[state], "glyph": GLYPH[state],
-                      "reason": ready.get("reason") or "", "detail": _detail(m, ready),
+                      "reason": ready.get("reason") or "", "detail": _detail(m, ready, keys),
                       "next": _next(m, ready, href),
                       "tiles": _tiles(m, ready, override or "", href)},
         "needs_you": state in NEEDS_YOU,
         "cause": {"key": key, "words": cause, "href": href(uid, section)} if key else None,
+        # every problem it has, worst first; a tile and its filter are about
+        # everyone with the problem, not only those it is the worst for
+        "problems": [{"key": k, "words": ui_live.PROBLEM_WORDS[k]} for k in keys],
         "last_qc": last_qc(m),
         "bench": bench(m),
         "level_uid": m.get("level_uid") or "",
@@ -330,7 +353,9 @@ def fleet(rows: List[dict]) -> dict:
     total = len(rows)
     not_ok = sum(1 for r in rows if r["readiness"]["state"] == NOT_OK)
     can = sum(1 for r in rows if r["readiness"]["state"] in (OK, OK_BUT, NO_QC))
-    if not_ok:
+    if not total:
+        pill = None                      # a verdict on nothing is no verdict
+    elif not_ok:
         pill = {"glyph": "error", "level": "error", "text": "%d not OK to run" % not_ok}
     elif can == total:
         pill = {"glyph": "final", "level": "final",
@@ -341,40 +366,47 @@ def fleet(rows: List[dict]) -> dict:
 
 
 def needs_you(rows: List[dict]) -> dict:
-    """The card: one tile per cause, worst first, at most six. A tile says
-    its cause, the next step for it and a link that filters the table to its
-    members; the members ride along as data (the filter and the record page
-    use them) but are not drawn. When more causes exist than fit, the sixth
-    tile is "More causes" to the Needs-you view, so nothing that needs you
-    silently falls off the card."""
+    """The card: one tile per problem, worst first, at most six. A tile says
+    the problem, the next step for it and a link that filters the table to
+    every instrument that has it; the members ride along as data (the filter
+    and the record page use them) but are not drawn. A tile is about every
+    instrument with its problem, not only those it is the worst for: an
+    overdue calibration behind a QC stop is still overdue, and its tile, its
+    filter and the bell count it. When more problems exist than fit, the
+    sixth tile is "More causes" to the Needs-you view, so nothing that needs
+    you silently falls off the card.
+
+    ``count`` is the number of instruments that need you (the nav's number),
+    not a sum over tiles: one instrument on two tiles is one instrument."""
     groups: Dict[str, List[dict]] = {}
     for r in rows:
-        if r["needs_you"] and r["cause"]:
-            groups.setdefault(r["cause"]["key"], []).append(r)
+        for p in r["problems"]:
+            groups.setdefault(p["key"], []).append(r)
     tiles = []
     for key, members in groups.items():
         members.sort(key=lambda r: (r["title"].lower(), r["uid"]))
-        state = members[0]["readiness"]["state"]
+        state = key.split("-", 1)[0]
         tiles.append({
             "key": key, "state": state, "glyph": GLYPH[state],
-            "cause": members[0]["cause"]["words"],
+            "cause": ui_live.PROBLEM_WORDS[key],
             "next": {"text": CAUSE_NEXT.get(key, "Open each record")},
             "link": "Show it" if len(members) == 1 else "Show them",
             "href": "/?cause=" + key,
-            "members": [{"uid": r["uid"], "title": r["title"], "href": r["cause"]["href"]}
-                        for r in members],
+            "members": [{"uid": r["uid"], "title": r["title"],
+                         "href": r["href"] if not r["cause"] or r["cause"]["key"] != key
+                         else r["cause"]["href"]} for r in members],
         })
-    tiles.sort(key=lambda t: (RANK[t["state"]], -len(t["members"]), t["cause"].lower()))
-    count = sum(len(t["members"]) for t in tiles)
+    tiles.sort(key=lambda t: (RANK[t["state"]], list(ui_live.PROBLEM_WORDS).index(t["key"])))
+    count = sum(1 for r in rows if r["needs_you"])
     if len(tiles) > MAX_TILES:
         shown = tiles[:MAX_TILES - 1]
         rest = tiles[MAX_TILES - 1:]
-        n = sum(len(t["members"]) for t in rest)
+        uids = sorted({m["uid"] for t in rest for m in t["members"]})
         shown.append({"key": "more", "state": rest[0]["state"], "glyph": "more",
                       "cause": "More causes",
                       "next": {"text": _and([t["cause"] for t in rest])},
-                      "link": "Show all that need you", "members": [], "more": n,
-                      "href": "/?filter=needs"})
+                      "link": "Show all that need you", "members": [], "more": len(uids),
+                      "uids": uids, "href": "/?filter=needs"})
         tiles = shown
     return {"count": count, "tiles": tiles}
 

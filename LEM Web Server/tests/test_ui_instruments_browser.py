@@ -13,6 +13,11 @@ looking, so they are checked here the same way:
   twice: the table row names it with its verdict; a Needs-you tile says a
   cause and its next step and names nobody, and carries no count beside the
   pill's. The card has at most six tiles; chips and caption carry no digits.
+  Round 3: the bell, opened on this page, named the rows' problems again
+  ("OptiMPP 1 is not OK to run: QC out of spec…"). It folds them here, so
+  with the bell open every instrument is still named exactly once.
+* **Every problem is on its row.** OptiMPP 2's overdue PM, behind its
+  overdue calibration, was on no row, tile or bell line.
 
 Plus the find box: Ctrl K focuses it, a search lists links and says what it
 searched, and Escape closes it.
@@ -87,6 +92,19 @@ def _open(d, base, path="/", size=(1440, 900), theme="light"):
     raise AssertionError("the table never drew")
 
 
+def test_t1_at_desk_the_verdict_and_its_reason_are_whole_on_the_first_screen(drv, server):
+    """Round 3's critic: at 1440x900 GC-2's verdict word sat cut by the
+    bottom edge and its reason ("Calibration overdue since 17 May") wholly
+    below it. The first screen must hold GC-2's whole row."""
+    _open(drv, server.base)
+    got = drv.execute_script("""
+        const tr = document.querySelector('tr[data-uid="gc-2"]');
+        return {bottom: tr.getBoundingClientRect().bottom, vh: innerHeight,
+                text: tr.querySelector('.c-run').innerText};""")
+    assert got["bottom"] <= got["vh"], got
+    assert "since" in got["text"], got
+
+
 @pytest.mark.parametrize("size", SIZES, ids=lambda s: "%dx%d" % s)
 def test_t1_the_verdict_is_on_screen_with_no_click(drv, server, size):
     _open(drv, server.base, size=size)
@@ -155,6 +173,73 @@ def test_say_it_once(drv, server):
     for title in titles:
         n = sum(1 for t in seen if re.search(r"(^|[^\w-])%s($|[^\w-])" % re.escape(title), t))
         assert n <= 1, (title, n, [t for t in seen if title in t])
+
+
+def _named(text, title):
+    return len(re.findall(r"(^|[^\w-])%s($|[^\w-])" % re.escape(title), text))
+
+
+def test_the_bell_does_not_tell_the_rows_again(drv, server):
+    """The critic's repro: open the bell on Instruments and count each
+    instrument's name in the page's text. Each is named once, on its row."""
+    import json
+    import urllib.request
+    _open(drv, server.base)
+    drv.execute_script("localStorage.removeItem('lem.recent'); localStorage.removeItem('lem.notes-dismissed')")
+    _open(drv, server.base)
+    titles = [r["title"] for r in json.load(urllib.request.urlopen(server.base + "/api/ui/instruments"))["instruments"]]
+    for _ in range(50):
+        if drv.execute_script("return !!document.getElementById('bell-fold').textContent"):
+            break
+        time.sleep(0.1)
+    drv.find_element("id", "bell").click()
+    time.sleep(0.2)
+    panel = drv.find_element("id", "bell-panel")
+    assert panel.is_displayed()
+    said = panel.text
+    for title in titles:
+        assert _named(said, title) == 0, ("the bell names a row's instrument", title, said)
+    assert "Instrument problems are on this page" in said, said
+    assert not re.search(r"\d+ instruments? (is|are)", said), said
+    page = drv.execute_script("return document.body.innerText")
+    for title in titles:
+        assert _named(page, title) == 1, (title, _named(page, title))
+    badge = drv.find_element("id", "bell-count")
+    shown = badge.text if badge.is_displayed() else ""
+    listed = len(drv.find_elements("css selector", "#bell-list li"))
+    assert shown == (str(listed) if listed else ""), (shown, listed)
+    drv.find_element("id", "bell").click()
+
+
+def test_a_pm_behind_a_calibration_is_on_its_row(drv, server):
+    _open(drv, server.base)
+    text = drv.execute_script(
+        "return document.querySelector('tr[data-uid=\"optimpp-2\"] .c-run').innerText")
+    assert "Calibration overdue" in text and "PM overdue too" in text, text
+
+
+def test_no_tile_looks_chosen_on_the_whole_list(drv, server):
+    _open(drv, server.base)
+    assert drv.find_elements("css selector", "a.ntile.current") == []
+    assert drv.find_elements("css selector", "a.ntile[aria-current]") == []
+
+
+@pytest.mark.parametrize("path,want", [("/?cause=ok_but-cal", 7), ("/?cause=ok_but-pm", 3)])
+def test_a_tiles_view_shows_everyone_with_the_problem(drv, server, path, want):
+    """The seed's schedule has 7 overdue calibrations and 3 overdue PMs; the
+    view that showed 2 of 3 PMs keyed on each instrument's worst cause."""
+    _open(drv, server.base, path)
+    assert len(drv.find_elements("css selector", "tr.irow")) == want
+
+
+def test_on_a_phone_every_chip_is_on_screen(drv, server):
+    _open(drv, server.base, size=(390, 844))
+    out = drv.execute_script("""
+        const w = document.documentElement.clientWidth;
+        return [...document.querySelectorAll('#inst-chips .chip')]
+            .filter(c => c.getBoundingClientRect().right > w || c.getBoundingClientRect().left < 0)
+            .map(c => c.textContent);""")
+    assert out == [], out
 
 
 def test_the_title_sits_in_the_topbar(drv, server):

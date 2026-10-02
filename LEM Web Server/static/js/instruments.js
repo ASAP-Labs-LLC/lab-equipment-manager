@@ -76,11 +76,10 @@
         if (!meta) return;
         if (!data || data.state !== 'ready' || !data.fleet) { meta.replaceChildren(); return; }
         const f = data.fleet;
-        const bits = [
-            h('span', { className: 'pill ' + f.pill.level, id: 'fleet-pill', 'data-testid': 'fleet-pill' },
-                glyph(f.pill.glyph), f.pill.text),
-            h('span', { id: 'fleet-count' }, f.total + (f.total === 1 ? ' instrument' : ' instruments')),
-        ];
+        // an empty lab has no verdict: no pill (the table says it in words)
+        const bits = f.pill ? [h('span', { className: 'pill ' + f.pill.level, id: 'fleet-pill', 'data-testid': 'fleet-pill' },
+            glyph(f.pill.glyph), f.pill.text)] : [];
+        bits.push(h('span', { id: 'fleet-count' }, f.total + (f.total === 1 ? ' instrument' : ' instruments')));
         if ((data.levels || []).length) {
             bits.push(h('span', { className: 'sep', 'aria-hidden': 'true' }, '·'));
             bits.push(h('span', { id: 'fleet-levels' }, 'on ' + data.levels.length + ' levels'));
@@ -110,7 +109,7 @@
     // A tile is a cause and its remedy; it names nobody and counts nothing.
     // Its link filters the table below to its rows, where each instrument is
     // named once, with its verdict. The tile whose cause is the view is the
-    // current one (GC's ink border); with no cause chosen, the worst is.
+    // current one (GC's ink border); with no cause chosen, none is.
     function tile(t, current) {
         const w = L.tileWords(t, view);
         const kids = [circle(t.more ? 'more' : t.glyph),
@@ -130,19 +129,15 @@
         if (!ny) { box.replaceChildren(); return; }
         empty.hidden = ny.count > 0;
         box.hidden = ny.count === 0;
-        const chosen = ny.tiles.findIndex(t => view.cause && t.key === view.cause);
-        box.replaceChildren(...ny.tiles.map((t, i) => tile(t, i === (chosen >= 0 ? chosen : 0))));
+        const chosen = L.currentTile(ny.tiles, view);
+        box.replaceChildren(...ny.tiles.map((t, i) => tile(t, i === chosen)));
         // few tiles share the row instead of leaving most of it empty
         box.style.setProperty('--cols', String(Math.min(6, Math.max(3, ny.tiles.length))));
         $('needs-caption').textContent = L.needsCaption(ny, refreshFailedAt);
     }
 
     // ── chips and the table ───────────────────────────────────────────────
-    function causeWords() {
-        const out = {};
-        for (const r of (data && data.instruments) || []) if (r.cause) out[r.cause.key] = r.cause.words;
-        return out;
-    }
+    function causeWords() { return L.problemWords((data && data.instruments) || []); }
     function renderChips() {
         const row = $('inst-chips');
         const list = L.chips(data, view, causeWords());
@@ -170,7 +165,6 @@
         const benchWhen = b.at ? L.when(b.at, now) : '';
         const name = h('td', { className: 'c-name' },
             h('a', { className: 'iname', href: r.href }, r.title),
-            sub(r.source, 'src'),
             sub([b.word, benchWhen].filter(Boolean).join(' · '), 'fold-bench'));
         const run = h('td', { className: 'c-run' },
             h('span', { className: 'verdict s-' + rd.state }, glyph(rd.glyph), h('span', { text: rd.word })),

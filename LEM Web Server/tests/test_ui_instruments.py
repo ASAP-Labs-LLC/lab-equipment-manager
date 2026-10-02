@@ -190,10 +190,9 @@ class TestEachInstrumentSaysWhetherItCanRun:
         assert p["fleet"]["pill"]["text"] == "It can run"
 
     def test_an_overdue_calibration_behind_a_worse_cause_is_said_on_its_row(self):
-        """Each instrument has ONE cause on the card (the worst), so an
-        overdue calibration behind "QC out of spec" or "QC due" is on no tile
-        and in no bell line. It must still be said somewhere, once: on that
-        instrument's own row, after the cause that outranks it."""
+        """An overdue calibration behind "QC out of spec" or "QC due" is not
+        the row's verdict, but it is still a fact about that instrument, so
+        its row says it, after the cause that outranks it."""
         p = build([machine("g", specs=[spec("Flash Point", False)], maint=[task("calibration", "RED")]),
                    machine("b", specs=[spec("Flash Point", None)], maint=[task("calibration", "RED")]),
                    machine("a", specs=[spec("Flash Point", True)], maint=[task("calibration", "RED")])])
@@ -254,6 +253,83 @@ class TestTheTableOrder:
               machine("x", "alpha", specs=[spec("X", True)]),
               machine("w", "Zed", specs=[spec("X", False)])]
         assert [r["uid"] for r in build(ms)["instruments"]] == ["w", "x", "y", "z"]
+
+
+class TestEveryProblemIsOnItsRow:
+    """Round 3's critic: "OptiMPP 2's overdue PM is not mentioned anywhere on
+    the home page." Its calibration was overdue too, and the page grouped
+    each instrument by its ONE worst cause, so the PM behind the calibration
+    was on no row, no tile and no bell line, and the PM filter showed 2 of
+    the 3 instruments with a PM overdue.
+
+    An instrument now carries every problem it has (`problems`, worst first).
+    The first is its cause, the one its verdict is about; each of the others
+    is said on its row as "· … too". A tile and its filter are about every
+    instrument with that problem, not only those for which it is the worst."""
+
+    def test_a_pm_behind_a_calibration_is_said_on_the_row(self):
+        p = build([machine("o2", "OptiMPP 2", specs=[spec("X", True)],
+                           maint=[task("calibration", "RED"), task("pm", "RED")])])
+        r = row(p, "o2")
+        assert r["readiness"]["detail"] == "Calibration overdue since 1 Sep · PM overdue too"
+        assert [x["key"] for x in r["problems"]] == ["ok_but-cal", "ok_but-pm"]
+
+    def test_several_behind_one_cause_read_as_one_clause(self):
+        p = build([machine("g", specs=[spec("Flash Point", False), spec("Density", None)],
+                           maint=[task("calibration", "RED"), task("pm", "RED")])])
+        assert row(p, "g")["readiness"]["detail"] == (
+            "Flash Point out of spec · QC due on Density too · calibration and PM overdue too")
+        assert [x["key"] for x in row(p, "g")["problems"]] == [
+            "not_ok-qc", "ok_but-qc", "ok_but-cal", "ok_but-pm"]
+
+    def test_the_first_problem_is_the_cause_its_verdict_is_about(self, tmp_path):
+        """One rule, two readings: the verdict's reason and problems[0] can
+        never name different things (§0.2)."""
+        app, _ = _seeded(tmp_path)
+        p = app.test_client().get("/api/ui/instruments").get_json()
+        for r in p["instruments"]:
+            if r["needs_you"]:
+                assert r["problems"] and r["problems"][0]["key"] == r["cause"]["key"], r["uid"]
+
+    def test_off_line_keeps_its_overdue_tasks(self):
+        """Taking an instrument off line is a decision about running it; it
+        does not make its calibration any less overdue."""
+        p = build([machine("kf", maint=[task("calibration", "RED")], specs=[spec("X", False)])],
+                  overrides={"kf": "SERVICE"})
+        r = row(p, "kf")
+        assert r["readiness"]["state"] == "off_line"
+        assert [x["key"] for x in r["problems"]] == ["ok_but-cal"]
+        assert r["readiness"]["detail"] == "Taken off line (SERVICE) · calibration overdue too"
+
+    def test_a_tile_is_about_everyone_with_the_problem(self):
+        p = build([machine("alpha", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
+                   machine("gamma", specs=[spec("X", False)], maint=[task("calibration", "RED")]),
+                   machine("o2", specs=[spec("X", True)],
+                           maint=[task("calibration", "RED"), task("pm", "RED")])])
+        tiles = {t["key"]: t for t in p["needs_you"]["tiles"]}
+        assert sorted(m["uid"] for m in tiles["ok_but-cal"]["members"]) == ["alpha", "gamma", "o2"]
+        assert [m["uid"] for m in tiles["ok_but-pm"]["members"]] == ["o2"]
+        assert list(tiles) == ["not_ok-qc", "ok_but-cal", "ok_but-pm"], "worst cause first"
+
+    def test_the_seed_tiles_count_what_the_schedule_says(self, tmp_path):
+        """The critic's check: the API's own maintenance data says seven
+        calibrations and three PMs are overdue; the tiles (and so their
+        filters) must be about exactly those instruments."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        machines = c.get("/api/machines").get_json()["machines"]
+        p = c.get("/api/ui/instruments").get_json()
+        tiles = {t["key"]: t for t in p["needs_you"]["tiles"]}
+        for kind, key in (("calibration", "ok_but-cal"), ("pm", "ok_but-pm")):
+            want = sorted(m["machine_uid"] for m in machines
+                          if any(str(t.get("kind")).lower() == kind and t.get("status") == "RED"
+                                 for t in m.get("maintenance") or []))
+            got = sorted(m["uid"] for m in tiles[key]["members"])
+            assert got == want, (kind, got, want)
+        assert len(tiles["ok_but-cal"]["members"]) == 7
+        assert len(tiles["ok_but-pm"]["members"]) == 3
+        o2 = row(p, "optimpp-2")
+        assert "PM overdue" in o2["readiness"]["detail"], o2["readiness"]["detail"]
 
 
 # ── the Needs-you card ──────────────────────────────────────────────────────
@@ -324,7 +400,7 @@ class TestNeedsYou:
         for t in p["needs_you"]["tiles"]:
             assert t["href"] == "/?cause=" + t["key"]
             assert sorted(m["uid"] for m in t["members"]) == sorted(
-                r["uid"] for r in p["instruments"] if r["cause"] and r["cause"]["key"] == t["key"])
+                r["uid"] for r in p["instruments"] if t["key"] in [x["key"] for x in r["problems"]])
 
     def test_at_most_six_tiles_and_the_rest_are_counted_not_dropped(self):
         """Seven causes do not fit. The sixth tile becomes "+2 more" linking
@@ -341,9 +417,9 @@ class TestNeedsYou:
         ny = build(ms)["needs_you"]
         assert ny["count"] == 8
         assert len(ny["tiles"]) <= 6
-        shown = sum(len(t["members"]) for t in ny["tiles"] if not t.get("more"))
+        shown = {m["uid"] for t in ny["tiles"] if not t.get("more") for m in t["members"]}
         more = [t for t in ny["tiles"] if t.get("more")]
-        assert len(more) == 1 and shown + more[0]["more"] == 8
+        assert len(more) == 1 and shown | set(more[0]["uids"]) == set("abcdefgh")
         assert more[0]["href"] == "/?filter=needs"
         said = " ".join([more[0]["cause"], more[0]["next"]["text"], more[0]["link"]])
         assert not re.search(r"\d", said), said
@@ -372,22 +448,22 @@ class TestNeedsYou:
 
 
 class TestTheBellAgreesWithTheCard:
-    """§0.2: two counts of one fact may not disagree. Round 2's critic found
-    the calibration bell line counting every instrument with an overdue
-    calibration while its "Show them" link (and the tile) keyed on the CAUSE,
-    which "QC due" and "QC out of spec" outrank. Alpha (calibration only),
-    Beta (QC due + calibration), Gamma (QC out of spec + calibration): the
-    bell said "2 instruments … Alpha and Beta" and its link listed 1.
+    """§0.2: two counts of one fact may not disagree. Round 3's critic: the
+    bell said "5 instruments are overdue for calibration" when the schedule
+    had 7, because it counted only instruments whose WORST cause was the
+    calibration. And it had no PM line at all.
 
-    The rule now: a bell line that links to the list says exactly the
-    instruments that list shows, because both key on the same cause."""
+    The rule now: a bell line is about every instrument with that problem,
+    the same set its tile and its "Show them" filter are about."""
 
     MS = [machine("alpha", "Alpha", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
           machine("delta", "Delta", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
           machine("beta", "Beta", specs=[spec("X", None)], maint=[task("calibration", "RED")]),
           machine("gamma", "Gamma", specs=[spec("X", False)], maint=[task("calibration", "RED")]),
           machine("eps", "Eps", specs=[spec("Y", None)]),
-          machine("zeta", "Zeta", specs=[spec("X", False)])]
+          machine("zeta", "Zeta", specs=[spec("X", False)]),
+          machine("omega", "Omega", specs=[spec("X", True)],
+                  maint=[task("calibration", "RED"), task("pm", "RED")])]
 
     def _bell(self):
         ready = {m["machine_uid"]: ui_live.readiness(m, "") for m in self.MS}
@@ -397,8 +473,14 @@ class TestTheBellAgreesWithTheCard:
 
     def test_the_repro(self):
         cal = [i for i in self._bell() if i["key"].startswith("caldue")]
-        assert [i["message"] for i in cal] == ["2 instruments are overdue for calibration: Alpha and Delta."]
+        assert [i["message"] for i in cal] == [
+            "5 instruments are overdue for calibration: Alpha, Beta and 3 more."]
         assert cal[0]["href"] == "/?cause=ok_but-cal"
+
+    def test_a_pm_behind_a_calibration_has_its_line(self):
+        pm = [i for i in self._bell() if i["key"].startswith("pmdue")]
+        assert [i["message"] for i in pm] == ["1 instrument is overdue for PM: Omega."]
+        assert pm[0]["href"] == "/instruments/omega#maintenance"
 
     def test_every_bell_line_to_the_list_names_what_the_list_shows(self):
         p = build(self.MS)
@@ -406,14 +488,49 @@ class TestTheBellAgreesWithTheCard:
         linked = [i for i in self._bell() if i["href"].startswith("/?cause=")]
         assert {i["href"] for i in linked} == {"/?cause=ok_but-cal", "/?cause=ok_but-qc",
                                                "/?cause=not_ok-qc"}, linked
+        n = {"ok_but-cal": 5, "ok_but-qc": 2, "not_ok-qc": 2}
         for i in linked:
             key = i["href"].split("=", 1)[1]
-            shown = [title[r["uid"]] for r in p["instruments"] if r["cause"] and r["cause"]["key"] == key]
-            assert len(shown) == 2, (key, shown)
-            for t in shown:
-                assert t in i["message"], (t, i["message"])
+            shown = [title[r["uid"]] for r in p["instruments"]
+                     if key in [x["key"] for x in r["problems"]]]
+            assert len(shown) == n[key], (key, shown)
+            if key != "not_ok-qc":
+                assert i["message"].startswith("%d instruments" % len(shown)), i["message"]
             for t in set(title.values()) - set(shown):
                 assert not re.search(r"\b%s\b" % t, i["message"]), (t, i["message"])
+
+    def test_instrument_lines_say_they_are_about_instruments(self):
+        """The Instruments page lists these on its rows, so its bell folds
+        them (they would be the second telling there). The bell can only
+        fold what is marked: every line about an instrument is marked, and a
+        line about something else (the round, the audit spool, a
+        certificate, the live road) is not."""
+        items = ui_live.conditions(
+            machines=self.MS, ready={m["machine_uid"]: ui_live.readiness(m, "") for m in self.MS},
+            overrides={"eps": "SERVICE"}, round_={"slot": "morning", "done": 1, "total": 5,
+                                                  "due": "09:00", "overdue": True},
+            audit_spool=2, live_road={"checking_in": 3, "live": 0},
+            certificates=[{"standard": "STD-1", "expires": "2026-10-09"}],
+            href=lambda u, s: "/instruments/%s#%s" % (u, s), now=NOW)
+        about = {i["key"].split(":")[0]: i.get("about") for i in items}
+        for k in ("notok", "override", "qcdue", "caldue", "pmdue"):
+            assert about[k] == "instruments", (k, about)
+        for k in ("round", "audit", "cert", "liveroad"):
+            assert about[k] is None, (k, about)
+
+    def test_notices_keep_the_mark_and_recoveries_carry_it(self):
+        clock = [1000.0]
+        n = ui_live.Notices(clock=lambda: clock[0])
+        out = n.update([{"key": "notok:a", "level": "error", "message": "A is not OK to run.",
+                         "href": "/x", "link": "Open A", "about": "instruments"},
+                        {"key": "audit", "level": "warning", "message": "2 rows.",
+                         "href": "/settings", "link": "Open"}],
+                       {"a": "A"}, {"notok": {"a"}, "offline": set()})
+        assert {o["message"]: o.get("about") for o in out} == {
+            "A is not OK to run.": "instruments", "2 rows.": None}
+        clock[0] += 5
+        out = n.update([], {"a": "A"}, {"notok": set(), "offline": set()})
+        assert [(o["message"], o.get("about")) for o in out] == [("A is OK to run again.", "instruments")]
 
 
 class TestTheFleetPill:
@@ -434,6 +551,13 @@ class TestTheFleetPill:
                    machine("b", running=False, module_state="stopped", specs=[spec("X", True)])])
         assert p["fleet"]["pill"]["text"] == "1 of 2 can run"
         assert p["fleet"]["pill"]["level"] == "held"
+
+
+    def test_an_empty_lab_has_no_verdict_to_give(self):
+        """"All 0 can run" is a verdict on nothing. LabCore answered with no
+        instruments, and the table says so in a sentence; the pill says
+        nothing rather than something empty."""
+        assert build([])["fleet"]["pill"] is None
 
 
 class TestFiltersAreViewsNotCounts:
@@ -636,6 +760,17 @@ class TestThePages:
         app, _ = _seeded(tmp_path)
         r = app.test_client().get("/?view=map")
         assert r.status_code == 302 and r.headers["Location"].endswith("/floor")
+
+    def test_the_home_page_folds_instrument_lines_out_of_its_bell(self, tmp_path):
+        """The bell is on every page; on this one, the rows already say each
+        instrument's problems, so its instrument lines would be the second
+        telling (round 3's critic: "the bell lists the row problems a second
+        time, by name and cause"). The page declares it; other pages do not."""
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        for path in ("/", "/instruments"):
+            assert 'data-bell-folds="instruments"' in c.get(path).get_data(as_text=True), path
+        assert "data-bell-folds" not in c.get("/settings").get_data(as_text=True)
 
     def test_one_h1(self, tmp_path):
         app, _ = _seeded(tmp_path)

@@ -124,6 +124,46 @@ def readiness(machine: dict, override: Optional[str] = None) -> dict:
     return {"state": OK, "reason": ""}
 
 
+# Every problem an instrument has, worst first, by key. The key is what a
+# Needs-you tile, its ?cause= filter and a bell line are about. ui_live owns
+# it (not ui_instruments) because the bell needs it and ui_instruments
+# imports this module.
+PROBLEM_WORDS = {"not_ok-qc": "QC out of spec", "ok_but-qc": "QC due",
+                 "ok_but-cal": "Calibration overdue", "ok_but-pm": "PM overdue",
+                 "cant_tell-stopped": "Bench stopped", "cant_tell-never": "Never checked in",
+                 "cant_tell-closed": "Lab closed"}
+
+
+def problems(machine: dict, override: Optional[str] = None) -> List[str]:
+    """Every problem one instrument has, as keys, worst first.
+
+    The first is the one its verdict is about (``readiness``'s reason), so the
+    two cannot name different things. The rest are facts behind it that are
+    just as true: an overdue PM behind an overdue calibration (round 3's
+    critic found OptiMPP 2's said nowhere), a calibration behind a QC stop.
+    Grouping each instrument by its one worst cause made a tile, its filter
+    and the bell count 5 overdue calibrations where the schedule had 7.
+
+    Off line is a decision about running it, so the QC and bench facts that
+    decide "can it run?" are moot; its overdue tasks are not.
+    """
+    r = readiness(machine, override)
+    state = r["state"]
+    cal, pm = bool(_overdue(machine, "calibration")), bool(_overdue(machine, "pm"))
+    tasks = (["ok_but-cal"] if cal else []) + (["ok_but-pm"] if pm else [])
+    if state == OFF_LINE:
+        return tasks
+    out = (["not_ok-qc"] if _out_of_spec(machine) else []) \
+        + (["ok_but-qc"] if _qc_due(machine) else []) + tasks
+    if not _checking_in(machine):
+        st = machine.get("module_state") or "unknown"
+        slug = {"stopped": "stopped", "closed": "closed"}.get(st, "never")
+        # "Lab closed" is a problem only when it is all there is to say
+        if slug != "closed" or not out:
+            out.append("cant_tell-" + slug)
+    return out
+
+
 def overrides_from_tables(tables: Optional[dict]) -> Optional[Dict[str, str]]:
     """uid -> override out of the snapshot's ``control`` arm, or None when the
     snapshot has no tables yet (unknown, not "no overrides")."""
@@ -330,12 +370,12 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
     for reason, uids in groups.items():
         if len(uids) == 1:
             uid = uids[0]
-            out.append({"key": "notok:" + uid, "level": "error",
+            out.append({"key": "notok:" + uid, "level": "error", "about": "instruments",
                         "message": "%s is not OK to run: %s." % (title[uid], reason),
                         "href": href(uid, "qc"), "link": "Open " + title[uid]})
         else:
             digest = hashlib.sha1(("%s|%s" % (reason, ",".join(sorted(uids)))).encode()).hexdigest()[:10]
-            out.append({"key": "notok:group:" + digest, "level": "error",
+            out.append({"key": "notok:group:" + digest, "level": "error", "about": "instruments",
                         "message": "%s are not OK to run: %s." % (
                             _names([title[u] for u in uids]), _lower_first(reason)),
                         "href": "/?cause=not_ok-qc", "link": "Show them"})
@@ -343,39 +383,38 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
         uid = m.get("machine_uid")
         if overrides is not None and overrides.get(uid):
             out.append({"key": "override:%s:%s" % (uid, overrides[uid].upper()), "level": "warning",
+                        "about": "instruments",
                         "message": "%s is off line (%s)." % (title[uid], overrides[uid].upper()),
                         "href": href(uid, ""), "link": "Open " + title[uid]})
 
-    # A line that links to the list says exactly the instruments the list
-    # shows: both key on the instrument's ONE cause (its readiness reason),
-    # the key ui_instruments' tiles and ?cause= filter use (§0.2).
-    def _cause(prefix: str) -> list:
-        return [m for m in ms if (ready.get(m.get("machine_uid")) or {}).get("state") == OK_BUT
-                and str((ready.get(m.get("machine_uid")) or {}).get("reason") or "").startswith(prefix)]
+    # A line that links to the list is about every instrument with that
+    # problem: the same set its tile and its ?cause= filter are about
+    # (§0.2). Not only those for which it is the worst problem: that counted
+    # 5 overdue calibrations where the schedule had 7, and no PM at all.
+    probs = {m.get("machine_uid"): problems(m, None if overrides is None
+                                             else overrides.get(m.get("machine_uid"), ""))
+             for m in ms}
 
-    due = _cause("QC due")
-    if due:
-        n = len(due)
-        out.append({"key": "qcdue", "level": "warning",
-                    "message": "%d %s due for QC: %s." % (
-                        n, _plural(n, "instrument is", "instruments are"),
-                        _names([title[m["machine_uid"]] for m in due])),
-                    "href": href(due[0]["machine_uid"], "qc") if n == 1 else "/?cause=ok_but-qc",
-                    "link": "Open " + title[due[0]["machine_uid"]] if n == 1 else "Show them"})
+    def _with(key: str) -> list:
+        # by name, as the tile lists them
+        return sorted((m for m in ms if key in probs.get(m.get("machine_uid"), ())),
+                      key=lambda m: (str(title[m["machine_uid"]]).lower(), m["machine_uid"]))
 
-    # Calibration overdue is a warning (Ryan, 2026-10-01), so it is a line of
-    # its own, merged across instruments; it used to ride inside "not OK".
-    # Only where it IS the cause: one behind QC is said on that row instead.
-    cal = _cause("Calibration")
-    if cal:
-        n = len(cal)
-        out.append({"key": "caldue:" + ",".join(sorted(m["machine_uid"] for m in cal)),
-                    "level": "warning",
-                    "message": "%d %s overdue for calibration: %s." % (
-                        n, _plural(n, "instrument is", "instruments are"),
-                        _names([title[m["machine_uid"]] for m in cal])),
-                    "href": href(cal[0]["machine_uid"], "maintenance") if n == 1 else "/?cause=ok_but-cal",
-                    "link": "Open " + title[cal[0]["machine_uid"]] if n == 1 else "Show them"})
+    for key, prefix, words, section in (
+            ("ok_but-qc", "qcdue", "due for QC", "qc"),
+            ("ok_but-cal", "caldue", "overdue for calibration", "maintenance"),
+            ("ok_but-pm", "pmdue", "overdue for PM", "maintenance")):
+        hit = _with(key)
+        if not hit:
+            continue
+        n = len(hit)
+        out.append({"key": prefix + ":" + ",".join(sorted(m["machine_uid"] for m in hit)),
+                    "level": "warning", "about": "instruments",
+                    "message": "%d %s %s: %s." % (
+                        n, _plural(n, "instrument is", "instruments are"), words,
+                        _names([title[m["machine_uid"]] for m in hit])),
+                    "href": href(hit[0]["machine_uid"], section) if n == 1 else "/?cause=" + key,
+                    "link": "Open " + title[hit[0]["machine_uid"]] if n == 1 else "Show them"})
 
     quiet = []
     for m in ms:
@@ -392,7 +431,7 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
             quiet.append((title[m["machine_uid"]], _hm(str(last)), m["machine_uid"]))
     if quiet:
         n = len(quiet)
-        out.append({"key": "quiet", "level": "warning",
+        out.append({"key": "quiet", "level": "warning", "about": "instruments",
                     "message": "%d %s quiet for more than 10 min in lab hours: %s." % (
                         n, _plural(n, "bench has been", "benches have been"),
                         _names(["%s (since %s)" % (t, hm) if hm else t for t, hm, _ in quiet])),
@@ -466,7 +505,8 @@ class Notices:
                         self._recovered.append({
                             "id": "%s:%s:recovered:%d" % (kind, uid, int(now)), "level": "success",
                             "message": words % titles[uid], "href": self._href.get(uid) or "/",
-                            "link": "Open " + titles[uid], "ts": _iso(now)})
+                            "link": "Open " + titles[uid], "ts": _iso(now),
+                            "about": "instruments"})
             if watched is not None:
                 self._watched = {k: set(v) for k, v in watched.items()}
             keys = {i["key"] for i in items}
@@ -479,7 +519,7 @@ class Notices:
                 since = self._since.setdefault(i["key"], now)
                 out.append({"id": "%s:%d" % (i["key"], int(since)), "level": i["level"],
                             "message": i["message"], "href": i.get("href"), "link": i.get("link"),
-                            "ts": _iso(since)})
+                            "ts": _iso(since), "about": i.get("about")})
             out.extend(self._recovered)
             out.sort(key=lambda n: n["ts"], reverse=True)
             return out

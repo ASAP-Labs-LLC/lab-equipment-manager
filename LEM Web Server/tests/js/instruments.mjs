@@ -41,9 +41,13 @@ const row = (uid, state, extra) => Object.assign({
 const data = {
   state: 'ready',
   instruments: [
-    row('a', 'not_ok', { cause: { key: 'not_ok-qc' } }), row('a2', 'ok_but', { cause: { key: 'ok_but-cal' } }),
-    row('b', 'ok_but', { cause: { key: 'ok_but-qc' }, level_uid: 'L2' }),
-    row('c', 'cant_tell', { cause: { key: 'cant_tell-stopped' }, bench: { state: 'stopped' } }),
+    row('a', 'not_ok', { cause: { key: 'not_ok-qc' },
+                         problems: [{ key: 'not_ok-qc', words: 'QC out of spec' }, { key: 'ok_but-cal', words: 'Calibration overdue' }] }),
+    row('a2', 'ok_but', { cause: { key: 'ok_but-cal' },
+                          problems: [{ key: 'ok_but-cal', words: 'Calibration overdue' }, { key: 'ok_but-pm', words: 'PM overdue' }] }),
+    row('b', 'ok_but', { cause: { key: 'ok_but-qc' }, level_uid: 'L2', problems: [{ key: 'ok_but-qc', words: 'QC due' }] }),
+    row('c', 'cant_tell', { cause: { key: 'cant_tell-stopped' }, bench: { state: 'stopped' },
+                            problems: [{ key: 'cant_tell-stopped', words: 'Bench stopped' }] }),
     row('d', 'no_qc', { maintenance: 2 }),
     row('e', 'ok', { level_uid: 'L2' }),
     row('f', 'off_line', { bench: { state: 'never' } }),
@@ -67,7 +71,18 @@ check('no QC assigned', uids(L.filterRows(data.instruments, { filter: 'noqc' }))
 check('maintenance: instruments with a schedule', uids(L.filterRows(data.instruments, { filter: 'maintenance' })), ['d']);
 check('quiet: the fleet line\'s link, benches not checking in', uids(L.filterRows(data.instruments, { filter: 'quiet' })), ['c', 'f']);
 check('a merged tile\'s link shows exactly its members', uids(L.filterRows(data.instruments, { cause: 'ok_but-qc' })), ['b']);
-check('a calibration tile\'s link', uids(L.filterRows(data.instruments, { cause: 'ok_but-cal' })), ['a2']);
+// Round 3: a tile's filter is about EVERY instrument with its problem, not
+// only those for which it is the worst. "a" is not OK to run (QC) and its
+// calibration is overdue too; "a2"'s PM hides behind its calibration. The
+// PM view that showed 2 of 3 overdue PMs was this filter keying on the cause.
+check('a calibration tile\'s link: everyone with an overdue calibration',
+      uids(L.filterRows(data.instruments, { cause: 'ok_but-cal' })), ['a', 'a2']);
+check('a PM behind a calibration is in the PM view', uids(L.filterRows(data.instruments, { cause: 'ok_but-pm' })), ['a2']);
+check('a row from an older answer (no problems) still filters by its cause',
+      uids(L.filterRows([row('z', 'ok_but', { cause: { key: 'ok_but-cal' } })], { cause: 'ok_but-cal' })), ['z']);
+check('the chip for a cause view is named from any row\'s problems',
+      L.problemWords(data.instruments), { 'not_ok-qc': 'QC out of spec', 'ok_but-cal': 'Calibration overdue',
+                                          'ok_but-pm': 'PM overdue', 'ok_but-qc': 'QC due', 'cant_tell-stopped': 'Bench stopped' });
 check('level', uids(L.filterRows(data.instruments, { level: 'L2' })), ['b', 'e']);
 check('level and filter together', uids(L.filterRows(data.instruments, { filter: 'needs', level: 'L2' })), ['b']);
 
@@ -186,6 +201,15 @@ check('Ctrl Shift K is the browser\'s', L.isFindKey({ key: 'K', ctrlKey: true, s
   check('the overflow tile lists the causes it holds, without a count',
         L.tileWords(more, { cause: '' }),
         { head: 'More causes', next: 'PM overdue and Bench stopped', link: 'Show all that need you', active: false });
+}
+// Round 3: with "All" the view, the first tile drew GC's ink "current"
+// border and read as selected. A tile is current only while its cause IS
+// the view; otherwise none is.
+{
+  const tiles = [{ key: 'not_ok-qc' }, { key: 'ok_but-cal' }];
+  check('no tile is current on the whole list', L.currentTile(tiles, { cause: '' }), -1);
+  check('the tile whose cause is the view is current', L.currentTile(tiles, { cause: 'ok_but-cal' }), 1);
+  check('a cause no tile holds makes none current', L.currentTile(tiles, { cause: 'cant_tell-never' }), -1);
 }
 check('the caption carries no count', L.needsCaption({ count: 10 }, null), 'Worst first · updates by itself');
 check('nothing needs you: no caption (the empty line says it)', L.needsCaption({ count: 0 }, null), '');
