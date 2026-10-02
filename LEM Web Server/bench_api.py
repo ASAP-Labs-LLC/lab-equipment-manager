@@ -165,11 +165,31 @@ def adoption_hash(lab_id: str, raw_values: dict) -> str:
     return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
 
 
+#: What a qc verdict row that kept no raw reading is keyed on in place of a
+#: value — the module's `ADOPTION_NO_RAW`, byte for byte.
+ADOPTION_NO_RAW = "(no raw)"
+
+
+def _adoption_detail(detail):
+    """A row's detail as a dict, {} when it has none, None when it cannot be
+    read — the module's `_detail_dict`, so both sides call the same rows
+    unreadable."""
+    if isinstance(detail, dict):
+        return detail
+    if detail in (None, ""):
+        return {}
+    try:
+        out = json.loads(detail)
+    except (TypeError, ValueError):
+        return None
+    return out if isinstance(out, dict) else None
+
+
 def adoption_raw_values(kind: str, test_name: str, value, detail: dict):
     """The raw reading a recorded row was made from (as the module's
     `legacy_row_raw_values`), or None when the row cannot say. run: `values`
     with `raw` laid over them (raw holds only the corrected tests); qc: the
-    one test at `raw_value` (spec-corrected), `raw`, or the value judged."""
+    one test at `raw_value` (spec-corrected) or `raw`, else ADOPTION_NO_RAW."""
     if kind == "run":
         values = detail.get("values")
         if not isinstance(values, dict):
@@ -188,14 +208,64 @@ def adoption_raw_values(kind: str, test_name: str, value, detail: dict):
                 raw = raw.get(test_name)
             if raw not in (None, ""):
                 return {test_name: raw}
-        return {test_name: value}
+        # No raw kept (v3.9 under a machine-level factor): the value is a
+        # corrected number, no key to the reading. Matched by count.
+        return {test_name: ADOPTION_NO_RAW}
     return None
+
+
+def adoption_digest(rows, now: datetime) -> dict:
+    """§10.2's answer over a bench's recorded run/qc rows (pure, so the
+    floor rehearsal runs the very code the endpoint does):
+
+      counts           the multiset of H(lab_id, raw);
+      unreadable_labs  Lab IDs with a row whose detail cannot be read — not
+                       "no row": the bench never recovers their lines;
+      qc_tests         Lab ID -> the tests it holds qc verdicts of, so a QC
+                       print matches whatever today's QC assignment is;
+      first_ts         when LEM first recorded a reading from the bench;
+      recent           run rows of the last ADOPTION_LEDGER_DAYS with the
+                       values v3.9 FILED, for the results guard's ledger."""
+    counts: Dict[str, int] = {}
+    unreadable = set()
+    qc_tests: Dict[str, set] = {}
+    recent: List[dict] = []
+    first: Optional[str] = None
+    since = (now - timedelta(days=ADOPTION_LEDGER_DAYS)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    for r in rows:
+        ts = str(r.get("ts") or "")
+        # v3.9 wrote "YYYY-MM-DD HH:MM:SS", v4 ISO: compared as one.
+        if ts and (first is None or ts.replace("T", " ")[:19]
+                   < first.replace("T", " ")[:19]):
+            first = ts
+        detail = _adoption_detail(r.get("detail"))
+        kind = str(r.get("kind") or "")
+        lab = str(r.get("lab_id") or "").strip()
+        raw = adoption_raw_values(kind, str(r.get("test_name") or ""),
+                                  r.get("value"), detail) \
+            if isinstance(detail, dict) else None
+        if raw is None:
+            unreadable.add(lab)
+            continue
+        h = adoption_hash(r.get("lab_id"), raw)
+        counts[h] = counts.get(h, 0) + 1
+        if kind == "qc":
+            qc_tests.setdefault(lab, set()).add(str(r.get("test_name") or ""))
+        if kind == "run" and ts.replace("T", " ")[:19] >= since \
+                and isinstance(detail.get("values"), dict):
+            recent.append({"h": h, "lab_id": r.get("lab_id"),
+                           "values": detail["values"], "ts": ts})
+    return {"rows": len(rows), "counts": counts,
+            "unreadable_labs": sorted(unreadable),
+            "qc_tests": {k: sorted(v) for k, v in qc_tests.items()},
+            "first_ts": first, "recent": recent}
 
 
 ADOPTION_RECIPE = ("sha256(canonical([lab_id, {test: v}]))[:32]; v a number "
                    "-> format(float, '.12g'), else stripped text; run row: "
                    "detail.values with detail.raw laid over them; qc row: "
-                   "{test_name: detail.raw_value or detail.raw or value}; "
+                   "{test_name: detail.raw_value or detail.raw or '(no raw)'}; "
                    "canonical = JSON, sorted keys, ',' ':' separators, UTF-8")
 #: §10.2 step 5: the bench seeds its results ledger from matched rows this recent.
 ADOPTION_LEDGER_DAYS = 30
@@ -1229,37 +1299,11 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
                 "('run', 'qc')", [uid])
             if not isinstance(res, dict) or res.get("error") or "rows" not in res:
                 raise StoreFailed(res)
-            counts: Dict[str, int] = {}
-            recent: List[dict] = []
-            first: Optional[str] = None
-            since = (datetime.now() - timedelta(days=ADOPTION_LEDGER_DAYS)
-                     ).strftime("%Y-%m-%d %H:%M:%S")
-            for r in res["rows"]:
-                ts = str(r.get("ts") or "")
-                # v3.9 wrote "YYYY-MM-DD HH:MM:SS", v4 ISO: compared as one.
-                if ts and (first is None or ts.replace("T", " ")[:19]
-                           < first.replace("T", " ")[:19]):
-                    first = ts
-                detail = _json_or(r.get("detail"), {})
-                if not isinstance(detail, dict):
-                    continue          # unreadable: evidence of nothing
-                kind = str(r.get("kind") or "")
-                raw = adoption_raw_values(kind, str(r.get("test_name") or ""),
-                                          r.get("value"), detail)
-                if raw is None:
-                    continue
-                h = adoption_hash(r.get("lab_id"), raw)
-                counts[h] = counts.get(h, 0) + 1
-                if kind == "run" and ts.replace("T", " ")[:19] >= since \
-                        and isinstance(detail.get("values"), dict):
-                    recent.append({"h": h, "lab_id": r.get("lab_id"),
-                                   "values": detail["values"], "ts": ts})
-            return _gz(jsonify({"machine_uid": uid,
-                                "src": request.args.get("src", ""),
-                                "boundary": request.args.get("boundary", ""),
-                                "recipe": ADOPTION_RECIPE,
-                                "rows": len(res["rows"]), "counts": counts,
-                                "first_ts": first, "recent": recent}))
+            digest = adoption_digest(res["rows"], datetime.now())
+            return _gz(jsonify(dict(digest, machine_uid=uid,
+                                    src=request.args.get("src", ""),
+                                    boundary=request.args.get("boundary", ""),
+                                    recipe=ADOPTION_RECIPE)))
         except BenchRefusal as exc:
             return _refused(exc)
         except StoreFailed as exc:

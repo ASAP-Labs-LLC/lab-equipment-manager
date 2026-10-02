@@ -228,6 +228,144 @@ def test_U3_a_factor_changed_since_logging_makes_no_false_recovery(qapp, tmp_pat
     assert rec["recovered"] == 0
 
 
+QC_D = dict(name="Density", value_col="Density", expected=0.85, std_dev=0.05,
+            k=2.0, sample_id="QC-D")
+
+
+def _machine_factor_world(b, texts, then, now):
+    """v3.9 logged `texts` on a bench whose correction is MACHINE-level
+    (lem_correction_factors, applied at the parse boundary) with a QC spec
+    that has no correction of its own; the factor is `now` at the v4 start."""
+    spec = mod.TestSpec(**QC_D)
+    legacy_world(b, texts, corrections=then, tests=[spec])
+    machine = b.m.machine()
+    machine.tests = [spec]
+    machine.corrections = dict(now)
+
+
+def test_U3_a_qc_standard_logged_under_a_machine_factor_since_changed_is_not_recovered(qapp, tmp_path, monkeypatch):
+    """The hole the round-1 critic found. v3.9's `qc_log_detail` writes
+    `raw_value` only when the SPEC has a correction; under a machine-level
+    factor the verdict row keeps only the corrected number (`value`). The
+    QC-D print was logged at +0.0100 and the factor is +0.0200 now, so
+    neither the raw reading (0.85) nor today's corrected one (0.87) is the
+    0.86 the row holds — and keyed on either, the print looked unrecorded:
+    1 false recovered where the bar is 0. A verdict row that kept no raw
+    cannot say which reading it was, only that the standard was run for
+    that test; it is matched on that, one row for one print."""
+    b = Bench(tmp_path, monkeypatch)
+    texts = [line(i) for i in range(30)] + ["QC-D,0.8500"]
+    _machine_factor_world(b, texts, {"Density": 0.01}, {"Density": 0.02})
+    rows = [r for r in log_rows(b) if r["lab_id"] == "QC-D"]
+    assert [r["kind"] for r in rows] == ["qc"]
+    assert "raw_value" not in json.loads(rows[0]["detail"])   # v3.9's shape
+    write_file(b, texts)
+    polls(b)
+    (rec,) = journal_records("adoption")
+    assert rec["recovered"] == 0
+    assert len(log_rows(b)) == 31 and b.lab.cell_sends == []
+    assert runs_in_journal(b.journal()) == []
+
+
+def test_U2_of_two_qc_prints_the_one_the_record_lacks_is_the_one_recovered(qapp, tmp_path, monkeypatch):
+    """Matching a no-raw verdict on (standard, test) is a count, not a free
+    pass: the standard was printed twice, the record holds one verdict, so
+    exactly one print is recovered — the newer, the one made while
+    LabStation was down — and the factor change does not hide it."""
+    b = Bench(tmp_path, monkeypatch)
+    logged = [line(i) for i in range(10)] + ["QC-D,0.8500"] + \
+        [line(i) for i in range(10, 30)]
+    _machine_factor_world(b, logged, {"Density": 0.01}, {"Density": 0.02})
+    write_file(b, logged + ["QC-D,0.8400"])
+    polls(b)
+    (rec,) = journal_records("adoption")
+    assert rec["recovered"] == 1
+    tail = log_rows(b)[len(logged) - 1 + 1:]
+    assert [(r["kind"], r["lab_id"]) for r in tail] == [("run", "QC-D")]
+    assert json.loads(tail[0]["detail"])["values"]["Density"] in ("0.8400", 0.84)
+
+
+def test_U3_a_qc_standard_no_longer_assigned_is_still_matched_to_its_verdicts(qapp, tmp_path, monkeypatch):
+    """The QC assignment is today's configuration; the verdicts are what
+    v3.9 did then. QC-D was a standard on this bench when it was logged and
+    is not now (or the QC library has not loaded yet): the print has no QC
+    keys of its own, but the record says it holds Density verdicts for QC-D,
+    and the print is matched to them — not recovered as a `run`."""
+    b = Bench(tmp_path, monkeypatch)
+    texts = [line(i) for i in range(30)] + ["QC-D,0.8500"]
+    _machine_factor_world(b, texts, {"Density": 0.01}, {"Density": 0.02})
+    b.m.machine().tests = []
+    write_file(b, texts)
+    polls(b)
+    (rec,) = journal_records("adoption")
+    assert (rec["recovered"], rec["matched"]) == (0, 31)
+    assert len(log_rows(b)) == 31 and b.lab.cell_sends == []
+
+
+def test_a_line_whose_recorded_rows_cannot_be_read_is_not_recovered(qapp, tmp_path, monkeypatch):
+    """The critic's worry about the real v3.9 rows: a row whose detail
+    cannot be read makes its line unmatched, and unmatched-after-a-match
+    means `recovered`. A row that cannot be read is not evidence of nothing
+    — the record DOES hold something for that sample. Such lines are
+    counted as `unreadable` (presumed recorded, said in the adoption record
+    and the status line), never written to the record a second time."""
+    b = Bench(tmp_path, monkeypatch)
+    texts = [line(i) for i in range(30)]
+    legacy_world(b, texts)
+    b.lab.con.execute("UPDATE lem_machine_log SET detail = '{not json' "
+                      "WHERE lab_id IN (?, ?)", [lab_id(12), lab_id(25)])
+    b.lab.con.commit()
+    write_file(b, texts)
+    polls(b)
+    (rec,) = journal_records("adoption")
+    assert (rec["recovered"], rec["unreadable"]) == (0, 2)
+    assert len(log_rows(b)) == 30 and b.lab.cell_sends == []
+
+
+def _write_cr(b, lines):
+    """The Eraspec's own LIMS export ends every print with a bare CR — the
+    last print in the file too (backup of the Eraspec PC, lims.csv: 311 CRs,
+    one LF)."""
+    with open(b.path, "ab") as f:
+        for text in lines:
+            f.write(text.encode() + b"\r")
+
+
+def test_a_cr_terminated_file_whose_last_print_is_recorded_costs_nothing(qapp, tmp_path, monkeypatch):
+    """Found by the floor rehearsal. A trailing bare CR may be half of a
+    CRLF, so the reader holds the last line back until the file is quiet —
+    and adoption, scanning only "complete" lines, left that last print out
+    of the seen-set. Once quiet, the reader took it as a NEW print: logged a
+    second time and filed again, on every Eraspec at its first v4 start.
+    Adoption waits for the file to hold still anyway, so a quiet file's last
+    line is adopted with the rest."""
+    b = Bench(tmp_path, monkeypatch)
+    texts = [line(i) for i in range(30)]
+    legacy_world(b, texts)
+    _write_cr(b, texts)
+    polls(b, 6)
+    (rec,) = journal_records("adoption")
+    assert rec["recovered"] == 0
+    assert len(log_rows(b)) == 30 and b.lab.cell_sends == []
+    assert runs_in_journal(b.journal()) == []
+
+
+def test_a_print_made_during_the_upgrade_at_the_end_of_a_cr_file_is_recovered(qapp, tmp_path, monkeypatch):
+    """The same file with one print the record lacks, at the very end: it
+    is recovered (recorded once, not filed), not read later as a live print
+    that is QC-judged and auto-filed."""
+    b = Bench(tmp_path, monkeypatch)
+    texts = [line(i) for i in range(30)]
+    legacy_world(b, texts)
+    _write_cr(b, texts + [line(30)])
+    polls(b, 6)
+    (rec,) = journal_records("adoption")
+    assert rec["recovered"] == 1
+    rows = log_rows(b)
+    assert len(rows) == 31 and json.loads(rows[-1]["detail"]).get("origin") == "recovered"
+    assert b.lab.cell_sends == []
+
+
 # ── U4 ────────────────────────────────────────────────────────────────────────
 
 def test_U4_lines_older_than_LEM_are_one_summary_and_no_alarm(qapp, tmp_path, monkeypatch):

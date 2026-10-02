@@ -349,6 +349,35 @@ class TestAdoptionThroughLEM:
             world.poll(k, prints=0)
         assert len(_bench_log_rows(world.store)) == 30
 
+    def test_U3_a_qc_print_under_a_changed_machine_factor_recovers_nothing(
+            self, world):
+        """The same hole on the v2 road: a QC standard logged under a
+        machine-level factor kept no raw; the factor has changed. Through the
+        digest (no-raw verdicts keyed on standard and test, matched by count)
+        no line is recovered — and a row LEM cannot read is named
+        (`unreadable_labs`), so its line is not recovered either."""
+        m = world.m
+        spec = m.TestSpec(name="Density", value_col="Density", expected=0.85,
+                          std_dev=0.05, k=2.0, sample_id="QC-D")
+        machine = world.bench.machine()
+        machine.tests = [spec]
+        lines = [_line(world, i) for i in range(30)] + ["QC-D,0.8500"]
+        _legacy(world, lines[:7] + lines[8:], corrections={"Density": 0.01})
+        res = world.store.sql(
+            "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+            "test_name, value, detail) VALUES (?, '2026-09-30 09:00:00', 'run', "
+            "?, '', '', '{not json')", [UID, world.labs[7]])
+        assert "error" not in res, res
+        machine.corrections = {"Density": 0.02}
+        with open(world.path, "a") as f:
+            f.write("\n".join(lines) + "\n")
+        for k in range(4):
+            world.poll(k, prints=0)
+        journal = m.BenchJournal(m.journal_dir(UID), UID)
+        (rec,) = [r for r in journal._scan() if r["kind"] == "adoption"]
+        assert (rec["road"], rec["recovered"], rec["unreadable"]) == ("lem", 0, 1)
+        assert len(_bench_log_rows(world.store)) == 30     # 29 runs + the unreadable
+
 
 def test_the_module_and_the_server_hash_every_row_alike():
     """The bench hashes its lines and LEM hashes its rows; one function on
@@ -367,8 +396,20 @@ def test_the_module_and_the_server_hash_every_row_alike():
          "detail": {"in_spec": True}},
         {"kind": "run", "lab_id": "L-3", "test_name": "", "value": "",
          "detail": {"values": {"Note": " ok ", "Flash": "1e2"}}},
+        # v3.9 under a machine-level factor: a verdict with no raw, as text.
+        {"kind": "qc", "lab_id": "QC-D", "test_name": "Density", "value": "0.86",
+         "detail": json.dumps({"in_spec": True, "operator": None})},
     ]
     for r in rows:
         server = bench_api.adoption_hash(r["lab_id"], bench_api.adoption_raw_values(
-            r["kind"], r["test_name"], r["value"], r["detail"]))
+            r["kind"], r["test_name"], r["value"],
+            bench_api._adoption_detail(r["detail"])))
         assert server == m.legacy_row_adoption_key(r), r
+    # And both sides call the same rows unreadable (no key at all).
+    for detail in ("{not json", "[1, 2]", json.dumps({"no_values": 1}), None):
+        r = {"kind": "run", "lab_id": "L-9", "test_name": "", "value": "",
+             "detail": detail}
+        d = bench_api._adoption_detail(detail)
+        server = None if d is None else bench_api.adoption_raw_values(
+            "run", "", "", d)
+        assert server is None and m.legacy_row_adoption_key(r) is None, detail

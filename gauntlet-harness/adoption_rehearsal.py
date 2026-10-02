@@ -27,7 +27,10 @@ Inputs are copies, never the live system:
 
 Spec §10.2 predicts 0 recovered on Eraspec, Eraspec NIR and Agilent GC 1,
 whose daily replays logged everything (G1). This tool is how that prediction
-is checked; it reads files and nothing else, and writes only --json.
+is checked on Ryan's copies of the live files and a LabCore backup copy; it
+reads files and nothing else, and writes only --json. Until those copies
+exist, `floor_rehearsal.py` runs it on the real instrument files this
+machine holds and a record written by v3.9.0's own code.
 """
 import argparse
 import json
@@ -40,6 +43,7 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODULE_DIR = os.path.join(os.path.dirname(HERE), "LEM Station Module")
+WEB_DIR = os.path.join(os.path.dirname(HERE), "LEM Web Server")
 
 
 def load_module():
@@ -93,6 +97,9 @@ def rehearse(file_path, machine, rows, last_position=0, mtime=None):
         data = f.read()
     source = mod.SingleCsvSource(file_path, None)
     scan = source.scan_for_adoption()
+    if scan.get("partial") is not None:
+        # A copy holds still: the bench takes the last line whole, as here.
+        scan = source.scan_for_adoption(final_complete=True)
     if mtime is not None:
         scan["mtime"] = mtime.timestamp()
     boundary = mod.adoption_boundary(data, last_position)
@@ -142,15 +149,27 @@ def rehearse(file_path, machine, rows, last_position=0, mtime=None):
     if plan is None:
         out["legacy"]["error"] = state.get("error")
 
-    # ── v2: LEM's digest holds every recorded row's key ──
-    counts = Counter(k for k in (mod.legacy_row_adoption_key(r) for r in rows) if k)
-    first_dt = mod._ts_naive(first)
+    # ── v2: the SERVER's digest (bench_api.adoption_digest, the endpoint's
+    # own code), read by the bench exactly as `_adoption_history` reads it ──
+    digest = load_server().adoption_digest(rows, datetime.now())
+    first_dt = mod._ts_naive(digest["first_ts"])
     older = first_dt is not None and datetime.fromtimestamp(scan["mtime"]) < first_dt
-    out["v2"] = _plan_out(mod.plan_adoption(lines, boundary, counts, None, older),
-                          labcore_reads=0)
+    out["v2"] = _plan_out(mod.plan_adoption(
+        lines, boundary, Counter(digest["counts"]), None, older,
+        unreadable=set(digest["unreadable_labs"]),
+        qc_tests={k: set(v) for k, v in digest["qc_tests"].items()}),
+        labcore_reads=0)
     out["unreadable_rows"] = sum(1 for r in rows
                                  if mod.legacy_row_adoption_key(r) is None)
+    out["unreadable_labs"] = len(digest["unreadable_labs"])
     return out
+
+
+def load_server():
+    if WEB_DIR not in sys.path:
+        sys.path.insert(0, WEB_DIR)
+    import bench_api
+    return bench_api
 
 
 def _plan_out(plan, labcore_reads):
@@ -160,7 +179,8 @@ def _plan_out(plan, labcore_reads):
     return {"path": plan.kind, "matched": plan.matched,
             "recovered": len(plan.recovered),
             "pre_history_lines": plan.pre_history, "presumed": plan.presumed,
-            "unchecked": plan.unchecked, "not_readings": plan.other,
+            "unchecked": plan.unchecked, "unreadable": plan.unreadable,
+            "not_readings": plan.other,
             "labcore_reads": labcore_reads,
             "recovered_lines": [l.text for l in plan.recovered[:20]]}
 

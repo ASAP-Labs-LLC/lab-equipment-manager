@@ -467,7 +467,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
     # v3.9 server), where the bench must ask LabCore itself.
 
     def adoption_world(logged, unlogged=0, pre=0, factor_then=None,
-                       factor_now=None, v2=True):
+                       factor_now=None, v2=True, qc_print=False):
         if not hasattr(mod, "plan_adoption"):
             raise Unsupported("U1–U5 need adoption at the first v4 start "
                               "(P4) — not present on this target")
@@ -477,14 +477,31 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         for i in range(pre):                 # older than LEM on this bench
             with open(c.path, "a") as f:
                 f.write(print_line(900 + i, "0.7%03d" % i))
-        texts = []
+        # A QC standard's print, in the middle of the logged lines, judged
+        # then against a spec with no correction of its own while the factor
+        # was machine-level: v3.9 logged its verdict as a `qc` row holding
+        # the corrected value and no raw. Not a sample: not in the ledger,
+        # no cell. In the MIDDLE, so a bench that matched only the QC print
+        # would call everything after it recovered (not quietly "history").
+        qc_text = "QC-D,0.8500\n"
+        qc_at = logged // 2 if qc_print else None
+        texts, logged_texts = [], []
         for i in range(logged + unlogged):
+            if i == qc_at:
+                c._write_lines([qc_text])
+                logged_texts.append(qc_text)
             lab, val = print_line(i).strip().split(",")
             texts.append(c.emit_line(lab, val))
-        saved = machine.corrections
+            if i < logged:
+                logged_texts.append(texts[-1])
+        saved = machine.corrections, machine.tests
+        if qc_print:
+            machine.tests = [mod.TestSpec(name="Density", value_col="Density",
+                                          expected=0.85, std_dev=0.05, k=2.0,
+                                          sample_id="QC-D")]
         machine.corrections = dict(factor_then or {})
         try:
-            for k, text in enumerate(texts[:logged]):
+            for k, text in enumerate(logged_texts):
                 at = at0 + timedelta(minutes=k)
                 rows = mod.apply_row_corrections(
                     [mod.parse_print(machine, text.strip()).to_row(at)],
@@ -497,13 +514,15 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
                     res = c.gw.fake.sql(sql, args)
                     if res.get("error"):
                         raise RuntimeError("U world: v3.9 row: " + res["error"])
+                    if kind != "run":
+                        continue
                     res = c.gw.fake.write("update_cell", {
                         "lab_id": lab, "test_name": "Density",
                         "value": str(row["Density"])})
                     if res.get("error"):
                         raise RuntimeError("U world: v3.9 cell: " + res["error"])
         finally:
-            machine.corrections = saved
+            machine.corrections, machine.tests = saved
         if factor_now:
             for test, corr in factor_now.items():
                 res = c.gw.fake.sql(
@@ -565,7 +584,8 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
                 "labcore_reads_all_polls": c.reads_after - c.reads_before,
                 "adoption": {k: adoptions[-1].get(k) for k in (
                     "path_kind", "matched", "presumed", "recovered",
-                    "pre_history_lines", "unchecked", "road", "labcore_reads")}
+                    "pre_history_lines", "unchecked", "unreadable", "road",
+                    "labcore_reads")}
                 if adoptions else None,
                 "store": c.store_kind()}
 
@@ -582,10 +602,16 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
     @new("U3")
     def u3():
         """Logged with +0.0100; the factor is +0.0200 at the v4 start. Every
-        line was recorded, so every recovered row would be a false one."""
-        m = adoption_measure(adoption_world(30, factor_then={"Density": 0.01},
-                                            factor_now={"Density": 0.02}))
-        m["false_recovered"] = m["recovered_rows"]
+        line was recorded, so every recovered row would be a false one. The
+        30 readings AND a QC standard's print, whose v3.9 verdict row kept no
+        raw (machine-level factor) — through LEM's digest and again through
+        LabCore's indexed reads (today's server)."""
+        worlds = {road: adoption_measure(adoption_world(
+            30, factor_then={"Density": 0.01}, factor_now={"Density": 0.02},
+            v2=(road == "v2"), qc_print=True)) for road in ("v2", "legacy")}
+        m = dict(worlds["v2"])
+        m["false_recovered"] = sum(w["recovered_rows"] for w in worlds.values())
+        m["legacy"] = worlds["legacy"]
         return m
 
     @new("U4")

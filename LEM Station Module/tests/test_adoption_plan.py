@@ -94,17 +94,31 @@ def test_a_corrected_run_row_is_keyed_on_its_raw_reading():
 
 
 def test_a_qc_row_is_keyed_on_its_test_and_raw_value():
-    """A QC standard's print logs one `qc` row per verdict, not a `run`: the
-    test name and the raw reading (`raw_value` when the spec corrected it,
-    otherwise the value the verdict was made on)."""
-    plain = {"kind": "qc", "lab_id": "QC-1", "test_name": "Density",
-             "value": "0.8", "detail": json.dumps({"in_spec": True})}
+    """A QC standard's print logs one `qc` row per verdict, not a `run`. A
+    verdict whose spec corrected it carries `raw_value`: keyed on the test
+    and that raw reading, exactly."""
     corrected = {"kind": "qc", "lab_id": "QC-1", "test_name": "Density",
                  "value": "0.81", "detail": {"raw_value": 0.8,
                                              "correction": 0.01}}
-    assert mod.legacy_row_adoption_key(plain) == key("QC-1", {"Density": "0.8"})
     assert mod.legacy_row_adoption_key(corrected) == key("QC-1",
                                                          {"Density": "0.8"})
+
+
+def test_a_qc_row_that_kept_no_raw_is_keyed_on_its_standard_and_test_only():
+    """v3.9 kept `raw_value` only for a SPEC correction. Under a machine-level
+    factor (lem_correction_factors) the verdict holds the corrected number
+    alone, and `value` is written with %g — six significant digits. So a
+    verdict without a raw cannot say which reading it was: it is keyed on
+    (standard, test) with no value, and a line matches it by count. Keyed
+    on `value`, a QC print logged at one factor looked unrecorded once the
+    factor changed (round-1 critic: 1 false recovered)."""
+    plain = {"kind": "qc", "lab_id": "QC-1", "test_name": "Density",
+             "value": "0.86", "detail": json.dumps({"in_spec": True})}
+    want = key("QC-1", {"Density": mod.ADOPTION_NO_RAW})
+    assert mod.legacy_row_adoption_key(plain) == want
+    other_value = dict(plain, value="0.87")
+    assert mod.legacy_row_adoption_key(other_value) == want
+    assert mod.legacy_row_adoption_key(dict(plain, lab_id="QC-2")) != want
 
 
 def test_a_row_that_cannot_be_read_is_not_a_key():
@@ -263,3 +277,79 @@ def test_a_qc_line_matches_its_qc_rows():
                           qc_keys=((key("QC-1", {"Density": "0.8"}),),))
     plan = mod.plan_adoption([qc], 0, Counter([key("QC-1", {"Density": "0.8"})]))
     assert plan.matched == 1 and plan.recovered == []
+
+
+def test_a_qc_line_matches_a_verdict_that_kept_no_raw_one_for_one():
+    """Two prints of the standard, one no-raw verdict recorded: one match,
+    and the other print — the newer, file order — is the one recovered."""
+    def qc(i, value):
+        return mod.AdoptionLine(
+            offset=i * 20, part=0, pk="q%d" % i, lab_id="QC-1",
+            run_key=key("QC-1", {"Density": value}),
+            qc_keys=((key("QC-1", {"Density": value}),),),
+            loose_keys=(key("QC-1", {"Density": mod.ADOPTION_NO_RAW}),))
+    lines = [qc(0, "0.85"), run_line(1, "L-1", "0.8"), qc(2, "0.84")]
+    rec = Counter([key("QC-1", {"Density": mod.ADOPTION_NO_RAW}),
+                   key("L-1", {"Density": "0.8"})])
+    plan = mod.plan_adoption(lines, 0, rec, fast_lines=0)
+    assert plan.matched == 2
+    assert [l.pk for l in plan.recovered] == ["q2"]
+    # With the fast path on, the newest print alone would match the one
+    # verdict by count and vouch for nothing older: no fast path on it.
+    plan = mod.plan_adoption(lines, 0, rec, fast_lines=2)
+    assert plan.kind == "full" and [l.pk for l in plan.recovered] == ["q2"]
+
+
+def test_a_line_whose_record_cannot_be_read_is_unreadable_not_recovered():
+    """`unreadable`: Lab IDs the record holds rows for that cannot be read.
+    An unmatched line of such a Lab ID is not a print the record lacks — the
+    record holds something for it that nobody can read — so it is counted
+    (and said) as unreadable, never recovered and never history."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(5)]
+    rec = recorded(*[("L-%d" % i, "0.8") for i in (0, 1, 3)])
+    plan = mod.plan_adoption(lines, 0, rec, unreadable={"L-2", "L-4"},
+                             fast_lines=0)
+    assert (plan.matched, plan.unreadable, plan.recovered) == (3, 2, [])
+    # Without the statement both would have been recovered.
+    plan = mod.plan_adoption(lines, 0, rec, fast_lines=0)
+    assert [l.lab_id for l in plan.recovered] == ["L-2", "L-4"]
+
+
+def test_a_qc_print_matches_its_verdicts_whatever_today_s_qc_assignment_is():
+    """Which standards a bench is checked against is today's configuration;
+    the verdict rows are what v3.9 did THEN. A standard since unassigned (or
+    a QC library that has not loaded yet) leaves the print with no QC keys of
+    its own, and keyed as a `run` it matched nothing: a false recovery. So
+    the record says which tests it holds verdicts of for each Lab ID
+    (`qc_tests`), and the line is matched on those — exactly where the row
+    kept a raw reading, by count where it did not."""
+    line = mod.AdoptionLine(offset=40, part=0, pk="q", lab_id="QC-D",
+                            run_key=key("QC-D", {"Density": "0.85"}),
+                            values=(("Density", "0.8500"),))
+    tail = run_line(1, "L-1", "0.8")
+    exact = Counter([key("QC-D", {"Density (QC)": 0.85}),
+                     key("L-1", {"Density": "0.8"})])
+    plan = mod.plan_adoption([tail, line], 0, exact, fast_lines=0,
+                             qc_tests={"QC-D": {"Density (QC)"}})
+    assert (plan.matched, plan.recovered) == (2, [])
+    loose = Counter([key("QC-D", {"Density (QC)": mod.ADOPTION_NO_RAW}),
+                     key("L-1", {"Density": "0.8"})])
+    plan = mod.plan_adoption([tail, line], 0, loose, fast_lines=0,
+                             qc_tests={"QC-D": {"Density (QC)"}})
+    assert (plan.matched, plan.recovered) == (2, [])
+    # Without the record's statement the print looked unrecorded.
+    plan = mod.plan_adoption([tail, line], 0, loose, fast_lines=0)
+    assert [l.pk for l in plan.recovered] == ["q"]
+
+
+def test_legacy_rows_say_which_qc_tests_and_which_lab_ids_they_hold():
+    rows = [{"kind": "qc", "lab_id": "QC-D", "test_name": "Density (QC)",
+             "value": "0.86", "detail": "{}"},
+            {"kind": "run", "lab_id": "L-1", "test_name": "", "value": "",
+             "detail": json.dumps({"values": {"Density": "0.8"}})},
+            {"kind": "run", "lab_id": "L-2", "test_name": "", "value": "",
+             "detail": "{not json"}]
+    got = mod.legacy_adoption_counts(rows)
+    assert got.unreadable == {"L-2"}
+    assert got.qc_tests == {"QC-D": {"Density (QC)"}}
+    assert sum(got.counts.values()) == 2

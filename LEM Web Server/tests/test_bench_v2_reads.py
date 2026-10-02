@@ -270,6 +270,36 @@ class TestAdoptionDigest:
         assert body["first_ts"] == "2026-09-30T10:00:00"
         assert lab.ops == 0
 
+    def test_rows_it_cannot_read_are_named_by_lab_id_not_dropped(
+            self, client, token, store):
+        """A recorded row whose detail cannot be read used to be skipped
+        ("evidence of nothing"), and its line then looked unrecorded to the
+        bench: a false `recovered`. It is evidence of SOMETHING — the record
+        holds a row for that sample — so the digest names its Lab ID, and
+        the bench presumes such lines recorded and says so. A QC verdict that
+        kept no raw is not unreadable: it is keyed on its standard and test."""
+        def row(lab_id, detail, kind="run", test="", value=""):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, '2026-09-30T10:00:00', "
+                "?, ?, ?, ?, ?)", [UID, kind, lab_id, test, value, detail])
+            assert "error" not in res
+        row("L-1", json.dumps({"values": {"Flash": "41.0"}}))
+        row("L-2", "{not json")
+        row("L-3", json.dumps({"no_values": True}))
+        row("QC-1", json.dumps({"in_spec": True}), kind="qc", test="Flash",
+            value="41.5")
+        body = _get(client, "/api/v2/bench/%s/adoption" % UID, token).get_json()
+        assert sorted(body["unreadable_labs"]) == ["L-2", "L-3"]
+        h = hashlib.sha256(json.dumps(["QC-1", {"Flash": "(no raw)"}],
+                                      sort_keys=True, separators=(",", ":")
+                                      ).encode()).hexdigest()[:32]
+        assert body["counts"][h] == 1 and sum(body["counts"].values()) == 2
+        assert body["rows"] == 4
+        # Which tests each Lab ID holds verdicts of: a QC print is matched on
+        # what was judged THEN, whatever today's QC assignment is.
+        assert body["qc_tests"] == {"QC-1": ["Flash"]}
+
     def test_it_says_when_this_bench_was_first_recorded_and_nothing_is_empty(
             self, client, token, store):
         """The bench needs "has LEM EVER recorded me, and since when" (§10.2:

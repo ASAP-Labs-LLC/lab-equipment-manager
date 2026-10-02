@@ -126,6 +126,15 @@ MUTATIONS = {
         "replace": "return AdoptionLine(offset, part, pk, lab, adoption_key(lab, "
                    "{k: v for k, v in corrected.items() if k not in RESERVED_ROW_KEYS}),",
         "what": "adoption matches corrected values, not raw (U3 must fail)"},
+    # Round 1's hole: a QC verdict that kept no raw (v3.9, machine-level
+    # factor) keyed on the corrected value it holds. Once the factor has
+    # changed, the standard's print looks unrecorded (U3 must fail — on the
+    # legacy road, where the bench keys LabCore's rows itself).
+    "adoption_qc_on_value": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"return \{test: ADOPTION_NO_RAW\}",
+        "replace": 'return {test: row.get("value")}',
+        "what": "a no-raw QC verdict keyed on its corrected value (U3 must fail)"},
     # A recovered reading stays on the results road like any other: filed
     # automatically, without the person §10.2 says must decide (U2).
     "recovered_filed": {

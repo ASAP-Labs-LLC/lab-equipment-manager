@@ -105,3 +105,61 @@ def test_the_command_line_writes_its_answer(loaded, tmp_path):
     assert p.returncode == 0, p.stdout.decode(errors="replace")
     got = json.loads(out.read_text())
     assert got["legacy"]["recovered"] == 0 and got["boundary"] == 0
+
+
+# ── the floor rehearsal: a record written by v3.9.0's own code ──────────────
+#
+# `floor_rehearsal.py` stands in for production LabCore (which nothing here
+# may read) with a record the TAGGED v3.9.0 module writes itself, replays
+# and all, over a growing copy of a file. These pin that the stand-in is what
+# it says: v3.9.0's code, v3.9.0's replay habit, and a prediction that moves
+# when the world does — 0 recovered as-is, exactly 1 with a downtime print.
+
+@pytest.fixture(scope="module")
+def v39_root(tmp_path_factory):
+    import floor_rehearsal as F
+    return F.v39_tree(str(tmp_path_factory.mktemp("v39")))
+
+
+def _cr_bench(tmp_path):
+    """A CR-terminated file in the Eraspec's 2023 LIMS shape, 40 prints."""
+    path = tmp_path / "lims.csv"
+    rows = ["ERASPEC;Diesel;ESF1;11/30/2023;13:%02d;11-30-23-%03d   ;Op ;FAME=; 0.%02d;V%%"
+            % (i % 60, i, i) for i in range(40)]
+    path.write_bytes(("\r".join(rows) + "\r").encode())
+    cfg = {"uid": "er1", "title": "Eraspec", "source_type": "single_csv",
+           "delimiter": ";", "lab_id": {"mode": "cell", "index": 5},
+           "mappings": [{"methods": ["FAME"],
+                         "selector": {"mode": "cell", "index": 8}}]}
+    return path, cfg
+
+
+def test_the_record_is_written_by_v390_and_carries_its_replays(v39_root, tmp_path):
+    """8 days, a marker stored after print 1, every restart replaying the
+    rest: the record holds each print several times over, as the Eraspec's
+    does (G1: the same 223 rows once a day)."""
+    import floor_rehearsal as F
+    path, cfg = _cr_bench(tmp_path)
+    data = path.read_bytes()
+    db, info = F.write_record(v39_root, str(path), cfg,
+                              F.history_steps(data, days=8, save_after=1),
+                              str(tmp_path))
+    assert info["stored_position"] == data.index(b"\r") + 1
+    assert info["restarts"] == 8
+    con = sqlite3.connect(db)
+    n, distinct = con.execute("SELECT COUNT(*), COUNT(DISTINCT lab_id) FROM "
+                              "lem_machine_log WHERE kind = 'run'").fetchone()
+    con.close()
+    assert distinct == 40 and n > 3 * 40      # replayed, not logged once
+
+
+def test_the_floor_prediction_moves_with_the_world(v39_root, tmp_path):
+    import floor_rehearsal as F
+    path, cfg = _cr_bench(tmp_path)
+    spec = dict(source=str(path), real=False, config=cfg,
+                history=dict(days=8, save_after=1))
+    asis = F.run_bench("cr", spec, v39_root, str(tmp_path), "as-is")
+    down = F.run_bench("cr", spec, v39_root, str(tmp_path), "downtime")
+    assert asis["legacy"]["recovered"] == 0 == asis["v2"]["recovered"]
+    assert down["legacy"]["recovered"] == 1 == down["v2"]["recovered"]
+    assert down["legacy"]["recovered_lines"][0].split(";")[5] == "DOWNTIME-0001"
