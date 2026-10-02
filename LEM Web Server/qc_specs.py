@@ -339,7 +339,7 @@ class MachineStateReader:
         """Newest log entry per machine. The status row is only rewritten
         when the status changes, so it is NOT a liveness signal — this is."""
         res = self.gateway.read_sql(
-            "SELECT machine_uid, MAX(ts) AS ts FROM lem_machine_log "
+            "SELECT machine_uid, MAX(ts) AS ts FROM lem_machine_log_effective "
             "GROUP BY machine_uid")
         # MISSING TABLE MAY DEGRADE TO EMPTY: nothing has ever been logged, so
         # "no activity" is the truth rather than a shrug.
@@ -389,15 +389,17 @@ class MachineStateReader:
             # every row sharing the last second of a page.
             ts, _, rid = str(before).partition("|")
             if rid.isdigit():
-                where.append("(ts < ? OR (ts = ? AND rowid < ?))")
+                where.append("(ts < ? OR (ts = ? AND id < ?))")
                 args.extend([ts, ts, int(rid)])
             else:
                 where.append("ts < ?")
                 args.append(ts)
-        sql = ("SELECT rowid AS rowid_src, machine_uid, ts, kind, lab_id, "
+        # `id`, not `rowid`: this reads the effective VIEW, and a view has no
+        # rowid. `id` is the store's INTEGER PRIMARY KEY — the same number.
+        sql = ("SELECT id AS rowid_src, machine_uid, ts, kind, lab_id, "
                "test_name, value, detail "
-               "FROM lem_machine_log WHERE " + " AND ".join(where)
-               + " ORDER BY ts DESC, rowid DESC")
+               "FROM lem_machine_log_effective WHERE " + " AND ".join(where)
+               + " ORDER BY ts DESC, id DESC")
         if limit is not None:
             sql += " LIMIT ?"
             args.append(int(limit))
@@ -413,7 +415,7 @@ class MachineStateReader:
     def recent_events(self, limit: int = 50) -> List[dict]:
         res = self.gateway.read_sql(
             "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
-            "FROM lem_machine_log ORDER BY ts DESC LIMIT ?", [int(limit)])
+            "FROM lem_machine_log_effective ORDER BY ts DESC LIMIT ?", [int(limit)])
         # MISSING TABLE MAY DEGRADE TO EMPTY: nothing has ever been logged.
         # ANYTHING ELSE RAISES — same reason as `events`, and this is the deep
         # request the log viewer makes, where a silently truncated (here: empty)

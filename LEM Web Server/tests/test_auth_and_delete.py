@@ -171,7 +171,7 @@ class TestDeleteMachine:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [uid, "2026-07-28T12:00:00", "run", "1", "", "", "{}"])
         QcSpecStore(gw).save(QcSpec(uid, "Cloud Point", "QC", -9.0, 0.5))
 
@@ -196,12 +196,27 @@ class TestDeleteMachine:
         assert self.count_kind(gw, "m1", "run") == 1          # history kept
         assert self.count_kind(gw, "m1", "config") == 1       # and audited
 
+    def effective_kind(self, gw, uid, kind):
+        res = gw.read_sql("SELECT COUNT(*) n FROM lem_machine_log_effective "
+                          "WHERE machine_uid=? AND kind=?", [uid, kind])
+        assert "error" not in res, res
+        return res["rows"][0]["n"]
+
     def test_purge_history_also_clears_the_log(self, gw, client):
+        """Cleared from every screen — and still in the record.
+
+        Transfer §5.2 (D4): "purge history" used to DELETE the machine's rows
+        from `lem_machine_log`, the one route that destroyed the 17025
+        record on a click. The store's trigger refuses that statement now;
+        what the route does instead is hide: a `retired_at` on the machine's
+        config row, which every default reader (they all read the effective
+        view) honours."""
         self.seed(gw)
         client.post("/api/login", json={"username": "k", "password": "good"})
         r = client.delete("/api/machines/m1", json={"purge_history": True})
         assert r.status_code == 200
-        assert self.count_kind(gw, "m1", "run") == 0          # history gone
+        assert self.effective_kind(gw, "m1", "run") == 0      # history hidden
+        assert self.count_kind(gw, "m1", "run") == 1          # …not destroyed
         # Wiping a machine's history is the one action whose record must
         # survive the wipe, so the audit entry is written afterwards.
         assert self.count_kind(gw, "m1", "config") == 1

@@ -418,19 +418,27 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         reg.add(sid, (lambda s, n: lambda: _unsupported(s, n))(sid, needs), "new")
 
     # ── web server (phase 1's run_web.py) ──────────────────────────────────
-    def web(name, fn):
+    # On a server with a LEM store (P6) W1/W2/W3/W2b are asked of the split
+    # server — `create_app(LocalStoreGateway, labcore=WGateway)` — and count
+    # LabCore's ops, which is what they always measured (gharness/store_web).
+    from . import store_web
+
+    def web(name, fn, store_fn=None):
         def run():
             if _has_store():
-                raise Unsupported(
-                    "%s on a server with a LEM store is measured by the store-side "
-                    "version of this scenario, which lands with P6/P7" % name)
+                if store_fn is None:
+                    raise Unsupported(
+                        "%s on a server with a LEM store measures the bridge's "
+                        "legacy pull, which lands with P9" % name)
+                return store_fn(rw)
             return fn()
         return run
-    reg.add("W1", web("W1", rw.w1), "web")
-    reg.add("W2", web("W2", rw.w2), "web")
-    reg.add("W3", web("W3", rw.w3), "web")
+    reg.add("W1", web("W1", rw.w1, store_web.w1), "web")
+    reg.add("W2", web("W2", rw.w2, store_web.w2), "web")
+    reg.add("W3", web("W3", rw.w3, store_web.w3), "web")
     reg.add("W4", web("W4", rw.w4), "web")
-    reg.add("W2b", lambda: _unsupported("W2b", V4_WEB["W2b"]), "web")
+    reg.add("W2b", lambda: (store_web.w2b(rw) if _has_store()
+                            else _unsupported("W2b", V4_WEB["W2b"])), "web")
     return reg
 
 

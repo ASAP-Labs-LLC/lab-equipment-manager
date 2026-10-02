@@ -104,8 +104,16 @@ class TestLoadIsIndependentOfViewers:
         client.get("/api/machines")
         gw.reads.clear()
         client.get("/api/machines?fresh=1")
-        assert len(gw.reads) == 1, [r[:40] for r in gw.reads]
-        assert "UNION ALL" in gw.reads[0]
+        # The log copy's reads are set aside, and only them. Before transfer §5
+        # the copy was a file of its own that this gateway never saw; it is the
+        # LEM store now — the same local file the batched read goes to — so its
+        # reads arrive here, and each one names the record's effective view.
+        # Everything ELSE a refresh asks for still has to be the one statement.
+        floor = [r for r in gw.reads if "lem_machine_log_effective" not in r
+                 or "UNION ALL" in r]
+        assert len(floor) == 1, [r[:40] for r in gw.reads]
+        assert "UNION ALL" in floor[0]
+        assert len(gw.reads) <= 3, [r[:40] for r in gw.reads]
 
     def test_schema_creation_does_not_repeat(self, gw):
         client, _ = make(gw)

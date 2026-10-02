@@ -32,22 +32,49 @@ import sys
 import threading
 
 
-def _build_gateway(dev: bool, seed: bool):
-    if dev:
-        from labcore_gateway import FakeLabCoreGateway
+def build_gateways(dev: bool, seed: bool, no_publish: bool,
+                   store_path=None):
+    """(store, labcore, where) — LEM's store and LabCore, for this boot.
 
-        gw = FakeLabCoreGateway()
+    Transfer spec §5. The STORE holds every `lem_*` table and the machine log;
+    LABCORE is asked only for what is LabCore's (sign-in, the dashboard's QC
+    rows, the test-method catalogue).
+
+    * live: the store at `LEM_STORE_PATH` (production default
+      `C:\\ASAPApps\\lem\\store\\lem.db`), read-write, created on first start;
+      LabCore over HTTP.
+    * `--no-publish` (the updater's candidate boot on a scratch port): the
+      SAME store, READ-ONLY. A release under test must not migrate, declare or
+      write anything into the record the live server is using.
+    * `--dev`: an in-memory LabCore and a scratch store (a fresh temp file
+      unless `LEM_STORE_PATH` / `store_path` names one), read-write even with
+      `--no-publish` — there is no live record for it to protect.
+    """
+    from lem_store import LocalStoreGateway, default_store_path
+
+    if dev:
+        import tempfile
+
+        from labcore_gateway import InMemoryLabCore
+
+        labcore = InMemoryLabCore()
+        path = (store_path or os.environ.get("LEM_STORE_PATH", "").strip()
+                or os.path.join(tempfile.mkdtemp(prefix="lem-dev-store-"),
+                                "lem.db"))
+        store = LocalStoreGateway(path)
         if seed:
-            _seed_demo(gw)
-        return gw, "fake (dev)"
+            _seed_demo(store, labcore)
+        return store, labcore, "fake (dev)"
 
     from labcore_gateway import HttpLabCoreGateway
 
-    gw = HttpLabCoreGateway()  # resolves LABCORE_URL → https://labvision.asaplabs.net
-    return gw, gw.base_url
+    labcore = HttpLabCoreGateway()  # LABCORE_URL → https://labvision.asaplabs.net
+    store = LocalStoreGateway(store_path or default_store_path(),
+                              read_only=no_publish)
+    return store, labcore, labcore.base_url
 
 
-def _seed_demo(gw) -> None:
+def _seed_demo(store, labcore=None) -> None:
     """Populate a fake gateway with one machine and QC data for a live demo.
 
     Every answer is read, like every other write in this app. These three were
@@ -60,12 +87,22 @@ def _seed_demo(gw) -> None:
     from datetime import datetime
 
     from db_config_store import DbConfigStore
+
+    lab = labcore if labcore is not None else store
+    # A dev store named on purpose (LEM_STORE_PATH) survives restarts; seeding
+    # it again would put a second demo lab on top of the first.
+    res = store.read_sql("SELECT COUNT(*) AS n FROM lem_machine_status")
+    if not res.get("error") and int((res.get("rows") or [{}])[0].get("n") or 0):
+        print("Demo store already seeded; --seed skipped.")
+        return
     from labcore_result import LabCoreError, confirm_write
     from models import AppConfig, BoxConfig, SampleSpec, SampleTestSpec, WatchedTarget
 
     def seed(operation, params):
         try:
-            confirm_write(gw.write(operation, params))
+            # `samples`/`sample_tests` are LabCore's tables, so the QC rows
+            # the dashboard judges go to LabCore; everything below is LEM's.
+            confirm_write(lab.write(operation, params))
         except LabCoreError as exc:
             raise RuntimeError(
                 "--seed could not write the demo data ({0}: {1}). The "
@@ -85,13 +122,13 @@ def _seed_demo(gw) -> None:
                     watched_targets=[WatchedTarget(sample="Diesel QC", test="Flash")])
     cfg = AppConfig(version=5, poll_minutes=5, map_locked=False,
                     sample_id_column="Lab ID", samples=[sample], boxes=[box])
-    ok, why = DbConfigStore(gw).save(cfg)
+    ok, why = DbConfigStore(store).save(cfg)
     if not ok:
         raise RuntimeError(
             "--seed could not save the demo configuration ({0}). The "
             "dashboard would come up with no instruments on it.".format(why))
 
-    _seed_floor(gw)
+    _seed_floor(store)
 
 
 def _seed_floor(gw) -> None:
@@ -172,12 +209,19 @@ def main(argv) -> int:
 
     from web_app import create_app
 
-    gateway, where = _build_gateway(args.dev, args.seed)
+    store, gateway, where = build_gateways(args.dev, args.seed,
+                                           args.no_publish)
+    print("LEM store: {0}{1}".format(
+        store.path, " (READ-ONLY: candidate boot)" if store.read_only else ""))
     if not args.dev and not gateway.is_running():
         print(f"WARNING: LabCore not reachable at {where}. "
-              f"Writes will fail until it is running.", file=sys.stderr)
+              f"Sign-in and the dashboard's QC rows will fail until it is "
+              f"running.", file=sys.stderr)
 
-    app = create_app(gateway, **app_options(args))
+    # `gateway` stays LabCore below: the live channel is published into
+    # LabCore's `lem_meta` because that is where v3.9 benches read it (the
+    # mixed-fleet exception, transfer §6.2; it ends at bridge-off).
+    app = create_app(store, labcore=gateway, **app_options(args))
     # The server — not the app factory — owns the background refresher, so
     # requests are served from memory and LabCore sees one reader, not one per
     # screen. Started before serving so the first page has something to show.

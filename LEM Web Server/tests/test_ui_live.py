@@ -445,9 +445,33 @@ class TestRunningNow:
         clock[0] += 2 * 60
         assert c.get("/api/ui/live").get_json()["jobs"] == []
 
-    def test_the_log_copy_says_what_it_is_from_memory(self, tmp_path):
+    def test_on_the_store_there_is_no_copy_to_be_behind(self, tmp_path):
+        """On LEM's store the History reads the record itself
+        (`StoreLogMirror`), so "the log copy" is always complete to now: there
+        is no first fill to show in Running now and no refresh to fall behind.
+        Telling a supervisor "the log copy is filling" about a copy that does
+        not exist would be a banner about nothing. And still 0 store reads:
+        the live feed answers from memory on every poll of every tab."""
+        from log_mirror import StoreLogMirror
         app, gw = _seeded(tmp_path)
         mirror = app.config["LOG_MIRROR"]
+        assert isinstance(mirror, StoreLogMirror)
+        c = app.test_client()
+        gw.calls.clear()
+        m = c.get("/api/ui/live").get_json()["mirror"]
+        assert m["state"] == "filled" and m["complete_to"]
+        assert gw.calls == []
+        assert not [j for j in c.get("/api/ui/live").get_json()["jobs"]
+                    if j.get("kind") == "log-copy"]
+
+    def test_the_log_copy_says_what_it_is_from_memory(self, tmp_path):
+        """The COPY (`LogMirror`) still exists for a server whose record is
+        in LabCore; its states are what the banner says about it."""
+        from log_mirror import LogMirror
+        app, gw = _seeded(tmp_path)
+        mirror = LogMirror(gw, path=str(tmp_path / "copy.sqlite3"),
+                           jobs=app.config["JOBS"])
+        app.config["LOG_MIRROR"] = mirror
         c = app.test_client()
         assert c.get("/api/ui/live").get_json()["mirror"]["state"] == "empty"
         mirror.refresh()

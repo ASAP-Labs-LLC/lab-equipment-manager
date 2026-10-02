@@ -171,7 +171,7 @@ class TestLogKindsAreCached:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES "
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
                "('m1','2026-08-03T09:00:00','run','1','CP','-7.4','{}')")
 
     def kind_reads(self, gw):
@@ -327,7 +327,7 @@ class TestRecentEventsComeFromTheSnapshot:
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
         for i in range(n):
-            gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+            gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                    ["m1", f"2026-08-03T09:{i:02d}:00", "run", str(i),
                     "Cloud Point", "-7.4", "{}"])
 
@@ -367,7 +367,7 @@ class TestRecentEventsComeFromTheSnapshot:
         refresh — seconds, not the six the client polls at."""
         self.seed(gw)
         client.get("/api/events?limit=60")
-        gw.sql("INSERT INTO lem_machine_log VALUES "
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
                "('m2','2026-08-03T10:00:00','run','9','CP','-8.1','{}')")
         app_snaps = None
         client.get("/api/machines?fresh=1")     # stands in for the poller's tick

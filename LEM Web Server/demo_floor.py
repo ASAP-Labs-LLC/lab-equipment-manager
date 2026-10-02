@@ -44,6 +44,7 @@ anything a test compares.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 from datetime import datetime, timedelta
@@ -211,8 +212,8 @@ def seed(gateway, documents_root: Optional[str] = None,
 
     _seed_schedule(write)
     ladder = _seed_levels(gateway)
-    placed = _seed_fleet(write, rng, now, ladder)
-    _backdate_setup(write, now)
+    with _setup_dated(now):
+        placed = _seed_fleet(write, rng, now, ladder)
     _seed_standards(gateway)
     _seed_certificates(gateway, documents_root)
     _seed_documents(gateway, documents_root)
@@ -603,8 +604,9 @@ STANDARDS = (
 
 
 
-def _backdate_setup(write, now) -> None:
-    """Move the seeder's own setup rows into the past, where they belong.
+@contextlib.contextmanager
+def _setup_dated(now):
+    """Date the seeder's own setup rows in the past, where they belong.
 
     Placing thirteen instruments on levels writes thirteen `config /
     level_move` audit rows — correctly: moving equipment between floors is an
@@ -615,17 +617,25 @@ def _backdate_setup(write, now) -> None:
 
     The rows are not deleted or suppressed — an audit trail with a hole in it
     to make a demo look tidy is the opposite of what this app is for. They are
-    simply dated to when the floor plan would actually have been arranged: days
-    ago, before any of the work sitting on top of it.
+    dated, AS THEY ARE WRITTEN, to when the floor plan would actually have been
+    arranged: days ago, before any of the work sitting on top of it.
 
-    Only rows this seeder just wrote are touched, matched on the action, and
-    only on the in-memory fake behind `--dev`.
+    This used to be an `UPDATE lem_machine_log SET ts = ?` afterwards. The
+    LEM store refuses that — `lem_machine_log` is append-only by trigger — and
+    it is right to: a seeder that rewrites history is the habit the trigger
+    exists to make impossible. So the clock `levels` stamps with is the thing
+    that moves, for the length of the placement and no longer.
     """
+    import levels
+
     when = (now - timedelta(days=6)).replace(hour=8, minute=30, second=0,
                                              microsecond=0)
-    write("UPDATE lem_machine_log SET ts = ? "
-          "WHERE kind = 'config' AND test_name = 'level_move'",
-          [when.isoformat()])
+    real = levels._now_stamp
+    levels._now_stamp = lambda: when.isoformat(timespec="seconds")
+    try:
+        yield
+    finally:
+        levels._now_stamp = real
 
 
 def _seed_standards(gateway) -> None:

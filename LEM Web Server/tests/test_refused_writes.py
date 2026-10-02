@@ -431,10 +431,14 @@ class TestARefusedDeleteReportsWhatActuallyLanded:
         assert stale_of(push(client)) == set()
 
     def test_a_refused_purge_is_reported_even_though_the_rest_landed(self):
-        """Erasing history is the most destructive half of this endpoint.
-        "Deleted" while the log is untouched is the worst possible lie about
-        it — in both directions."""
-        gw, client = busy_bench(refuse=refuse_only("lem_machine_log"))
+        """Hiding history is the most consequential half of this endpoint.
+        "Done" while the history is still on every screen is the worst
+        possible lie about it — in both directions.
+
+        The statement refused is the one that hides (transfer §5.2: purge is
+        a `retired_at` on the config row now; the record itself refuses a
+        DELETE)."""
+        gw, client = busy_bench(refuse=refuse_only("retired_at"))
         response = client.delete("/api/machines/pac-flash-2",
                                  json={"confirm": True, "purge_history": True})
         assert response.status_code >= 400, response.get_json()
