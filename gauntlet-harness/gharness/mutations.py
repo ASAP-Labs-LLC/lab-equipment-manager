@@ -93,11 +93,21 @@ MUTATIONS = {
         "pattern": r"resolution = resolve_rewrite\(",
         "replace": "resolution = resolve_by_count(",
         "what": "ordered diff replaced by count matching (X1/X2 must fail)"},
+    # ── the guarded results road (owner P3) ──
+    # The guard's one decision point: every cell is a plain write whatever
+    # the guard read found in it — today's unguarded road (A1/A3 overwrite,
+    # K4/N4 re-send).
     "guard_off": {
-        "kind": "source", "owner": "P3", "pattern": None, "replace": None,
+        "kind": "source", "owner": "P3",
+        "pattern": r"verdict, expect = decide_cell\(cur_rows, value, led\)",
+        "replace": 'verdict, expect = ("write", "")',
         "what": "results guard read skipped"},
+    # `batch_outcome` reads each index's error out of an `ok` answer; off,
+    # every index of an ok batch reads clean — v3.9's "ok means filed".
     "per_index_off": {
-        "kind": "source", "owner": "P3", "pattern": None, "replace": None,
+        "kind": "source", "owner": "P3",
+        "pattern": r'out\[idx\] = str\(entry\["error"\]\) if entry\.get\("error"\) else None',
+        "replace": "out[idx] = None",
         "what": "per-index batch results ignored (B1 must fail)"},
     "blind_mode_off": {
         "kind": "source", "owner": "P8", "pattern": None, "replace": None,

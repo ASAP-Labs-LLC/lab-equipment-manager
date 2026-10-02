@@ -357,6 +357,20 @@ def schedule(m: dict) -> dict:
     return {"tasks": len(tasks), "next": nxt}
 
 
+def _bay(pos) -> Optional[List[float]]:
+    """The saved bay, as the map reads it: two finite numbers, or None.
+    A half-written layout row ([x, None], text) is not a bay; drawn, it
+    would put the instrument at the origin as if somebody had."""
+    if not isinstance(pos, (list, tuple)) or len(pos) != 2:
+        return None
+    out = []
+    for v in pos:
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v in (float("inf"), float("-inf")):
+            return None
+        out.append(float(v))
+    return out
+
+
 def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: Href) -> dict:
     uid = m["machine_uid"]
     ready = ui_live.readiness(m, override)
@@ -381,7 +395,7 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
         "bench": bench(m),
         "level_uid": m.get("level_uid") or "",
         "where": {"level": levels.get(m.get("level_uid") or "") or "No level",
-                  "placed": m.get("pos") is not None},
+                  "placed": _bay(m.get("pos")) is not None, "pos": _bay(m.get("pos"))},
         "maintenance": len(m.get("maintenance") or []),
         "schedule": schedule(m),
     }
@@ -453,7 +467,7 @@ def needs_you(rows: List[dict]) -> dict:
 
 
 def build(*, machines: List[dict], overrides: Optional[Dict[str, str]],
-          levels: List[dict], href: Href) -> dict:
+          levels: List[dict], href: Href, default_level: str = "") -> dict:
     """The ready answer, for merged machines that were read."""
     names = {str(lv.get("uid")): str(lv.get("name") or "") for lv in levels or []}
     rows = [instrument(m, None if overrides is None else overrides.get(m["machine_uid"], ""),
@@ -469,6 +483,9 @@ def build(*, machines: List[dict], overrides: Optional[Dict[str, str]],
         "needs_you": needs_you(rows),
         "fleet": fleet(rows),
         "levels": lv if len(lv) > 1 else [],
+        # the level the map opens on (Settings › Floor and levels), the same
+        # one the old floor opened on
+        "default_level": str(default_level or ""),
         "has_maintenance": any(r["maintenance"] for r in rows),
     }
 
@@ -479,4 +496,4 @@ def unread(error: Optional[str]) -> dict:
     has read would be a statement made from no information."""
     return {"state": "unreadable" if error else "not_read", "error": error or None,
             "instruments": None, "needs_you": None, "fleet": None, "levels": [],
-            "has_maintenance": False}
+            "default_level": "", "has_maintenance": False}

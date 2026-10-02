@@ -636,13 +636,27 @@ def test_E6_a_second_reading_is_not_resolved_by_deletion(
             "reports the earlier 0.9000. A re-run supersedes."
             + explain(oracle, gateway))
     else:
-        recorded = [w for w in gateway.value_writes(lab_id=CANONICAL,
+        # Ryan's decision D1 (2026-10-01) changed what "not resolved by
+        # deletion" means here. It used to be satisfied by WRITING the
+        # instrument's 0.8654 over the 0.9000 the operator typed — resolving
+        # the disagreement by deleting the operator's value instead. A cell a
+        # person filled is now never overwritten by the bench: the
+        # disagreement is a CONFLICT, journaled at the bench with both values,
+        # for a person to decide in LEM. Neither value is deleted.
+        assert oracle.delivered(DENSITY, CANONICAL) == "0.9000", (
+            "the bench overwrote the value the operator typed" +
+            explain(oracle, gateway))
+        assert not [w for w in gateway.value_writes(lab_id=CANONICAL,
                                                     test=DENSITY)
-                    if w[2] == "0.8654"]
-        assert recorded, (
+                    if w[2] == "0.8654"], explain(oracle, gateway)
+        journal = bench._journal_for(bench.machine())
+        conflicts = [c for r in journal._scan() if r.get("kind") == "conflict"
+                     for c in r["cells"]]
+        assert [(c[0], c[1], c[2], c[3]) for c in conflicts] == [
+            (CANONICAL, DENSITY, "0.8654", "0.9000")], (
             "the instrument disagreed with what the operator typed and the "
-            "instrument's reading was never written against this sample at "
-            "all. A disagreement must not be resolved by deletion."
+            "instrument's reading was recorded nowhere a person can decide it. "
+            "A disagreement must not be resolved by deletion."
             + explain(oracle, gateway))
 
 

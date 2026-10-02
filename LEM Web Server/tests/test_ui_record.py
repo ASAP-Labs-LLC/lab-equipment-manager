@@ -457,9 +457,12 @@ class TestTheRoutes:
 
     def test_show_on_the_floor_map_lands_on_the_instrument(self, tmp_path):
         app, _ = _seeded(tmp_path)
+        # The map is now the Instruments page drawn as a plan (piece 12);
+        # floor_map.js reads ?focus= and rings that bay. The link must land
+        # on that page, not bounce to the whole floor.
         r = app.test_client().get("/?view=map&focus=optimpp-1")
-        assert r.status_code == 302
-        assert r.headers["Location"].endswith("/floor?machine=optimpp-1")
+        assert r.status_code == 200
+        assert "floor_map.js" in r.get_data(as_text=True)
 
     def test_the_floor_opens_the_machine_it_was_sent(self):
         """Until the map moves into the shell, the floor's own record panel is
