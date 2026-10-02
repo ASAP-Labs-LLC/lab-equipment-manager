@@ -172,7 +172,7 @@ class TestFirstPaintFlagIsDeclaredBeforeUse:
     to work because load() is called from the bottom of the file — a fact no reader
     should have to verify to be sure the page loads."""
 
-    PAGES = ("floor.html", "checklists.html", "maintenance.html")
+    PAGES = ("floor.html", "maintenance.html")
 
     def read(self, name):
         import pathlib

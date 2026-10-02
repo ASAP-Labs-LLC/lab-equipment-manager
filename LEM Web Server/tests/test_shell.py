@@ -22,9 +22,9 @@ from labcore_gateway import FakeLabCoreGateway
 # covers it); "/maintenance" redirects to its filter, and the old PM page
 # lives at /maintenance/classic until the record and Settings › Imports take
 # over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
-# round (a new shell page, tests/test_round_page.py); the old checklists
-# page, with the editor, answers at /checklists/edit.
-PAGES = ["/floor", "/checklists/edit", "/maintenance/classic", "/logs"]
+# round, and /checklists/edit is the round editor and /checklists/trends is
+# Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
+PAGES = ["/floor", "/maintenance/classic", "/logs"]
 DESTS = ["/floor", "/checklists", "/maintenance", "/logs"]
 
 
@@ -106,7 +106,7 @@ class TestNavigation:
         assert 'href="/"' in body(client, path), path
 
     @pytest.mark.parametrize("path,expected", [
-        ("/floor", "/floor"), ("/checklists/edit", "/checklists"),
+        ("/floor", "/floor"),
         ("/maintenance/classic", "/maintenance"), ("/logs", "/logs")])
     def test_the_current_page_is_marked(self, client, path, expected):
         html = body(client, path)

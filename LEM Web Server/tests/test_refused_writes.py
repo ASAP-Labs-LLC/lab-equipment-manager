@@ -730,8 +730,8 @@ class TestTheFloorDoesNotSwallowARefusal:
     with no transaction across them, and the reply thrown away entirely.
     """
 
-    PAGES = ("templates/floor.html", "templates/checklists.html",
-             "templates/maintenance.html")
+    PAGES = ("templates/floor.html", "templates/maintenance.html",
+             "static/js/round_edit.js", "static/js/round_archive.js")
 
     # Calls whose answer there is genuinely nothing to do with. Named one by
     # one, because "it's probably fine" is how the other seven got here.
@@ -781,10 +781,17 @@ class TestTheFloorDoesNotSwallowARefusal:
         source = open("static/lem.js", encoding="utf-8").read()
         assert "not_landed" in source and "NOT saved" in source
 
-    @pytest.mark.parametrize("page", ("templates/floor.html",
-                                      "templates/checklists.html"))
+    @pytest.mark.parametrize("page", ("templates/floor.html",))
     def test_the_pages_use_it(self, page):
         assert "LEM.failure(" in open(page, encoding="utf-8").read()
+
+    def test_the_round_editor_writes_through_lem_send(self):
+        """LEM.send formats a refusal with the same `failure()`, and keeps a
+        request id so a Save pressed again is not saved twice."""
+        js = open("static/js/round_edit.js", encoding="utf-8").read()
+        assert "LEMjs.send('/api/checklists'" in js
+        assert "LEM.send('/api/checklists/' + encodeURIComponent(main.dataset.uid)" in js
+        assert "fetch('/api/checklists'" not in js
 
     def test_the_override_shows_labcores_reason_not_a_canned_one(self):
         """The write the benches act on. "Could not apply the override."

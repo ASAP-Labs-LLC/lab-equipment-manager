@@ -1,0 +1,17 @@
+{#- The archive of recorded days, as a sheet (P8: the old one was a white
+    browser-default dialog). Opened by #archive-chip on the round list
+    ("Archived (n)") and by "Open the archive" in an editor, where it shows
+    that round only. Filled by static/js/round_archive.js: loading, the
+    calendar, "nothing recorded yet", and "could not be read" are four
+    different sentences. -#}
+<dialog class="sheet sheet-wide" id="archive-sheet" aria-labelledby="archive-title" data-testid="archive-sheet">
+  <div class="sheet-head">
+    <h2 id="archive-title">Archived rounds</h2>
+    <button type="button" class="icon-btn" id="archive-close" aria-label="Close" title="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+  <p id="archive-sub">One square per day a round was recorded; the fuller the square, the more of what was recorded was ticked. Choose a day to read it.</p>
+  <div id="archive-body" aria-live="polite">
+    <p class="load-line"><span class="glyph working" aria-hidden="true"></span> Reading the archive…</p>
+  </div>
+  <div id="archive-day" class="archive-day" aria-live="polite"></div>
+</dialog>
