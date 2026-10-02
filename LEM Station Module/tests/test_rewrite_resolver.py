@@ -149,6 +149,101 @@ def test_an_append_that_also_looks_like_a_prepend_stays_an_append():
     assert len(res.new) == 1
 
 
+def test_a_trim_to_the_last_line_then_qc_prints_is_a_continuation():
+    """Found by fuzzing the round-2 resolver: the file is trimmed in place to
+    its newest line (QC3) and the instrument then prints two samples, QC3
+    and QC2 again, and a sample. The new file starts with the old file's
+    newest line — the head-trim shape — but difflib's longest-match alignment
+    paired the new QC3 and QC2 with older copies far up the old file, ended
+    in a `replace`, and the change was read as a correction: the two QC
+    prints were lost. When the old file's head is gone (the diff does not
+    open by matching it) and the new file starts with the old file's last
+    lines, the trim is the reading: everything after the overlap is new."""
+    O = L("QC2", "S1", "QC1", "QC3", "S2", "S3", "S4", "QC2", "QC1", "S5",
+          "QC2", "S6", "QC2", "QC2", "QC3", "QC2", "QC2", "QC3", "S7", "S8",
+          "QC1", "S9", "QC2", "S10", "S11", "S12", "QC2", "S13", "QC3")
+    N = L("QC3", "S41", "S42", "QC3", "QC2", "S43")
+    res = resolve_rewrite(O, N)
+    assert res.kind == "continuation"
+    assert new_lines(res, N) == ["S41", "S42", "QC3", "QC2", "S43"]
+
+
+def test_an_insert_between_repeats_is_also_a_trim_and_both_are_recorded():
+    """[QC3, QC3] trimmed in place to [QC3], then S, QC2, QC3 printed. The
+    same bytes are two lines inserted between the two old QC3s, which is
+    what the diff reads (and the trim's QC3 would be lost). §4.2: when the
+    diff could shift, the larger candidate set is recorded and the lines only
+    it holds are labelled — a visible possible duplicate, not a loss."""
+    O = L("QC3", "QC3")
+    N = L("QC3", "S1", "QC2", "QC3")
+    res = resolve_rewrite(O, N)
+    assert res.new == [1, 2, 3]
+    assert res.ambiguous == {3}
+    assert res.ambiguity["kind"] == "periodic" and res.ambiguity["lines"] == 1
+
+
+def test_a_correction_in_a_short_file_that_opens_and_closes_alike_is_recorded_labelled():
+    """The price of the rule above, stated: a short file that opens and closes
+    with the same QC line also reads as "trimmed to that line, then the rest
+    printed again". The corrected line is new either way; the other four are
+    recorded labelled."""
+    O = L("QC1", "S1", "S2", "S3", "S4", "QC1")
+    N = L("QC1", "S1", "S2*", "S3", "S4", "QC1")
+    res = resolve_rewrite(O, N)
+    assert new_lines(res, N) == ["S1", "S2*", "S3", "S4", "QC1"]
+    assert res.ambiguous == {1, 3, 4, 5}
+
+
+def test_a_correction_in_a_long_file_that_opens_and_closes_alike_stays_one_line():
+    """...and only a short one: a trim reading that would label more lines
+    than any print burst (over 20) is not taken. One new line."""
+    O = ["QC1"] + ["S%d" % i for i in range(40)] + ["QC1"]
+    N = list(O)
+    N[10] = "S9*"
+    res = resolve_rewrite(O, N)
+    assert new_lines(res, N) == ["S9*"]
+    assert not res.ambiguous
+
+
+def test_in_place_head_trims_lose_only_what_the_bytes_cannot_show():
+    """A property over 6,000 seeded in-place head trims that keep at least
+    one line (R3's shape) plus 1..5 appended lines, a third of them repeating
+    QC lines. The resolver's answer either holds every appended line, or is
+    itself an exact explanation of the same bytes (the new file is some other
+    suffix of O plus fewer new lines — R7p's class, which no reader can tell
+    apart). Before this round's rules: 233 trials lost a reading the bytes
+    did show; now none."""
+    import random
+    from collections import Counter
+    rng = random.Random(11)
+    qc = ["QC1", "QC2", "QC3"]
+    sid = [0]
+
+    def draw():
+        if rng.random() < 0.35:
+            return rng.choice(qc)
+        sid[0] += 1
+        return "S%05d" % sid[0]
+    decidable, exact = [], 0
+    for _ in range(6000):
+        O = [draw() for _ in range(rng.randint(2, 40))]
+        t = rng.randint(1, len(O) - 1)
+        add = [draw() for _ in range(rng.randint(1, 5))]
+        N = O[t:] + add
+        res = resolve_rewrite(O, N)
+        got = sorted(res.new)
+        if Counter(N[j] for j in got) >= Counter(add):
+            continue
+        k = len(got)
+        if got == list(range(len(N) - k, len(N))) and \
+                N[:len(N) - k] == O[len(O) - (len(N) - k):]:
+            exact += 1
+            continue
+        decidable.append((O, N, add, res))
+    assert not decidable, (len(decidable), decidable[:2])
+    assert exact < 10, exact
+
+
 # ── rotation: a new file (or truncated and started again) ────────────────────
 
 def test_x2_a_rotated_file_that_repeats_earlier_lines_is_all_new():
@@ -160,7 +255,136 @@ def test_x2_a_rotated_file_that_repeats_earlier_lines_is_all_new():
     res = resolve_rewrite(O, N, rotated=True)
     assert res.kind == "rotation"
     assert res.new == [0, 1, 2]
+    # Recorded, and labelled: the same bytes are what a write-temp-then-rename
+    # that cut the old file's tail would leave (see the rotation tests below).
+    assert res.ambiguous == {0, 1, 2}
+
+
+# A new file under the name (a different file identity) that repeats some of
+# the old file's lines. Round 1 resolved these by the shape of the diff's END:
+# when the new file's last line differed from the old one's, the diff ended in
+# a `replace`, the change was read as an in-place correction, and only the
+# replacing lines were recorded. Every repeated QC line was lost without a
+# trace as soon as one sample followed it (the critic's "QC triplet + 1
+# sample": 3 lost, 0 labelled, through the gate's own World). A rotation is a
+# different file; what the diff's end looks like says nothing about it.
+
+def test_x2_a_rotated_file_repeating_qc_then_a_sample_loses_nothing():
+    O = L("Q0", "Q1", "Q2", "S0", "S1", "S2")
+    N = L("Q0", "Q1", "Q2", "S3")
+    res = resolve_rewrite(O, N, rotated=True)
+    assert res.kind == "rotation"
+    assert res.new == [0, 1, 2, 3]
+    assert res.ambiguous == {0, 1, 2}
+    assert res.ambiguity["kind"] == "rotation_overlap"
+    assert res.ambiguity["lines"] == 3
+
+
+def test_x2_a_rotated_file_repeating_qc_then_three_samples_loses_nothing():
+    O = L("Q0", "Q1", "Q2", "S0", "S1", "S2")
+    N = L("Q0", "Q1", "Q2", "S3", "S4", "S5")
+    res = resolve_rewrite(O, N, rotated=True)
+    assert res.new == [0, 1, 2, 3, 4, 5]
+    assert res.ambiguous == {0, 1, 2}
+
+
+def test_x2_qc_repeated_between_two_new_samples_loses_nothing():
+    O = L("Q0", "Q1", "Q2", "S0", "S1", "S2")
+    N = L("S3", "Q0", "Q1", "Q2", "S4")
+    res = resolve_rewrite(O, N, rotated=True)
+    assert res.new == [0, 1, 2, 3, 4]
+    assert res.ambiguous == {1, 2, 3}
+
+
+def test_a_short_file_corrected_by_write_temp_then_rename_is_recorded_labelled():
+    """The bytes the rotation rule cannot tell from X2's: a three-line file
+    whose last line was corrected and saved by writing a temp file and
+    renaming it over the old one (the identity changes). Recording all of it,
+    with the two unchanged lines labelled, is a visible possible duplicate;
+    the alternative reading loses a whole day's opening QC. Record, never
+    drop (§4.2)."""
+    O = L("A", "B", "C")
+    N = L("A", "B", "C*")
+    res = resolve_rewrite(O, N, rotated=True)
+    assert res.new == [0, 1, 2]
+    assert res.ambiguous == {0, 1}
+
+
+def test_a_long_file_corrected_by_write_temp_then_rename_is_still_a_correction():
+    """More than twenty of the old lines, in order, in the new file is not a
+    plausible rotation (the spec's own bound for X3), so a large export
+    corrected through a temp file records the corrected line and nothing else
+    — never forty labelled duplicates."""
+    O = ["L%d" % i for i in range(40)]
+    N = O[:-1] + L("L39*")
+    res = resolve_rewrite(O, N, rotated=True)
+    assert new_lines(res, N) == ["L39*"]
     assert not res.ambiguous
+
+
+def test_a_new_file_starting_with_all_of_a_short_old_file_is_a_rotation_when_the_old_file_is_still_there():
+    """Day 1 printed only its QC triplet; day 2's file starts with the same
+    triplet and then a sample. By bytes alone that is also a write-temp-then-
+    rename of the whole file plus one line, which is a continuation (the next
+    test). What tells them apart is not in the bytes: on a rotation the old
+    file is still in the folder under another name (the bench found and
+    drained it), while a temp-file rewrite leaves no old file behind."""
+    O = L("Q0", "Q1", "Q2")
+    N = L("Q0", "Q1", "Q2", "S0")
+    res = resolve_rewrite(O, N, rotated=True, predecessor=True)
+    assert res.new == [0, 1, 2, 3]
+    assert res.ambiguous == {0, 1, 2}
+    assert res.ambiguity["kind"] == "rotation_overlap"
+
+
+def test_a_rotated_file_with_its_old_file_still_there_is_never_taken_for_newest_first():
+    """[S0, Q0, Q1, Q2] after [Q0, Q1, Q2] looks like a newest-first prepend.
+    When the old file is still in the folder this is a new file in its own
+    right, read in file order, and the direction is not flipped for good."""
+    O = L("Q0", "Q1", "Q2")
+    N = L("S0", "Q0", "Q1", "Q2")
+    res = resolve_rewrite(O, N, rotated=True, predecessor=True)
+    assert sorted(res.new) == [0, 1, 2, 3]
+    assert res.ambiguous == {1, 2, 3}
+    assert not res.newest_first
+
+
+def test_no_rotated_file_of_a_few_lines_ever_loses_a_reading():
+    """The critic's fuzz, as a property: a new file of 1..8 lines drawn from a
+    pool where QC lines repeat, after an old file of 1..40 lines. With the old
+    file found in the folder, every line of the new one is recorded (labelled
+    where it matches the old file), 4,000 seeded trials out of 4,000.
+
+    Without the old file there is exactly one shape that is NOT all new: the
+    new file holds every line of the old one, at its top or (prepended) at its
+    bottom. Those bytes are what a write-temp-then-rename of the same history
+    leaves, and without the predecessor's evidence they are read that way;
+    the test counts them so the exception stays visible (12 of 4,000 here)."""
+    import random
+    rng = random.Random(7)
+    qc = ["QC1", "QC2", "QC3"]
+    sid = [0]
+
+    def draw():
+        if rng.random() < 0.4:
+            return rng.choice(qc)
+        sid[0] += 1
+        return "S%05d" % sid[0]
+    lost, copies = [], 0
+    for _ in range(4000):
+        O = [draw() for _ in range(rng.randint(1, 40))]
+        N = [draw() for _ in range(rng.randint(1, 8))]
+        copy = N[:len(O)] == O or N[len(N) - len(O):] == O
+        for pred in (False, True):
+            res = resolve_rewrite(O, N, rotated=True, predecessor=pred)
+            if sorted(res.new) == list(range(len(N))):
+                continue
+            if copy and not pred:
+                copies += 1
+                continue
+            lost.append((O, N, pred, res))
+    assert not lost, (len(lost), lost[:3])
+    assert copies == 12
 
 
 def test_x3_a_new_file_starting_with_the_old_files_last_lines_is_recorded_and_labelled():

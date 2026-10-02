@@ -355,6 +355,252 @@ def test_an_ambiguous_overlap_is_recorded_labelled_and_journaled(qapp, tmp_path,
         ["ambiguous"] * 3 + ["live"] * 2
 
 
+def test_a_new_days_file_repeating_the_qc_triplet_then_a_sample_loses_nothing(qapp, tmp_path, monkeypatch):
+    """The critic's X2 variant, on the real module. Day 1 opens with a QC
+    triplet and runs three samples; the instrument renames the file away and
+    day 2 opens with the same triplet (same values, printed again for real)
+    and a sample. Round 1 read the day-2 file as a correction of day 1's tail
+    and recorded only the sample: 3 lost, 0 labelled. All four are recorded
+    now; the three that match day 1 carry `origin: ambiguous`, and one
+    ambiguity record says why."""
+    b = Bench(tmp_path, monkeypatch)
+    b.emit(6)                                      # "QC" 0..2, samples 3..5
+    b.poll()
+    os.replace(b.path, str(b.path) + ".1")
+    with open(b.path, "w") as f:
+        f.writelines(line(i) + "\n" for i in (0, 1, 2, 6))
+    for _ in range(3):
+        b.poll()
+    rows = details(b)
+    assert sorted(lab for lab, _d in rows) == sorted(
+        [lab_id(i) for i in range(7)] + [lab_id(0), lab_id(1), lab_id(2)])
+    assert [lab for lab, d in rows if d.get("origin") == "ambiguous"] == \
+        [lab_id(0), lab_id(1), lab_id(2)]
+    amb = [r for r in b.journal()._scan() if r["kind"] == "ambiguity"]
+    assert len(amb) == 1 and amb[0]["lines"] == 3
+
+
+def test_a_new_file_holding_all_of_a_short_old_one_is_a_rotation_if_the_old_file_is_still_there(qapp, tmp_path, monkeypatch):
+    """Day 1 printed only its triplet; day 2 opens with it again and a sample.
+    The old file is in the folder as inst.csv.1, so this is a rotation, not a
+    temp-file copy of the same history: all four are recorded."""
+    b = Bench(tmp_path, monkeypatch)
+    b.emit(3)
+    b.poll()
+    os.replace(b.path, str(b.path) + ".1")
+    with open(b.path, "w") as f:
+        f.writelines(line(i) + "\n" for i in (0, 1, 2, 3))
+    for _ in range(3):
+        b.poll()
+    assert sorted(b.lab.log_runs()) == sorted(
+        [lab_id(i) for i in range(4)] + [lab_id(0), lab_id(1), lab_id(2)])
+
+
+def test_a_short_file_rewritten_through_a_temp_file_is_still_a_continuation(qapp, tmp_path, monkeypatch):
+    """The same day-2 bytes with NO old file left behind: an instrument that
+    saves its history plus one line through a temp file. One new reading,
+    nothing labelled."""
+    b = Bench(tmp_path, monkeypatch)
+    b.emit(3)
+    b.poll()
+    tmp = str(b.path) + ".tmp"
+    with open(tmp, "w") as f:
+        f.writelines(line(i) + "\n" for i in range(4))
+    os.replace(tmp, b.path)
+    for _ in range(3):
+        b.poll()
+    assert sorted(b.lab.log_runs()) == [lab_id(i) for i in range(4)]
+    assert not [d for _l, d in details(b) if d.get("origin") == "ambiguous"]
+
+
+# ── a file that never goes quiet ─────────────────────────────────────────────
+#
+# Quiescence (Q1) holds a change the cursor cannot explain until the file has
+# stopped changing. An instrument that writes on every poll never stops: the
+# critic drove one that saves its whole history through a temp file every
+# 20 s against a bench polling every 20 s, and round 1 delivered 0 of 90
+# readings in 30 minutes with nothing on the status line. Nothing was lost —
+# it all arrived once the instrument stopped — but a bench that says "nothing
+# new" while it holds unread data is the empty result the rules forbid.
+#
+# The rule now: after QUIET_MAX_WAIT of waiting, the bench reads the part of
+# the file that has held still — byte-identical to what an earlier poll at
+# least QUIET_SECONDS ago saw, at the top of the file (or, newest-first, at the
+# bottom) — and says on the status line that it is doing so. That is the quiet
+# rule applied to the region the writer has finished with, not a guess.
+
+def _src(tmp_path, name="inst.csv"):
+    path = tmp_path / name
+    jd = tmp_path / ("j-" + name)
+    jd.mkdir()
+    return str(path), mod.SingleCsvSource(str(path), mod.CursorStore(str(jd)))
+
+
+def _take(src, now):
+    r = src.read(now)
+    r.commit()
+    return [str(p) for p in r.prints]
+
+
+def _save_via_temp(path, lines):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.writelines(lines)
+    os.replace(tmp, path)
+
+
+def test_a_file_saved_through_a_temp_file_on_every_poll_is_still_read(tmp_path):
+    path, src = _src(tmp_path)
+    hist = ["R%04d,1.00\n" % i for i in range(50)]
+    _save_via_temp(path, hist)
+    assert len(_take(src, T0)) == 50
+    got = []
+    notes = []
+    for k in range(1, 91):                         # 30 minutes, 20 s apart
+        hist.append("N%04d,1.00\n" % k)
+        _save_via_temp(path, hist)
+        got += _take(src, T0 + timedelta(seconds=20 * k))
+        notes.append(src.status_note())
+    during = len(got)
+    for k in range(91, 95):                        # the instrument stops
+        got += _take(src, T0 + timedelta(seconds=20 * k))
+    assert sorted(got) == sorted(h.strip() for h in hist[50:])   # once each
+    assert during >= 84, during                    # round 1: 0
+    assert any("has not stopped changing" in n for n in notes)
+    # said once as an event (the operator's notice list), and standing on the
+    # status line for as long as it lasts
+    assert sum("has not stopped changing" in n for n in src.notices) == 1
+    assert src.status_note() == ""                 # quiet again: said nothing
+
+
+def test_a_continuous_printer_after_an_early_edit_keeps_being_read(tmp_path):
+    """The critic's other probe: a same-size edit inside the first 4 KB, then
+    one print per 30 s poll for an hour. Round 1 delivered 1 of 120 until the
+    printing stopped. The corrected line is a new reading; every print
+    arrives within the hour."""
+    path, src = _src(tmp_path)
+    with open(path, "w") as f:
+        for i in range(400):
+            f.write("S%04d,%d.00\n" % (i, i % 7))
+    assert len(_take(src, T0)) == 400
+    got = []
+    for k in range(1, 121):
+        if k == 2:
+            data = open(path, "rb").read().replace(b"S0010,3.00", b"S0010,9.00", 1)
+            open(path, "wb").write(data)
+        with open(path, "a") as f:
+            f.write("N%04d,1.00\n" % k)
+        got += _take(src, T0 + timedelta(seconds=30 * k))
+    during = list(got)
+    for k in range(121, 125):
+        got += _take(src, T0 + timedelta(seconds=30 * k))
+    want = ["N%04d,1.00" % k for k in range(1, 121)] + ["S0010,9.00"]
+    assert sorted(got) == sorted(want)
+    assert len(during) >= 118, len(during)
+
+
+def test_a_newest_first_file_rewritten_on_every_poll_is_still_read(tmp_path):
+    """R2's instrument, printing on every poll: its new line is at the TOP, so
+    what holds still is the bottom of the file."""
+    path, src = _src(tmp_path)
+    rows = ["R%04d,1.00\n" % i for i in range(10)]
+    with open(path, "w") as f:
+        f.writelines(reversed(rows))
+    _take(src, T0)
+    rows.append("R0010,1.00\n")
+    with open(path, "w") as f:
+        f.writelines(reversed(rows))
+    got = []
+    for k in (1, 2):                               # detected while quiet
+        got += _take(src, T0 + timedelta(seconds=20 * k))
+    assert got == ["R0010,1.00"]
+    for k in range(3, 63):                         # 20 minutes, never quiet
+        rows.append("R%04d,1.00\n" % (k + 8))
+        with open(path, "w") as f:
+            f.writelines(reversed(rows))
+        got += _take(src, T0 + timedelta(seconds=20 * k))
+    during = len(got)
+    for k in range(63, 67):
+        got += _take(src, T0 + timedelta(seconds=20 * k))
+    assert sorted(got) == sorted(r.strip() for r in rows[10:])
+    assert during >= 55, during
+
+
+def test_a_file_where_nothing_holds_still_waits_and_says_so(tmp_path):
+    """Every byte changes on every poll (a whole-file rewrite of different
+    content): there is no part the writer has finished with, so nothing is
+    read — and the status line says the bench is waiting, and that nothing
+    is lost by it."""
+    path, src = _src(tmp_path)
+    with open(path, "w") as f:
+        f.write("A,1\nB,2\n")
+    _take(src, T0)
+    for k in range(1, 8):
+        with open(path, "w") as f:
+            f.write("Z%d,%d\nY%d,%d\n" % (k, k, k, k))
+        assert _take(src, T0 + timedelta(seconds=20 * k)) == []
+    note = src.status_note()
+    assert "has not stopped changing" in note and "nothing" in note.lower()
+
+
+def test_a_held_region_with_no_whole_line_is_not_taken(tmp_path):
+    """The part that held still may be only half a line: here a slow writer
+    rewrites the file with the same three lines, a few bytes per poll. Taking
+    that half line would resolve an empty file against the snapshot, set the
+    cursor to 0, and the finished file would then be read again from the top
+    as three new readings. It keeps waiting instead; the finished file is the
+    one already read, and nothing is new."""
+    path, src = _src(tmp_path)
+    full = "A,1\nB,2\nC,3\n"
+    with open(path, "w") as f:
+        f.write(full)
+    _take(src, T0)
+    for k in range(1, 8):                          # "A", "A,", "A,1" ... slowly
+        with open(path, "w") as f:
+            f.write(full[:min(k, 3)] if k < 7 else full[:3])
+        assert _take(src, T0 + timedelta(seconds=20 * k)) == []
+    with open(path, "w") as f:
+        f.write(full)
+    got = []
+    for k in range(8, 12):
+        got += _take(src, T0 + timedelta(seconds=20 * k))
+    assert got == []
+
+
+def test_a_mid_rewrite_poll_still_waits_inside_the_cap(tmp_path):
+    """Q1 is not weakened: a poll that sees a prefix of a rewrite, then the
+    completed rewrite 30 s later, still reads only the one new line once the
+    file is quiet — no prefix region is taken inside QUIET_MAX_WAIT."""
+    path, src = _src(tmp_path)
+    old = ["L%02d,1\n" % i for i in range(15)]
+    with open(path, "w") as f:
+        f.writelines(old)
+    _take(src, T0)
+    with open(path, "w") as f:
+        f.writelines(old[:7])
+    assert _take(src, T0 + timedelta(seconds=30)) == []
+    with open(path, "w") as f:
+        f.writelines(old + ["L15,1\n"])
+    got = []
+    for k in (2, 3, 4):
+        got += _take(src, T0 + timedelta(seconds=30 * k))
+    assert got == ["L15,1"]
+    assert mod.QUIET_MAX_WAIT >= timedelta(seconds=60)
+
+
+def test_the_waiting_note_reaches_the_status_line(qapp, tmp_path, monkeypatch):
+    b = Bench(tmp_path, monkeypatch)
+    b.emit(3)
+    b.poll()
+    for k in range(6):
+        with open(b.path, "w") as f:
+            f.write("X%d,0.1\n" % k)
+        b.poll()
+    (source,) = b.m._sources.values()
+    assert "has not stopped changing" in b.m._source_notes(b.m.machine())
+    assert source.status_note()                    # stays until it settles
+
+
 # ── multi_csv ────────────────────────────────────────────────────────────────
 
 class Drop:
