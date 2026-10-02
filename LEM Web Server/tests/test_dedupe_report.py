@@ -166,9 +166,10 @@ class TestQcImpact:
         vals = [2.0, 2.2, 1.9, 2.1]
         for v in vals:
             lab.poll("u", [self._qc(v)], [GENUINE])
-        # replay: all four QC again plus 20 run lines, in one burst
+        # replay: all four QC again plus 20 run lines, in one burst, in the
+        # order the record first logged them (a re-read copies the file)
         runs = [SimLab.run_line("L40%03d" % k, {"v": str(k)}) for k in range(20)]
-        lab.poll("u", runs, [GENUINE] * 20, ts="2026-08-01T00:00:01")
+        lab.poll("u", runs, [GENUINE] * 20)
         lab.poll("u", [self._qc(v) for v in vals] + runs, [DUP] * 24)
         [s] = _report(lab)["qc_impact"]
         assert s["n_before"] == 8 and s["n_after"] == 4
@@ -472,3 +473,44 @@ class TestTheBandIsJudgedWithoutOurKey:
         [b] = chk["benches"]
         assert b["reachable_by_any_definition"] is True
         assert b["reachable"] is False
+
+
+class TestO9SaysNotMetWhenItIsNotMet:
+    """Round-4 critic: the dry run printed "110,751 -> INSIDE the predicted
+    range", which is G1's own proxy measured against itself, while the
+    CANDIDATES (63,869) were outside 110k-140k and Agilent GC 2 was 39.6 %
+    under G1. A reader skimming the output saw "INSIDE". The report now
+    leads with a verdict computed from the candidates alone: met only if
+    the total replay candidates are inside the predicted range AND every
+    named bench is inside its band. When it is not met it says which part
+    failed, and what would unblock it: the band is Ryan's (D7), and the
+    rows that reaching it would erase are counted, so nobody can meet it
+    by loosening a rule without that number in front of them."""
+
+    def _check(self, total, burst_rows):
+        lab = TestThePredictionIsChecked()._lab()
+        result = dedupe.classify(dedupe.LogRow.from_dict(r) for r in lab.rows)
+        return dedupe.prediction_check(result, {
+            "since": "2026-09-01", "total": total, "band": 0.10,
+            "benches": {"b": {"name": "Bench B", "burst_rows": burst_rows}}})
+
+    def test_not_met_names_what_failed_and_what_it_would_erase(self):
+        chk = self._check([40, 60], 75)
+        v = chk["verdict"]
+        assert v["met"] is False
+        assert v["total_within_band"] is False
+        assert v["benches_out_of_band"] == ["Bench B"]
+        # total floor 40 erases 15, the bench's floor 68 erases 43; the
+        # bench's rows are inside the total, so meeting both costs 43
+        assert v["readings_erased_to_meet"] == 43
+        assert "Ryan" in v["unblocks"]
+        lines = dedupe.o9_lines(chk)
+        assert lines[1].startswith("  VERDICT: NOT MET")
+        assert not any("INSIDE" in l for l in lines)
+
+    def test_met_when_candidates_and_every_bench_are_in_band(self):
+        chk = self._check([20, 30], 25)
+        v = chk["verdict"]
+        assert v["met"] is True and v["benches_out_of_band"] == []
+        assert v["readings_erased_to_meet"] == 0
+        assert dedupe.o9_lines(chk)[1].startswith("  VERDICT: MET")

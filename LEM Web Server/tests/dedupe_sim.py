@@ -62,6 +62,20 @@ majority rule, and a Blank and a Solvent as a "stretch of two samples":
   file re-read that holds some readings more often than the record does,
   with a run of standards and one sample between those extra copies — the
   standards' copies are copies.
+
+Added after the round-4 critic hid a genuine PAIR re-test (40005, 40006,
+identical results) inside a 26-row catch-up poll as a "stretch of two
+samples":
+
+* pair, triple and four-sample re-tests, identical numbers, at the head, in
+  the middle and at the tail of catch-up polls, one of them between
+  standards that repeat too — all genuine;
+* the restart that re-reads from a stale offset now re-reads six samples
+  (a copy, hidden), and the TWO-line re-read moved to its own pair of
+  benches beside a genuine re-test of the same two samples that writes the
+  identical record. That copy's truth is `LISTED`: no rule can hide it
+  without hiding the re-test, so it must be listed beside its original
+  (`probable_duplicate`), visible, for a person.
 """
 
 from __future__ import annotations
@@ -70,6 +84,11 @@ import json
 from typing import Dict, List, Optional
 
 GENUINE, DUP = "genuine", "dup"
+#: A real copy whose rows are, row for row, what a genuine re-test of at
+#: most four samples writes. It must be LISTED (probable_duplicate beside
+#: its original), never silently passed; it cannot be hidden without
+#: hiding the re-test that looks exactly like it.
+LISTED = "dup-listed"
 
 
 class SimLab:
@@ -334,7 +353,7 @@ def build() -> SimLab:
     # samples from a stale offset, then the next night's new rows follow.
     more = [SimLab.run_line("C2%03d" % k, {"N": "%d.%d" % (60 + k, k)})
             for k in range(22)]
-    lab.poll(cu, night[-2:] + more, [DUP] * 2 + [GENUINE] * 22)
+    lab.poll(cu, night[-6:] + more, [DUP] * 6 + [GENUINE] * 22)
 
     # ── ROUND 4: a standard is not a sample ─────────────────────────────
     fl = "flashqc"
@@ -368,4 +387,36 @@ def build() -> SimLab:
     lab.poll(g2, p + back + q + back + [
         SimLab.run_line("4100%d" % k, {"v": "n%d" % k}) for k in range(10)],
         [DUP] * 4 + [GENUINE] * 4 + [DUP] * 4 + [GENUINE] * 14)
+
+    # ── ROUND 5: a re-test of a few samples is not a re-read ────────────
+    rt = "retests"
+    first = [SimLab.run_line("40%03d" % k, {"S": "%d.%d" % (k % 4 + 1, k % 3),
+                                            "N": "%d" % (k % 7)})
+             for k in range(30)]
+    lab.poll(rt, first, [GENUINE] * 30)
+    for _ in range(5):
+        lab.noise()
+
+    def fresh(base, n):
+        return [SimLab.run_line("%d%03d" % (base, k),
+                                {"S": "%d.%d" % (k % 5, k)})
+                for k in range(n)]
+    # the critic's C1c: two samples re-tested back to back, mid catch-up
+    lab.poll(rt, fresh(41, 10) + first[5:7] + fresh(42, 14), [GENUINE] * 26)
+    # three at the head, four at the tail
+    lab.poll(rt, first[10:13] + fresh(43, 22), [GENUINE] * 25)
+    lab.poll(rt, fresh(44, 21) + first[20:24], [GENUINE] * 25)
+    # a pair between standards that read what they read yesterday
+    af, ao = SimLab.qc_line("AF26", "S", 2.0), SimLab.qc_line("AO25", "S", 2.5)
+    lab.poll(rt, [af, ao], [GENUINE] * 2)
+    lab.poll(rt, fresh(45, 9) + [af, first[14], first[15], ao]
+             + fresh(46, 12), [GENUINE] * 25)
+
+    # A two-line re-read and a pair re-test: the same record on two benches.
+    for uid, truth in (("reread2", LISTED), ("retest2", GENUINE)):
+        s = [SimLab.run_line("46%03d" % k, {"S": "%d" % (k % 3)})
+             for k in range(10)]
+        for line in s:
+            lab.poll(uid, [line], [GENUINE])
+        lab.poll(uid, s[-2:] + fresh(47, 22), [truth] * 2 + [GENUINE] * 22)
     return lab
