@@ -47,6 +47,11 @@
         let lastLevel = null;
         let lastRefresh = Date.now();
         let inFlight = false;
+        // the wall's own data, not only the live feed, must be answering:
+        // a /api/ui/wall/floor that fails while /api/ui/live answers would
+        // otherwise leave a frozen wall saying "Live"
+        let dataOkMs = Date.now();
+        let dataFailing = false;
 
         // ── levels ───────────────────────────────────────────────────────
         function levels() { return (data && data.levels) || []; }
@@ -70,7 +75,8 @@
         // ── the head ─────────────────────────────────────────────────────
         function liveNow(now) {
             const st = window.LEMLive ? window.LEMLive.status() : { last_ok_at: 0 };
-            return L.liveState({ loadedMs, lastOkMs: st.last_ok_at || 0, nowMs: now, tz,
+            const heard = dataFailing ? Math.min(st.last_ok_at || 0, dataOkMs) : (st.last_ok_at || 0);
+            return L.liveState({ loadedMs: dataFailing ? Math.min(loadedMs, dataOkMs) : loadedMs, lastOkMs: heard, nowMs: now, tz,
                                  snapshotStale: !!(data && data.stale), builtAt: data && data.built_at,
                                  serverNow: data && data.server_now });
         }
@@ -119,15 +125,70 @@
         }
 
         // ── the plan ─────────────────────────────────────────────────────
+        // The whole floor at once when every bay can still hold its words at
+        // the bar's sizes (wall_logic.floorPack); one level at a time only
+        // when it cannot. `whole` is the pack in use, or null.
+        let whole = null;
+        let emptyLevels = [];
+        function px(v) { return parseFloat(v) || 0; }
+        function sizes() {
+            const vh = window.innerHeight / 100;
+            const name = Math.max(18, 2.04 * vh), word = Math.max(16, 1.86 * vh), det = Math.max(14, 1.49 * vh);
+            const pad = Math.min(16, Math.max(10, 1.3 * vh));
+            // must fit: a two-line name and the whole verdict word on up to
+            // two lines ("Not OK / to run"); the detail is the line that
+            // steps aside in a short bay (plan.js fit). Wide enough for a
+            // name's longest word ("Pensky-Martens") at the name size.
+            const hpad = Math.min(16, Math.max(10, 0.75 * window.innerWidth / 100));
+            return { minH: Math.ceil(2 * pad + 2.4 * name + 2.6 * word + 4),
+                     minW: Math.ceil(word * 7 + 2 * hpad),
+                     head: Math.ceil(Math.max(16, 1.75 * vh) * 1.9) };
+        }
+        function packAll(W, H) {
+            const lv = levels();
+            emptyLevels = [];
+            if (lv.length < 2 || pinned()) return null;
+            const parts = [];
+            for (const l of lv) {
+                const lay = P.layout(P.onLevel(data.instruments, l.uid, data), {});
+                if (lay.w) parts.push({ uid: l.uid, name: l.name, lay, w: lay.w, h: lay.h });
+                else emptyLevels.push(l.name);
+            }
+            if (parts.length < 2) return null;
+            const sz = sizes();
+            const p = L.floorPack(parts, W, H, { gap: 12, panelGap: 20, head: sz.head, minW: sz.minW, minH: sz.minH });
+            return p ? Object.assign(p, { parts, head: sz.head }) : null;
+        }
+        function bayOpts(cellH, gap) {
+            return { cellH, gap, fullWords: true, details: data.details || {}, detailsShort: data.details_short || {} };
+        }
+        function drawWhole(plan, p) {
+            plan.className = 'wall-levels';
+            plan.style.setProperty('--wl-head', p.head + 'px');
+            const hosts = [];
+            plan.replaceChildren(...p.rows.map(r => h('div', { className: 'wl-row' }, ...r.map(i => {
+                const part = p.parts[i];
+                const host = h('div', { className: 'plan wallplan', 'data-level': part.uid });
+                hosts.push([host, part]);
+                return h('section', { className: 'wl-panel', 'aria-label': part.name,
+                                      style: 'width:' + (part.w * p.cellW + 12 * (part.w + 1)) + 'px' },
+                    h('h3', { className: 'wl-name', text: part.name }), host);
+            }))));
+            // drawn once the panels are in the page, so plan.js can measure
+            for (const [host, part] of hosts) P.draw(host, part.lay, bayOpts(p.cellH, 12));
+        }
         function drawPlan() {
             const plan = $('wf-plan');
             const empty = $('wf-empty');
             const unplaced = $('wf-unplaced');
             const ready = data && data.state === 'ready' && Array.isArray(data.instruments);
-            const level = ready ? levelNow() : '';
+            const wrap = $('wf-plan-wrap');
+            whole = ready && data.instruments.length ? packAll(wrap.clientWidth, wrap.clientHeight) : null;
+            const level = ready && !whole ? levelNow() : '';
             lastLevel = level;
-            $('wf-level').textContent = ready ? levelName(level) : 'The floor';
-            drawDots(level);
+            $('wf-level').textContent = !ready ? 'The floor'
+                : whole ? 'The whole floor · ' + whole.parts.length + ' levels' : levelName(level);
+            drawDots(whole ? null : level);
             if (!ready || !data.instruments.length) {
                 plan.hidden = true;
                 plan.replaceChildren();
@@ -136,29 +197,39 @@
                 empty.textContent = ((data && data.wall) || {}).sub || '';
                 return;
             }
-            const here = P.onLevel(data.instruments, level, data);
-            const lay = P.layout(here, {});
-            if (!lay.w) {
-                plan.hidden = true;
-                plan.replaceChildren();
-                empty.hidden = false;
-                empty.textContent = 'Nobody has placed an instrument on ' + levelName(level) + ' yet.';
-            } else {
+            let lost = [];
+            if (whole) {
                 empty.hidden = true;
                 plan.hidden = false;
-                const wrap = $('wf-plan-wrap');
-                const W = wrap.clientWidth, H = wrap.clientHeight;
-                const narrow = (W - 24 - 12 * (lay.w - 1)) / lay.w < 120;
-                const gap = narrow ? 8 : 12;
-                const cellW = (W - 2 * gap - gap * (lay.w - 1)) / lay.w;
-                const fill = Math.floor((H - 2 * gap - gap * (lay.h - 1)) / lay.h);
-                const cellH = Math.max(40, Math.min(fill, Math.floor(cellW * 1.05), 300));
-                P.draw(plan, lay, { cellH, gap, details: data.details || {}, detailsShort: data.details_short || {} });
+                drawWhole(plan, whole);
+                const placed = new Set(whole.parts.flatMap(pt => pt.lay.bays.map(b => b.uid)));
+                lost = data.instruments.filter(r => !placed.has(r.uid));
+            } else {
+                plan.className = 'plan wallplan';
+                const here = P.onLevel(data.instruments, level, data);
+                const lay = P.layout(here, {});
+                lost = lay.unplaced;
+                if (!lay.w) {
+                    plan.hidden = true;
+                    plan.replaceChildren();
+                    empty.hidden = false;
+                    empty.textContent = 'Nobody has placed an instrument on ' + levelName(level) + ' yet.';
+                } else {
+                    empty.hidden = true;
+                    plan.hidden = false;
+                    const W = wrap.clientWidth, H = wrap.clientHeight;
+                    const narrow = (W - 24 - 12 * (lay.w - 1)) / lay.w < 120;
+                    const gap = narrow ? 8 : 12;
+                    const cellW = (W - 2 * gap - gap * (lay.w - 1)) / lay.w;
+                    const fill = Math.floor((H - 2 * gap - gap * (lay.h - 1)) / lay.h);
+                    const cellH = Math.max(40, Math.min(fill, Math.floor(cellW * 1.05), 300));
+                    P.draw(plan, lay, bayOpts(cellH, gap));
+                }
             }
-            if (lay.unplaced.length) {
+            if (lost.length) {
                 unplaced.hidden = false;
                 unplaced.replaceChildren(h('span', { className: 'wu-head', text: 'Not on the plan:' }),
-                    ...lay.unplaced.map((r, i) => h('a', { href: r.href, className: 'wu-item', draggable: 'false' },
+                    ...lost.map((r, i) => h('a', { href: r.href, className: 'wu-item', draggable: 'false' },
                         (i ? ', ' : ' ') + r.title + ' · ' + ((r.readiness && r.readiness.word) || ''))));
             } else {
                 unplaced.hidden = true;
@@ -168,12 +239,14 @@
         function drawDots(level) {
             const lv = levels();
             const dots = $('wf-dots');
-            dots.replaceChildren(...(lv.length > 1 ? lv.map(l => h('i', { className: l.uid === level ? 'on' : '' })) : []));
-            $('wf-step').hidden = !(lv.length > 1 && !pinned() && !rot.running());
+            dots.replaceChildren(...(lv.length > 1 && level ? lv.map(l => h('i', { className: l.uid === level ? 'on' : '' })) : []));
+            $('wf-step').hidden = !(lv.length > 1 && level && !pinned() && !rot.running());
         }
         function rotText(now) {
             const lv = levels();
-            if (lv.length < 2) return '';
+            const skipped = emptyLevels.length ? ' · ' + emptyLevels.join(', ') + ': nothing placed' : '';
+            if (whole) return 'All ' + whole.parts.length + ' levels shown · nothing to rotate' + skipped;
+            if (lv.length < 2) return (lv.length ? '1 level' : 'One floor') + ' · nothing to rotate';
             const i = Math.max(0, lv.findIndex(l => l.uid === lastLevel)) + 1;
             const head = 'Level ' + i + ' of ' + lv.length;
             if (pinned()) return head + ' · pinned';
@@ -192,11 +265,18 @@
                 .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
                 .then(d => {
                     data = d;
+                    dataOkMs = Date.now();
+                    dataFailing = false;
                     if (d.lab_tz) tz = d.lab_tz;
                     rot.setCount(Math.max(1, levels().length), Date.now());
                     render();
                 })
-                .catch(() => { /* the stale rule says it if LEM is gone; the last answer stays */ })
+                .catch(() => {
+                    // the last answer stays; try again in 10 s, and after 90 s
+                    // without one the stale rule says so (liveNow)
+                    dataFailing = true;
+                    lastRefresh = Date.now() - REFRESH_MS + 10000;
+                })
                 .then(() => { inFlight = false; });
         }
 
@@ -215,7 +295,7 @@
         function tick(now) {
             if (!shown) return;
             const before = rot.index;
-            rot.tick(now);
+            if (!whole) rot.tick(now);
             const live = liveNow(now);
             if (live.kind !== lastKind) { lastKind = live.kind; drawHead(live); }
             else $('wf-live').textContent = live.footer;

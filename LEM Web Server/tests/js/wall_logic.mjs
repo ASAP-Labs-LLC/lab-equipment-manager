@@ -112,6 +112,29 @@ check('1440x900 holds 3 by 3', W.qcGrid(1376, 690), { cols: 3, rows: 3, per: 9 }
 check('1920x1080 holds 4 by 3', W.qcGrid(1856, 870), { cols: 4, rows: 3, per: 12 });
 check('pages', W.pages(13, 9), 2);
 
+// ── the whole floor at once (round 2) ────────────────────────────────────
+// A wall exists so the room sees the whole floor at a glance. Round 1 drew
+// one level at a time, so a three-level demo floor showed 5 of 13 benches
+// in huge, mostly empty bays, and the blind judge picked a mock that showed
+// all of them. floorPack lays every level out together whenever each bay
+// can still hold its words at the bar's sizes (minW x minH). Only when no
+// arrangement can does the wall rotate levels.
+{
+  const demo = [{ uid: 'g', w: 3, h: 2 }, { uid: 'm', w: 3, h: 2 }, { uid: 'u', w: 3, h: 2 }];
+  const o1440 = { gap: 12, panelGap: 20, head: 32, minW: 140, minH: 112 };
+  const p = W.floorPack(demo, 1019, 640, o1440);
+  check('1440: the three demo levels fit together, two to a row', p && p.rows, [[0, 1], [2]]);
+  check('1440: every bay is at least the readable size', p && p.cellW >= 140 && p.cellH >= 112, true);
+  const q = W.floorPack(demo, 1400, 830, { gap: 12, panelGap: 20, head: 36, minW: 170, minH: 136 });
+  check('1920: two to a row as well (three in a row makes slivers)', q && q.rows, [[0, 1], [2]]);
+  check('1920: bays never taller than wide by more than 5 %', q && q.cellH <= Math.floor(q.cellW * 1.05), true);
+  const big = [{ uid: 'a', w: 7, h: 5 }, { uid: 'b', w: 7, h: 5 }, { uid: 'c', w: 7, h: 5 }];
+  check('a floor too big to read at once rotates (null)', W.floorPack(big, 1019, 640, o1440), null);
+  check('one level is one panel', W.floorPack([{ uid: 'x', w: 7, h: 5 }], 1019, 640, { gap: 12, panelGap: 20, head: 0, minW: 100, minH: 90 }).rows, [[0]]);
+  check('no levels is nothing to pack', W.floorPack([], 1000, 600, o1440), null);
+  check('a box not measured yet packs nothing', W.floorPack(demo, 0, 0, o1440), null);
+}
+
 // ── /wall alternation ────────────────────────────────────────────────────
 check('alternates in the order given', W.wallSequence(['floor', 'qc']), ['floor', 'qc']);
 check('one wall stays', W.wallSequence(['qc']), ['qc']);

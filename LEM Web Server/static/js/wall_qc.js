@@ -94,13 +94,17 @@
         let lastKind = '';
         let lastRefresh = Date.now();
         let inFlight = false;
+        // the wall's own data must be answering too (see wall_floor.js)
+        let dataOkMs = Date.now();
+        let dataFailing = false;
         let per = 9;
         const rot = L.rotator({ count: 1, every: PAGE_MS, now: Date.now(), enabled: kiosk.rotate && !reduced });
 
         function cards() { return (data && data.cards) || []; }
         function liveNow(now) {
             const st = window.LEMLive ? window.LEMLive.status() : { last_ok_at: 0 };
-            return L.liveState({ loadedMs, lastOkMs: st.last_ok_at || 0, nowMs: now, tz,
+            const heard = dataFailing ? Math.min(st.last_ok_at || 0, dataOkMs) : (st.last_ok_at || 0);
+            return L.liveState({ loadedMs: dataFailing ? Math.min(loadedMs, dataOkMs) : loadedMs, lastOkMs: heard, nowMs: now, tz,
                                  snapshotStale: !!(data && data.stale), builtAt: data && data.built_at,
                                  serverNow: data && data.server_now });
         }
@@ -186,8 +190,12 @@
             lastRefresh = Date.now();
             window.LEMLive.bgFetch('/api/ui/wall/qc', { cache: 'no-store', headers: { Accept: 'application/json' } })
                 .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-                .then(d => { data = d; if (d.lab_tz) tz = d.lab_tz; render(); })
-                .catch(() => { /* the stale rule says it if LEM is gone */ })
+                .then(d => { data = d; dataOkMs = Date.now(); dataFailing = false; if (d.lab_tz) tz = d.lab_tz; render(); })
+                .catch(() => {
+                    // the last answer stays; again in 10 s; 90 s without one is stale
+                    dataFailing = true;
+                    lastRefresh = Date.now() - REFRESH_MS + 10000;
+                })
                 .then(() => { inFlight = false; });
         }
 

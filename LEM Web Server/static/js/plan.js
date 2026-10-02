@@ -322,6 +322,7 @@
                 kids.push(node);
             }
             host.replaceChildren(...kids);
+            host.classList.toggle('fullwords', !!opts.fullWords);
             host.classList.toggle('roomy', (opts.cellH || 0) >= 140 && (opts.cellH || 0) < 200);
             host.classList.toggle('grand', (opts.cellH || 0) >= 200);
             fit(host);
@@ -336,29 +337,39 @@
         function over(el, tall) {
             return el.scrollWidth > el.clientWidth + 0.5 || (tall && el.scrollHeight > el.clientHeight + 1);
         }
-        function fitText(el, full, short, tall) {
+        // `box` is the element whose overflow counts (the word's own line
+        // on the wall, where its glyph sits inline in the text)
+        function fitText(el, full, short, tall, box) {
+            box = box || el;
             el.textContent = full;
-            if (!over(el, tall)) return;
-            if (short) { el.textContent = short; if (!over(el, tall)) return; }
+            if (!over(box, tall)) return;
+            if (short) { el.textContent = short; if (!over(box, tall)) return; }
             const s = short || full;
             let lo = 0, hi = s.length - 1;
             while (lo < hi) {
                 const mid = (lo + hi + 1) >> 1;
                 el.textContent = cutAt(s, mid);
-                if (over(el, tall)) hi = mid - 1; else lo = mid;
+                if (over(box, tall)) hi = mid - 1; else lo = mid;
             }
             el.textContent = cutAt(s, lo);
-            if (over(el, tall)) el.textContent = '…';
+            if (over(box, tall)) el.textContent = '…';
         }
         function fit(host) {
+            // fullwords (the wall): the verdict is the app's whole word on up
+            // to two lines, never "Not OK" beside a count that says "Not OK
+            // to run"; when a bay is too short for all three lines, the
+            // detail steps aside first (the bay's title keeps it).
+            const full = host.classList.contains('fullwords');
             for (const bay of host.querySelectorAll('.bay')) {
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
                 const det = bay.querySelector('.b-detail');
                 const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
                 if (name) fitText(name, name.textContent, '', true);
-                if (word) fitText(word, word.textContent, shortWord(state), false);
+                if (word) fitText(word, word.textContent, full ? '' : shortWord(state), full, full ? word.parentElement : word);
+                if (det) det.hidden = false;
                 if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);
+                if (full && det && bay.scrollHeight > bay.clientHeight + 1) det.hidden = true;
             }
         }
         api.fit = fit;

@@ -173,7 +173,42 @@
     }
     function pages(n, per) { return Math.max(1, Math.ceil((n || 0) / Math.max(1, per))); }
 
-    const api = { STALE_MS, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
+    // ── the whole floor at once ──────────────────────────────────────────
+    /** Every level in one view, if the bays stay readable.
+        `levels` are [{uid, w, h}] (each level's plan in cells), in order;
+        W x H the room the plan has. Levels go row-major, k to a row, every
+        bay one uniform cell; each row of levels has a heading (o.head px)
+        and o.panelGap between levels. The k whose cell is best balanced
+        (width / 1.3 against height) wins, among those whose cell is at least
+        o.minW x o.minH. null when none is: then the wall rotates levels. */
+    function floorPack(levels, W, H, o) {
+        o = o || {};
+        const n = (levels || []).length;
+        if (!n || !(W > 0) || !(H > 0)) return null;
+        const gap = o.gap == null ? 12 : o.gap, pg = o.panelGap == null ? 20 : o.panelGap;
+        const head = o.head || 0, minW = o.minW || 0, minH = o.minH || 0, maxH = o.maxH || 300;
+        let best = null;
+        for (let k = 1; k <= n; k++) {
+            const rows = [];
+            for (let i = 0; i < n; i += k) rows.push(Array.from({ length: Math.min(k, n - i) }, (_, j) => i + j));
+            let cellW = Infinity, cells = 0;
+            for (const r of rows) {
+                const cols = r.reduce((a, i) => a + Math.max(1, levels[i].w | 0), 0);
+                // each level is its own grid: gutters inside it, panelGap between
+                cellW = Math.min(cellW, (W - gap * (cols - r.length) - 2 * gap * r.length - pg * (r.length - 1)) / cols);
+                cells += Math.max(...r.map(i => Math.max(1, levels[i].h | 0)));
+            }
+            const free = H - head * rows.length - gap * (cells - rows.length) - 2 * gap * rows.length - pg * (rows.length - 1);
+            cellW = Math.floor(cellW);
+            const cellH = Math.min(Math.floor(free / cells), Math.floor(cellW * 1.05), maxH);
+            if (cellW < minW || cellH < minH) continue;
+            const score = Math.min(cellW / 1.3, cellH);
+            if (!best || score > best.score) best = { perRow: k, rows, cellW, cellH, score };
+        }
+        return best;
+    }
+
+    const api = { STALE_MS, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
     root.LEMWallLogic = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);
