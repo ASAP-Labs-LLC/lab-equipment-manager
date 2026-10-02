@@ -204,6 +204,30 @@ MUTATIONS = {
                    r"(\s*)return False",
         "replace": r"if True:\n\1return False",
         "what": "blind mode off: a wiped journal re-sends (T4 floods)"},
+    # ── legacy projection (owner T-P5) ──
+    # The exact key's NOT EXISTS removed: a keyed row is a bare INSERT again,
+    # so a lost answer's resend lands twice (L1, M3 must go red).
+    "projection_key_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"\+ _PROJECTION_KEY_SQL\)",
+        "replace": ")",
+        "what": "legacy projection without its NOT EXISTS (L1/M3 dup)"},
+    # `jk` left out of the detail: the key is content only, and the v4
+    # server can no longer link a projected row to its bench record, so a
+    # rollback's rows land in the store twice on the re-upgrade (M5, DG2,
+    # M6r). (L2's twins still both land: one statement never suppresses its
+    # own rows — it is a resend split across statements that would lose one.)
+    "projection_jk_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"row\[6\] = projection_detail\(row\[6\], jk\)",
+        "replace": "row[6] = row[6]",
+        "what": "projected rows carry no jk (M5, DG2, M6r double on re-upgrade)"},
+    # DG2 off: a rollback copies nothing back (DG2 must go red).
+    "dg2_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"if due <= 0:\n(\s*)return 0",
+        "replace": r"if True:\n\1return 0",
+        "what": "a rollback does not copy the last 24 h of QC and status back"},
 }
 
 CODE_DIRS = ("LEM Station Module", "LEM Web Server")

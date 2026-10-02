@@ -1195,12 +1195,14 @@ class BenchJournal:
     def mark_settled(self, refs) -> List[str]:
         return self._mark("settled", refs)
 
-    def settle_with(self, records: List[dict], refs) -> List[str]:
+    def settle_with(self, records: List[dict], refs,
+                    record_refs: Optional[list] = None) -> List[str]:
         """Append the results road's decisions (`filed`, `conflict`,
         `rejected`, `given_up`) and the `settled` mark of the readings they
         finish, in ONE fsync'd write: a kill can never leave a reading settled
         without the record of what became of it, nor the other way round.
-        Returns the refs marked settled."""
+        Returns the refs marked settled; `record_refs`, when given, receives
+        the refs the decisions themselves were journaled under, in order."""
         with self._lock:
             todo = []
             for ref in refs or ():
@@ -1211,7 +1213,9 @@ class BenchJournal:
             if todo:
                 out.append({"kind": "settled", "of": todo})
             if out:
-                self.append(out)
+                got = self.append(out)
+                if record_refs is not None:
+                    record_refs.extend(got[:len(records or ())])
             return todo
 
     def holds_run(self, ref) -> bool:
@@ -1826,6 +1830,110 @@ def build_log_batch(records: List[list]) -> tuple:
     for record in records:
         args.extend(record)
     return sql, args
+
+
+# ── Legacy projection: the exact key (transfer v4 §7, §10.3) ─────────────────
+#
+# A v4 bench on today's v3.9 server still writes LabCore's machine log — on
+# that floor it is the only record anybody reads. What it no longer does is
+# write it with a bare INSERT. A bare INSERT cannot be sent twice, and the
+# legacy road sends twice whenever an answer is lost: LabCore stored the rows,
+# the timeout reached the bench, the bench put the rows back on its queue and
+# the next poll stored them again (N3, gate L1: 3 duplicate rows).
+#
+# Every row now names the journal record it projects — `detail.jk =
+# "epoch:seq"` — and goes in through
+#
+#   INSERT INTO lem_machine_log (...) SELECT v.* FROM (VALUES (...), ...) AS v
+#   WHERE NOT EXISTS (SELECT 1 FROM lem_machine_log l WHERE l.machine_uid =
+#       v.uid AND l.kind = v.kind AND l.ts = v.ts AND l.detail = v.detail
+#       AND l.lab_id IS v.lab_id AND l.test_name IS v.test AND l.value IS v.value)
+#
+# so a resend finds its own rows and inserts nothing. Why each part:
+#
+#   * `jk` IN THE DETAIL makes the key the record, not the content. Two genuine
+#     prints of one sample with one value in one poll are two journal records,
+#     so two keys and two rows (L2). Proposal A's NOT EXISTS keyed on (uid,
+#     kind, ts, lab_id, test) and dropped the second print as a "resend".
+#   * THE OTHER THREE COLUMNS are compared too. `jk` already makes the key
+#     exact for every row the module writes; comparing all seven columns
+#     costs nothing (they are in the row the index seek lands on) and means
+#     the statement can only ever skip a row that is byte-for-byte present.
+#   * (machine_uid, kind, ts) IS `idx_lem_log_uid_kind_ts`, which v3.9 already
+#     declares — so the probe is an index seek on a 258k-row table read over
+#     SMB under LabCore's 8 s read watchdog, and there is NO LabCore schema
+#     change (proposal C's ALTER TABLE plus partial unique index on that
+#     production table is exactly what this avoids).
+#   * VALUES IN A SUBQUERY keeps it at 7 bound values a row. Repeating the key
+#     in a per-row `SELECT ?.. WHERE NOT EXISTS (… ?..)` is 11 a row, 1,100
+#     for LOG_BATCH_ROWS — over the 999 an older SQLite allows, and a refused
+#     statement refuses all hundred rows.
+#   * SQLite computes an INSERT … SELECT that reads its own target table in
+#     full before inserting, so two rows of one statement never suppress each
+#     other; only rows ALREADY in LabCore do.
+#
+# The detail recipe is the v4 server's (`bench_api._row_detail`): parse,
+# set `jk`, re-dump with json.dumps defaults. The server stores a v2 record's
+# rows with the same `jk`, and its bridge links a LabCore row carrying one to
+# the bench record it projects — which is what lets this bench reach a v4
+# server later and send its epoch from seq 1 without doubling a row (M6).
+# Changing the recipe is a MAJOR change (§13).
+
+def projection_detail(detail, jk: str) -> str:
+    """A machine-log row's detail with its journal record's key added."""
+    parsed = detail
+    if isinstance(detail, str):
+        try:
+            parsed = json.loads(detail) if detail else {}
+        except ValueError:
+            return detail
+    if not isinstance(parsed, dict):
+        return detail if isinstance(detail, str) else json.dumps(detail)
+    parsed = dict(parsed)
+    parsed["jk"] = jk
+    return json.dumps(parsed)
+
+
+_PROJECTION_KEY_SQL = (
+    " WHERE NOT EXISTS (SELECT 1 FROM lem_machine_log AS l WHERE "
+    "l.machine_uid = v.column1 AND l.kind = v.column3 AND l.ts = v.column2 "
+    "AND l.detail = v.column7 AND l.lab_id IS v.column4 "
+    "AND l.test_name IS v.column5 AND l.value IS v.column6)")
+
+
+def build_projection_batch(records: List[list]) -> tuple:
+    """One keyed INSERT for up to LOG_BATCH_ROWS machine-log rows whose
+    details already carry `jk` (see above). Same seven columns, same order,
+    as `build_log_batch`."""
+    if not records:
+        return "", []
+    values = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(records))
+    sql = ("INSERT INTO lem_machine_log "
+           "(machine_uid, ts, kind, lab_id, test_name, value, detail) "
+           "SELECT v.column1, v.column2, v.column3, v.column4, v.column5, "
+           "v.column6, v.column7 FROM (VALUES " + values + ") AS v"
+           + _PROJECTION_KEY_SQL)
+    args: List = []
+    for record in records:
+        args.extend(record)
+    return sql, args
+
+
+def _ref_seq(ref) -> int:
+    """The seq of a journal ref "epoch:seq" (0 if it is not one)."""
+    try:
+        return int(str(ref).rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def projected_args(args: list, jk: Optional[str]) -> list:
+    """The row a queued entry writes: today's seven values, with `jk` added
+    to the detail when the entry projects a journal record."""
+    row = list(args)
+    if jk:
+        row[6] = projection_detail(row[6], jk)
+    return row
 
 
 def machine_scoped_qc_rows(rows: List[dict], machine_uid: str) -> List[dict]:
@@ -3085,9 +3193,6 @@ ROTATION_OVERLAP_MAX = 20
 SUFFIX_STRIP_MARGIN = 32
 # How many of O's newest lines the fallback anchors on.
 TAIL_ANCHOR_LINES = 64
-# Timestamps per read when a restarted bench asks LabCore which of the rows it
-# owes already landed — well under SQLite's 999-variable limit on old builds.
-OWED_CHECK_STAMPS = 200
 # multi_csv: a file is moved here before it is read (the move proves the
 # instrument has let go of it) and out to processed/ only after the journal
 # holds it. A kill in between leaves it here, where the next poll finds it.
@@ -9049,12 +9154,23 @@ class LEMStationModule:
             # the uploader sends from acked+1, so nothing is owed to LabCore.
             entries = []
         if entries:
-            # Not queued yet: some of these rows may have LANDED before the
-            # previous process died — written, then killed before the mark said
-            # so (K2: 100 rows logged twice). `_journal_verify_owed` asks
-            # LabCore which are already there before any is sent again.
+            # Some of these rows may have LANDED before the previous process
+            # died — written, then killed before the mark said so (K2). They
+            # are keyed by their record, so sending them again lands only the
+            # ones that did not (`_journal_requeue_owed`).
             self._journal_owed = list(entries) + list(
                 getattr(self, "_journal_owed", None) or [])
+        events = 0
+        if not _v2(self):
+            # The event records after `projected_seq` (and LEM's acked): a
+            # note, override, PM tick or status change the previous process
+            # journaled — on this road, or on the v2 side before a 404 it
+            # did not live to fall back from — and LabCore may not have.
+            # Keyed, so the ones that did land add nothing.
+            events = self._v2_project_bookkeeping(machine, journal)
+            # A rollback's DG2 back-fill the previous process queued but did
+            # not see land.
+            events += self._legacy_dg2(journal, bench_now(), messages)
         if backlog:
             with self._results_lock:
                 if _v2(self):
@@ -9079,6 +9195,10 @@ class LEMStationModule:
             messages.append(
                 f"Picked up {owed + len(self._journal_carry)} reading(s) this "
                 "bench had journaled but not yet delivered; sending them now.")
+        if events:
+            messages.append(f"{events} logged event(s) this bench had "
+                            "journaled but not yet written to LabCore are "
+                            "being written now.")
 
     def _journal_intake(self, journal, prints) -> list:
         """The store check: carried frames first, then this poll's prints,
@@ -9183,100 +9303,23 @@ class LEMStationModule:
                 self._pending_events.append(_log_entry(args, ref))
         return True
 
-    def _journal_verify_owed(self, machine, read_sql, messages) -> None:
-        """Re-deliver what a previous process left unprojected — except what
-        already landed.
+    def _journal_requeue_owed(self) -> None:
+        """Put what a previous process left unprojected back at the FRONT of
+        the queue — all of it, without asking LabCore first.
 
         A reading is marked PROJECTED only after LabCore accepted its rows, so
         a process killed between the accept and the mark leaves rows the
-        journal still owes that LabCore already has. Sent again they are
-        duplicates (K2: a kill after the 2nd of 3 log batches cost 100). So
-        before re-queueing, ONE read asks LabCore for this bench's rows at the
-        owed rows' timestamps, and for each exact row (every column) the bench
-        sends only how many more the journal says should exist than LabCore
-        holds. Exact on every column, timestamp included, and counted rather
-        than "exists", so two genuine identical prints in one poll are still
-        two rows. The rows found already there are counted as landed, which
-        marks their readings projected.
-
-        A read that fails is not "none landed": the rows stay owed at the
-        bench, nothing is sent, and the next poll asks again."""
+        journal still owes that LabCore already has (K2: a kill after the 2nd
+        of 3 log batches). This used to cost a read before every such
+        restart — which of these rows, exactly, are already there? — and a
+        count-by-content answer to it. Every owed row now names its record
+        (`detail.jk`) and goes in through the exact key, so the rows that
+        landed match themselves and insert nothing: the drain IS the check,
+        with no read and no counting to get wrong (§10.3)."""
         owed = list(getattr(self, "_journal_owed", None) or [])
-        if not owed:
-            return
-        journal = self._journal_for(machine) if machine is not None else None
-        stamps = sorted({str(e[1][1]) for e in owed})
-        uid = str(owed[0][1][0])
-
-        def key(args):
-            return tuple("" if v is None else str(v) for v in args[:7])
-        res = None
-        if callable(read_sql) and journal is not None:
-            rows: list = []
-            res = {"rows": rows}
-            step = max(1, int(OWED_CHECK_STAMPS))
-            for at in range(0, len(stamps), step):
-                part = stamps[at:at + step]
-                marks = ",".join("?" for _ in part)
-                try:
-                    got = read_sql(
-                        "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                        "detail FROM lem_machine_log WHERE machine_uid = ? AND ts "
-                        f"IN ({marks})", [uid] + part)
-                except Exception as exc:          # noqa: BLE001 — any failure
-                    got = {"error": str(exc) or exc.__class__.__name__}
-                if not isinstance(got, dict) or got.get("error"):
-                    res = got
-                    break
-                rows.extend(got.get("rows") or [])
-        if not isinstance(res, dict) or res.get("error") or journal is None:
-            why = (res or {}).get("error") if isinstance(res, dict) else "no answer"
-            messages.append(
-                f"{len(owed)} machine-log record(s) a previous run left owed "
-                f"are kept at the bench: LabCore could not be asked which of "
-                f"them already landed ({why or 'no journal'}); asking again "
-                "next poll.")
-            return
-        have: Dict[tuple, int] = {}
-        for r in res.get("rows") or []:
-            k = key([r.get("machine_uid"), r.get("ts"), r.get("kind"),
-                     r.get("lab_id"), r.get("test_name"), r.get("value"),
-                     r.get("detail")])
-            have[k] = have.get(k, 0) + 1
-        want: Dict[tuple, int] = {}
-        stamp_set = set(stamps)
-        try:
-            records = journal._scan()
-        except JournalError as exc:
-            messages.append(f"{len(owed)} owed machine-log record(s) are kept "
-                            f"at the bench: the journal could not be read "
-                            f"({exc}); asking again next poll.")
-            return
-        for rec in records:
-            if rec.get("kind") != "run":
-                continue
-            for args in rec.get("log") or ():
-                if isinstance(args, list) and len(args) >= 7 \
-                        and str(args[1]) in stamp_set:
-                    k = key(args)
-                    want[k] = want.get(k, 0) + 1
-        room = {k: want.get(k, 0) - have.get(k, 0) for k in want}
-        send, landed = [], []
-        for entry in owed:
-            k = key(entry[1])
-            if room.get(k, 1) > 0:
-                room[k] = room.get(k, 1) - 1
-                send.append(entry)
-            else:
-                landed.append(entry)
         self._journal_owed = []
-        if send:
-            self._pending_events.extendleft(reversed(send))
-        if landed:
-            self._journal_landed(landed)
-            messages.append(f"{len(landed)} machine-log record(s) a previous "
-                            "run left owed were already in LabCore and were "
-                            "not sent again.")
+        if owed:
+            self._pending_events.extendleft(reversed(owed))
 
     def _journal_landed(self, batch) -> None:
         """The drain got `batch` into lem_machine_log: a reading all of whose
@@ -9297,6 +9340,9 @@ class LEMStationModule:
                 if counts[ref] <= 0:
                     del counts[ref]
                     done.append(ref)
+                    events = getattr(self, "_proj_events", None)
+                    if events:
+                        events.discard(ref)
         if done:
             self._journal_mark("projected", done)
 
@@ -9367,19 +9413,33 @@ class LEMStationModule:
         current = getattr(self, "_journal", None)
         if current is not None and current not in journals:
             journals.append(current)
+        legacy = not _v2(self)
         for journal in journals:
             mine = [d for d in decisions
                     if any(journal.holds_run(r) for r in d.get("of") or ())]
             refs_here = [r for r in sorted(settled) if journal.holds_run(r)]
             if not mine and not refs_here:
                 continue
-            try:
-                journal.settle_with(mine, refs_here)
-            except JournalError:
-                # Unrecorded means re-offered after a restart, where the guard
-                # read finds the cell as this poll left it: a re-decided
-                # reading, never a lost or doubled one.
-                pass
+            # On the legacy road a decision that carries a machine-log row
+            # (`log`: a given-up reading's held_expired row) is projected like
+            # any event record — keyed by the ref it is journaled under, and
+            # counted owed in the same breath, under the journal lock, so
+            # `projected_seq` cannot pass it before its row lands.
+            with self._journal_lock_or_new():
+                made: list = []
+                try:
+                    journal.settle_with(mine, refs_here, made)
+                except JournalError:
+                    # Unrecorded means re-offered after a restart, where the
+                    # guard read finds the cell as this poll left it: a
+                    # re-decided reading, never a lost or doubled one.
+                    continue
+                if legacy and journal is current:
+                    for rec, ref in zip(mine, made):
+                        rows = [a for a in rec.get("log") or ()
+                                if isinstance(a, list) and len(a) == 7]
+                        if rows:
+                            self._legacy_owe_event(ref, rows)
 
     # ── Transfer v2 (§6): the uploader thread does all LEM I/O ───────────────
     #
@@ -9511,12 +9571,15 @@ class LEMStationModule:
         up = getattr(self, "_uploader", None)
         return True if up is None else up.wait_idle(timeout)
 
-    def _v2_fell_back(self, machine, journal, messages) -> None:
+    def _v2_fell_back(self, machine, journal, messages,
+                      now: Optional[datetime] = None) -> None:
         """The bench WAS on v2 and LEM now answers 404 (an old server, or a
         rollback). What LEM had not acked goes the old way — its log rows to
-        LabCore (checked against what is already there first, as a restart's
-        are), its results to the results road without the 60 s hold — so a
-        mid-process fall-back loses nothing (§12.2, M5)."""
+        LabCore through the exact key, its results to the results road
+        without the 60 s hold — so a mid-process fall-back loses nothing and
+        doubles nothing (§12.2, M5). And what LEM HAD acked of the last 24 h
+        of QC and status is copied back too (DG2), so the rolled-back floor
+        does not show stale QC."""
         entries = []
         counts = getattr(self, "_journal_unprojected", None)
         if counts is None:
@@ -9537,18 +9600,62 @@ class LEMStationModule:
             self._factor_read_at = {}
             self._identity_backlog = wait + list(self._identity_backlog)
         events = self._v2_project_bookkeeping(machine, journal)
-        if entries or wait or events:
+        if journal.meta("last_v2_handshake") and journal.acked > 0:
+            # Due until its rows have landed (`_note_projected` clears it), so
+            # a process that dies first does it again at its next start.
+            try:
+                journal.update_meta(dg2_due=int(journal.acked))
+            except JournalError:
+                pass
+        back = self._legacy_dg2(journal, now or bench_now(), messages)
+        if entries or wait or events or back:
             messages.append(
                 f"LEM answered as an older server: {len(entries) + events} log "
                 f"row(s) and {len(wait)} held result(s) go the old way "
-                "(LabCore).")
+                "(LabCore)"
+                + (f", and the last 24 h of QC and status ({back} record(s)) "
+                   "are copied back so this floor shows them" if back else "")
+                + ".")
 
     #: Journal kinds that are not an operator's event: the runs (projected by
-    #: their own `log`), the source bookkeeping, and the v2 status/specs/config
-    #: records, which the legacy road re-derives or handles below.
+    #: their own `log`), the source bookkeeping, and the v2 specs/config
+    #: records, which the legacy road re-derives or handles below. A `state`
+    #: record IS projected: it is the status change the v4 server would have
+    #: written into the log, and the floor's history needs it.
     _V2_NOT_EVENTS = frozenset({
-        "run", "frame", "consumed", "known", "state", "specs", "config",
+        "run", "frame", "consumed", "known", "specs", "config",
         "periodic", "rotation_overlap", "no_snapshot", "ambiguity"})
+
+    @staticmethod
+    def _record_rows(uid: str, rec: dict) -> List[list]:
+        """The machine-log rows v3.9 would have written for a journal record
+        that is not a reading — the projection of a v2-side record onto
+        today's table, in the shapes the v4 server derives (`state` → a
+        status_change row, `given_up` → held_expired). A record journaled on
+        the legacy road carries its rows in `log` already."""
+        rows = rec.get("log")
+        if isinstance(rows, list):
+            return [a for a in rows if isinstance(a, list) and len(a) == 7]
+        kind = str(rec.get("kind") or "")
+        try:
+            ts = datetime.fromisoformat(str(rec.get("ts")))
+        except (TypeError, ValueError):
+            ts = datetime.now()
+        if kind == "state":
+            detail = {"from": str(rec.get("from") or ""),
+                      "to": str(rec.get("status") or ""),
+                      "reason": str(rec.get("reason") or "")}
+            if isinstance(rec.get("sub"), dict):
+                detail["sub"] = rec["sub"]
+            return [build_log_insert(uid, "status_change", ts,
+                                     detail=detail)[1]]
+        detail = rec.get("detail") if isinstance(rec.get("detail"), dict) \
+            else {}
+        return [build_log_insert(
+            uid, "held_expired" if kind == "given_up" else kind, ts,
+            lab_id=str(rec.get("lab_id") or ""),
+            test_name=str(rec.get("test_name") or ""),
+            value=str(rec.get("value") or ""), detail=detail)[1]]
 
     def _v2_project_bookkeeping(self, machine, journal) -> int:
         """The rest of a fall-back: what the bench did on the v2 side that LEM
@@ -9556,23 +9663,31 @@ class LEMStationModule:
 
         Needed since an UNKNOWN bench holds on the v2 side (only a 404 means
         "old server"): an operator's note, override or maintenance record, a
-        factor saved, the machine's setup saved — all journal records while
-        LEM was unreachable. On an old server they are LabCore rows or they
-        are nowhere. The status and specs the v2 sync journaled are marked
-        unpublished so the legacy sync publishes them.
+        factor saved, the machine's setup saved, a status change — all
+        journal records while LEM was unreachable. On an old server they are
+        LabCore rows or they are nowhere. The specs the v2 sync journaled are
+        marked unpublished so the legacy sync publishes them.
 
-        Exactly once: `legacy_projected_seq` in the journal's meta remembers
-        how far this has gone, so a second fall-back (v2 found, then rolled
-        back) starts after it. Returns the log rows queued."""
+        The same walk is a legacy bench's restart re-delivery of its event
+        records (`_journal_recover_once`): a note journaled on this road
+        whose row never landed, or a v2-side record whose 404 the previous
+        process heard but did not live to fall back from.
+
+        From `projected_seq` (or LEM's acked, whichever is further), keyed by
+        each record's ref like every other projected row, so a second
+        fall-back — or one that overlaps a restart's re-delivery — writes
+        nothing twice. `projected_seq` moves past them only once their rows
+        have landed (`_note_projected`). Returns the records queued."""
         self._published_specs = None
         self._last_status_pushed = None
         if machine is None or journal is None:
             return 0
         try:
-            done = int(journal.meta("legacy_projected_seq") or 0)
+            done = int(journal.meta("projected_seq") or 0)
         except (TypeError, ValueError):
             done = 0
-        start = max(int(journal.acked or 0), done) + 1
+        start = max(int(journal.acked or 0), done,
+                    int(journal.meta("pruned_seq") or 0)) + 1
         last = journal.last_seq()
         if start > last:
             return 0
@@ -9591,14 +9706,15 @@ class LEMStationModule:
                             configured = True
                         if isinstance(rec.get("corrections"), dict):
                             corrections.update(rec["corrections"])
-                            events.append(("config", rec))
+                            events.append(rec)
+                        elif isinstance(rec.get("log"), list):
+                            events.append(rec)       # journaled on this road
                         continue
                     if not kind or kind in self._V2_NOT_EVENTS:
                         continue
-                    events.append(("held_expired" if kind == "given_up"
-                                   else kind, rec))
+                    events.append(rec)
         except JournalError:
-            return 0       # nothing marked: the next fall-back tries again
+            return 0       # nothing queued: the next fall-back tries again
         run_sql = globals().get("labcore_sql")
         if corrections and callable(run_sql):
             who = self._current_operator() or UNKNOWN_OPERATOR
@@ -9614,26 +9730,100 @@ class LEMStationModule:
                         sql, args = build_correction_delete(machine.uid, name)
                     run_sql(sql, args)
             except Exception:                         # noqa: BLE001
-                return 0   # LabCore refused: nothing marked, tried again
+                return 0   # LabCore refused: nothing queued, tried again
             self._corrections_read_at = None
         if configured:
             self._publish_config_labcore(machine)
-        for kind, rec in events:
-            try:
-                ts = datetime.fromisoformat(str(rec.get("ts")))
-            except (TypeError, ValueError):
-                ts = datetime.now()
-            detail = rec.get("detail") if isinstance(rec.get("detail"),
-                                                     dict) else {}
-            self._pending_events.append(build_log_insert(
-                machine.uid, kind, ts, lab_id=str(rec.get("lab_id") or ""),
-                test_name=str(rec.get("test_name") or ""),
-                value=str(rec.get("value") or ""), detail=detail))
-        try:
-            journal.update_meta(legacy_projected_seq=seq - 1)
-        except JournalError:
-            pass
+        with self._journal_lock_or_new():
+            for rec in events:
+                rows = self._record_rows(machine.uid, rec)
+                if rows:
+                    self._legacy_owe_event(
+                        "%s:%d" % (rec["epoch"], rec["seq"]), rows)
         return len(events)
+
+    #: DG2's window: how far back a rollback copies QC and status (§10.4).
+    DG2_HOURS = 24
+
+    def _legacy_dg2(self, journal, now: datetime, messages) -> int:
+        """DG2 (§10.4): a v4 server that held this bench's record has been
+        rolled back to v3.9, whose floor reads QC from LabCore's log. The
+        verdicts and status changes LEM acked in the last 24 h are in the v4
+        store only, so the rolled-back floor would show QC as stale — or as
+        the last verdict v3.9 ever saw — for as long as the rollback lasts.
+        They are copied back: every `qc` reading record and every `state`
+        record at or below `acked` whose time is within DG2_HOURS of `now`.
+        Readings of samples are not: the results road filed them, and the
+        log history of a rollback window is the v4 store's.
+
+        Keyed by each record's ref, so a second rollback adds nothing, and
+        on the re-upgrade the v4 server's bridge recognises every row by its
+        `jk` as a record it already holds. Due while `dg2_due` is in the
+        journal's meta (set by the fall-back, cleared once the rows land), so
+        a process killed in between does it again at its next start.
+        Returns the records queued."""
+        try:
+            due = int(journal.meta("dg2_due") or 0)
+        except (TypeError, ValueError):
+            due = 0
+        if due <= 0:
+            return 0
+        machine = getattr(self, "_machine", None)
+        uid = str(getattr(machine, "uid", "") or journal.uid)
+        try:
+            cutoff = (now - timedelta(hours=self.DG2_HOURS)).astimezone()
+        except (ValueError, OSError, OverflowError):
+            return 0
+        start = int(journal.meta("pruned_seq") or 0) + 1
+        top = min(due, journal.last_seq())
+        picked = []
+        seq = start
+        try:
+            while seq <= top:
+                batch = journal.records_from(seq, 500)
+                if not batch:
+                    break
+                for rec in batch:
+                    seq = int(rec.get("seq") or seq) + 1
+                    if rec["seq"] > top:
+                        break
+                    kind = rec.get("kind")
+                    if kind not in ("run", "state"):
+                        continue
+                    try:
+                        at = datetime.fromisoformat(str(rec.get("ts")))
+                        if at.tzinfo is None:
+                            at = at.astimezone()
+                    except (TypeError, ValueError):
+                        continue
+                    if at < cutoff:
+                        continue
+                    if kind == "run":
+                        rows = [a for a in rec.get("log") or ()
+                                if isinstance(a, list) and len(a) == 7]
+                        if not rows or any(a[2] != "qc" for a in rows):
+                            continue
+                    else:
+                        rows = self._record_rows(uid, rec)
+                    picked.append(("%s:%d" % (rec["epoch"], rec["seq"]), rows))
+        except JournalError as exc:
+            messages.append(f"The last 24 h of QC could not be read back from "
+                            f"the bench journal ({exc}); asked again at the "
+                            "next start.")
+            return 0
+        refs = getattr(self, "_dg2_refs", None)
+        if refs is None:
+            refs = self._dg2_refs = set()
+        with self._journal_lock_or_new():
+            for ref, rows in picked:
+                self._legacy_owe_event(ref, rows)
+                refs.add(ref)
+        if not picked:
+            try:
+                journal.update_meta(dg2_due=None)
+            except JournalError:
+                pass
+        return len(picked)
 
     def _transfer_status(self, now: datetime) -> str:
         """One sentence for the bench card about LEM (§14): said only when
@@ -11794,7 +11984,7 @@ class LEMStationModule:
                 and LEMStationModule._transfer_state(self).mode == "legacy":
             journal = self._journal_for(machine) if machine is not None else None
             if journal is not None:
-                self._v2_fell_back(machine, journal, messages)
+                self._v2_fell_back(machine, journal, messages, now)
         self._v2_was_active = v2
         if not v2:
             self._probe_live_channel(machine)
@@ -12709,17 +12899,29 @@ class LEMStationModule:
             # Named, not counted: "1 reading(s)" tells an operator nothing they
             # can act on, and this is the last time anybody hears about it.
             for row in expired:
-                self._log_event("held_expired",
-                                lab_id=str(row.get(LAB_ID_KEY) or "").strip(),
-                                detail=run_log_detail(row), now=now)
+                lab = str(row.get(LAB_ID_KEY) or "").strip()
                 # The journal's own record of the decision: no sample in seven
-                # days. It reaches the LEM store as a `held_expired` row.
-                if row.get(JOURNAL_KEY):
-                    decisions.append({
+                # days. It reaches the LEM store as a `held_expired` row, and
+                # on the legacy road it carries the held_expired row v3.9
+                # wrote (`log`) and is projected keyed by its own ref. It is
+                # the ONE record of the give-up: a second, journaled through
+                # `_log_event`, made the floor's history say it twice.
+                journal = LEMStationModule._journal_for(self, machine) \
+                    if row.get(JOURNAL_KEY) and machine is not None else None
+                if journal is not None:
+                    decision = {
                         "kind": "given_up", "of": [row[JOURNAL_KEY]],
-                        "lab_id": str(row.get(LAB_ID_KEY) or "").strip(),
+                        "lab_id": lab,
                         "why": f"no sample matched in {HELD_ROW_MAX_AGE.days} "
-                               "days"})
+                               "days"}
+                    if not _v2(self):
+                        decision["log"] = [build_log_insert(
+                            machine.uid, "held_expired", now, lab_id=lab,
+                            detail=run_log_detail(row))[1]]
+                    decisions.append(decision)
+                else:
+                    self._log_event("held_expired", lab_id=lab,
+                                    detail=run_log_detail(row), now=now)
                 self._road_forget(row)
             # Carried on the payload like the hold notice, and for the same
             # reason only more sharply: `messages[-1]` wins the status line, and
@@ -14066,7 +14268,7 @@ class LEMStationModule:
             # that click is waiting on these records and the next poll takes
             # them.
             if store:
-                self._journal_verify_owed(machine, read_sql, messages)
+                self._journal_requeue_owed()
                 self._drain_events(run_sql, messages)
 
             # The results road. Runs even with no new prints: it is also where
@@ -14280,12 +14482,130 @@ class LEMStationModule:
         if len(self._pending_events) >= LOG_EVENT_LIMIT:
             self._events_dropped += 1
             return
-        if _v2(self) and self._v2_log_event(
-                kind, lab_id, test_name, value, detail, now):
+        if _v2(self):
+            if self._v2_log_event(kind, lab_id, test_name, value, detail, now):
+                return
+        elif LEMStationModule._legacy_log_event(self, kind, lab_id, test_name,
+                                                value, detail, now):
             return
         self._pending_events.append(build_log_insert(
             self._machine.uid, kind, now or datetime.now(),
             lab_id=lab_id, test_name=test_name, value=value, detail=detail))
+
+    #: Machine-log kinds that are readings: they are journaled as `run`
+    #: records by the poll itself. `_log_event` sees them only on the road
+    #: with no journal (`_queue_run_events`), where there is nothing to key.
+    _READING_KINDS = frozenset({"run", "qc"})
+
+    def _legacy_log_event(self, kind: str, lab_id: str, test_name: str,
+                          value, detail: Optional[dict],
+                          now: Optional[datetime]) -> bool:
+        """`_log_event` on the legacy road (§10.3): the record first, then its
+        row. The event is journaled as the record a v2 bench journals — a
+        status change as a `state` record, a given-up reading as `given_up`,
+        the rest under their own kind — carrying in `log` the exact row v3.9
+        would have written, and that row is queued keyed by the record's ref.
+
+        Under v3.9 an operator's note, an override or a PM tick lived in a
+        memory queue until a poll drained it: a kill before the write lost
+        it, a lost answer wrote it twice. Journaled, a restart re-projects it
+        from `projected_seq`; keyed, a resend lands nothing. And because it
+        is the same record a v2 bench would have sent, a v4 server that later
+        receives this epoch from seq 1 reads it the same way (M6).
+
+        False when there is no journal to hold it: the caller writes today's
+        plain row, which is what the module has always done without one."""
+        if kind in LEMStationModule._READING_KINDS:
+            return False
+        machine = getattr(self, "_machine", None)
+        journal_for = getattr(self, "_journal_for", None)
+        journal = journal_for(machine) \
+            if machine is not None and callable(journal_for) else None
+        if journal is None:
+            return False
+        detail = dict(detail or {})
+        _sql, args = build_log_insert(
+            machine.uid, kind, now or datetime.now(), lab_id=lab_id,
+            test_name=test_name, value=value, detail=detail)
+        if kind == "status_change":
+            rec = {"kind": "state", "status": str(detail.get("to") or ""),
+                   "reason": str(detail.get("reason") or ""),
+                   "from": str(detail.get("from") or "")}
+            if isinstance(detail.get("sub"), dict):
+                rec["sub"] = detail["sub"]
+        elif kind == "held_expired":
+            rec = {"kind": "given_up", "lab_id": lab_id,
+                   "test_name": test_name,
+                   "why": "no sample after %d days" % HELD_ROW_MAX_AGE.days,
+                   "detail": detail}
+        else:
+            rec = {"kind": kind, "lab_id": lab_id, "test_name": test_name,
+                   "value": "" if value is None else str(value),
+                   "detail": detail}
+        rec["log"] = [args]
+        with self._journal_lock_or_new():
+            try:
+                (ref,) = journal.append([rec], ts=_poll_ts(now) if now
+                                        else None)
+            except JournalError:
+                return False
+            self._legacy_owe_event(ref, [args])
+        return True
+
+    def _legacy_owe_event(self, ref: str, rows: list, front: bool = False
+                          ) -> None:
+        """Queue an event record's rows for LabCore, keyed by its ref, and
+        count them owed so `projected_seq` cannot pass the record until they
+        have landed. Under the journal lock (the caller's)."""
+        counts = getattr(self, "_journal_unprojected", None)
+        if counts is None:
+            counts = self._journal_unprojected = {}
+        owed = getattr(self, "_proj_events", None)
+        if owed is None:
+            owed = self._proj_events = set()
+        entries = [_log_entry(args, ref) for args in rows]
+        # Set, not added to: a record re-queued (a restart, a second
+        # fall-back) is owed its rows once, however often it is offered.
+        counts[ref] = len(entries)
+        owed.add(ref)
+        if front:
+            self._pending_events.extendleft(reversed(entries))
+        else:
+            self._pending_events.extend(entries)
+
+    def _note_projected(self) -> None:
+        """Advance `projected_seq` in journal.meta (§10.3): the highest seq at
+        or below which the legacy projection has nothing left to do — every
+        record is in LabCore's log, is in the v4 store (acked), or makes no
+        row. Computed from what the journal still owes (unprojected runs) and
+        the event records whose rows have not landed, under the journal lock
+        so an event journaled on another worker is either counted or above
+        the `last_seq` read here. A restart re-projects event records from
+        here; readings are re-delivered by their own marks."""
+        if _v2(self):
+            return
+        journal = getattr(self, "_journal", None)
+        if journal is None:
+            return
+        prefix = str(journal.epoch) + ":"
+        with self._journal_lock_or_new():
+            mark = journal.last_seq()
+            for run in journal.open_runs():
+                if not run["projected"] and str(run["ref"]).startswith(prefix):
+                    mark = min(mark, _ref_seq(run["ref"]) - 1)
+            for ref in list(getattr(self, "_proj_events", None) or ()):
+                if str(ref).startswith(prefix):
+                    mark = min(mark, _ref_seq(ref) - 1)
+            try:
+                if int(journal.meta("projected_seq") or 0) != mark:
+                    journal.update_meta(projected_seq=max(0, mark))
+                dg2 = getattr(self, "_dg2_refs", None)
+                if dg2 and journal.meta("dg2_due") and not (
+                        dg2 & set(getattr(self, "_proj_events", None) or ())):
+                    journal.update_meta(dg2_due=None)
+                    dg2.clear()
+            except (JournalError, TypeError, ValueError):
+                pass
 
     def _drain_events(self, run_sql, messages: Optional[List[str]] = None
                       ) -> None:
@@ -14341,17 +14661,37 @@ class LEMStationModule:
                     break
             if not batch:
                 break
-            sql, args = build_log_batch([args for _sql, args in batch])
-            try:
-                result = run_sql(sql, args, source="LEM Station")
-            except Exception:
-                self._pending_events.extendleft(reversed(batch))
-                raise
-            refused = refusal_reason(result)
-            if not refused:
-                self._journal_landed(batch)
+            # A row that projects a journal record goes through the exact key
+            # (`build_projection_batch`): sent twice, it lands once. A row
+            # with no record behind it — the journal could not be opened —
+            # is today's plain INSERT; it has nothing to be keyed on.
+            keyed = [e for e in batch if getattr(e, "ref", None)]
+            plain = [e for e in batch if not getattr(e, "ref", None)]
+            refused = ""
+            for part, build in ((keyed, build_projection_batch),
+                                (plain, build_log_batch)):
+                if not part:
+                    continue
+                sql, args = build([projected_args(a, getattr(e, "ref", None))
+                                   for e in part for a in (e[1],)])
+                try:
+                    result = run_sql(sql, args, source="LEM Station")
+                except Exception:
+                    # Back at the FRONT: the keyed rows only if they were not
+                    # taken (a keyed part that WAS taken is already marked).
+                    self._note_projected()
+                    if part is plain:
+                        batch = plain
+                    self._pending_events.extendleft(reversed(batch))
+                    raise
+                refused = refusal_reason(result)
+                if refused:
+                    rest = part if part is plain else batch
+                    self._pending_events.extendleft(reversed(rest))
+                    break
+                self._journal_landed(part)
             if refused:
-                self._pending_events.extendleft(reversed(batch))
+                self._note_projected()
                 already_closed = not self._log_road_open
                 self._log_road_open = False
                 # Through `_report_loss`, not a bare `messages.append`. This is
@@ -14371,6 +14711,7 @@ class LEMStationModule:
                         messages)
                 return
         self._log_road_open = True
+        self._note_projected()
         dropped, self._events_dropped = self._events_dropped, 0
         if dropped:
             # The one loss on this road that nothing else covers, so it is said
