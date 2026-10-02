@@ -141,6 +141,59 @@ MUTATIONS = {
         "pattern": r'out\[idx\] = str\(entry\["error"\]\) if entry\.get\("error"\) else None',
         "replace": "out[idx] = None",
         "what": "per-index batch results ignored (B1 must fail)"},
+    # ── adoption at the first v4 start (owner P4; beyond §15.7's list) ──
+    # Adoption never runs: the first v4 start reads its file from the top,
+    # which is A's prototype (U1: 30 rows and 30 cells again).
+    "adoption_off": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"if self\._adoption_due\(machine, source\):",
+        "replace": "if False:",
+        "what": "no adoption: the first v4 start re-reads the whole file (U1 must fail)"},
+    # B's match: the line keyed on the value the factor makes of it TODAY,
+    # not the raw reading — a factor changed since logging unmatches every
+    # line (U3 must fail).
+    "adoption_on_corrected": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"return AdoptionLine\(offset, part, pk, lab, adoption_key\(lab, values\),",
+        "replace": "return AdoptionLine(offset, part, pk, lab, adoption_key(lab, "
+                   "{k: v for k, v in apply_row_corrections([dict(values)], "
+                   "getattr(machine, 'corrections', None) or {})[0].items() "
+                   "if k not in RESERVED_ROW_KEYS}),",
+        "what": "adoption matches corrected values, not raw (U3 must fail)"},
+    # Round 2's hole: a QC verdict that kept no raw reading matched by a
+    # count per (standard, test), whatever value it judged. Every restart's
+    # replay leaves a spare verdict, so a standard printed during the
+    # upgrade matched one and was lost (U2's QC-downtime world must fail).
+    "adoption_qc_by_count": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"hit = next\(\(v for v in sorted\(self\._candidates\(line, t, raw\)\)",
+        "replace": 'hit = next((v for v in sorted(slot["value"])',
+        "what": "a no-raw QC verdict matched by count, not value (U2 must fail)"},
+    # Round 1's hole: a no-raw verdict logged under a factor that has changed
+    # since may not stand in for its print (no stage B). The standard's print
+    # looks unrecorded: U3's one-test standard is falsely recovered.
+    "adoption_qc_on_value": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"elif miss or not wild or not all\(",
+        "replace": "elif True or miss or not wild or not all(",
+        "what": "a no-raw QC verdict under a since-changed factor never stands in (U3 must fail)"},
+    # Round 3's hole: the bench forgets the factors the record shows were
+    # applied (run rows' detail.corrections) and knows only today's. A QC
+    # standard logged under a factor that has since been removed is then
+    # explained by nothing and falsely recovered (U3's removed/deleted
+    # worlds must fail).
+    "adoption_logged_factors_off": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"self\.logged = dict\(logged or \{\}\)",
+        "replace": "self.logged = {}",
+        "what": "factors applied at logging ignored (U3 removed-factor must fail)"},
+    # A recovered reading stays on the results road like any other: filed
+    # automatically, without the person §10.2 says must decide (U2).
+    "recovered_filed": {
+        "kind": "source", "owner": "P4",
+        "pattern": r'rows = \[r for r in rows if r\.get\(ORIGIN_KEY\) != "recovered"\]',
+        "replace": "rows = list(rows)",
+        "what": "recovered readings auto-filed (U2 must fail)"},
     # A bench whose journal is gone reads its file only once LEM has said
     # where its record ends (P8, `_transfer_blind`). Off, a wiped bench
     # reads its whole file from the top and sends it all again: T4/T4b's

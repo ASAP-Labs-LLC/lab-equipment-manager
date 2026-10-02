@@ -12,6 +12,7 @@ file (the T4 flood) — so it answers 503 and the bench waits.
 """
 import base64
 import gzip
+from datetime import datetime, timedelta
 import hashlib
 import json
 
@@ -245,23 +246,131 @@ class TestAdoptionDigest:
             assert "error" not in res
         row("L-1", {"values": {"Flash": "41.0"}})
         row("L-1", {"values": {"Flash": "41.0"}})            # a genuine repeat
-        row("L-2", {"values": {"Flash": "42.5"}, "raw": {"Flash": "42.0"},
-                    "corrections": {"Flash": 0.5}})
+        row("L-2", {"values": {"Flash": "42.5", "Pour": "-3"},
+                    "raw": {"Flash": 42.0}, "corrections": {"Flash": 0.5}})
         r = _get(client, "/api/v2/bench/%s/adoption" % UID, token,
                  query_string={"src": "f.csv", "boundary": "0"})
         assert r.status_code == 200, r.get_json()
         body = r.get_json()
-        h1 = hashlib.sha256(json.dumps(["L-1", {"Flash": "41.0"}],
+        # Numbers in one canonical form ("41.0" and 41 are one reading: the
+        # file says "41.0", a corrected row's raw is the float 41.0), and a
+        # corrected row keyed on its raw laid over the values it did not
+        # correct — so the line "L-2,42.0,-3" matches it whatever the factor
+        # is now.
+        h1 = hashlib.sha256(json.dumps(["L-1", {"Flash": "41"}],
                                        sort_keys=True, separators=(",", ":"),
                                        ensure_ascii=False).encode()
                             ).hexdigest()[:32]
-        h2 = hashlib.sha256(json.dumps(["L-2", {"Flash": "42.0"}],
+        h2 = hashlib.sha256(json.dumps(["L-2", {"Flash": "42", "Pour": "-3"}],
                                        sort_keys=True, separators=(",", ":"),
                                        ensure_ascii=False).encode()
                             ).hexdigest()[:32]
         assert body["counts"] == {h1: 2, h2: 1}
         assert body["rows"] == 3 and body["recipe"].startswith("sha256")
+        assert body["first_ts"] == "2026-09-30T10:00:00"
         assert lab.ops == 0
+
+    def test_rows_it_cannot_read_are_named_by_lab_id_not_dropped(
+            self, client, token, store):
+        """A recorded row whose detail cannot be read used to be skipped
+        ("evidence of nothing"), and its line then looked unrecorded to the
+        bench: a false `recovered`. It is evidence of SOMETHING — the record
+        holds a row for that sample — so the digest names its Lab ID, and
+        the bench presumes such lines recorded and says so. A QC verdict that
+        kept no raw is not unreadable: it is keyed on its standard and test."""
+        def row(lab_id, detail, kind="run", test="", value=""):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, '2026-09-30T10:00:00', "
+                "?, ?, ?, ?, ?)", [UID, kind, lab_id, test, value, detail])
+            assert "error" not in res
+        row("L-1", json.dumps({"values": {"Flash": "41.0"}}))
+        row("L-2", "{not json")
+        row("L-3", json.dumps({"no_values": True}))
+        row("QC-1", json.dumps({"in_spec": True}), kind="qc", test="Flash",
+            value="41.5")
+        body = _get(client, "/api/v2/bench/%s/adoption" % UID, token).get_json()
+        assert sorted(body["unreadable_labs"]) == ["L-2", "L-3"]
+        h = hashlib.sha256(json.dumps(["QC-1", {"Flash": "(no raw)"}],
+                                      sort_keys=True, separators=(",", ":")
+                                      ).encode()).hexdigest()[:32]
+        assert body["counts"][h] == 1 and sum(body["counts"].values()) == 2
+        assert body["rows"] == 4
+        # Which tests each Lab ID holds verdicts of: a QC print is matched on
+        # what was judged THEN, whatever today's QC assignment is.
+        assert body["qc_tests"] == {"QC-1": ["Flash"]}
+        # And what each verdict judged. A verdict that kept no raw is matched
+        # on its VALUE: a count per (standard, test) is inflated by every
+        # restart's replay and matched a standard printed during the upgrade
+        # (round-2 critic, Agilent GC 1).
+        assert body["qc_verdicts"] == {
+            "QC-1": {"Flash": {"raw": {}, "value": {"41.5": 1}}}}
+
+    def test_it_says_which_factors_the_record_applied_when_it_was_logged(
+            self, client, token, store):
+        """A QC standard's verdict that kept no raw reading holds the reading
+        plus the machine-level factor of the day it was logged. If that factor
+        has since been removed, the bench cannot explain the verdict from
+        today's factors, and called the logged print recovered (round-3
+        critic, Z1/Z10/Z12). The run rows v3.9 logged around it carry the
+        offset it actually applied (`detail.corrections`), so the digest
+        lists them: every distinct non-zero offset per column."""
+        def row(lab_id, detail):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, '2026-09-30T10:00:00', "
+                "'run', ?, '', '', ?)", [UID, lab_id, detail])
+            assert "error" not in res
+        row("L-1", json.dumps({"values": {"Density": 0.71},
+                               "raw": {"Density": 0.70},
+                               "corrections": {"Density": 0.01}}))
+        row("L-2", json.dumps({"values": {"Density": 0.72},
+                               "raw": {"Density": 0.71},
+                               "corrections": {"Density": 0.01}}))
+        row("L-3", json.dumps({"values": {"Flash": 61.0}, "raw": {"Flash": 64},
+                               "corrections": {"Flash": -3, "Pour": 0}}))
+        row("L-4", json.dumps({"values": {"Density": 0.73}}))
+        body = _get(client, "/api/v2/bench/%s/adoption" % UID, token).get_json()
+        assert body["factors"] == {"Density": [0.01], "Flash": [-3.0]}
+
+    def test_it_says_when_this_bench_was_first_recorded_and_nothing_is_empty(
+            self, client, token, store):
+        """The bench needs "has LEM EVER recorded me, and since when" (§10.2:
+        pre-LEM lines are those older than the first ingest). A bench with no
+        rows says rows 0 and first_ts null — a statement, not a failure."""
+        r = _get(client, "/api/v2/bench/%s/adoption" % UID, token)
+        assert r.status_code == 200
+        body = r.get_json()
+        assert (body["rows"], body["counts"], body["first_ts"]) == (0, {}, None)
+        assert body["recent"] == []
+
+    def test_recent_run_rows_carry_the_values_that_were_filed(self, client,
+                                                              token, store):
+        """§10.2 step 5 seeds the results guard's ledger from the matched
+        legacy rows of the last 30 days: for those the bench needs the
+        CORRECTED values v3.9 filed, keyed by the same hash. Older rows and
+        qc rows are not part of it."""
+        now = datetime.now()
+
+        def row(lab_id, ts, detail, kind="run"):
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail) VALUES (?, ?, ?, ?, '', '', ?)",
+                [UID, ts, kind, lab_id, json.dumps(detail)])
+            assert "error" not in res
+        recent = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+        old = (now - timedelta(days=45)).strftime("%Y-%m-%d %H:%M:%S")
+        row("L-1", recent, {"values": {"Flash": "41.5"}, "raw": {"Flash": 41.0}})
+        row("L-2", old, {"values": {"Flash": "40.0"}})
+        body = _get(client, "/api/v2/bench/%s/adoption" % UID, token).get_json()
+        assert len(body["recent"]) == 1
+        (r,) = body["recent"]
+        assert (r["lab_id"], r["values"], r["ts"]) == ("L-1", {"Flash": "41.5"},
+                                                       recent)
+        h = hashlib.sha256(json.dumps(["L-1", {"Flash": "41"}], sort_keys=True,
+                                      separators=(",", ":")).encode()
+                           ).hexdigest()[:32]
+        assert r["h"] == h and body["counts"][h] == 1
 
     def test_a_large_answer_is_gzipped_when_the_bench_accepts_it(
             self, client, token, store):

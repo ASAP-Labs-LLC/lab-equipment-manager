@@ -130,3 +130,20 @@ def test_a_print_after_the_analyst_makes_the_print_the_truth_again():
     L.analyst_set("b", "6")
     L.register("b", "7")
     assert L.expected_cell("b") == "7"
+
+
+def test_a_corrected_rows_raw_float_is_the_print_it_was_read_from():
+    """v3.9 keeps a corrected reading's raw value as a FLOAT in `detail.raw`
+    (`apply_row_corrections`), so the instrument's "0.8000" comes back from
+    the record as 0.8. Compared as text, every corrected print ending in 0
+    was one lost and one dup (U3 read 3/3 for exactly this). Compared as the
+    number it is, it is the same reading; different numbers still differ."""
+    L = Ledger()
+    for v in ("0.8000", "0.8010", "0.8003"):
+        L.register("a", v)
+    t = tally(L.truth(), rows(("a", 0.8), ("a", 0.801), ("a", 0.8003)))
+    assert (t["lost"], t["dup"]) == (0, 0)
+    t = tally(L.truth(), rows(("a", 0.8), ("a", 0.802), ("a", 0.8003)))
+    assert (t["lost"], t["dup"]) == (1, 1)
+    t = tally(Ledger().truth(), rows(("a", "n/a")))
+    assert (t["lost"], t["dup"]) == (0, 1)

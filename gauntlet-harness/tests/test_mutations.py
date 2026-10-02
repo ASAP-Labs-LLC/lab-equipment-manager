@@ -273,3 +273,20 @@ def test_a_subprocess_whose_status_contradicts_its_results_is_exit_2(monkeypatch
                     "--tmp", str(tmp_path)])
     assert rc == 2
     assert "exited 0 but its results imply 1" in capsys.readouterr().out
+
+
+P4_SOURCE = ["adoption_off", "adoption_on_corrected", "recovered_filed",
+             "adoption_qc_on_value", "adoption_qc_by_count",
+             "adoption_logged_factors_off"]
+
+
+@pytest.mark.parametrize("name", P4_SOURCE)
+def test_each_p4_pattern_matches_exactly_once_here_and_never_in_v390(name):
+    """P4's mutations name adoption code: once in this worktree (so the
+    self-test can break it), nowhere in v3.9.0 (so they are UNAVAILABLE
+    there, not silently killed by something else)."""
+    rx = re.compile(MU.MUTATIONS[name]["pattern"])
+    rel = "LEM Station Module/lem_station_module.py"
+    with open(os.path.join(WORKTREE, rel), encoding="utf-8") as f:
+        assert len(rx.findall(f.read())) == 1
+    assert rx.findall(_v390_source(rel)) == []
