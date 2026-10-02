@@ -430,6 +430,11 @@
             $('round-pill-glyph').className = 'glyph ' + (p.kind === 'done' ? 'final' : p.kind === 'overdue' ? 'error' : 'half');
             setText($('round-pill-text'), p.text);
         }
+        // the progress edge: the pill's count as a length, painted with it
+        const meter = $('round-meter');
+        if (meter && meter.firstElementChild) {
+            meter.firstElementChild.style.width = (c.total ? (100 * c.done / c.total) : 0) + '%';
+        }
         setText($('round-due'), due ? 'Due ' + due : '');
         $('round-due').hidden = !due;
         $('round-due-sep').hidden = !due;

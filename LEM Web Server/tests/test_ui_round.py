@@ -202,6 +202,14 @@ window.fetch = function (u, o) {
 """
 
 
+def _meter(d):
+    """The filled share of the round card's progress edge, as drawn."""
+    return _js(d, """const m = document.getElementById('round-meter');
+      if (!m || !m.offsetParent) return null;
+      const f = m.firstElementChild.getBoundingClientRect().width, t = m.getBoundingClientRect().width;
+      return t ? f / t : null;""")
+
+
 def test_the_header_and_bench_bar_agree_with_a_row_that_is_still_saving(drv, server, opening):
     """Round 1's critic, with 4 s of latency: the row said ticked and
     "Saving…", the pill "0 of 3 done", the bench bar "Nothing ticked yet
@@ -219,12 +227,16 @@ def test_the_header_and_bench_bar_agree_with_a_row_that_is_still_saving(drv, ser
     assert d.find_element(By.ID, "round-pill-text").text == "1 of 3 done"
     assert d.find_element(By.ID, "bb-saved-text").text == "1 tick saving…"
     assert d.find_element(By.ID, "bench-bar").get_attribute("data-save") == "saving"
+    # the card's progress edge is the pill drawn as a length: it moves in the
+    # same task as the row, so the three can never disagree
+    assert abs(_meter(d) - 1 / 3) < 0.02, _meter(d)
     time.sleep(1.0)                                    # still held: still agreeing
     assert d.find_element(By.ID, "round-pill-text").text == "1 of 3 done"
     _js(d, "window.__release.forEach(f => f());")
     assert _wait(lambda: d.find_element(By.ID, "bb-saved-text").text.startswith("Saved "))
     assert _rows(d)[0].get_attribute("data-state") == "done"
     assert d.find_element(By.ID, "round-pill-text").text == "1 of 3 done"
+    assert abs(_meter(d) - 1 / 3) < 0.02, _meter(d)
 
 
 def test_a_session_gone_on_the_server_asks_for_sign_in_and_the_tick_lands(drv, server, opening):
@@ -339,6 +351,18 @@ def test_no_horizontal_scroll_and_aa_text(drv, server, opening, scheme, w, h):
     assert nxt and nxt[0] == opening["items"][2]["uid"], nxt
     assert nxt[1] not in ("rgba(0, 0, 0, 0)", "transparent"), "the next row has no band"
     assert "btn-primary" in _rows(d)[1].find_element(By.CSS_SELECTOR, ".rsave").get_attribute("class")
+    # Round 2's blind judges still preferred the mock's finished-vs-open
+    # rows: our filled ink ticks were the loudest marks on the page and the
+    # empty boxes the faintest, so the eye went to what was done. An open box
+    # is a 2 px edge, and the next one is drawn in ink, the colour a done
+    # tick is filled with: the eye finds what is left first.
+    edges = _js(d, """const t=[...document.querySelectorAll('#lists .rrow .tick')];
+      const s=t.map(e=>getComputedStyle(e));
+      return {open: parseFloat(s[2].borderTopWidth), nextEdge: s[2].borderTopColor, doneFill: s[0].backgroundColor};""")
+    assert edges["open"] >= 2, edges
+    assert edges["nextEdge"] == edges["doneFill"], edges
+    # the progress edge shows what is done of the round: 2 of 3 here
+    assert abs(_meter(d) - 2 / 3) < 0.02, _meter(d)
     bad = _js(d, CONTRAST_JS)
     assert bad == [], bad
     # every target on a row is at least 44 px (48 for the tick)

@@ -74,6 +74,9 @@
 
   <section class="card round-card" id="lists" aria-labelledby="round-items-title"{% if not lists %} hidden{% endif %}>
     <h2 class="visually-hidden" id="round-items-title">{{ SLOT_NAME }} items</h2>
+    {#- the pill as a length along the card's top edge: decoration of the
+        same count (aria-hidden; the pill is what is read out) -#}
+    <div class="round-meter" id="round-meter" aria-hidden="true"><i style="width: {{ '%.4f'|format(100 * ns.done / ns.total) if ns.total else 0 }}%"></i></div>
     {%- for cl in lists %}
     {%- if lists|length > 1 %}<h2 class="rgroup">{{ cl.name }}</h2>{% endif %}
     {%- for item in cl["items"] %}

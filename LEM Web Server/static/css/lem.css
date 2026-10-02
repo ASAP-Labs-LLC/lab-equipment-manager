@@ -206,7 +206,11 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
 .glyph.half { border-radius: 50%; border: 1.5px solid var(--text); background: linear-gradient(90deg, var(--text) 50%, transparent 50%); }
 .pill.held .glyph.error { background: var(--pill-held-fg); }
 
-.round-card { overflow: hidden; }
+.round-card { overflow: hidden; position: relative; }
+/* the card's top edge carries the pill's count as a length. Ink, no
+   transition: it moves in the same frame as the row and the pill */
+.round-meter { height: 4px; background: var(--border-light); }
+.round-meter > i { display: block; height: 100%; width: 0; background: var(--ink); }
 .round-card .rgroup { font-size: var(--fs-md); font-weight: 650; padding: var(--s4) var(--s5) var(--s2); border-top: 1px solid var(--border-light); }
 .round-card .rgroup:first-of-type { border-top: 0; }
 .round-card .rhead {
@@ -221,7 +225,8 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
     border-top: 1px solid var(--border-light); cursor: pointer; position: relative;
     -webkit-tap-highlight-color: transparent; transition: background var(--t-fast) var(--ease-std);
 }
-.round-card > .rrow:first-of-type, .round-card > h2.visually-hidden + .rrow { border-top: 0; }
+.round-card > .rrow:first-of-type, .round-card > h2.visually-hidden + .rrow,
+.round-meter + .rrow, .round-meter + .rgroup, .round-meter + .rhead { border-top: 0; }
 .rrow:hover { background: var(--bg-hover); }
 .rrow[data-checked="1"] { cursor: default; }
 .rrow[data-checked="1"]:hover { background: transparent; }
@@ -230,11 +235,14 @@ body.anon [data-gated], body.anon .gated { color: var(--text-muted); border-styl
    band, so the eye lands on what is left and not on what is done */
 .rrow.next { box-shadow: inset 3px 0 0 var(--ink); background: var(--bg-hover); }
 .rrow.next:hover { background: var(--bg-active); }
+/* what is left is drawn as firmly as what is done: the next box is edged in
+   the ink a done tick is filled with, so the eye goes to it, not up the page */
+.rrow.next .tick { border-color: var(--ink); }
 
 .rrow .tick {
     grid-area: tick; width: 48px; height: 48px; display: grid; place-items: center; padding: 0;
     /* --text-muted, not --border-strong: a control's edge needs 3:1 (1.4.11) */
-    border: 1.5px solid var(--text-muted); border-radius: 12px; background: var(--bg-card); color: var(--ink-fg);
+    border: 2px solid var(--text-muted); border-radius: 12px; background: var(--bg-card); color: var(--ink-fg);
     cursor: pointer; transition: background var(--t-fast) var(--ease-std), border-color var(--t-fast) var(--ease-std);
 }
 .rrow .tick svg { width: 26px; height: 26px; opacity: 0; transform: scale(.6); transition: opacity var(--t-fast) var(--ease-out), transform var(--t-base) var(--ease-out); }
