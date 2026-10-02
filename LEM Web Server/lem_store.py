@@ -327,7 +327,8 @@ _DDL = (
     " PRIMARY KEY (machine_uid, bench_epoch))",
     "CREATE TABLE IF NOT EXISTS bench_token ("
     " machine_uid TEXT PRIMARY KEY, token_sha256 TEXT, issued_at TEXT,"
-    " issued_by TEXT, revoked_at TEXT, pending_reenrol_at TEXT)",
+    " issued_by TEXT, revoked_at TEXT, pending_reenrol_at TEXT,"
+    " enroll_key_sha256 TEXT)",
     "CREATE TABLE IF NOT EXISTS bench_source ("
     " machine_uid TEXT, src TEXT, lineage TEXT, cursor TEXT, snapshot BLOB,"
     " updated_at TEXT, snapshot_sha TEXT, announced_sha TEXT,"
@@ -646,6 +647,7 @@ class LocalStoreGateway:
                                     "{0} TEXT".format(col))
                 for table, added in (
                         ("bench_cursor", ("stats", "digest_mismatch")),
+                        ("bench_token", ("enroll_key_sha256",)),
                         ("bench_source", ("snapshot_sha", "announced_sha"))):
                     have = [r[1] for r in con.execute(
                         "PRAGMA table_info('{0}')".format(table)).fetchall()]

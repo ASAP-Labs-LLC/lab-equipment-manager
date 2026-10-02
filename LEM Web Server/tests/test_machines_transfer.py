@@ -126,9 +126,12 @@ class TestSize:
         machines = live["machines"]
         assert len(machines) == 17
         before = len(_compact(live))
-        worst = transfer_field({"road": "public", "unacked": 99_999_999,
-                                "seen": 0.0}, now=10**9)
-        # the largest it can be: every value present and long
+        # The largest it can be, from the code's own bounds (bench_api's
+        # `bench_road` / `bench_count`), fed the worst a bench can send —
+        # not a value this test picks. See test_bench_input_bounds.py.
+        worst = transfer_field({"road": "x" * 200_000,
+                                "unacked": int("9" * 4000),
+                                "seen": 0.0}, now=4_102_444_800.0)
         assert None not in worst.values(), worst
         for m in machines:
             m["transfer"] = worst

@@ -183,6 +183,68 @@ def _parse_moment(value) -> Optional[datetime]:
 
 # ── what /api/machines and /healthz know, in memory ──────────────────────────
 
+#: The roads the spec names (§6.2). Anything else a bench calls its road is
+#: "other": still a road, never the bench's own text — `/api/machines` echoes
+#: this, and GC hub reads that payload under a 1 MB cap.
+ROADS = ("lan", "public", "folder")
+#: The largest count a bench can report and LEM will echo. Nine digits: a
+#: bench a billion records behind is a bench to look at, not a number to read.
+MAX_COUNT = 999_999_999
+#: The counters a bench reports about its LabCore traffic (§6.1 stats).
+LABCORE_COUNTERS = ("reads", "writes", "failed", "timeouts", "watchdog")
+
+
+def bench_road(value) -> Optional[str]:
+    """What a bench said its road was, as LEM holds and echoes it: a named
+    road, "other", or None when it said nothing."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, str) and value.strip().lower() in ROADS:
+        return value.strip().lower()
+    return "other"
+
+
+def bench_count(value) -> Optional[int]:
+    """A count a bench reported, as LEM holds and echoes it: an int in
+    0..MAX_COUNT, or None when it is not a count (negative, bool, NaN, text).
+    Too big — `Infinity` included, which Python's json reads — is MAX_COUNT."""
+    if isinstance(value, float):
+        if value != value:                          # NaN
+            return None
+        if value in (float("inf"), float("-inf")):
+            return MAX_COUNT if value > 0 else None
+    n = _int_or(value, None)
+    if n is None or n < 0:
+        return None
+    return min(n, MAX_COUNT)
+
+
+def labcore_counts(value) -> dict:
+    """The bench's LabCore counters: the named ones, each a bounded count."""
+    if not isinstance(value, dict):
+        return {}
+    out = {}
+    for key in LABCORE_COUNTERS:
+        n = bench_count(value.get(key))
+        if n is not None:
+            out[key] = n
+    return out
+
+
+def _bounded(fields: dict) -> dict:
+    """The registry's one door: whatever a caller passes, what is kept is
+    what `/api/machines` and `/healthz` may echo."""
+    out = dict(fields)
+    if "road" in out:
+        out["road"] = bench_road(out["road"])
+    if "unacked" in out:
+        out["unacked"] = bench_count(out["unacked"])
+    if "labcore" in out:
+        out["labcore"] = labcore_counts(out["labcore"])
+    if "module_version" in out and out["module_version"] is not None:
+        out["module_version"] = str(out["module_version"])[:40]
+    return out
+
 class BenchRegistry:
     """The last thing each v2 bench said about itself. Memory only, so the
     floor's `transfer` field and `/healthz` cost nothing per request; filled
@@ -199,7 +261,7 @@ class BenchRegistry:
     def note(self, uid: str, **fields) -> None:
         with self._lock:
             entry = dict(self._entries.get(uid) or {})
-            entry.update(fields)
+            entry.update(_bounded(fields))
             entry.setdefault("seen", self._clock())
             self._entries[uid] = entry
 
@@ -236,17 +298,18 @@ class BenchRegistry:
                     continue
                 seen = _parse_moment(row.get("last_seen"))
                 stats = _json_or(row.get("stats"), {})
-                self._entries[uid] = {
+                # Through the same door as `note`: a row an older build (or
+                # a person) left in the store must not reopen the hole.
+                self._entries[uid] = _bounded({
                     "epoch": row.get("bench_epoch"),
                     "acked": row.get("acked_seq"),
                     "road": row.get("road"),
                     "module_version": row.get("module_version"),
-                    "unacked": _int_or(stats.get("unacked"), None),
-                    "labcore": stats.get("labcore") if isinstance(
-                        stats.get("labcore"), dict) else {},
+                    "unacked": stats.get("unacked"),
+                    "labcore": stats.get("labcore"),
                     "digest_mismatch": bool(row.get("digest_mismatch")),
                     "seen": seen.timestamp() if seen else None,
-                }
+                })
             self.hydrated = True
 
     def summary(self) -> dict:
@@ -260,10 +323,13 @@ class BenchRegistry:
             "v2": len(entries),
             "reporting": len(reporting),
             "lagging": len(entries) - len(reporting),
-            "unacked_total": sum(_int_or(e.get("unacked"), 0) for e in entries),
+            "unacked_total": min(MAX_COUNT, sum(
+                bench_count(e.get("unacked")) or 0 for e in entries)),
             "digest_mismatch": sum(1 for e in entries if e.get("digest_mismatch")),
-            "labcore_failed_5min": sum(_int_or(x.get("failed"), 0) for x in lc),
-            "labcore_watchdog_5min": sum(_int_or(x.get("watchdog"), 0) for x in lc),
+            "labcore_failed_5min": min(MAX_COUNT, sum(
+                bench_count(x.get("failed")) or 0 for x in lc)),
+            "labcore_watchdog_5min": min(MAX_COUNT, sum(
+                bench_count(x.get("watchdog")) or 0 for x in lc)),
             "hydrated": self.hydrated,
         }
 
@@ -277,8 +343,8 @@ def transfer_field(entry: Optional[dict], now: Optional[float] = None
         return None
     now = time.time() if now is None else now
     seen = entry.get("seen")
-    return {"road": entry.get("road"),
-            "unacked": _int_or(entry.get("unacked"), None),
+    return {"road": bench_road(entry.get("road")),
+            "unacked": bench_count(entry.get("unacked")),
             "last_sync_age_s": (round(max(0.0, now - float(seen)), 1)
                                 if seen is not None else None)}
 
@@ -288,7 +354,10 @@ def _int_or(value, default):
         return default
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float('inf')). Python's json reads `Infinity`,
+        # and an exception here inside a sync's transaction would roll back
+        # every sync from that bench.
         return default
 
 
@@ -708,6 +777,23 @@ class Ingest:
 
 # ── the routes ───────────────────────────────────────────────────────────────
 
+#: Shorter than this, an `enroll_key` is guessable and is treated as absent.
+MIN_ENROLL_KEY = 16
+MAX_ENROLL_KEY = 256
+
+
+def enroll_key_of(body) -> Optional[str]:
+    """The hash of the bench's `enroll_key`, or None when it sent none (or one
+    too short to be a secret). A bench makes the key once per enrolment and
+    sends it with every retry of that enrolment, so a lost 200 is answered
+    again instead of becoming "already enrolled; needs a person" (§6.4)."""
+    key = (body or {}).get("enroll_key") if isinstance(body, dict) else None
+    if not isinstance(key, str) or not \
+            MIN_ENROLL_KEY <= len(key) <= MAX_ENROLL_KEY:
+        return None
+    return token_hash(key)
+
+
 def ensure_current_state_tables(store) -> bool:
     """The current-state tables a sync updates, declared with their owner's
     exact DDL (snapshot_service) so a sync on a fresh store does not fail on
@@ -992,7 +1078,9 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
     @app.route("/api/v2/bench/<uid>/enroll", methods=["POST"])
     def bench_v2_enroll(uid):
         """§6.4. The shared live token proves an EXISTING uid's first
-        enrolment; anything else waits for a person (202 pending)."""
+        enrolment; anything else waits for a person (202 pending) — except
+        the same enrolment retried with its `enroll_key` after a lost 200,
+        before the token has carried a sync."""
         supplied = request.headers.get("X-LEM-Token", "")
         if not hmac.compare_digest(str(supplied),
                                    str(app.config["LIVE_TOKEN"])):
@@ -1005,6 +1093,7 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
             return _answer(400, {"error": "Expected a JSON object."})
         if body and body.get("machine_uid") not in (None, uid):
             return _answer(400, {"error": "machine_uid does not match the URL"})
+        key_sha = enroll_key_of(body)
         now = _iso()
         if not declared["done"]:
             declared["done"] = ensure_current_state_tables(store)
@@ -1026,19 +1115,31 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
                 approved = (row is not None and not row.get("token_sha256")
                             and str(row.get("issued_by") or "")
                             .startswith("approved:"))
-                if (row is None and known) or approved:
+                # The same enrolment retried after its answer was lost: the
+                # key this bench made for it, before the token has carried a
+                # sync (a sync spends the key). See `enroll_key_of`.
+                retried = (row is not None and key_sha is not None
+                           and row.get("token_sha256")
+                           and not row.get("revoked_at")
+                           and row.get("enroll_key_sha256")
+                           and hmac.compare_digest(
+                               str(row["enroll_key_sha256"]), key_sha))
+                if (row is None and known) or approved or retried:
                     token = secrets.token_urlsafe(32)
-                    who = ("shared token, " + str(row["issued_by"]).replace(
-                        "approved:", "approved by ")) if approved \
-                        else "shared token (first enrolment)"
+                    who = (str(row.get("issued_by") or "") if retried
+                           else ("shared token, " + str(row["issued_by"])
+                                 .replace("approved:", "approved by "))
+                           if approved else "shared token (first enrolment)")
                     ing.x("INSERT INTO bench_token (machine_uid, token_sha256, "
-                          "issued_at, issued_by, revoked_at, pending_reenrol_at) "
-                          "VALUES (?, ?, ?, ?, NULL, NULL) ON CONFLICT("
+                          "issued_at, issued_by, revoked_at, pending_reenrol_at, "
+                          "enroll_key_sha256) "
+                          "VALUES (?, ?, ?, ?, NULL, NULL, ?) ON CONFLICT("
                           "machine_uid) DO UPDATE SET token_sha256 = "
                           "excluded.token_sha256, issued_at = excluded.issued_at, "
                           "issued_by = excluded.issued_by, revoked_at = NULL, "
-                          "pending_reenrol_at = NULL",
-                          [uid, token_hash(token), now, who])
+                          "pending_reenrol_at = NULL, enroll_key_sha256 = "
+                          "excluded.enroll_key_sha256",
+                          [uid, token_hash(token), now, who, key_sha])
                     result = (200, {"token": token, "machine_uid": uid,
                                     "issued_at": now})
                 else:
@@ -1143,6 +1244,15 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
         try:
             with store.transaction():
                 ing = Ingest(store, uid, epoch, now)
+                # This token has carried a sync, so the bench holds it: its
+                # enrolment key is spent. Only for THIS token — if a retried
+                # enrolment rotated it since `_bench_auth`, the key stays so
+                # the bench can still collect the token it never saw.
+                ing.x("UPDATE bench_token SET enroll_key_sha256 = NULL WHERE "
+                      "machine_uid = ? AND token_sha256 = ? AND "
+                      "enroll_key_sha256 IS NOT NULL",
+                      [uid, token_hash(request.headers.get(
+                          "X-LEM-Bench-Token", ""))])
                 cur = (ing.q("SELECT acked_seq, durable_seq, digest, "
                              "digest_mismatch FROM bench_cursor WHERE "
                              "machine_uid = ? AND bench_epoch = ?",
@@ -1194,10 +1304,10 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
                         "stats = excluded.stats, digest_mismatch = COALESCE("
                         "bench_cursor.digest_mismatch, excluded.digest_mismatch)",
                         [uid, epoch, acked, digest,
-                         _int_or(stats.get("records_total"), None), now, now,
-                         str(stats["road"])[:16] if stats.get("road") else None,
+                         bench_count(stats.get("records_total")), now, now,
+                         bench_road(stats.get("road")),
                          doc["module_version"], skew,
-                         _int_or(lc.get("failed"), None),
+                         bench_count(lc.get("failed")),
                          json.dumps(stats, default=str)[:20000] if stats else None,
                          json.dumps(mismatch) if mismatch else None])
                     live_block = doc.get("live") or {}
@@ -1262,10 +1372,9 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
                                             "seq %d; send from %d"
                                             % (conflict, conflict + 1)})
         registry.note(uid, epoch=epoch, acked=acked, road=stats.get("road"),
-                      unacked=_int_or(stats.get("unacked"), None),
+                      unacked=stats.get("unacked"),
                       module_version=doc["module_version"],
-                      labcore=stats.get("labcore") if isinstance(
-                          stats.get("labcore"), dict) else {},
+                      labcore=stats.get("labcore"),
                       digest_mismatch=bool(mismatch) or bool(
                           cur and cur.get("digest_mismatch")),
                       seen=time.time())
