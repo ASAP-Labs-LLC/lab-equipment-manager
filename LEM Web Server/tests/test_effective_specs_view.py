@@ -14,6 +14,8 @@ reflects what is really being applied.
 """
 import pytest
 
+from log_mirror import StoreLogMirror
+
 from labcore_gateway import FakeLabCoreGateway
 
 
@@ -112,7 +114,15 @@ class TestEffectiveSpecsReachTheFloor:
         real = gw.read_sql
         gw.read_sql = lambda s, a=None, **k: (reads.append(s), real(s, a, **k))[1]
         client.get("/api/machines?fresh=1")
-        assert len(reads) == 1, [r[:40] for r in reads]
+        # The log copy's reads are set aside, and only them. Before transfer §5
+        # the copy was a file of its own that this gateway never saw; it is the
+        # LEM store now — the same local file the batched read goes to — so its
+        # reads arrive here, and each one names the record's effective view.
+        # Everything ELSE a refresh asks for still has to be the one statement.
+        floor = [r for r in reads if "lem_machine_log_effective" not in r
+                 or "UNION ALL" in r]
+        assert len(floor) == 1, [r[:40] for r in reads]
+        assert "UNION ALL" in floor[0]
 
     def test_two_machines_do_not_mix(self, gw, client):
         gw.sql("INSERT INTO lem_machine_status VALUES "
@@ -171,13 +181,26 @@ def log_qc(gw, ts, lab_id, value, test_name=None):
     gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
            "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
            "test_name TEXT, value TEXT, detail TEXT)")
-    gw.sql("INSERT INTO lem_machine_log VALUES (?,?,'qc',?,?,?,'{}')",
+    gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,'qc',?,?,?,'{}')",
            ["5fd04c0031f9", ts, lab_id,
             test_name or "ASTM D7236/D7094 - Flash Point Closed cup "
                          "(small scale)", str(value)])
 
 
 class TestAVerdictDoesNotSurviveAChangeOfStandard:
+    """The SNAPSHOT-ARM path: what the floor does when no whole copy of the
+    log is available to answer `latest_qc` — the newest-60 `event` arm is all
+    it has, so silence there is unknown, never a mismatch.
+
+    On the LEM store the whole record is always available and
+    `TestTheLogIsTheRecordAndTheSpecIsACache` is the path that answers; these
+    tests take the copy away so the fallback they describe is still held to
+    its rules (a LabCore-backed `LogMirror` that has not filled yet takes
+    exactly this path)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_whole_copy(self, client):
+        client.application.config["LOG_MIRROR"] = None
     def test_a_reading_from_the_retired_standard_is_not_shown_as_this_ones(self, gw, client):
         # The Multitek S shape exactly: the spec is on AF26, the remembered
         # reading was made against AO25.
@@ -263,7 +286,7 @@ class TestTheLocalCopyIsWhatAnswersInProduction:
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
         for ts, lab_id, value in rows:
-            gw.sql("INSERT INTO lem_machine_log VALUES (?,?,'qc',?,?,?,'{}')",
+            gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,'qc',?,?,?,'{}')",
                    ["5fd04c0031f9", ts, lab_id,
                     "ASTM D7236/D7094 - Flash Point Closed cup (small scale)",
                     str(value)])
@@ -293,10 +316,10 @@ class TestTheLocalCopyIsWhatAnswersInProduction:
               "test_name TEXT, value TEXT, detail TEXT)")
         # 400 unrelated run rows sit on top of the verdict we need.
         for i in range(400):
-            g.sql("INSERT INTO lem_machine_log VALUES "
+            g.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
                   "('m1', ?, 'run', '1', 'Sulfur', '1.0', '{}')",
                   ["2026-09-03T%02d:%02d:00" % (i // 60, i % 60)])
-        g.sql("INSERT INTO lem_machine_log VALUES "
+        g.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
               "('m1','2026-08-24T19:58:10','qc','AO25','Sulfur','4.87','{}')")
         m = LogMirror(g, path=os.path.join(tempfile.mkdtemp(), "m.sqlite3"))
         m.refresh()
@@ -331,7 +354,7 @@ class TestTheLogIsTheRecordAndTheSpecIsACache:
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
         for ts, lab_id, value, detail in rows:
-            gw.sql("INSERT INTO lem_machine_log VALUES (?,?,'qc',?,?,?,?)",
+            gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,'qc',?,?,?,?)",
                    ["5fd04c0031f9", ts, lab_id,
                     "ASTM D7236/D7094 - Flash Point Closed cup (small scale)",
                     str(value), detail])
@@ -393,8 +416,16 @@ class TestTheLogIsTheRecordAndTheSpecIsACache:
         client.application.config["LOG_MIRROR"] = self.mirror(gw, [
             ("2026-09-02T17:06:41", "AF26", 9.9, '{"in_spec": true}')])
         # …but for a DIFFERENT test, so this spec has no evidence either way.
-        gw.sql("UPDATE lem_machine_log SET test_name = 'Something Else'")
-        client.application.config["LOG_MIRROR"] = self.mirror(gw, [])
+        # Written as a second row rather than by renaming the first: the
+        # record is append-only (the store's trigger refuses an UPDATE), so
+        # this lab's log simply starts out holding the other test's reading.
+        gw.sql("INSERT INTO log_annotation (log_id, label, by, at) "
+               "SELECT id, 'import_leftover', 'test', 't' FROM lem_machine_log")
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+               "test_name, value, detail) VALUES ('5fd04c0031f9', "
+               "'2026-09-02T17:06:41', 'qc', 'AF26', 'Something Else', '9.9', "
+               "'{\"in_spec\": true}')")
+        client.application.config["LOG_MIRROR"] = StoreLogMirror(gw)
         spec = flash(client)["effective_specs"][0]
         assert spec["last_qc_value"] == pytest.approx(2.875)
 
@@ -427,7 +458,7 @@ class TestAHalfFilledCopyIsNotEvidence:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES ('5fd04c0031f9',"
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES ('5fd04c0031f9',"
                "'2026-08-24T19:58:10','qc','AO25',"
                "'ASTM D7236/D7094 - Flash Point Closed cup (small scale)',"
                "'4.87','{\"in_spec\": true}')")

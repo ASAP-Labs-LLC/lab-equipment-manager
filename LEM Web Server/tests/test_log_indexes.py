@@ -71,7 +71,7 @@ def gw():
             kind, f"L-{i}", "Sulphur" if kind == "qc" else "", "1.0", "{}",
         ))
     for row in rows:
-        gateway.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gateway.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                     list(row))
     for i in range(200):
         gateway.sql("INSERT INTO lem_maintenance VALUES (?,?,?,?,?,?,?)",

@@ -143,7 +143,7 @@ LOG_DDL = ("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
 
 def log(gw, uid, ts, kind, lab_id, test_name, value, detail):
     gw.sql(LOG_DDL)
-    gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+    gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
            [uid, ts, kind, lab_id, test_name, str(value), json.dumps(detail)])
 
 
@@ -351,7 +351,7 @@ class TestAQcEventIsTheTransition:
         """`in_spec` is tri-state everywhere else in this tree and it is
         tri-state here. A formatting problem must not read as a verdict."""
         seed(gw)
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["pac-flash-2", "2026-08-25T09:00:00", "qc", "L-AO25",
                 "Flash Point", "7.9", "{not json at all"])
         log(gw, "pac-flash-2", "2026-08-25T10:00:00", "run", "37250", "",

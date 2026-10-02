@@ -182,20 +182,20 @@ class TestItDoesNotCostLabCoreAnything:
     poller on the queue the benches write through."""
 
     def test_a_refresh_reads_the_mirror_not_labcore(self, gw, tmp_path):
+        """Counted on a LabCore of its own (transfer §5): the wall reads the
+        LEM store, which is local, and LabCore sees nothing — not the log,
+        not the titles, not anything."""
+        from labcore_counter import CountingLabCore
         _series(gw, FLASH, "Flash Point", [63.5, 63.6, 63.7])
-        app = _app(gw, tmp_path)
-        hits = {"n": 0}
-        real = gw.read_sql
-
-        def counted(sql, args=None, **kw):
-            if "lem_machine_log" in sql:
-                hits["n"] += 1
-            return real(sql, args, **kw)
-
-        gw.read_sql = counted
-        body = _client(app).get("/api/qc-wall").get_json()
+        lab = CountingLabCore()
+        app = create_app(gw, labcore=lab, secret="t",
+                         documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
+        app.config["LOG_MIRROR"].refresh()
+        for _ in range(3):
+            body = _client(app).get("/api/qc-wall").get_json()
         assert body["series"], "nothing drawn"
-        assert hits["n"] == 0, "the wall read LabCore; the mirror is why it need not"
+        assert lab.calls == [], "the wall read LabCore; the store is why it need not"
 
     def test_an_unfilled_mirror_falls_back_rather_than_showing_nothing(
             self, gw, tmp_path):

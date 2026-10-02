@@ -1370,8 +1370,11 @@ def logged(gw):
 
 def _log_rows(gw) -> list:
     return gw.read_sql(
+        # `ts, rowid`: two moves in one second are ordinary (`_now_stamp` is
+        # whole seconds), and a tie broken by whichever index the planner
+        # picks is an order nobody wrote.
         "SELECT machine_uid, ts, kind, test_name, detail FROM lem_machine_log "
-        "ORDER BY ts")["rows"]
+        "ORDER BY ts, rowid")["rows"]
 
 
 class TestAMoveLeavesARecord:

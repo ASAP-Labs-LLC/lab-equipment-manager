@@ -223,7 +223,7 @@ class TestQcApi:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["m1", "2026-07-28T12:00:00", "run", "37037", "", "", "{}"])
         body = client.get("/api/machines/m1/events").get_json()
         assert body["events"][0]["lab_id"] == "37037"

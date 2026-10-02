@@ -1400,7 +1400,7 @@ class UncertaintyStore:
                     window_end: Optional[datetime] = None) -> QcSeries:
         """The QC runs for one (machine, test), as `qc_series` parses them.
 
-        `ORDER BY ts, rowid`: `lem_machine_log` has a same-second tie-break
+        `ORDER BY ts, id`: `lem_machine_log` has a same-second tie-break
         problem since it was indexed (`_audit` stamps to whole seconds), and two
         reporting queries in this tree already say exactly this for exactly that
         reason.
@@ -1408,9 +1408,9 @@ class UncertaintyStore:
         res = _read(
             self.gateway,
             "SELECT machine_uid, ts, kind, lab_id, test_name, value, detail "
-            "FROM lem_machine_log "
+            "FROM lem_machine_log_effective "
             "WHERE kind = 'qc' AND machine_uid = ? AND test_name = ? "
-            "ORDER BY ts, rowid", [machine_uid, test_name])
+            "ORDER BY ts, id", [machine_uid, test_name])
         with _doing("read the QC log for {!r} on {!r}".format(
                 test_name, machine_uid)):
             listed = rows(res)
@@ -1661,8 +1661,8 @@ class UncertaintyStore:
         oldest = min(e.computed_at for e in current)
         res = _read(
             self.gateway,
-            "SELECT machine_uid, kind, ts, detail FROM lem_machine_log "
-            "WHERE kind IN ({}) AND ts > ? ORDER BY ts, rowid".format(
+            "SELECT machine_uid, kind, ts, detail FROM lem_machine_log_effective "
+            "WHERE kind IN ({}) AND ts > ? ORDER BY ts, id".format(
                 ", ".join("?" for _ in TRIGGER_KINDS)),
             list(TRIGGER_KINDS) + [oldest])
         with _doing("read the re-estimation triggers"):

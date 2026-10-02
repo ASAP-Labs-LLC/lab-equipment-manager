@@ -199,7 +199,8 @@ class MachineConfigStore:
         found = _read(
             self._read_sql(
                 "SELECT machine_uid, title, updated_at, updated_by "
-                "FROM lem_machine_config ORDER BY title",
+                "FROM lem_machine_config WHERE retired_at IS NULL "
+                "ORDER BY title",
                 what="listing the equipment configurations"),
             "listing the equipment configurations", missing_ok=True)
         return [{"machine_uid": str(r.get("machine_uid") or ""),
@@ -218,7 +219,8 @@ class MachineConfigStore:
         found = _read(
             self._read_sql(
                 "SELECT machine_uid, title, config, updated_at, updated_by "
-                "FROM lem_machine_config WHERE machine_uid = ?", [machine_uid],
+                "FROM lem_machine_config WHERE machine_uid = ? "
+                "AND retired_at IS NULL", [machine_uid],
                 what="reading the configuration of {0}".format(machine_uid)),
             "reading the configuration of {0}".format(machine_uid),
             missing_ok=True)
@@ -262,7 +264,7 @@ class MachineConfigStore:
                 "updated_at, updated_by) VALUES (?, ?, ?, ?, ?) "
                 "ON CONFLICT(machine_uid) DO UPDATE SET title=excluded.title, "
                 "config=excluded.config, updated_at=excluded.updated_at, "
-                "updated_by=excluded.updated_by",
+                "updated_by=excluded.updated_by, retired_at=NULL",
                 [machine_uid, title, json.dumps(config or {}), when, by],
                 what="saving the configuration of {0} ({1})".format(
                     title, machine_uid)),
