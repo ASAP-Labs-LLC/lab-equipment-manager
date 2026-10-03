@@ -2592,13 +2592,21 @@
    "v4_spec": "0 lost; 0 effective dup across every hand-over"
   },
   "M3": {
-   "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
+   "v3.9_source": "none: the scenario is a v4 bench on a v3.9 server (v3.9 has no legacy projection to measure)",
    "v3.9": null,
    "v4": {
     "lost": 0,
-    "effective_dup": 0
+    "effective_dup": 0,
+    "analyst_overwritten": 0,
+    "ddl_beyond_v39": 0,
+    "went_legacy": true,
+    "v39_floor_status_timeline": 200,
+    "v39_floor_events": {
+     "ge": 1
+    },
+    "labcore_offset_ts_rows": 0
    },
-   "v4_spec": "0 lost; 0 effective dup across every hand-over"
+   "v4_spec": "0 lost; 0 effective dup across every hand-over — legacy projection through N3, L2, A1, K6 and K2 in one bench life; no DDL beyond v3.9.0's own (no LabCore schema change); the v3.9 floor's own code (tagged v3.9.0 web_app, status-timeline) renders the rows LabCore holds: 200, and no row carries a UTC offset v3.9 never wrote (T-P5 round 3: copied-back status_change rows at -07:00 made it answer 500)."
   },
   "M4": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2614,9 +2622,36 @@
    "v3.9": null,
    "v4": {
     "lost": 0,
-    "effective_dup": 0
+    "effective_dup": 0,
+    "went_legacy": true,
+    "back_on_v2": true,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0,
+    "v39_floor_status_timeline": 200,
+    "v39_floor_events": {
+     "ge": 1
+    },
+    "labcore_offset_ts_rows": 0
    },
-   "v4_spec": "0 lost; 0 effective dup across every hand-over"
+   "v4_spec": "0 lost; 0 effective dup across every hand-over; LabCore holds no row twice and no journal bookkeeping (filed, settled, ...) as a machine event; the v3.9 floor's own code (tagged v3.9.0 web_app, status-timeline) renders the rows LabCore holds: 200, and no row carries a UTC offset v3.9 never wrote (T-P5 round 3: copied-back status_change rows at -07:00 made it answer 500)."
+  },
+  "M5R": {
+   "v3.9_source": "none: the scenario is a v4 bench rolled back with a v4 server (v3.9 has no rollback to measure)",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "effective_dup": 0,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0,
+    "went_legacy": true,
+    "back_on_v2": true,
+    "v39_floor_status_timeline": 200,
+    "v39_floor_events": {
+     "ge": 1
+    },
+    "labcore_offset_ts_rows": 0
+   },
+   "v4_spec": "M5 with LabStation restarted mid-rollback (T-P5 round 2): the restart walk and the fall-back offer the same records in one process; 0 lost, 0 effective dup in the store, 0 exact-duplicate and 0 bookkeeping rows in LabCore; the v3.9 floor's own code (tagged v3.9.0 web_app, status-timeline) renders the rows LabCore holds: 200, and no row carries a UTC offset v3.9 never wrote (T-P5 round 3: copied-back status_change rows at -07:00 made it answer 500)."
   },
   "M6": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2626,6 +2661,25 @@
     "effective_dup": 0
    },
    "v4_spec": "0 lost; 0 effective dup across every hand-over"
+  },
+  "M6r": {
+   "v3.9_source": "none: the scenario is a v4 bench meeting a v4 server after a v3.9 one",
+   "v3.9": null,
+   "v4": {
+    "lost": 0,
+    "effective_dup": 0,
+    "went_legacy": true,
+    "back_on_v2": true,
+    "labcore_rows_projected": {
+     "ge": 1
+    },
+    "v39_floor_status_timeline": 200,
+    "v39_floor_events": {
+     "ge": 1
+    },
+    "labcore_offset_ts_rows": 0
+   },
+   "v4_spec": "M6 on the REAL module (T-P5): projected rows (with a lost answer) meet the bridge and the bench's first v2 sync from seq 1 — 0 lost, 0 effective dup; the v3.9 floor's own code (tagged v3.9.0 web_app, status-timeline) renders the rows LabCore holds: 200, and no row carries a UTC offset v3.9 never wrote (T-P5 round 3: copied-back status_change rows at -07:00 made it answer 500)."
   },
   "DG1": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2641,9 +2695,47 @@
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
    "v3.9": null,
    "v4": {
-    "dup_on_reupgrade": 0
+    "dup_on_reupgrade": 0,
+    "qc_copied_back": {
+     "ge": 1
+    },
+    "state_copied_back": {
+     "ge": 1
+    },
+    "runs_copied_back": 0,
+    "back_on_v2": true,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0,
+    "v39_floor_status_timeline": 200,
+    "v39_floor_events": {
+     "ge": 1
+    },
+    "labcore_offset_ts_rows": 0
    },
-   "v4_spec": "v3.9 floor gets the last 24 h of qc/state through projection; 0 dup on re-upgrade"
+   "v4_spec": "v3.9 floor gets the last 24 h of qc/state through projection; 0 dup on re-upgrade; LabCore holds every copied row once and no journal bookkeeping row; the v3.9 floor's own code (tagged v3.9.0 web_app, status-timeline) renders the rows LabCore holds: 200, and no row carries a UTC offset v3.9 never wrote (T-P5 round 3: copied-back status_change rows at -07:00 made it answer 500)."
+  },
+  "DG2C": {
+   "v3.9_source": "none: the scenario needs a v4 server rolled back (v3.9 has no rollback to measure)",
+   "v3.9": null,
+   "v4": {
+    "dup_on_reupgrade": 0,
+    "labcore_exact_dup": 0,
+    "labcore_bookkeeping_rows": 0,
+    "qc_copied_back": {
+     "ge": 1
+    },
+    "state_copied_back": {
+     "ge": 1
+    },
+    "runs_copied_back": 0,
+    "back_on_v2": true,
+    "v39_floor_status_timeline": 200,
+    "v39_floor_events": {
+     "ge": 1
+    },
+    "labcore_offset_ts_rows": 0
+   },
+   "v4_spec": "DG2 with LabStation restarted while the server answers 404 (T-P5 round 2: the critic's DG2C, 3 doubled rows): the last 24 h of qc/state copied back once each — 0 exact-duplicate and 0 bookkeeping rows in LabCore, 0 dup on re-upgrade; the v3.9 floor's own code (tagged v3.9.0 web_app, status-timeline) renders the rows LabCore holds: 200, and no row carries a UTC offset v3.9 never wrote (T-P5 round 3: copied-back status_change rows at -07:00 made it answer 500)."
   },
   "W1": {
    "v3.9_source": "baseline/web.json (phase 1, v3.9.0), verbatim",
@@ -2920,6 +3012,97 @@
     "cell_dup_lands": 0
    },
    "v4_spec": "N2 on the legacy road (a v4 bench meeting an old server, D8): the LabCore log drain still loses nothing. 0"
+  },
+  "K6L": {
+   "v3.9_source": "K6's phase-1 row: the same function, run with the server answering 404 — v3.9 never calls out, so the numbers are K6's exactly",
+   "v3.9": {
+    "scenario": "K6 single_csv",
+    "what": "30 prints; clean LabStation restart (config never re-saved since setup)",
+    "printed": 30,
+    "log_rows": 60,
+    "log_lost": 0,
+    "log_dup": 30,
+    "log_stray": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 30,
+    "cell_dup_lands": 30,
+    "still_held_at_bench": 0,
+    "still_queued_log": 0,
+    "kills": 0,
+    "restarts": 1,
+    "ops": 109,
+    "notes": [],
+    "lost": 0,
+    "dup": 30,
+    "labelled_dup": 0,
+    "labelled_rows": 0,
+    "truth_prints": 30,
+    "stored_effective": 60,
+    "analyst_overwritten": 0,
+    "expect_audit_hits": null,
+    "injected": 0,
+    "conflicts": null,
+    "rejected": null,
+    "labcore_ops": 109,
+    "v2_syncs": 0,
+    "records_resent": null,
+    "roads_used": [],
+    "max_sends_per_cell": 2
+   },
+   "v4": {
+    "lost": 0,
+    "dup": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_sends": 0,
+    "cell_dup_lands": 0
+   },
+   "v4_spec": "K6 on the legacy road (a v4 bench on today's server, D8; T-P5): a clean restart doubles no row and no cell send. 0/0 · 0/0 · 0/0"
+  },
+  "A1L": {
+   "v3.9_source": "A1's row: the same function, run with the server answering 404 — v3.9 never calls out, so the numbers are A1's exactly",
+   "v3.9": {
+    "scenario": "A1 single_csv",
+    "what": "analyst corrects 5 filed cells; clean restart",
+    "printed": 5,
+    "log_rows": 10,
+    "log_lost": 0,
+    "log_dup": 5,
+    "log_stray": 0,
+    "res_lost": 0,
+    "res_wrong": 5,
+    "cell_dup_sends": 5,
+    "cell_dup_lands": 5,
+    "still_held_at_bench": 0,
+    "still_queued_log": 0,
+    "kills": 0,
+    "restarts": 1,
+    "ops": 63,
+    "notes": [],
+    "lost": 0,
+    "dup": 5,
+    "labelled_dup": 0,
+    "labelled_rows": 0,
+    "truth_prints": 5,
+    "stored_effective": 10,
+    "analyst_overwritten": 5,
+    "expect_audit_hits": null,
+    "injected": 0,
+    "conflicts": null,
+    "rejected": null,
+    "labcore_ops": 63,
+    "v2_syncs": 0,
+    "records_resent": null,
+    "roads_used": [],
+    "max_sends_per_cell": 2
+   },
+   "v4": {
+    "analyst_overwritten": 0,
+    "lost": 0,
+    "dup": 0
+   },
+   "v4_spec": "A1 on the legacy road (a v4 bench on today's server, D8; T-P5): 0 overwritten (today 5), 0 lost, 0 dup"
   },
   "CF2r": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",

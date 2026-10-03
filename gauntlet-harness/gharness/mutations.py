@@ -204,6 +204,57 @@ MUTATIONS = {
                    r"(\s*)return False",
         "replace": r"if True:\n\1return False",
         "what": "blind mode off: a wiped journal re-sends (T4 floods)"},
+    # ── legacy projection (owner T-P5) ──
+    # The exact key's NOT EXISTS removed: a keyed row is a bare INSERT again,
+    # so a lost answer's resend lands twice (L1, M3 must go red).
+    "projection_key_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"\+ _PROJECTION_KEY_SQL\)",
+        "replace": ")",
+        "what": "legacy projection without its NOT EXISTS (L1/M3 dup)"},
+    # `jk` left out of the detail: the key is content only, and the v4
+    # server can no longer link a projected row to its bench record, so a
+    # rollback's rows land in the store twice on the re-upgrade (M5, DG2,
+    # M6r). (L2's twins still both land: one statement never suppresses its
+    # own rows — it is a resend split across statements that would lose one.)
+    "projection_jk_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"row\[6\] = projection_detail\(row\[6\], jk\)",
+        "replace": "row[6] = row[6]",
+        "what": "projected rows carry no jk (M5, DG2, M6r double on re-upgrade)"},
+    # DG2 off: a rollback copies nothing back (DG2 must go red).
+    "dg2_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"if due <= 0:\n(\s*)return 0",
+        "replace": r"if True:\n\1return 0",
+        "what": "a rollback does not copy the last 24 h of QC and status back"},
+    # The queue's once-per-record claim off: a record offered by both the
+    # restart walk and the fall-back is queued twice, and both copies go out
+    # in ONE keyed statement, whose rows do not see each other (DG2C, M5R
+    # must go red: LabCore holds rows twice).
+    "queue_once_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"if ref in queued:\n(\s*)return False",
+        "replace": r"if False:\n\1return False",
+        "what": "a record offered twice is queued twice (DG2C/M5R LabCore dup)"},
+    # The journal's bookkeeping back among the projected events: `filed`,
+    # `settled` ... become machine-log rows on a fall-back (M5, DG2, DG2C,
+    # M5R must go red on labcore_bookkeeping_rows).
+    "bookkeeping_projected": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r'"filed", "settled", "conflict", "rejected", "projected", '
+                   r'"adoption"\}\)',
+        "replace": "})",
+        "what": "a fall-back writes filed/settled/... into lem_machine_log"},
+    # A projected row keeps the journal's UTC offset in its `ts` (critic,
+    # T-P5 round 3): v3.9's floor cannot subtract it from now(), and its
+    # status gutter answers 500 (M5, M5R, DG2, DG2C must go red on
+    # v39_floor_status_timeline and labcore_offset_ts_rows).
+    "projection_ts_aware": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"return ts\.astimezone\(\)\.replace\(tzinfo=None\)",
+        "replace": "return ts",
+        "what": "a projected log row keeps the journal's UTC offset"},
 }
 
 CODE_DIRS = ("LEM Station Module", "LEM Web Server")

@@ -732,8 +732,10 @@ def test_rows_that_landed_before_a_kill_are_not_logged_again(qapp, tmp_path, mon
     """K2: a 250-print poll goes out in three batches; the process dies right
     after LabCore accepted the second. Phase 1 logged 203 rows twice; the
     journal alone still logged the 100 of the second batch twice, because the
-    mark saying they had landed never got written. One read after the restart
-    asks LabCore which owed rows are already there; only the rest are sent."""
+    mark saying they had landed never got written. Every owed row now names
+    its journal record (`detail.jk`) and goes in through the exact key
+    (legacy projection, §10.3), so the restart sends all 250 again and the
+    200 already there add nothing."""
     b = Bench(tmp_path, monkeypatch, samples=300)
     b.emit(3)
     b.poll()
@@ -763,9 +765,13 @@ def test_two_identical_prints_in_one_poll_are_both_redelivered(qapp, tmp_path, m
     assert sorted(b.lab.log_runs()) == [lab_id(0), lab_id(5), lab_id(5)]
 
 
-def test_a_failed_check_sends_nothing_and_asks_again(qapp, tmp_path, monkeypatch):
-    """A failed read is never an empty result: "LabCore could not say which
-    rows landed" must not become "none landed, send them all"."""
+def test_a_restart_resends_what_it_owes_without_asking_labcore_first(qapp, tmp_path, monkeypatch):
+    """Until the exact key, a restarted bench READ LabCore's log at the owed
+    rows' timestamps before re-sending (`_journal_verify_owed`), and when that
+    read failed it had to hold everything ("a failed read is never an empty
+    result"). The key made the read unnecessary: rows that landed match
+    themselves. So the restart costs LabCore no read of lem_machine_log at
+    all — and there is no failed read left to mistake for an empty one."""
     b = Bench(tmp_path, monkeypatch)
     b.emit(3)
     b.poll()
@@ -773,75 +779,42 @@ def test_a_failed_check_sends_nothing_and_asks_again(qapp, tmp_path, monkeypatch
     _kill_after_nth_log_write(b, 1)
     b.poll()
     assert len(b.lab.log_runs()) == 6            # landed, then the kill
-    real = b.lab.read_sql
-    fail = {"on": True}
-
-    def read_sql(sql, args=None, timeout=None):
-        if fail["on"] and "FROM lem_machine_log WHERE machine_uid = ? AND ts IN" in sql:
-            return {"error": "database is locked"}
-        return real(sql, args, timeout)
-    mod.__dict__["labcore_read_sql"] = read_sql
-    b.poll()
-    assert len(b.lab.log_runs()) == 6            # nothing re-sent blind
-    assert "could not be asked" in b.m._status_label.toolTip()
-    fail["on"] = False
-    b.poll()
-    assert sorted(b.lab.log_runs()) == [lab_id(i) for i in range(6)]
-
-
-def test_a_cursor_that_cannot_be_read_right_now_is_an_error_not_a_fresh_start(qapp, tmp_path, monkeypatch):
-    """A cursor.json the OS will not hand over this poll (an antivirus scan, a
-    sharing violation) is a failed read. The poll reports it and reads
-    nothing; it must not decide the bench has no cursor and start the file
-    again from the top on the next poll."""
-    b = Bench(tmp_path, monkeypatch)
-    for _ in range(3):
-        b.emit(3)
-        b.poll()
-    b.restart()
-    real = mod.CursorStore.load
-    calls = {"n": 0}
-
-    def flaky(self):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise mod.JournalError("cannot read cursor.json: sharing violation")
-        return real(self)
-    monkeypatch.setattr(mod.CursorStore, "load", flaky)
-    b.poll()
-    assert "cursor" in b.m.evaluation().reason.lower()
-    b.emit(1)
-    b.poll()
-    assert calls["n"] == 2
-    assert sorted(b.lab.log_runs()) == [lab_id(i) for i in range(10)]
-    assert b.m._journal_suppressed == 0           # it did not start again at 0
-
-
-def test_the_owed_row_check_asks_in_slices(qapp, tmp_path, monkeypatch):
-    """A bench that died after a long LabCore outage can owe rows from
-    hundreds of polls, and one IN (...) with a parameter per timestamp passes
-    SQLite's variable limit — a read that would fail every time and keep the
-    rows at the bench for ever. The check asks in slices."""
-    monkeypatch.setattr(mod, "OWED_CHECK_STAMPS", 2)
-    b = Bench(tmp_path, monkeypatch)
-    b.lab.plan = lambda kind, what: "kill_before" if kind == "log" else None
-    b.emit(1)
-    b.poll()                                   # dies before its log write
-    for _ in range(4):                         # owed rows from 5 polls
-        b.lab.plan = lambda kind, what: "kill_before" if kind == "log" else None
-        b.emit(1)
-        b.poll()
     reads = []
     real = b.lab.read_sql
 
     def read_sql(sql, args=None, timeout=None):
-        if "AND ts IN" in sql:
-            reads.append(len(args) - 1)
+        if "lem_machine_log" in sql and " ts IN" in sql:
+            reads.append(sql)
         return real(sql, args, timeout)
     mod.__dict__["labcore_read_sql"] = read_sql
     b.poll()
-    assert reads and max(reads) <= 2 and sum(reads) == 5
-    assert sorted(b.lab.log_runs()) == [lab_id(i) for i in range(5)]
+    b.poll()
+    assert reads == []
+    assert sorted(b.lab.log_runs()) == [lab_id(i) for i in range(6)]
+
+
+def test_rows_owed_from_many_polls_go_back_in_statements_of_at_most_100(qapp, tmp_path, monkeypatch):
+    """A bench that died after a long LabCore outage can owe rows from
+    hundreds of polls. They go back through the same batching as any other
+    rows — at most LOG_BATCH_ROWS a statement, 7 bound values a row — so the
+    resend can never be one statement over SQLite's variable limit, refused
+    every time with the rows kept at the bench for ever."""
+    b = Bench(tmp_path, monkeypatch, samples=400)
+    for _ in range(5):
+        b.lab.plan = lambda kind, what: "kill_before" if kind == "log" else None
+        b.emit(60)
+        b.poll()                                 # dies before its log write
+    sizes = []
+    real = b.lab.sql
+
+    def sql(sql, args=None, source="LabStation", timeout=None):
+        if "INSERT INTO lem_machine_log" in sql:
+            sizes.append(len(args or []))
+        return real(sql, args, source, timeout)
+    mod.__dict__["labcore_sql"] = sql
+    b.poll()
+    assert sizes and max(sizes) <= 7 * mod.LOG_BATCH_ROWS
+    assert sorted(b.lab.log_runs()) == sorted(lab_id(i) for i in range(300))
 
 
 def test_a_file_left_in_flight_is_delivered_even_without_a_journal(qapp, tmp_path, monkeypatch):

@@ -290,3 +290,19 @@ def test_each_p4_pattern_matches_exactly_once_here_and_never_in_v390(name):
     with open(os.path.join(WORKTREE, rel), encoding="utf-8") as f:
         assert len(rx.findall(f.read())) == 1
     assert rx.findall(_v390_source(rel)) == []
+
+
+T_P5_SOURCE = ["projection_key_off", "projection_jk_off", "dg2_off",
+               "queue_once_off", "bookkeeping_projected",
+               "projection_ts_aware"]
+
+
+@pytest.mark.parametrize("name", T_P5_SOURCE)
+def test_each_t_p5_pattern_matches_exactly_once_here_and_never_in_v390(name):
+    """T-P5's mutations name the legacy projection: once in this worktree,
+    nowhere in v3.9.0 (which has no projection to break)."""
+    rx = re.compile(MU.MUTATIONS[name]["pattern"])
+    rel = "LEM Station Module/lem_station_module.py"
+    with open(os.path.join(WORKTREE, rel), encoding="utf-8") as f:
+        assert len(rx.findall(f.read())) == 1
+    assert rx.findall(_v390_source(rel)) == []

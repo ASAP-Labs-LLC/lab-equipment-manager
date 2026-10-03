@@ -476,6 +476,58 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
         c.settle()
         return c.tally("L2 single_csv", "legacy projection: two genuine prints of one lab_id and test in one poll")
 
+    # K6 and A1 again with the bench on today's server (D8: module v4 ships
+    # first, in legacy projection). The record is LabCore's there, and the
+    # two baseline faults the rollout most has to end — a restart doubling
+    # the log, a restart overwriting an analyst's cell — must end on THAT
+    # road too, not only once the server is v4 (T-P5).
+    reg.add("K6L", on_legacy_road(rf.k6_clean_restart_never_saved), "new")
+    reg.add("A1L", on_legacy_road(a1), "new")
+
+    from . import legacy_projection as _lp
+
+    @new("M3")
+    def m3():
+        if not hasattr(mod, "BenchUploader"):
+            # A v3.9 bench on a v3.9 server is M1, not M3: there is no v4
+            # bench here to put on today's server.
+            _unsupported("M3", "a v4 bench (journal, uploader: P1, P8)")
+        return _lp.m3(W, rf, mod, lab_id)
+
+    @new("M5")
+    def m5():
+        if not _has_store():
+            _unsupported("M5", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m5(W, rf, mod)
+
+    @new("M6r")
+    def m6r():
+        if not _has_store():
+            _unsupported("M6r", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m6r(W, rf, mod)
+
+    @new("DG2")
+    def dg2():
+        if not _has_store():
+            _unsupported("DG2", "a LEM store (P6) and its bridge (P9)")
+        return _lp.dg2(W, rf, mod)
+
+    # The same two rollbacks with LabStation restarted while the server
+    # answers 404 (critic, T-P5 round 2): the restart's walk and the
+    # fall-back offered the same records in one process, both copies went
+    # out in one keyed statement, and LabCore held them twice.
+    @new("DG2C")
+    def dg2c():
+        if not _has_store():
+            _unsupported("DG2C", "a LEM store (P6) and its bridge (P9)")
+        return _lp.dg2(W, rf, mod, restart=True)
+
+    @new("M5R")
+    def m5r():
+        if not _has_store():
+            _unsupported("M5R", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m5(W, rf, mod, restart=True)
+
     # ── roads (§6.2) ────────────────────────────────────────────────────────
     v2_target = hasattr(mod, "BenchUploader")
 
@@ -1184,10 +1236,7 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
 V4_ONLY = {
     "T3": "store restored from a backup: a 409 cursor answer from /api/v2 sync (P7, P11)",
     "M1": "order matrix pairing 1 (§12.2; P13)",
-    "M3": "order matrix pairing 3 (§12.2; P13)",
     "M4": "order matrix pairing 4 (§12.2; P13)",
-    "M5": "order matrix pairing 5 (§12.2; P13)",
-    "DG2": "server rollback after v4 benches synced: projection (P9)",
 }
 V4_WEB = {"W2b": "server INSERTs on the LEM store (P6)"}
 
