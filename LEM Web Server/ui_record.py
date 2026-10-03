@@ -218,8 +218,8 @@ def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str])
         lead = "QC out of spec on " + _and([c["title"] for c in bad])
         std, at = _stds(bad), _newest(bad)
         nxt = "Fix, then rerun " + (std or "the standard")
-    elif state == OK_BUT and reason.startswith("QC due"):
-        lead = "QC due on " + _and([c["title"] for c in due])
+    elif state == OK_BUT and ui_live.is_qc_owed(reason):
+        lead = ui_live.owed_phrase(due, lambda cs: _and([c["title"] for c in cs]))
         std, at = _stds(due), _newest(due)
         nxt = "Run " + (std or "the QC standard")
     elif state == OK_BUT and reason.startswith("Calibration"):
@@ -254,7 +254,8 @@ def caption(m: dict, state: str, reason: str, rows: List[dict], keys: List[str])
     behind = keys if state == OFF_LINE else keys[1:]
     too = []
     if "ok_but-qc" in behind:
-        too.append("QC due on %s too" % _and([c["title"] for c in due]))
+        p = ui_live.owed_phrase(due, lambda cs: _and([c["title"] for c in cs]))
+        too.append((p[:1].lower() + p[1:] if p.startswith(ui_live.NO_VERDICT) else p) + " too")
     if "ok_but-cal" in behind:
         too.append("calibration overdue%s too" % _since(m, "calibration"))
     if "ok_but-pm" in behind:
@@ -284,7 +285,7 @@ def _primary(state: str, rows: List[dict], m: Optional[dict] = None,
     QC due, Can't tell, No QC assigned and OK have none: QC is filed by the
     bench, a silent bench is restarted at its own computer, assigning is the
     QC section's job, and OK has nothing to do."""
-    if state == OK_BUT and m is not None and not reason.startswith("QC due"):
+    if state == OK_BUT and m is not None and not ui_live.is_qc_owed(reason):
         kind = "calibration" if reason.startswith("Calibration") else "pm"
         tasks = sorted(ui_live._overdue(m, kind),
                        key=lambda t: (str(t.get("next_due") or "9999"), str(t.get("name") or "")))

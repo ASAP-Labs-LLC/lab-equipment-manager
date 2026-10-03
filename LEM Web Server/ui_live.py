@@ -274,6 +274,50 @@ def qc_due(machine: dict) -> list:
 _qc_due = qc_due
 
 
+# §4.1 tells two kinds of owed QC apart: **QC due** is a pass that aged out
+# of its window (it read true once, nobody has shown it still does), **No
+# verdict yet** is an assigned check that has never run (against this
+# standard). Both make the card "OK to run, but…", share the problem key
+# "ok_but-qc" and the next step (run the standard); only the words differ,
+# and they must differ the same way in every sentence (round 9's critic:
+# Koehler K23000's tile said "No verdict yet · Never run" and its card "QC
+# due on Viscosity 40C").
+QC_DUE, NO_VERDICT = "QC due", "No verdict yet"
+
+
+def is_qc_owed(reason: str) -> bool:
+    """Is a ``readiness`` reason about owed QC (either kind)?"""
+    return str(reason or "").startswith((QC_DUE, NO_VERDICT))
+
+
+def owed_split(due: list) -> tuple:
+    """(ran before, never run) out of owed checks (``qc_due``'s, or any rows
+    carrying ``check_verdict``'s verdict)."""
+    ran = [c for c in due if c["verdict"]["word"] == QC_DUE]
+    return ran, [c for c in due if c["verdict"]["word"] != QC_DUE]
+
+
+def owed_word(due: list) -> str:
+    """The one word for a set of owed checks: QC due if any ran before (the
+    stronger: a pass lapsed), else No verdict yet."""
+    ran, _ = owed_split(due)
+    return QC_DUE if ran else NO_VERDICT
+
+
+def owed_phrase(due: list, names: Callable[[list], str]) -> str:
+    """"QC due on Density", "No verdict yet on Vapour", or both, in one
+    clause: "QC due on Density and no verdict yet on Vapour". `names` turns
+    a list of checks into the page's way of naming them."""
+    ran, never = owed_split(due)
+    parts = []
+    if ran:
+        parts.append("%s on %s" % (QC_DUE, names(ran)))
+    if never:
+        w = NO_VERDICT if not parts else NO_VERDICT[:1].lower() + NO_VERDICT[1:]
+        parts.append("%s on %s" % (w, names(never)))
+    return " and ".join(parts)
+
+
 def _overdue(machine: dict, kind: str) -> list:
     """Scheduled tasks of `kind` that are overdue (from lem_maintenance, the
     schedule, never from the bench's sub_statuses: P10)."""
@@ -335,7 +379,7 @@ def readiness(machine: dict, override: Optional[str] = None) -> dict:
     due = _qc_due(machine)
     if due:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in due}))
-        return {"state": OK_BUT, "reason": "QC due: " + names}
+        return {"state": OK_BUT, "reason": "%s: %s" % (owed_word(due), names)}
     if _overdue(machine, "calibration"):
         return {"state": OK_BUT, "reason": "Calibration overdue"}
     if _overdue(machine, "pm"):
@@ -635,10 +679,14 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
         if not hit:
             continue
         n = len(hit)
+        verb = _plural(n, "instrument is", "instruments are")
+        if key == "ok_but-qc" and owed_word([c for m in hit for c in qc_due(m)]) == NO_VERDICT:
+            # every one of them has never run: not "due" (§4.1, round 9)
+            words, verb = "no QC verdict yet", _plural(n, "instrument has", "instruments have")
         out.append({"key": prefix + ":" + ",".join(sorted(m["machine_uid"] for m in hit)),
                     "level": "warning", "about": "instruments",
                     "message": "%d %s %s: %s." % (
-                        n, _plural(n, "instrument is", "instruments are"), words,
+                        n, verb, words,
                         _names([title[m["machine_uid"]] for m in hit])),
                     "href": href(hit[0]["machine_uid"], section) if n == 1 else "/?cause=" + key,
                     "link": "Open " + title[hit[0]["machine_uid"]] if n == 1 else "Show them"})

@@ -394,9 +394,14 @@
                 h('td', { className: 'm-last', text: day(t.last_done) }),
                 h('td', { text: day(t.next_due) }),
                 h('td', {}, h('span', { className: 'verdict ' + (t.glyph === 'error' ? 's-not_ok' : t.glyph === 'half' ? 's-ok_but' : '') }, glyph(t.glyph), h('span', { text: t.word })))))))),
-            h('p', { className: 'caption' }, ((data.readiness.primary || {}).act === 'done'
-                ? 'The card above marks the overdue one done. To schedule a task or mark another done, use the '
-                : 'To schedule a task or mark one done, use the '), h('a', { className: 'link', href: '/maintenance/classic', text: 'PM and calibration page' }), ' until it moves here.'));
+            // When the card marks the overdue task done in place, the step is
+            // on this page and the section says nothing more (round 9's
+            // critic: a promise of a future home under a card that already acts).
+            // Otherwise the schedule is kept on the PM and calibration page.
+            // (spread, not null: replaceChildren would draw null as text)
+            ...((data.readiness.primary || {}).act === 'done' ? []
+                : [h('p', { className: 'caption' }, 'Tasks are scheduled and marked done on the ',
+                    h('a', { className: 'link', href: '/maintenance/classic', text: 'PM and calibration page' }), '.')]));
     }
     function renderBench() {
         const b = data.bench;

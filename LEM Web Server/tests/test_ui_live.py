@@ -408,7 +408,8 @@ class TestTheBell:
                                    audit_spool=0, live_road=None, certificates=None,
                                    href=lambda u, s: "/floor", now=datetime(2026, 10, 1, 10))
         assert [i["message"] for i in items] == [
-            "2 instruments are due for QC: OptiMPP 1 and OptiMPP 2."]
+            # neither has ever run: not "due" (§4.1, round 9)
+            "2 instruments have no QC verdict yet: OptiMPP 1 and OptiMPP 2."]
 
 
 # ── readiness (§3.1) ────────────────────────────────────────────────────────
@@ -499,12 +500,13 @@ class TestReadiness:
     def test_a_superseded_failure_is_not_a_failure(self):
         """A failure against the OLD standard says nothing about the new one,
         so it is not a stop. Nor is it a pass: the new standard has not been
-        run, which is QC due, the word the record's row says for it (piece 5,
-        round 2: one rule for the card and every row)."""
+        run, which is No verdict yet (§4.1: never run against this standard),
+        the word the record's row says for it (piece 5, round 2: one rule for
+        the card and every row; round 9: and one word)."""
         r = ui_live.readiness(dict(self.BASE, effective_specs=[
             {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
              "last_qc_superseded_by": "AF26"}]), "")
-        assert r == {"state": ui_live.OK_BUT, "reason": "QC due: IBP"}
+        assert r == {"state": ui_live.OK_BUT, "reason": "No verdict yet: IBP"}
         (c,) = ui_live.qc_checks(dict(self.BASE, effective_specs=[
             {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
              "last_qc_superseded_by": "AF26"}]))

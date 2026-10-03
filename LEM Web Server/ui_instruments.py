@@ -177,8 +177,8 @@ def _cause(m: dict, ready: dict) -> tuple:
     if state == NOT_OK:
         return ("not_ok-qc", "QC out of spec", "qc")
     if state == OK_BUT:
-        if reason.startswith("QC due"):
-            return ("ok_but-qc", "QC due", "qc")
+        if ui_live.is_qc_owed(reason):
+            return ("ok_but-qc", ui_live.owed_word(ui_live.qc_due(m)), "qc")
         if reason.startswith("Calibration"):
             return ("ok_but-cal", "Calibration overdue", "maintenance")
         return ("ok_but-pm", "PM overdue", "maintenance")
@@ -205,7 +205,8 @@ def _too(m: dict, keys: List[str]) -> str:
     not among them: the row's Bench column says it."""
     out = []
     if "ok_but-qc" in keys:
-        out.append("QC due on %s too" % _tests(ui_live.qc_due(m)))
+        p = ui_live.owed_phrase(ui_live.qc_due(m), _tests)
+        out.append((p[:1].lower() + p[1:] if p.startswith(ui_live.NO_VERDICT) else p) + " too")
     for k, w, kind in (("ok_but-cal", "calibration", "calibration"), ("ok_but-pm", "PM", "pm")):
         if k in keys:
             out.append("%s overdue%s too" % (w, _since(m, kind)))
@@ -221,8 +222,8 @@ def _primary(m: dict, ready: dict) -> str:
         return "%s out of spec" % _tests(bad)
     if state == OK_BUT and reason.startswith("Calibration"):
         return "Calibration overdue" + _since(m, "calibration")
-    if state == OK_BUT and reason.startswith("QC due"):
-        return "QC due on %s" % _tests(ui_live.qc_due(m))
+    if state == OK_BUT and ui_live.is_qc_owed(reason):
+        return ui_live.owed_phrase(ui_live.qc_due(m), _tests)
     if state == OK_BUT:
         return "PM overdue" + _since(m, "pm")
     if state == OFF_LINE:
@@ -260,7 +261,7 @@ def _next(m: dict, ready: dict, href: Href) -> Optional[dict]:
     if state == OFF_LINE:
         return {"text": "Put it back on line when the work is done", "label": "Open the record",
                 "href": href(uid, "")}
-    if state == OK_BUT and reason.startswith("QC due"):
+    if state == OK_BUT and ui_live.is_qc_owed(reason):
         std = _and(sorted({c["sample_id"] for c in ui_live.qc_due(m) if c["sample_id"]}))
         return {"text": "Run %s" % (std or "the QC standard"), "label": "See the checks",
                 "href": href(uid, "qc")}
@@ -378,6 +379,23 @@ def _bay(pos) -> Optional[List[float]]:
     return out
 
 
+def _problem_words(m: dict, key: str) -> str:
+    """A problem's words for one instrument: owed QC says which kind
+    (``ui_live.owed_word``), every other problem its fixed words."""
+    if key == "ok_but-qc":
+        return ui_live.owed_word(ui_live.qc_due(m))
+    return ui_live.PROBLEM_WORDS[key]
+
+
+def _tile_cause(key: str, members: List[dict]) -> str:
+    """A tile's cause. Owed QC is "No verdict yet" only when every member's
+    checks have never run; one lapsed pass among them makes it "QC due"."""
+    if key == "ok_but-qc":
+        words = {p["words"] for r in members for p in r["problems"] if p["key"] == key}
+        return ui_live.QC_DUE if ui_live.QC_DUE in words or not words else ui_live.NO_VERDICT
+    return ui_live.PROBLEM_WORDS[key]
+
+
 def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: Href) -> dict:
     uid = m["machine_uid"]
     ready = ui_live.readiness(m, override)
@@ -397,7 +415,7 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
         "cause": {"key": key, "words": cause, "href": href(uid, section)} if key else None,
         # every problem it has, worst first; a tile and its filter are about
         # everyone with the problem, not only those it is the worst for
-        "problems": [{"key": k, "words": ui_live.PROBLEM_WORDS[k]} for k in keys],
+        "problems": [{"key": k, "words": _problem_words(m, k)} for k in keys],
         "last_qc": last_qc(m),
         "bench": bench(m),
         "level_uid": m.get("level_uid") or "",
@@ -450,7 +468,7 @@ def needs_you(rows: List[dict]) -> dict:
         state = key.split("-", 1)[0]
         tiles.append({
             "key": key, "state": state, "glyph": GLYPH[state],
-            "cause": ui_live.PROBLEM_WORDS[key],
+            "cause": _tile_cause(key, members),
             "next": {"text": CAUSE_NEXT.get(key, "Open each record")},
             "link": "Show it" if len(members) == 1 else "Show them",
             "href": "/?cause=" + key,

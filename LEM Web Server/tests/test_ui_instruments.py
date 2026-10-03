@@ -202,7 +202,8 @@ class TestEachInstrumentSaysWhetherItCanRun:
                    machine("b", specs=[spec("Flash Point", None)], maint=[task("calibration", "RED")]),
                    machine("a", specs=[spec("Flash Point", True)], maint=[task("calibration", "RED")])])
         assert row(p, "g")["readiness"]["detail"] == "Flash Point out of spec · calibration overdue since 1 Sep too"
-        assert row(p, "b")["readiness"]["detail"] == "QC due on Flash Point · calibration overdue since 1 Sep too"
+        # "b" has never run its check: §4.1's No verdict yet, not QC due (round 9)
+        assert row(p, "b")["readiness"]["detail"] == "No verdict yet on Flash Point · calibration overdue since 1 Sep too"
         assert row(p, "a")["readiness"]["detail"] == "Calibration overdue since 1 Sep"
 
     def test_an_overdue_pm_says_since_when_as_a_calibration_does(self):
@@ -312,7 +313,7 @@ class TestEveryProblemIsOnItsRow:
         p = build([machine("g", specs=[spec("Flash Point", False), spec("Density", None)],
                            maint=[task("calibration", "RED"), task("pm", "RED")])])
         assert row(p, "g")["readiness"]["detail"] == (
-            "Flash Point out of spec · QC due on Density too"
+            "Flash Point out of spec · no verdict yet on Density too"
             " · calibration overdue since 1 Sep too · PM overdue since 1 Sep too")
         assert [x["key"] for x in row(p, "g")["problems"]] == [
             "not_ok-qc", "ok_but-qc", "ok_but-cal", "ok_but-pm"]
@@ -384,13 +385,14 @@ class TestNeedsYou:
     """
 
     def test_same_cause_merges_into_one_tile(self):
-        """§3.2: OptiMPP 1 and OptiMPP 2, both QC due, are one tile."""
+        """§3.2: OptiMPP 1 and OptiMPP 2, both owed QC, are one tile. Neither
+        has ever run its check, so the tile says §4.1's No verdict yet."""
         ms = [machine("o1", "OptiMPP 1", specs=[spec("Cloud", None)]),
               machine("o2", "OptiMPP 2", specs=[spec("Pour", None)])]
         tiles = build(ms)["needs_you"]["tiles"]
         assert len(tiles) == 1
         t = tiles[0]
-        assert t["cause"] == "QC due"
+        assert t["cause"] == "No verdict yet"
         assert [m["uid"] for m in t["members"]] == ["o1", "o2"]
 
     def test_a_tile_says_the_cause_and_the_next_step_never_the_instruments(self):
@@ -462,7 +464,7 @@ class TestNeedsYou:
     def test_worst_cause_first(self):
         ms = [machine("d", "D", specs=[spec("X", None)]),
               machine("a", "A", specs=[spec("X", False)])]
-        assert [t["cause"] for t in build(ms)["needs_you"]["tiles"]] == ["QC out of spec", "QC due"]
+        assert [t["cause"] for t in build(ms)["needs_you"]["tiles"]] == ["QC out of spec", "No verdict yet"]
 
     def test_off_line_and_no_qc_are_not_problems_that_happened(self):
         """Off line is a decision somebody made, with a comment; No QC

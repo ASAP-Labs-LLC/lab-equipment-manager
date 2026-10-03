@@ -313,7 +313,7 @@ class TestAWarningsNextStepIsTheButton:
                 continue
             rec = c.get("/api/ui/instruments/" + row["uid"]).get_json()
             p = rec["readiness"]["primary"]
-            if rec["readiness"]["caption"]["lead"].startswith("QC due"):
+            if rec["readiness"]["caption"]["lead"].startswith(("QC due", "No verdict yet")):
                 assert p is None, row["uid"]
                 continue
             seen += 1
@@ -965,11 +965,15 @@ class TestEveryCheckIsJudgedByTheCardsRule:
             assert keys and all(k == "in" for k in keys), (name, keys)
         if state == "cant_tell":
             assert all(k == "none" for k in keys), (name, keys)
-        if state == "ok_but" and rec["readiness"]["caption"]["lead"].startswith("QC due"):
-            due = [c["title"] for c in rows if c["verdict"]["key"] == "due"]
+        if state == "ok_but" and cap["lead"].startswith(("QC due", "No verdict yet")):
+            due = [c for c in rows if c["verdict"]["key"] == "due"]
             assert due, name
-            for t in due:
-                assert t in cap["lead"], (name, cap["lead"])
+            for c in due:
+                assert c["title"] in cap["lead"], (name, cap["lead"])
+                # each owed check is named after its own row's word (round 9)
+                w = c["verdict"]["word"]
+                assert re.search(r"(?i)%s on [^;]*%s" % (re.escape(w), re.escape(c["title"])), cap["lead"]), \
+                    (name, w, cap["lead"])
         if "due" in keys and state != "off_line":
             assert "QC due on " + rows[keys.index("due")]["title"] in (cap["lead"] + " " + cap["too"]) \
                 or rows[keys.index("due")]["title"] in cap["lead"] + cap["too"], (name, cap)
@@ -1000,8 +1004,8 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         it, in §4.1's hollow ring, with the reason "never run".
 
         The instrument's verdict is a different level of §4.1 and is
-        unchanged: a check is owed, so the card says "OK to run, but… QC due
-        on <check>. Next: run AF26", and the QC tile is the current tile,
+        unchanged: a check is owed, so the card says "OK to run, but… No
+        verdict yet on <check>. Next: run AF26", and the QC tile is the current tile,
         because it is the one that explains the "but". The row keeps key
         "due" so everything that counts what makes the card say "QC due"
         (the caption, the home's row) still counts it."""
@@ -1012,7 +1016,8 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         (c,) = rec["qc"]["checks"]
         assert c["verdict"] == {"key": "due", "word": "No verdict yet", "glyph": "never",
                                 "detail": "never run"}
-        assert rec["readiness"]["caption"]["lead"] == "QC due on Flash Point Closed cup (small scale)"
+        # and the card's sentence says the row's word (round 9's critic)
+        assert rec["readiness"]["caption"]["lead"] == "No verdict yet on Flash Point Closed cup (small scale)"
         assert rec["readiness"]["caption"]["next"] == "Run AF26"
         tile = _qc_tile(rec)
         assert (tile["word"], tile["detail"], tile["glyph"]) == ("No verdict yet", "Never run", "never")
@@ -1116,7 +1121,7 @@ class TestEveryCheckIsJudgedByTheCardsRule:
             cap = rec["readiness"]["caption"]
             assert not re.search(r"\bon\s*(\.|;|$)", cap["lead"]), (r["title"], cap)
             keys = [x["verdict"]["key"] for x in rec["qc"]["checks"]]
-            if cap["lead"].startswith("QC due"):
+            if cap["lead"].startswith(("QC due", "No verdict yet")):
                 assert "due" in keys, (r["title"], keys)
             if rec["readiness"]["state"] == "cant_tell":
                 assert "in" not in keys, r["title"]
