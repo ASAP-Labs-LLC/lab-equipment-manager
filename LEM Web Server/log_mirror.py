@@ -442,6 +442,16 @@ class LogMirror:
         with self._lock:
             return [dict(r) for r in self._db.execute(sql, args).fetchall()]
 
+    def reported_tests(self) -> List[tuple]:
+        """Every (machine_uid, test_name) the log holds a result or a QC run
+        for: which instruments report a test, for the New standard sheet's
+        "Check it on" (instruments that already report it are offered
+        first). Local; raises if the copy cannot be read."""
+        with self._lock:
+            return [(str(r[0]), str(r[1])) for r in self._db.execute(
+                "SELECT DISTINCT machine_uid, test_name FROM log "
+                "WHERE kind IN ('run', 'qc') AND test_name != ''").fetchall()]
+
     def count(self, machine_uid: Optional[str] = None) -> int:
         sql = "SELECT COUNT(*) n FROM log"
         args: list = []
@@ -725,6 +735,13 @@ class StoreLogMirror(LogMirror):
         sql += " ORDER BY ts DESC, id DESC LIMIT ?"
         args.append(int(limit))
         return self._read(sql, args)
+
+    def reported_tests(self) -> List[tuple]:
+        """`LogMirror.reported_tests`, from the store. A failed read raises."""
+        return [(str(r.get("machine_uid") or ""), str(r.get("test_name") or ""))
+                for r in self._read(
+                    "SELECT DISTINCT machine_uid, test_name FROM %s "
+                    "WHERE kind IN ('run', 'qc') AND test_name != ''" % self.VIEW)]
 
     def count(self, machine_uid: Optional[str] = None) -> int:
         sql = "SELECT COUNT(*) AS n FROM %s" % self.VIEW

@@ -930,6 +930,21 @@ class StandardCertificateStore:
             missing_ok=missing_ok)
         return [StandardCertificate.from_row(row) for row in rows]
 
+    def by_standard(self) -> Dict[str, List[StandardCertificate]]:
+        """Every certificate, grouped by the standard it is for, newest first:
+        the library table's certificate column in ONE read rather than one per
+        standard. Raises when the read fails, like `certificates`: an empty map
+        from here says no standard has a certificate on file."""
+        rows = self._rows(
+            f"SELECT {_COLUMNS} FROM lem_standard_documents "
+            "ORDER BY uploaded_at DESC, uid DESC", [],
+            "list the library's certificates")
+        out: Dict[str, List[StandardCertificate]] = {}
+        for row in rows:
+            cert = StandardCertificate.from_row(row)
+            out.setdefault(cert.standard_name, []).append(cert)
+        return out
+
     def get(self, uid: str) -> Optional[StandardCertificate]:
         """One certificate's metadata, or None if there is no such certificate.
 
