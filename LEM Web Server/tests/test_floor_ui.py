@@ -47,7 +47,7 @@ def client(gw):
 @pytest.fixture
 def floor(client):
     # The floor moved to /floor when the root became the mode selector.
-    return client.get("/floor").get_data(as_text=True)
+    return client.get("/floor/classic").get_data(as_text=True)
 
 
 @pytest.fixture()

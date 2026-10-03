@@ -141,6 +141,59 @@ MUTATIONS = {
         "pattern": r'out\[idx\] = str\(entry\["error"\]\) if entry\.get\("error"\) else None',
         "replace": "out[idx] = None",
         "what": "per-index batch results ignored (B1 must fail)"},
+    # ── adoption at the first v4 start (owner P4; beyond §15.7's list) ──
+    # Adoption never runs: the first v4 start reads its file from the top,
+    # which is A's prototype (U1: 30 rows and 30 cells again).
+    "adoption_off": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"if self\._adoption_due\(machine, source\):",
+        "replace": "if False:",
+        "what": "no adoption: the first v4 start re-reads the whole file (U1 must fail)"},
+    # B's match: the line keyed on the value the factor makes of it TODAY,
+    # not the raw reading — a factor changed since logging unmatches every
+    # line (U3 must fail).
+    "adoption_on_corrected": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"return AdoptionLine\(offset, part, pk, lab, adoption_key\(lab, values\),",
+        "replace": "return AdoptionLine(offset, part, pk, lab, adoption_key(lab, "
+                   "{k: v for k, v in apply_row_corrections([dict(values)], "
+                   "getattr(machine, 'corrections', None) or {})[0].items() "
+                   "if k not in RESERVED_ROW_KEYS}),",
+        "what": "adoption matches corrected values, not raw (U3 must fail)"},
+    # Round 2's hole: a QC verdict that kept no raw reading matched by a
+    # count per (standard, test), whatever value it judged. Every restart's
+    # replay leaves a spare verdict, so a standard printed during the
+    # upgrade matched one and was lost (U2's QC-downtime world must fail).
+    "adoption_qc_by_count": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"hit = next\(\(v for v in sorted\(self\._candidates\(line, t, raw\)\)",
+        "replace": 'hit = next((v for v in sorted(slot["value"])',
+        "what": "a no-raw QC verdict matched by count, not value (U2 must fail)"},
+    # Round 1's hole: a no-raw verdict logged under a factor that has changed
+    # since may not stand in for its print (no stage B). The standard's print
+    # looks unrecorded: U3's one-test standard is falsely recovered.
+    "adoption_qc_on_value": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"elif miss or not wild or not all\(",
+        "replace": "elif True or miss or not wild or not all(",
+        "what": "a no-raw QC verdict under a since-changed factor never stands in (U3 must fail)"},
+    # Round 3's hole: the bench forgets the factors the record shows were
+    # applied (run rows' detail.corrections) and knows only today's. A QC
+    # standard logged under a factor that has since been removed is then
+    # explained by nothing and falsely recovered (U3's removed/deleted
+    # worlds must fail).
+    "adoption_logged_factors_off": {
+        "kind": "source", "owner": "P4",
+        "pattern": r"self\.logged = dict\(logged or \{\}\)",
+        "replace": "self.logged = {}",
+        "what": "factors applied at logging ignored (U3 removed-factor must fail)"},
+    # A recovered reading stays on the results road like any other: filed
+    # automatically, without the person §10.2 says must decide (U2).
+    "recovered_filed": {
+        "kind": "source", "owner": "P4",
+        "pattern": r'rows = \[r for r in rows if r\.get\(ORIGIN_KEY\) != "recovered"\]',
+        "replace": "rows = list(rows)",
+        "what": "recovered readings auto-filed (U2 must fail)"},
     # A bench whose journal is gone reads its file only once LEM has said
     # where its record ends (P8, `_transfer_blind`). Off, a wiped bench
     # reads its whole file from the top and sends it all again: T4/T4b's
@@ -151,6 +204,77 @@ MUTATIONS = {
                    r"(\s*)return False",
         "replace": r"if True:\n\1return False",
         "what": "blind mode off: a wiped journal re-sends (T4 floods)"},
+    # ── legacy projection (owner T-P5) ──
+    # The exact key's NOT EXISTS removed: a keyed row is a bare INSERT again,
+    # so a lost answer's resend lands twice (L1, M3 must go red).
+    "projection_key_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"\+ _PROJECTION_KEY_SQL\)",
+        "replace": ")",
+        "what": "legacy projection without its NOT EXISTS (L1/M3 dup)"},
+    # `jk` left out of the detail: the key is content only, and the v4
+    # server can no longer link a projected row to its bench record, so a
+    # rollback's rows land in the store twice on the re-upgrade (M5, DG2,
+    # M6r). (L2's twins still both land: one statement never suppresses its
+    # own rows — it is a resend split across statements that would lose one.)
+    "projection_jk_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"row\[6\] = projection_detail\(row\[6\], jk\)",
+        "replace": "row[6] = row[6]",
+        "what": "projected rows carry no jk (M5, DG2, M6r double on re-upgrade)"},
+    # DG2 off: a rollback copies nothing back (DG2 must go red).
+    "dg2_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"if due <= 0:\n(\s*)return 0",
+        "replace": r"if True:\n\1return 0",
+        "what": "a rollback does not copy the last 24 h of QC and status back"},
+    # The queue's once-per-record claim off: a record offered by both the
+    # restart walk and the fall-back is queued twice, and both copies go out
+    # in ONE keyed statement, whose rows do not see each other (DG2C, M5R
+    # must go red: LabCore holds rows twice).
+    "queue_once_off": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"if ref in queued:\n(\s*)return False",
+        "replace": r"if False:\n\1return False",
+        "what": "a record offered twice is queued twice (DG2C/M5R LabCore dup)"},
+    # The journal's bookkeeping back among the projected events: `filed`,
+    # `settled` ... become machine-log rows on a fall-back (M5, DG2, DG2C,
+    # M5R must go red on labcore_bookkeeping_rows).
+    "bookkeeping_projected": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r'"filed", "settled", "conflict", "rejected", "projected", '
+                   r'"adoption"\}\)',
+        "replace": "})",
+        "what": "a fall-back writes filed/settled/... into lem_machine_log"},
+    # A projected row keeps the journal's UTC offset in its `ts` (critic,
+    # T-P5 round 3): v3.9's floor cannot subtract it from now(), and its
+    # status gutter answers 500 (M5, M5R, DG2, DG2C must go red on
+    # v39_floor_status_timeline and labcore_offset_ts_rows).
+    "projection_ts_aware": {
+        "kind": "source", "owner": "T-P5",
+        "pattern": r"return ts\.astimezone\(\)\.replace\(tzinfo=None\)",
+        "replace": "return ts",
+        "what": "a projected log row keeps the journal's UTC offset"},
+    # ── T-P13: what T3 and M4 claim to measure ──
+    # A store restored from a backup answers 409 `cursor` with what it
+    # holds; the bench must adopt that acked and resend from it. Treated as
+    # any other error, the bench holds and retries from its OWN acked
+    # forever — T3 must go red.
+    "cursor_409_ignored": {
+        "kind": "source", "owner": "T-P13",
+        "pattern": r'if ans\.status == 409 and isinstance\(doc\.get\("acked"\), int\):',
+        "replace": "if False:",
+        "what": "a 409 cursor answer (a restored store) is not adopted; no resend"},
+    # Only a 404 means "old server" (§12.2): a 503 is LEM busy, and a v2
+    # bench that fell back on it would write lem_* rows to LabCore — M4
+    # (and N503) must go red.
+    "fallback_on_503": {
+        "kind": "source", "owner": "T-P13",
+        "pattern": r'if ans\.status == 404:\n(\s+)self\._upl_legacy\(t, journal\)\n'
+                   r'(\s+)return\n(\s+)if ans\.status != 200 or not isinstance',
+        "replace": r"if ans.status in (404, 503):\n\1self._upl_legacy(t, journal)\n"
+                   r"\2return\n\3if ans.status != 200 or not isinstance",
+        "what": "a v2 sync answered 503 falls back to legacy projection"},
 }
 
 CODE_DIRS = ("LEM Station Module", "LEM Web Server")

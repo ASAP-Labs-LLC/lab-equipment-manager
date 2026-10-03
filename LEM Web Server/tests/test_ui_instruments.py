@@ -117,6 +117,15 @@ def spec(test, ok, at="2026-10-01T11:23:00", sample="AF26"):
             "expected": 1.5, "last_qc_value": 1.4}
 
 
+def lapsed(test, sample="AF26"):
+    """A check that ran before and has no verdict in the window: "QC due".
+    ``spec(test, None)`` is one that never ran, which §4.1 calls "No verdict
+    yet" (round 5: /qc and /floor gave such a check two words)."""
+    s = spec(test, None, sample=sample)
+    s["last_qc_at"] = "2026-09-20T10:00:00"
+    return s
+
+
 def task(kind, status, name=None):
     return {"uid": "t-" + kind, "kind": kind, "status": status, "name": name or kind.upper(),
             "next_due": "2026-09-01", "reason": ""}
@@ -385,14 +394,13 @@ class TestNeedsYou:
     """
 
     def test_same_cause_merges_into_one_tile(self):
-        """§3.2: OptiMPP 1 and OptiMPP 2, both owed QC, are one tile. Neither
-        has ever run its check, so the tile says §4.1's No verdict yet."""
-        ms = [machine("o1", "OptiMPP 1", specs=[spec("Cloud", None)]),
-              machine("o2", "OptiMPP 2", specs=[spec("Pour", None)])]
+        """§3.2: OptiMPP 1 and OptiMPP 2, both QC due, are one tile."""
+        ms = [machine("o1", "OptiMPP 1", specs=[lapsed("Cloud")]),
+              machine("o2", "OptiMPP 2", specs=[lapsed("Pour")])]
         tiles = build(ms)["needs_you"]["tiles"]
         assert len(tiles) == 1
         t = tiles[0]
-        assert t["cause"] == "No verdict yet"
+        assert t["cause"] == "QC due"
         assert [m["uid"] for m in t["members"]] == ["o1", "o2"]
 
     def test_a_tile_says_the_cause_and_the_next_step_never_the_instruments(self):

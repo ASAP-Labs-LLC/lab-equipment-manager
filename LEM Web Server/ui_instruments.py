@@ -388,12 +388,14 @@ def _problem_words(m: dict, key: str) -> str:
 
 
 def _tile_cause(key: str, members: List[dict]) -> str:
-    """A tile's cause. Owed QC is "No verdict yet" only when every member's
-    checks have never run; one lapsed pass among them makes it "QC due"."""
-    if key == "ok_but-qc":
-        words = {p["words"] for r in members for p in r["problems"] if p["key"] == key}
-        return ui_live.QC_DUE if ui_live.QC_DUE in words or not words else ui_live.NO_VERDICT
-    return ui_live.PROBLEM_WORDS[key]
+    """A tile's cause: what its members have. Owed QC is "QC due", "No
+    verdict yet", or "QC due or no verdict yet" when the tile holds both
+    kinds (one key, one filter; /floor's Needs attention says the same)."""
+    said = sorted({p["words"] for r in members for p in r["problems"] if p["key"] == key},
+                  key=lambda w: (w != ui_live.PROBLEM_WORDS[key], w))
+    if not said:
+        return ui_live.PROBLEM_WORDS[key]
+    return said[0] + "".join(" or " + ui_live._lower_first(w) for w in said[1:])
 
 
 def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: Href) -> dict:
@@ -466,6 +468,12 @@ def needs_you(rows: List[dict]) -> dict:
     for key, members in groups.items():
         members.sort(key=lambda r: (r["title"].lower(), r["uid"]))
         state = key.split("-", 1)[0]
+        # the tile says what its members have: "QC due", "No verdict yet",
+        # or both when it holds both kinds (one key, one filter)
+        said = sorted({p["words"] for r in members for p in r["problems"] if p["key"] == key},
+                      key=lambda w: (w != ui_live.PROBLEM_WORDS[key], w))
+        cause = (said[0] + "".join(" or " + ui_live._lower_first(w) for w in said[1:])) if said \
+            else ui_live.PROBLEM_WORDS[key]
         tiles.append({
             "key": key, "state": state, "glyph": GLYPH[state],
             "cause": _tile_cause(key, members),

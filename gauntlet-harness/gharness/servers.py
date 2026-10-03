@@ -79,7 +79,10 @@ SHARED_TOKEN = "gate-shared-live-token"
 
 
 def bench_uids(world):
-    return [getattr(world, "uid", None) or "b1"]
+    """The benches the imported store knows: the world's one bench, or every
+    bench of a fleet (the soak's 17)."""
+    return list(getattr(world, "uids", None) or
+                [getattr(world, "uid", None) or "b1"])
 
 
 def seed_known_bench(store, uid, title=None):

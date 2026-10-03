@@ -60,17 +60,35 @@ class Ledger:
         return len(self.prints)
 
 
+def _value_key(value):
+    """A reading's value as the tally compares it: a number as the number it
+    is (v3.9 keeps a corrected reading's raw value as a float, so the printed
+    "0.8000" comes back as 0.8), anything else as its text."""
+    text = str(value)
+    try:
+        number = float(text.strip())
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, ".12g")
+
+
 def tally(truth, rows):
     """`rows`: iterable of dicts {lab_id, value, labels (set), hidden (bool)}.
     Hidden rows (marked duplicates the effective view excludes) are not
     stored_effective. Returns lost / dup / labelled_dup / labelled_rows /
     stored / truth."""
+    canon = Counter()
+    for (lab, val), n in truth.items():
+        canon[(str(lab), _value_key(val))] += n
+    truth = canon
     stored = Counter()
     labelled = Counter()
     for r in rows:
         if r.get("hidden"):
             continue
-        k = (str(r["lab_id"]), str(r["value"]))
+        k = (str(r["lab_id"]), _value_key(r["value"]))
         stored[k] += 1
         if AMBIGUOUS in (r.get("labels") or ()):
             labelled[k] += 1

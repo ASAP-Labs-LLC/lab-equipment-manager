@@ -217,17 +217,32 @@ def world(tmp_path, monkeypatch):
     w.m, w.bench, w.lab, w.store, w.roads, w.path, w.labs = \
         m, bench, lab, store, roads, path, labs
     w.n = 0
+    w.app = app
+
+    def settle_now():
+        assert w.bench._uploader_wait_idle(30.0), "the uploader never went idle"
+        up = w.bench._uploader
+        assert up is None or up.errors == 0, up.last_error
 
     def poll(k, prints=1):
         with open(path, "a") as f:
             for _ in range(prints):
                 f.write("%s,0.%04d\n" % (labs[w.n], 8000 + w.n))
                 w.n += 1
-        bench.process_now(T0 + timedelta(seconds=30 * k))
-        settle()
-    w.poll, w.settle = poll, settle
+        w.bench.process_now(T0 + timedelta(seconds=30 * k))
+        settle_now()
+
+    def restart():
+        """LabStation starts the module again: a new process, the same
+        journal folder and the same machine (as it is now)."""
+        machine = m.Machine.from_dict(w.bench.machine().to_dict())
+        w.bench.shutdown()
+        w.bench = qt.make_module()
+        w.bench.set_machine(machine, publish=True)
+        settle_now()
+    w.poll, w.settle, w.restart = poll, settle_now, restart
     yield w
-    bench.shutdown()
+    w.bench.shutdown()
     store.close()
 
 
@@ -288,3 +303,169 @@ class TestAFilingPollInV2:
                 world.bench._send_pulse(T0 + timedelta(seconds=30 * k))
                 world.settle()
         assert world.lab.since(mark) == []
+
+
+# ── Adoption at the first v4 start, through LEM's digest (§10.2) ─────────────
+
+def _legacy(world, lines, corrections=None):
+    """What v3.9 left in LEM's store (imported from LabCore, §10.1) and in
+    LabCore's cells: one row per line, written by the module's own
+    `run_log_events`, which is the shape v3.9 wrote."""
+    m = world.m
+    machine = world.bench.machine()
+    saved = machine.corrections
+    machine.corrections = dict(corrections or {})
+    try:
+        for k, text in enumerate(lines):
+            at = T0 - timedelta(days=1) + timedelta(minutes=k)
+            rows = m.apply_row_corrections(
+                [m.parse_print(machine, text).to_row(at)], machine.corrections)
+            for row, kind, lab, test, value, detail in m.run_log_events(
+                    machine, rows, "analyst", None):
+                res = world.store.sql(
+                    "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                    "test_name, value, detail) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    [UID, at.strftime("%Y-%m-%d %H:%M:%S"), kind, lab, test,
+                     value, json.dumps(detail)])
+                assert "error" not in res, res
+                world.lab.fake.sql("INSERT OR REPLACE INTO sample_tests "
+                                   "(lab_id, test_name, result) VALUES (?, "
+                                   "'Density', ?)", [lab, str(row["Density"])])
+    finally:
+        machine.corrections = saved
+
+
+def _line(world, i, value=None):
+    return "%s,%s" % (world.labs[i], value or "0.%04d" % (8000 + i))
+
+
+class TestAdoptionThroughLEM:
+    def test_U1_U2_one_recovered_row_no_replay_and_no_labcore_read(self, world):
+        """30 lines LEM's record already holds (imported from v3.9) and one
+        printed while LabStation was down for the upgrade. Through LEM's
+        digest: the 30 cost nothing — no new row, no cell — the one is
+        recorded once as `recovered` and not filed, and LabCore is never
+        asked about the bench's history (0 LabCore reads of lem_machine_log;
+        U5's 15-read budget is the legacy road's, not this one's)."""
+        lines = [_line(world, i) for i in range(30)]
+        _legacy(world, lines)
+        with open(world.path, "a") as f:
+            f.write("\n".join(lines + [_line(world, 30)]) + "\n")
+        # The v4 module starts on a record that already holds the import:
+        # LEM answers no v2 request until the import is verified (§10.1), so
+        # the digest the uploader asks for at the bind is the imported record.
+        world.restart()
+        mark = world.lab.mark()
+        for k in range(4):
+            world.poll(k, prints=0)
+        rows = world.store.read_sql(
+            "SELECT lab_id, origin FROM lem_machine_log WHERE machine_uid = ? "
+            "AND kind = 'run' ORDER BY id", [UID])["rows"]
+        assert len(rows) == 31
+        assert rows[-1] == {"lab_id": world.labs[30], "origin": "recovered"}
+        ops = world.lab.since(mark)
+        assert not [op for op in ops if "LEM_MACHINE_LOG" in op[1].upper()], ops
+        assert not [op for op in ops if op[0] == "write"], ops
+        assert world.lab.cell(world.labs[30], "Density") is None
+        assert any(p.endswith("/adoption") for _m, p in world.roads.requests)
+        # §10.2 step 5 through the digest's `recent`: the ledger knows what
+        # v3.9 filed, so a re-run of one of these is LEM's own value to
+        # supersede, not a conflict.
+        journal = world.m.BenchJournal(world.m.journal_dir(UID), UID)
+        assert journal.ledger_value(world.labs[5], "Density") == "0.8005"
+
+    def test_U3_a_factor_changed_since_logging_recovers_nothing(self, world):
+        lines = [_line(world, i) for i in range(30)]
+        _legacy(world, lines, corrections={"Density": 0.01})
+        world.bench.machine().corrections = {"Density": 0.02}
+        with open(world.path, "a") as f:
+            f.write("\n".join(lines) + "\n")
+        # The v4 module starts on a record that already holds the import:
+        # LEM answers no v2 request until the import is verified (§10.1), so
+        # the digest the uploader asks for at the bind is the imported record.
+        world.restart()
+        for k in range(4):
+            world.poll(k, prints=0)
+        assert len(_bench_log_rows(world.store)) == 30
+
+    def test_U3_a_qc_print_under_a_changed_machine_factor_recovers_nothing(
+            self, world):
+        """The same hole on the v2 road: a QC standard logged under a
+        machine-level factor kept no raw; the factor has changed. Through the
+        digest (no-raw verdicts matched on the values they judged, and one
+        logged under a since-changed factor standing in for its own
+        standard's print) no line is recovered — and a row LEM cannot read is named
+        (`unreadable_labs`), so its line is not recovered either."""
+        m = world.m
+        spec = m.TestSpec(name="Density", value_col="Density", expected=0.85,
+                          std_dev=0.05, k=2.0, sample_id="QC-D")
+        machine = world.bench.machine()
+        machine.tests = [spec]
+        lines = [_line(world, i) for i in range(30)] + ["QC-D,0.8500"]
+        # The unreadable row is one of the newest twenty lines', so the fast
+        # path cannot take the file and the full match must name it. (The QC
+        # verdict alone no longer forces the full match: it is explained by
+        # the +0.01 the run rows' detail.corrections show it was logged under.)
+        _legacy(world, lines[:20] + lines[21:], corrections={"Density": 0.01})
+        res = world.store.sql(
+            "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+            "test_name, value, detail) VALUES (?, '2026-09-30 09:00:00', 'run', "
+            "?, '', '', '{not json')", [UID, world.labs[20]])
+        assert "error" not in res, res
+        machine.corrections = {"Density": 0.02}
+        # Today's factor is LEM's configuration (the import copied
+        # lem_correction_factors): the bench judges the record on it, and
+        # LEM's config would set it back to none if only this PC held it.
+        res = world.store.sql("INSERT OR REPLACE INTO lem_correction_factors "
+                              "(machine_uid, test_name, correction) VALUES "
+                              "(?, 'Density', 0.02)", [UID])
+        assert "error" not in res, res
+        world.app.config["SNAPSHOTS"].refresh()
+        with open(world.path, "a") as f:
+            f.write("\n".join(lines) + "\n")
+        # The v4 module starts on a record that already holds the import:
+        # LEM answers no v2 request until the import is verified (§10.1), so
+        # the digest the uploader asks for at the bind is the imported record.
+        world.restart()
+        for k in range(4):
+            world.poll(k, prints=0)
+        journal = m.BenchJournal(m.journal_dir(UID), UID)
+        (rec,) = [r for r in journal._scan() if r["kind"] == "adoption"]
+        assert (rec["road"], rec["recovered"], rec["unreadable"]) == ("lem", 0, 1)
+        assert len(_bench_log_rows(world.store)) == 30     # 29 runs + the unreadable
+
+
+def test_the_module_and_the_server_hash_every_row_alike():
+    """The bench hashes its lines and LEM hashes its rows; one function on
+    two sides of a wire. Every shape of recorded row, through both."""
+    import bench_api
+    m, _qt = _module()
+    rows = [
+        {"kind": "run", "lab_id": "L-1", "test_name": "", "value": "",
+         "detail": {"values": {"Density": "0.8000"}}},
+        {"kind": "run", "lab_id": " L-2 ", "test_name": "", "value": "",
+         "detail": {"values": {"Density": "0.8100", "Sulfur": "12"},
+                    "raw": {"Density": 0.8}, "corrections": {"Density": 0.01}}},
+        {"kind": "qc", "lab_id": "QC-1", "test_name": "Density", "value": "0.81",
+         "detail": {"raw_value": 0.8, "correction": 0.01}},
+        {"kind": "qc", "lab_id": "QC-1", "test_name": "Flash", "value": "41",
+         "detail": {"in_spec": True}},
+        {"kind": "run", "lab_id": "L-3", "test_name": "", "value": "",
+         "detail": {"values": {"Note": " ok ", "Flash": "1e2"}}},
+        # v3.9 under a machine-level factor: a verdict with no raw, as text.
+        {"kind": "qc", "lab_id": "QC-D", "test_name": "Density", "value": "0.86",
+         "detail": json.dumps({"in_spec": True, "operator": None})},
+    ]
+    for r in rows:
+        server = bench_api.adoption_hash(r["lab_id"], bench_api.adoption_raw_values(
+            r["kind"], r["test_name"], r["value"],
+            bench_api._adoption_detail(r["detail"])))
+        assert server == m.legacy_row_adoption_key(r), r
+    # And both sides call the same rows unreadable (no key at all).
+    for detail in ("{not json", "[1, 2]", json.dumps({"no_values": 1}), None):
+        r = {"kind": "run", "lab_id": "L-9", "test_name": "", "value": "",
+             "detail": detail}
+        d = bench_api._adoption_detail(detail)
+        server = None if d is None else bench_api.adoption_raw_values(
+            "run", "", "", d)
+        assert server is None and m.legacy_row_adoption_key(r) is None, detail

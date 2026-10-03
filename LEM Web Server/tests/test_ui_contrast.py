@@ -181,6 +181,17 @@ LEM_PAIRS = [
     ("--st-held", ["--bg-card"], UI, "a held glyph on a card"),
     ("--st-held", ["--bg-card", "--bg-sunken"], UI, "a held glyph on a tile"),
     ("--chart-ink", ["--bg-card"], UI, "chart ink against the card"),
+    # the wall kiosks (piece 13): read from across the room, so every word
+    # on them is held to text contrast, and the QC cards' limit lines (the
+    # band's edges, what a point is judged against) to the 3:1 of a glyph
+    ("--text", ["--bg"], TEXT, "the wall's headline and counts"),
+    ("--text-muted", ["--bg"], TEXT, "the wall's sub-line, count words and footer"),
+    ("--st-error", ["--bg"], TEXT, "the wall's Not OK to run count"),
+    ("--pill-held-fg", ["--bg-card"], TEXT, "OK to run, but... / QC due on a wall bay or card"),
+    ("--st-error", ["--bg-card"], TEXT, "Not OK to run / Out of spec on a wall bay or card"),
+    ("--text-muted", ["--bg-card"], UI, "the QC wall's limit lines"),
+    ("--chart-ink", ["--bg-card"], UI, "the QC wall's points"),
+    ("--st-error", ["--bg-card"], UI, "the QC wall's out-of-spec triangles"),
     # the degraded-data banner (#paused-banner). GC hub draws it in
     # --warn-text on --warn-soft, which is 4.38:1 in light: under AA. LEM's
     # lem.css sets it in --pill-held-fg, the token made for text on that tint.

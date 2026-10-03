@@ -93,6 +93,26 @@ git tag -a v1.2.3 -m "One line saying what changed and why"
 git push origin v1.2.3
 ```
 
+**Transfer v4 (server or module 4.x): the gate first.** CI runs no tests, so
+nothing else stands between a transfer regression and the floor. Before a
+4.x tag (transfer spec §15), every one of these must exit 0. Judge by the exit
+status, never a piped `| tail`:
+
+```bash
+set -o pipefail
+PY="$PWD/LEM Web Server/.venv/bin/python"     # the gate needs Flask
+cd gauntlet-harness
+"$PY" gate.py --target v4;          echo "gate exit=$?"    # every §9 row exact
+"$PY" gate.py --target v4 --mutations --strict; echo "self-test exit=$?"
+"$PY" soak.py;                      echo "soak exit=$?"    # 17 benches, 24 h
+```
+
+Then also run all three existing suites green: web pytest, module pytest
+(`QT_QPA_PLATFORM=offscreen`, the module's own venv), and every
+`tests/js/*.mjs`. Exit 2 from the gate or the soak means the harness itself
+is not trustworthy (drift, a write outside its temp folder, a fault that did
+not fire). It is not a pass and not a verdict. Tagging is still Ryan's call.
+
 Do **not** create a `VERSION` file by hand — CI writes it and it is gitignored.
 
 Confirm CI built it:

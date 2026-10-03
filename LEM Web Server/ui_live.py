@@ -305,8 +305,9 @@ def owed_word(due: list) -> str:
 
 
 def owed_phrase(due: list, names: Callable[[list], str]) -> str:
-    """"QC due on Density", "No verdict yet on Vapour", or both, in one
-    clause: "QC due on Density and no verdict yet on Vapour". `names` turns
+    """"QC due on Density", "No verdict yet on Vapour", or both, each under
+    its own word: "QC due on Density · no verdict yet on Vapour" (the
+    separator the home's and the walls' sentences use). `names` turns
     a list of checks into the page's way of naming them."""
     ran, never = owed_split(due)
     parts = []
@@ -315,7 +316,7 @@ def owed_phrase(due: list, names: Callable[[list], str]) -> str:
     if never:
         w = NO_VERDICT if not parts else NO_VERDICT[:1].lower() + NO_VERDICT[1:]
         parts.append("%s on %s" % (w, names(never)))
-    return " and ".join(parts)
+    return " · ".join(parts)
 
 
 def _overdue(machine: dict, kind: str) -> list:

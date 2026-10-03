@@ -24,8 +24,8 @@ from labcore_gateway import FakeLabCoreGateway
 # over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
 # round, and /checklists/edit is the round editor and /checklists/trends is
 # Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
-PAGES = ["/floor", "/maintenance/classic", "/logs"]
-DESTS = ["/floor", "/checklists", "/maintenance", "/logs"]
+PAGES = ["/floor/classic", "/maintenance/classic", "/logs"]
+DESTS = ["/floor/classic", "/checklists", "/maintenance", "/logs"]
 
 
 class StubAuth:
@@ -106,7 +106,7 @@ class TestNavigation:
         assert 'href="/"' in body(client, path), path
 
     @pytest.mark.parametrize("path,expected", [
-        ("/floor", "/floor"),
+        ("/floor/classic", "/floor/classic"),
         ("/maintenance/classic", "/maintenance"), ("/logs", "/logs")])
     def test_the_current_page_is_marked(self, client, path, expected):
         html = body(client, path)
@@ -155,7 +155,7 @@ class TestNothingIsClipped:
 
     def test_the_floor_separates_page_tools_from_global_chrome(self, client):
         """19 controls in one row was the actual problem."""
-        html = body(client, "/floor")
+        html = body(client, "/floor/classic")
         assert 'class="tools"' in html
 
     def test_the_floor_tools_row_can_scroll_or_wrap(self, client):
@@ -193,7 +193,7 @@ class TestNothingIsClipped:
         """It is the FALLBACK readout for the case where the tool row has
         pushed the picker off-screen — so "GROUND F…" fails on exactly the
         viewport it exists for."""
-        css = style_block(body(client, "/floor"))
+        css = style_block(body(client, "/floor/classic"))
         rule = re.search(r"\.levelmark\{([^}]*)\}", css).group(1)
         assert "text-overflow:ellipsis" not in rule.replace(" ", "")
         assert "clamp(" in rule, "the watermark does not scale with the stage"
@@ -203,7 +203,7 @@ class TestNothingIsClipped:
         """The picker drew a styled chip and the Levels dialog drew the same
         word as bare lowercase text glued to the name — "Ground Floor default",
         which reads as the level's name. One rule, both places."""
-        css = style_block(body(client, "/floor"))
+        css = style_block(body(client, "/floor/classic"))
         m = re.search(r"(?<![\w.\[])\.dflt\{([^}]*)\}", css)
         assert m, "`.dflt` is not styled at all outside the picker row"
         rule = m.group(1).replace(" ", "")
@@ -241,19 +241,19 @@ class TestFloorWidth:
 
     def test_the_rails_are_narrower_than_before(self, client):
         """The rail cost 612px of a 1366px laptop; the map is the page."""
-        css = style_block(body(client, "/floor"))
+        css = style_block(body(client, "/floor/classic"))
         assert self._rail_cost(css, 1366) <= 560, "rails still cost too much"
 
     def test_the_rails_do_not_take_the_floor_on_a_wide_screen(self, client):
         """A ceiling as well as a floor: a 1920px screen spends the extra
         width on the plan, not on two columns of whitespace."""
-        css = style_block(body(client, "/floor"))
+        css = style_block(body(client, "/floor/classic"))
         assert self._rail_cost(css, 1920) <= 700
 
     def test_the_record_rail_can_hold_a_corrective_action(self, client):
         """It was 248px, and a corrective action's title, three badges, an
         owner and two dates could not fit in it — dates broke mid-token."""
-        css = style_block(body(client, "/floor"))
+        css = style_block(body(client, "/floor/classic"))
         m = re.search(r"\.shell\{[^}]*grid-template-columns:\s*([^;}]+)", css)
         first = re.search(r"clamp\(([^,]+),", m.group(1))
         assert first, "the record rail is not fluid"

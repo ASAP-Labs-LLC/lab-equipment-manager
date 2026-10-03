@@ -38,7 +38,7 @@ from web_app import create_app
 # over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
 # round, and /checklists/edit is the round editor and /checklists/trends is
 # Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
-PAGES = ("/floor", "/maintenance/classic", "/logs")
+PAGES = ("/floor/classic", "/maintenance/classic", "/logs")
 
 
 @pytest.fixture
@@ -73,21 +73,21 @@ class TestTheVersionIsOnThePage:
 
     def test_it_is_the_same_string_healthz_reports(self, client):
         health = client.get("/healthz").get_json()["version"]
-        text = self._stamp(client.get("/floor").get_data(as_text=True))
+        text = self._stamp(client.get("/floor/classic").get_data(as_text=True))
         assert text and health in text
         assert health == web_app.APP_VERSION
 
     def test_a_checkout_says_dev_rather_than_nothing(self, client):
         """A blank corner reads as "no version", not as "not a release"."""
         assert web_app.APP_VERSION
-        body = client.get("/floor").get_data(as_text=True)
+        body = client.get("/floor/classic").get_data(as_text=True)
         assert re.search(r'class="[^"]*verstamp', body), (
             "the stamp element is not on the page")
 
     def test_it_names_itself_for_someone_reading_it_aloud(self, client):
         """"3.1.0" alone in a corner is a number nobody can act on. It has to
         say what it is the version OF."""
-        body = client.get("/floor").get_data(as_text=True)
+        body = client.get("/floor/classic").get_data(as_text=True)
         text = self._stamp(body)
         assert text, "no stamp element"
         assert "LEM" in text or "version" in text.lower(), text.strip()[:80]
@@ -109,6 +109,6 @@ class TestItReflectsWhatIsActuallyRunning:
     def test_the_stamp_is_not_a_link_or_a_control(self, client):
         """It reports; it does not do anything. A clickable version in the
         corner of a wall display is a thing somebody leans on by accident."""
-        body = client.get("/floor").get_data(as_text=True)
+        body = client.get("/floor/classic").get_data(as_text=True)
         stamp = re.search(r'<(\w+)[^>]*verstamp', body)
         assert stamp and stamp.group(1).lower() not in ("a", "button")

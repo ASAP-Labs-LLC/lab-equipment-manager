@@ -70,9 +70,10 @@ def test_mutation_t0_turns_every_tallied_scenario_red(tmp_path, v39):
     rc, out, _ = run_gate(tmp_path, "--target", "v3.9", "--mutation", "T0")
     tallied = {s for s, r in v39[1]["scenarios"].items()
                if "lost" in (r.get("measured") or {})}
-    # 47 of §9, plus F1L and N2L (the legacy-road replays added with P8)
-    # and the harness's A1j (P3).
-    assert len(tallied) == 50
+    # 47 of §9, plus F1L and N2L (the legacy-road replays added with P8),
+    # the harness's A1j (P3), and K6L and A1L (the legacy-road replays added
+    # with T-P5).
+    assert len(tallied) == 52
     assert set(out["drifted"]) == tallied
     assert rc == 2          # drift: the harness no longer reproduces today
 
@@ -81,3 +82,19 @@ def test_a_v4_only_scenario_never_passes_by_default(v39):
     for sid in ("T4", "U1", "M1", "K1b"):
         r = v39[1]["scenarios"][sid]
         assert r["status"] != "ran" and r["v4_fail"], sid
+
+
+def test_v4_exits_0_with_every_section_9_row_held(tmp_path):
+    """The verdict on this worktree (T-P13): the v3.9 drift check first, then
+    every scenario — the 29 baseline, every new one, M1–M6, W1–W4 — holds
+    its v4 row exactly. M1 is fed the drift run's own results (one v3.9 run
+    per invocation), and says how many baseline rows it reproduced."""
+    rc, out, took = run_gate(tmp_path, "--target", "v4")
+    assert out["harness_errors"] == [] and out["violations"] == []
+    assert out["v4_failed"] == [], out["v4_failed"]
+    assert rc == 0
+    assert len(out["scenarios"]) == 92
+    assert all(r["status"] == "ran" for r in out["scenarios"].values())
+    m1 = out["scenarios"]["M1"]["measured"]
+    assert (m1["baseline_reproduced"], m1["web_reproduced"]) == (29, 4)
+    assert took < 90

@@ -273,3 +273,53 @@ def test_a_subprocess_whose_status_contradicts_its_results_is_exit_2(monkeypatch
                     "--tmp", str(tmp_path)])
     assert rc == 2
     assert "exited 0 but its results imply 1" in capsys.readouterr().out
+
+
+P4_SOURCE = ["adoption_off", "adoption_on_corrected", "recovered_filed",
+             "adoption_qc_on_value", "adoption_qc_by_count",
+             "adoption_logged_factors_off"]
+
+
+@pytest.mark.parametrize("name", P4_SOURCE)
+def test_each_p4_pattern_matches_exactly_once_here_and_never_in_v390(name):
+    """P4's mutations name adoption code: once in this worktree (so the
+    self-test can break it), nowhere in v3.9.0 (so they are UNAVAILABLE
+    there, not silently killed by something else)."""
+    rx = re.compile(MU.MUTATIONS[name]["pattern"])
+    rel = "LEM Station Module/lem_station_module.py"
+    with open(os.path.join(WORKTREE, rel), encoding="utf-8") as f:
+        assert len(rx.findall(f.read())) == 1
+    assert rx.findall(_v390_source(rel)) == []
+
+
+T_P5_SOURCE = ["projection_key_off", "projection_jk_off", "dg2_off",
+               "queue_once_off", "bookkeeping_projected",
+               "projection_ts_aware"]
+
+
+@pytest.mark.parametrize("name", T_P5_SOURCE)
+def test_each_t_p5_pattern_matches_exactly_once_here_and_never_in_v390(name):
+    """T-P5's mutations name the legacy projection: once in this worktree,
+    nowhere in v3.9.0 (which has no projection to break)."""
+    rx = re.compile(MU.MUTATIONS[name]["pattern"])
+    rel = "LEM Station Module/lem_station_module.py"
+    with open(os.path.join(WORKTREE, rel), encoding="utf-8") as f:
+        assert len(rx.findall(f.read())) == 1
+    assert rx.findall(_v390_source(rel)) == []
+
+
+T_P13_SOURCE = ["cursor_409_ignored", "fallback_on_503"]
+
+
+@pytest.mark.parametrize("name", T_P13_SOURCE)
+def test_each_t_p13_pattern_matches_exactly_once_here_and_never_in_v390(name):
+    """T-P13's mutations break what T3 and M4 claim to measure — the bench
+    resending from the server's acked after a 409 cursor (a restored store),
+    and a v2 bench falling back to LabCore ONLY on a 404 (§12.2) — so those
+    two rows are shown able to go red. Once in this worktree, nowhere in
+    v3.9.0 (which speaks no v2)."""
+    rx = re.compile(MU.MUTATIONS[name]["pattern"])
+    rel = "LEM Station Module/lem_station_module.py"
+    with open(os.path.join(WORKTREE, rel), encoding="utf-8") as f:
+        assert len(rx.findall(f.read())) == 1
+    assert rx.findall(_v390_source(rel)) == []

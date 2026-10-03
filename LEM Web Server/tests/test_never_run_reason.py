@@ -19,7 +19,7 @@ record card's sentence, the "…too" tail behind another verdict, the
 problem's words, the home's Needs-you tile and the bell.
 
 A check that ran before and one that never ran, on the same instrument, are
-said apart in one sentence: "QC due on Density and no verdict yet on Vapour".
+said apart in one sentence: "QC due on Density · no verdict yet on Vapour".
 
 The second nit of that round: GC-2's card acts in place ("Mark the
 calibration done…"), but the Maintenance section under it still said "use
@@ -62,7 +62,7 @@ class TestTheReasonSaysWhichKindOfOwed:
         m = machine("d", specs=[spec("Density", True, at=AGED), spec("Vapour", None)])
         assert ui_live.readiness(m)["reason"] == "QC due: Density, Vapour"
         r = _row([m], "d")
-        assert r["readiness"]["detail"] == "QC due on Density and no verdict yet on Vapour"
+        assert r["readiness"]["detail"] == "QC due on Density · no verdict yet on Vapour"
 
 
 class TestTheListRowSaysIt:
@@ -88,11 +88,14 @@ class TestTheHomeTileAndBellSayIt:
         assert (t["key"], t["cause"]) == ("ok_but-qc", "No verdict yet")
         assert t["next"]["text"] == "Run the QC standard"
 
-    def test_a_tile_with_any_aged_pass_says_qc_due(self):
+    def test_a_tile_holding_both_kinds_says_both(self):
+        """One key, one filter, two kinds of member: the tile names both
+        words, the lapsed one first, as /floor's Needs attention does. A tile
+        that said only "QC due" would call Vapour's never-run check a lapse."""
         ms = [machine("k", specs=[spec("Vapour", None)]),
               machine("d", specs=[spec("Density", True, at=AGED)])]
         (t,) = build(ms)["needs_you"]["tiles"]
-        assert t["cause"] == "QC due"
+        assert t["cause"] == "QC due or no verdict yet"
 
 
 class TestTheDevSeedSaysOneWord:

@@ -596,6 +596,10 @@ def make_world(lh, rf, mod, GateGateway, server_factory=None):
                 "uploader_errors": getattr(getattr(self.m, "_uploader", None),
                                            "errors", None),
                 "max_sends_per_cell": max(gw.cell_sends.values()) if gw.cell_sends else 0,
+                # cell_dup_sends counted only where the batch REACHED LabCore:
+                # a batch killed before it executed is not a send LabCore saw.
+                "cell_dup_received": sum(max(0, n - 1) for n in
+                                         getattr(gw, "cell_received", {}).values()),
                 # Re-read prints the journal's store check dropped (v4). None
                 # on a target with no journal: "nothing suppressed" and "cannot
                 # suppress" are different sentences.

@@ -1,0 +1,43 @@
+{#- The wall frame (ia-final §3.8): /floor, /qc and /wall hang on TVs that
+    nobody stands at, signs in on or touches. So, unlike _layout.html, there
+    is no sidebar, top bar, sign-in sheet, user chip, bell or toast: none of
+    them can be used on a wall, and each would be one more thing on a screen
+    read from across the room.
+
+    What it keeps from the app frame: the same tokens and the shell.js theme
+    (System / Light / Dark, plus a ?theme= pin that wall_boot.js reads before
+    first paint), the live client (live.js, GETs only), a way home (the mark,
+    with the visible words "LEM ›") and #app-version bottom-right, the same
+    string /healthz reports. No inline script: page code is in static/js,
+    and the first paint's data rides in a JSON island. -#}
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Wall{% endblock %} · LEM</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ v('favicon.svg') }}">
+  <script src="/static/js/wall_boot.js?v={{ v('js/wall_boot.js') }}"></script>
+  <script src="/static/js/ui_logic.js?v={{ v('js/ui_logic.js') }}"></script>
+  <script src="/static/js/shell.js?v={{ v('js/shell.js') }}"></script>
+  <link rel="stylesheet" href="/static/css/tokens.css?v={{ v('css/tokens.css') }}">
+  <link rel="stylesheet" href="/static/css/shell.css?v={{ v('css/shell.css') }}">
+  <link rel="stylesheet" href="/static/css/badge.css?v={{ v('css/badge.css') }}">
+  <link rel="stylesheet" href="/static/css/lem.css?v={{ v('css/lem.css') }}">
+</head>
+<body class="gc lem wall-body" data-wall="{{ kind }}">
+  <main class="wall" id="main">
+    {#- one or more views (_wall_floor_view.html, _wall_qc_view.html); each
+        carries its own head with the mark, so /wall can alternate them -#}
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="/static/js/live.js?v={{ v('js/live.js') }}"></script>
+  <script src="/static/js/wall_logic.js?v={{ v('js/wall_logic.js') }}"></script>
+  {% block scripts %}{% endblock %}
+
+  {#- Which build is running, bottom-right: the string /healthz reports. -#}
+  <div id="app-version" aria-hidden="true">{{ app_version() }}</div>
+</body>
+</html>

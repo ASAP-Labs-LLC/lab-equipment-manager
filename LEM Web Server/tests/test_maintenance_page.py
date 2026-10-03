@@ -126,7 +126,7 @@ class TestThePage:
         assert 'href="/maintenance/classic"' in client.get("/").get_data(as_text=True)
 
     def test_it_is_reachable_from_the_floor(self, client):
-        assert 'href="/maintenance"' in client.get("/floor").get_data(as_text=True)
+        assert 'href="/maintenance"' in client.get("/floor/classic").get_data(as_text=True)
 
     def test_it_can_get_back(self, page):
         assert 'href="/"' in page

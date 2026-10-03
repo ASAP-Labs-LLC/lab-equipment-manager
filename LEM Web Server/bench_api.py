@@ -59,7 +59,7 @@ import secrets
 import threading
 import time
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from live_presence import ELLIPSIS, FLOOR_FIELD_BYTES, clip_text
@@ -141,17 +141,221 @@ def chain(previous_hex: str, raw: bytes) -> str:
     return hashlib.sha256(bytes.fromhex(previous_hex) + raw).hexdigest()
 
 
+def adoption_value(value) -> str:
+    """One measurement as the adoption key spells it — byte-identical to
+    `lem_station_module.adoption_value`: a number in one canonical form
+    (format(float, '.12g')), anything else stripped text. The file says
+    "0.8000" and a corrected row's `detail.raw` holds the float 0.8; they are
+    one reading."""
+    if isinstance(value, bool):
+        return str(value)
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, ".12g")
+
+
 def adoption_hash(lab_id: str, raw_values: dict) -> str:
     """§10.2's H(lab_id, raw): what a bench hashes for each line after its
-    adoption boundary, and what the server hashes for each recorded row."""
-    return hashlib.sha256(canonical([str(lab_id or ""), raw_values or {}])
-                          ).hexdigest()[:32]
+    adoption boundary, and what the server hashes for each recorded row.
+    Identical to `lem_station_module.adoption_key`."""
+    canon = {str(k): adoption_value(v) for k, v in (raw_values or {}).items()}
+    body = json.dumps([str(lab_id or "").strip(), canon], sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
 
 
-ADOPTION_RECIPE = ("sha256(canonical([lab_id, raw]))[:32]; raw = detail.raw "
-                   "when a correction applied, else detail.values, for a run "
-                   "row; {test_name: str(detail.raw or value)} for a qc row; "
+#: What a qc verdict row that kept no raw reading is keyed on in place of a
+#: value — the module's `ADOPTION_NO_RAW`, byte for byte.
+ADOPTION_NO_RAW = "(no raw)"
+
+
+def _adoption_detail(detail):
+    """A row's detail as a dict, {} when it has none, None when it cannot be
+    read — the module's `_detail_dict`, so both sides call the same rows
+    unreadable."""
+    if isinstance(detail, dict):
+        return detail
+    if detail in (None, ""):
+        return {}
+    try:
+        out = json.loads(detail)
+    except (TypeError, ValueError):
+        return None
+    return out if isinstance(out, dict) else None
+
+
+def adoption_raw_values(kind: str, test_name: str, value, detail: dict):
+    """The raw reading a recorded row was made from (as the module's
+    `legacy_row_raw_values`), or None when the row cannot say. run: `values`
+    with `raw` laid over them (raw holds only the corrected tests); qc: the
+    one test at `raw_value` (spec-corrected) or `raw`, else ADOPTION_NO_RAW."""
+    if kind == "run":
+        values = detail.get("values")
+        if not isinstance(values, dict):
+            return None
+        out = dict(values)
+        raw = detail.get("raw")
+        if isinstance(raw, dict):
+            out.update(raw)
+        return out
+    if kind == "qc":
+        if not test_name:
+            return None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test_name)
+            if raw not in (None, ""):
+                return {test_name: raw}
+        # No raw kept (v3.9 under a machine-level factor): the value is a
+        # corrected number, no key to the reading. Matched by count.
+        return {test_name: ADOPTION_NO_RAW}
+    return None
+
+
+def _qc_number_text(value) -> str:
+    """A verdict's `value` as v3.9 spelled it (f"{value:g}") — the module's
+    `qc_verdict_value`."""
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, "g")
+
+
+def adoption_qc_verdicts(rows) -> dict:
+    """The recorded qc verdicts, as the module's `qc_verdict_record` builds
+    them from LabCore's rows: {Lab ID: {test: {"raw": {raw: n}, "value":
+    {value: n}}}}. "raw" holds the verdicts that kept their raw reading (a spec
+    correction). "value" holds the ones that did not, by the value they
+    judged: the raw reading, or the reading plus the factor of the day. The
+    bench matches its file against those values. A count alone cannot tell a
+    replayed verdict from a new print."""
+    out: Dict[str, dict] = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "qc":
+            continue
+        detail = _adoption_detail(r.get("detail"))
+        test = str(r.get("test_name") or "")
+        if not isinstance(detail, dict) or not test:
+            continue
+        slot = out.setdefault(str(r.get("lab_id") or "").strip(), {}) \
+            .setdefault(test, {"raw": {}, "value": {}})
+        raw = None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test)
+            if raw not in (None, ""):
+                break
+            raw = None
+        if raw is not None:
+            k, side = adoption_value(raw), slot["raw"]
+        else:
+            k, side = _qc_number_text(r.get("value")), slot["value"]
+        side[k] = side.get(k, 0) + 1
+    return out
+
+
+def adoption_logged_factors(rows) -> dict:
+    """The machine-level factors the record shows were applied when it was
+    written: {column: sorted distinct non-zero offsets}, from the `run`
+    rows' `detail.corrections` (the offset v3.9 actually added). A QC
+    verdict that kept no raw reading is the reading plus the factor of the
+    day it was logged; with these the bench can explain it even after that
+    factor was removed or changed. Identical to the module's
+    `logged_factors`."""
+    seen: Dict[str, set] = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "run":
+            continue
+        detail = _adoption_detail(r.get("detail"))
+        applied = (detail or {}).get("corrections")
+        if not isinstance(applied, dict):
+            continue
+        for col, off in applied.items():
+            if isinstance(off, bool):
+                continue
+            try:
+                n = float(str(off).strip())
+            except (TypeError, ValueError):
+                continue
+            if n == 0 or math.isnan(n) or math.isinf(n):
+                continue
+            seen.setdefault(str(col), set()).add(n)
+    return {col: sorted(offs) for col, offs in seen.items()}
+
+
+def adoption_digest(rows, now: datetime) -> dict:
+    """§10.2's answer over a bench's recorded run/qc rows (pure, so the
+    floor rehearsal runs the very code the endpoint does):
+
+      counts           the multiset of H(lab_id, raw);
+      unreadable_labs  Lab IDs with a row whose detail cannot be read — not
+                       "no row": the bench never recovers their lines;
+      qc_tests         Lab ID -> the tests it holds qc verdicts of;
+      qc_verdicts      what each of those verdicts judged
+                       (`adoption_qc_verdicts`), so a QC print matches its
+                       own verdicts whatever today's QC assignment is;
+      factors          the factors the record applied when it was logged
+                       (`adoption_logged_factors`), so a verdict made under
+                       a factor removed since still explains its print;
+      first_ts         when LEM first recorded a reading from the bench;
+      recent           run rows of the last ADOPTION_LEDGER_DAYS with the
+                       values v3.9 FILED, for the results guard's ledger."""
+    counts: Dict[str, int] = {}
+    unreadable = set()
+    qc_tests: Dict[str, set] = {}
+    recent: List[dict] = []
+    first: Optional[str] = None
+    since = (now - timedelta(days=ADOPTION_LEDGER_DAYS)).strftime(
+        "%Y-%m-%d %H:%M:%S")
+    for r in rows:
+        ts = str(r.get("ts") or "")
+        # v3.9 wrote "YYYY-MM-DD HH:MM:SS", v4 ISO: compared as one.
+        if ts and (first is None or ts.replace("T", " ")[:19]
+                   < first.replace("T", " ")[:19]):
+            first = ts
+        detail = _adoption_detail(r.get("detail"))
+        kind = str(r.get("kind") or "")
+        lab = str(r.get("lab_id") or "").strip()
+        raw = adoption_raw_values(kind, str(r.get("test_name") or ""),
+                                  r.get("value"), detail) \
+            if isinstance(detail, dict) else None
+        if raw is None:
+            unreadable.add(lab)
+            continue
+        h = adoption_hash(r.get("lab_id"), raw)
+        counts[h] = counts.get(h, 0) + 1
+        if kind == "qc":
+            qc_tests.setdefault(lab, set()).add(str(r.get("test_name") or ""))
+        if kind == "run" and ts.replace("T", " ")[:19] >= since \
+                and isinstance(detail.get("values"), dict):
+            recent.append({"h": h, "lab_id": r.get("lab_id"),
+                           "values": detail["values"], "ts": ts})
+    return {"rows": len(rows), "counts": counts,
+            "unreadable_labs": sorted(unreadable),
+            "qc_tests": {k: sorted(v) for k, v in qc_tests.items()},
+            "qc_verdicts": adoption_qc_verdicts(rows),
+            "factors": adoption_logged_factors(rows),
+            "first_ts": first, "recent": recent}
+
+
+ADOPTION_RECIPE = ("sha256(canonical([lab_id, {test: v}]))[:32]; v a number "
+                   "-> format(float, '.12g'), else stripped text; run row: "
+                   "detail.values with detail.raw laid over them; qc row: "
+                   "{test_name: detail.raw_value or detail.raw or '(no raw)'}; "
                    "canonical = JSON, sorted keys, ',' ':' separators, UTF-8")
+#: §10.2 step 5: the bench seeds its results ledger from matched rows this recent.
+ADOPTION_LEDGER_DAYS = 30
 
 
 def token_hash(token: str) -> str:
@@ -1266,29 +1470,16 @@ def register(app, store, *, snapshots, live, registry: BenchRegistry,
             _hold()
             _bench_auth(uid)
             res = store.read_sql(
-                "SELECT kind, lab_id, test_name, value, detail FROM "
+                "SELECT ts, kind, lab_id, test_name, value, detail FROM "
                 "lem_machine_log_effective WHERE machine_uid = ? AND kind IN "
                 "('run', 'qc')", [uid])
             if not isinstance(res, dict) or res.get("error") or "rows" not in res:
                 raise StoreFailed(res)
-            counts: Dict[str, int] = {}
-            for r in res["rows"]:
-                detail = _json_or(r.get("detail"), {})
-                if r.get("kind") == "run":
-                    raw = detail.get("raw") if detail.get("raw") else \
-                        detail.get("values") or {}
-                else:
-                    raw_value = detail.get("raw")
-                    raw = {str(r.get("test_name") or ""):
-                           str(raw_value if raw_value not in (None, "")
-                               else r.get("value") or "")}
-                h = adoption_hash(r.get("lab_id"), raw)
-                counts[h] = counts.get(h, 0) + 1
-            return _gz(jsonify({"machine_uid": uid,
-                                "src": request.args.get("src", ""),
-                                "boundary": request.args.get("boundary", ""),
-                                "recipe": ADOPTION_RECIPE,
-                                "rows": len(res["rows"]), "counts": counts}))
+            digest = adoption_digest(res["rows"], datetime.now())
+            return _gz(jsonify(dict(digest, machine_uid=uid,
+                                    src=request.args.get("src", ""),
+                                    boundary=request.args.get("boundary", ""),
+                                    recipe=ADOPTION_RECIPE)))
         except BenchRefusal as exc:
             return _refused(exc)
         except StoreFailed as exc:

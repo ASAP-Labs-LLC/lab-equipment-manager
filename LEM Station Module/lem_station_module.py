@@ -39,11 +39,11 @@ import urllib.parse
 import urllib.request
 import uuid
 import zlib
-from collections import OrderedDict, deque
-from dataclasses import dataclass, field
+from collections import Counter, OrderedDict, deque
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, NamedTuple, Optional
 
 STATUS_GREEN = "GREEN"
 STATUS_YELLOW = "YELLOW"
@@ -727,6 +727,9 @@ class BenchJournal:
         self.recovery_done = False        # the module's re-delivery has run
         self.pause_files = False          # disk policy: file ingest paused
         self._known: set = set()
+        # {src: the `adoption` record} — §10.2's first-start adoption, once per
+        # journal, recorded per source it adopted.
+        self.adoptions: Dict[str, dict] = {}
         # {(lab_id, test): the value LEM last filed there} — the ledger `L` of
         # the results guard, rebuilt from `filed` records (and ledger.idx for
         # pruned ones), never from memory alone.
@@ -823,10 +826,14 @@ class BenchJournal:
         if status == "ok":
             self._meta = meta
         elif status == "missing":
+            # A journal born now is this bench's first v4 start: its file
+            # sources adopt what the record already holds before they read
+            # (§10.2). A journal that predates adoption never does — it has a
+            # cursor of its own.
             self._meta = {"epoch": secrets.token_hex(8), "acked": 0,
                           "durable": 0, "created": _local_ts(),
                           "module": MODULE_VERSION, "last_v2_handshake": None,
-                          "uid": self.uid}
+                          "uid": self.uid, "adoption": "due"}
             if last_epoch is None:
                 # Nothing on disk at all. Until LEM has been asked what it
                 # already holds for this bench (§6.5), the file sources must
@@ -951,6 +958,84 @@ class BenchJournal:
         with self._lock:
             return self.ledger.get((str(lab_id), str(test)))
 
+    # ── adoption (§10.2) ─────────────────────────────────────────────────────
+
+    def adoption_due(self) -> bool:
+        """Is this the first v4 start, with nothing adopted yet? True only for
+        a journal created by v4 (meta "adoption": "due") that holds no
+        `adoption` record and whose meta names none."""
+        with self._lock:
+            return (self._meta.get("adoption") == "due" and not self.adoptions
+                    and not self._meta.get("adopted"))
+
+    def adopted(self, src: str) -> Optional[dict]:
+        with self._lock:
+            return self.adoptions.get(src) or \
+                (self._meta.get("adopted") or {}).get(src)
+
+    def add_known(self, keys) -> int:
+        """Make lines the record already holds part of the seen-set, durably
+        (known.idx, fsync'd), so neither a lost cursor nor a re-read can ever
+        journal them. Written BEFORE the `adoption` record: a kill between the
+        two re-adopts, and the keys are the same keys."""
+        keys = [str(k) for k in keys or () if k]
+        with self._lock:
+            new = [k for k in keys if k not in self._known]
+            if not new:
+                return 0
+            path = os.path.join(self.dir, JOURNAL_KNOWN_NAME)
+            try:
+                with open(path, "ab") as f:
+                    f.write("".join(k + "\n" for k in new).encode("utf-8"))
+                    f.flush()
+                    self._fsync(f.fileno())
+            except OSError as exc:
+                raise JournalError(f"cannot write {path}: {exc}") from exc
+            self._known.update(new)
+            return len(new)
+
+    def seed_ledger(self, cells) -> int:
+        """§10.2 step 5: `L` from the legacy rows adoption matched, so a later
+        re-run of a cell v3.9 filed is LEM superseding its own value, not a
+        conflict. Into ledger.idx, which loads BEFORE the segments: anything
+        LEM files afterwards is a `filed` record and wins."""
+        cells = [[str(c[0]), str(c[1]), str(c[2])] for c in cells or ()
+                 if c and len(c) >= 3 and c[0] and c[1]]
+        if not cells:
+            return 0
+        with self._lock:
+            path = os.path.join(self.dir, JOURNAL_LEDGER_NAME)
+            try:
+                with open(path, "ab") as f:
+                    f.write("".join(json.dumps(c) + "\n" for c in cells
+                                    ).encode("utf-8"))
+                    f.flush()
+                    self._fsync(f.fileno())
+            except OSError as exc:
+                raise JournalError(f"cannot write {path}: {exc}") from exc
+            for lab, test, value in cells:
+                self.ledger[(lab, test)] = value
+            return len(cells)
+
+    def mark_adopted(self, src: str, summary: dict) -> None:
+        """Adoption of `src` is complete (its record is journaled and its
+        cursor saved). Kept in journal.meta as well, so pruning the segment
+        that held the record never makes a bench adopt twice."""
+        with self._lock:
+            adopted = dict(self._meta.get("adopted") or {})
+            adopted[str(src)] = dict(summary or {})
+            self._meta["adopted"] = adopted
+            self._meta["adoption"] = "done"
+            self._write_meta()
+
+    def adoption_not_needed(self, why: str) -> None:
+        """A bench whose first v4 start reads no file (serial, manual,
+        multi_csv — whose folder IS the queue) has nothing to adopt."""
+        with self._lock:
+            if self._meta.get("adoption") == "due":
+                self._meta["adoption"] = "not_needed:" + str(why)
+                self._write_meta()
+
     def _apply(self, body: dict, seg: dict) -> None:
         kind = body.get("kind")
         ref = f"{body['epoch']}:{body['seq']}"
@@ -972,6 +1057,9 @@ class BenchJournal:
             return
         if kind == "rejected":
             self.rejected[ref] = body
+            return
+        if kind == "adoption":
+            self.adoptions[str(body.get("src") or "")] = body
             return
         if kind == "frame":
             self._frames[str(body.get("pk"))] = (str(body.get("text") or ""),
@@ -1107,12 +1195,14 @@ class BenchJournal:
     def mark_settled(self, refs) -> List[str]:
         return self._mark("settled", refs)
 
-    def settle_with(self, records: List[dict], refs) -> List[str]:
+    def settle_with(self, records: List[dict], refs,
+                    record_refs: Optional[list] = None) -> List[str]:
         """Append the results road's decisions (`filed`, `conflict`,
         `rejected`, `given_up`) and the `settled` mark of the readings they
         finish, in ONE fsync'd write: a kill can never leave a reading settled
         without the record of what became of it, nor the other way round.
-        Returns the refs marked settled."""
+        Returns the refs marked settled; `record_refs`, when given, receives
+        the refs the decisions themselves were journaled under, in order."""
         with self._lock:
             todo = []
             for ref in refs or ():
@@ -1123,7 +1213,9 @@ class BenchJournal:
             if todo:
                 out.append({"kind": "settled", "of": todo})
             if out:
-                self.append(out)
+                got = self.append(out)
+                if record_refs is not None:
+                    record_refs.extend(got[:len(records or ())])
             return todo
 
     def holds_run(self, ref) -> bool:
@@ -1628,8 +1720,42 @@ class _LogEntry(tuple):
     ref = None
 
 
+def _log_wall_time(ts: datetime) -> datetime:
+    """A machine-log row's time as v3.9 writes it: naive LOCAL wall time.
+
+    The journal stamps records with their UTC offset (§3.2), and a projected
+    row is built from that stamp. v3.9 never put an offset in
+    lem_machine_log.ts, and its floor subtracts every row's time from a naive
+    `datetime.now()` (`qc_is_stale`, under the status gutter): one aware row in
+    the window and /status-timeline answers 500 with "can't subtract
+    offset-naive and offset-aware datetimes" (critic, T-P5 round 3: the
+    status_change rows DG2 copies back after a rollback). The same instant, in
+    the bench's local time, without the offset — deterministic on a bench, so
+    a row re-sent through the exact key carries the same `ts` both times."""
+    if ts.tzinfo is None:
+        return ts
+    try:
+        return ts.astimezone().replace(tzinfo=None)
+    except (ValueError, OSError, OverflowError):
+        return ts.replace(tzinfo=None)
+
+
+def _log_row_ts(args: list) -> list:
+    """`args` with its `ts` (index 1) in v3.9's shape — for rows stored in a
+    journal record's `log`, which every road re-sends as written."""
+    try:
+        at = datetime.fromisoformat(str(args[1]))
+    except (TypeError, ValueError, IndexError):
+        return args
+    if at.tzinfo is None:
+        return args
+    out = list(args)
+    out[1] = _log_wall_time(at).isoformat()
+    return out
+
+
 def _log_entry(args: list, ref: Optional[str]) -> "_LogEntry":
-    entry = _LogEntry((LOG_INSERT_SQL, list(args)))
+    entry = _LogEntry((LOG_INSERT_SQL, _log_row_ts(list(args))))
     entry.ref = ref
     return entry
 
@@ -1656,7 +1782,7 @@ def build_log_insert(machine_uid: str, kind: str, ts: datetime,
     name = str(test_name or "")
     if not name.strip():
         name = ""
-    args = [machine_uid, ts.isoformat(), kind, lab_id, name,
+    args = [machine_uid, _log_wall_time(ts).isoformat(), kind, lab_id, name,
             str(value), json.dumps(detail or {})]
     return sql, args
 
@@ -1738,6 +1864,110 @@ def build_log_batch(records: List[list]) -> tuple:
     for record in records:
         args.extend(record)
     return sql, args
+
+
+# ── Legacy projection: the exact key (transfer v4 §7, §10.3) ─────────────────
+#
+# A v4 bench on today's v3.9 server still writes LabCore's machine log — on
+# that floor it is the only record anybody reads. What it no longer does is
+# write it with a bare INSERT. A bare INSERT cannot be sent twice, and the
+# legacy road sends twice whenever an answer is lost: LabCore stored the rows,
+# the timeout reached the bench, the bench put the rows back on its queue and
+# the next poll stored them again (N3, gate L1: 3 duplicate rows).
+#
+# Every row now names the journal record it projects — `detail.jk =
+# "epoch:seq"` — and goes in through
+#
+#   INSERT INTO lem_machine_log (...) SELECT v.* FROM (VALUES (...), ...) AS v
+#   WHERE NOT EXISTS (SELECT 1 FROM lem_machine_log l WHERE l.machine_uid =
+#       v.uid AND l.kind = v.kind AND l.ts = v.ts AND l.detail = v.detail
+#       AND l.lab_id IS v.lab_id AND l.test_name IS v.test AND l.value IS v.value)
+#
+# so a resend finds its own rows and inserts nothing. Why each part:
+#
+#   * `jk` IN THE DETAIL makes the key the record, not the content. Two genuine
+#     prints of one sample with one value in one poll are two journal records,
+#     so two keys and two rows (L2). Proposal A's NOT EXISTS keyed on (uid,
+#     kind, ts, lab_id, test) and dropped the second print as a "resend".
+#   * THE OTHER THREE COLUMNS are compared too. `jk` already makes the key
+#     exact for every row the module writes; comparing all seven columns
+#     costs nothing (they are in the row the index seek lands on) and means
+#     the statement can only ever skip a row that is byte-for-byte present.
+#   * (machine_uid, kind, ts) IS `idx_lem_log_uid_kind_ts`, which v3.9 already
+#     declares — so the probe is an index seek on a 258k-row table read over
+#     SMB under LabCore's 8 s read watchdog, and there is NO LabCore schema
+#     change (proposal C's ALTER TABLE plus partial unique index on that
+#     production table is exactly what this avoids).
+#   * VALUES IN A SUBQUERY keeps it at 7 bound values a row. Repeating the key
+#     in a per-row `SELECT ?.. WHERE NOT EXISTS (… ?..)` is 11 a row, 1,100
+#     for LOG_BATCH_ROWS — over the 999 an older SQLite allows, and a refused
+#     statement refuses all hundred rows.
+#   * SQLite computes an INSERT … SELECT that reads its own target table in
+#     full before inserting, so two rows of one statement never suppress each
+#     other; only rows ALREADY in LabCore do.
+#
+# The detail recipe is the v4 server's (`bench_api._row_detail`): parse,
+# set `jk`, re-dump with json.dumps defaults. The server stores a v2 record's
+# rows with the same `jk`, and its bridge links a LabCore row carrying one to
+# the bench record it projects — which is what lets this bench reach a v4
+# server later and send its epoch from seq 1 without doubling a row (M6).
+# Changing the recipe is a MAJOR change (§13).
+
+def projection_detail(detail, jk: str) -> str:
+    """A machine-log row's detail with its journal record's key added."""
+    parsed = detail
+    if isinstance(detail, str):
+        try:
+            parsed = json.loads(detail) if detail else {}
+        except ValueError:
+            return detail
+    if not isinstance(parsed, dict):
+        return detail if isinstance(detail, str) else json.dumps(detail)
+    parsed = dict(parsed)
+    parsed["jk"] = jk
+    return json.dumps(parsed)
+
+
+_PROJECTION_KEY_SQL = (
+    " WHERE NOT EXISTS (SELECT 1 FROM lem_machine_log AS l WHERE "
+    "l.machine_uid = v.column1 AND l.kind = v.column3 AND l.ts = v.column2 "
+    "AND l.detail = v.column7 AND l.lab_id IS v.column4 "
+    "AND l.test_name IS v.column5 AND l.value IS v.column6)")
+
+
+def build_projection_batch(records: List[list]) -> tuple:
+    """One keyed INSERT for up to LOG_BATCH_ROWS machine-log rows whose
+    details already carry `jk` (see above). Same seven columns, same order,
+    as `build_log_batch`."""
+    if not records:
+        return "", []
+    values = ", ".join(["(?, ?, ?, ?, ?, ?, ?)"] * len(records))
+    sql = ("INSERT INTO lem_machine_log "
+           "(machine_uid, ts, kind, lab_id, test_name, value, detail) "
+           "SELECT v.column1, v.column2, v.column3, v.column4, v.column5, "
+           "v.column6, v.column7 FROM (VALUES " + values + ") AS v"
+           + _PROJECTION_KEY_SQL)
+    args: List = []
+    for record in records:
+        args.extend(record)
+    return sql, args
+
+
+def _ref_seq(ref) -> int:
+    """The seq of a journal ref "epoch:seq" (0 if it is not one)."""
+    try:
+        return int(str(ref).rsplit(":", 1)[1])
+    except (IndexError, ValueError):
+        return 0
+
+
+def projected_args(args: list, jk: Optional[str]) -> list:
+    """The row a queued entry writes: today's seven values, with `jk` added
+    to the detail when the entry projects a journal record."""
+    row = list(args)
+    if jk:
+        row[6] = projection_detail(row[6], jk)
+    return row
 
 
 def machine_scoped_qc_rows(rows: List[dict], machine_uid: str) -> List[dict]:
@@ -2950,8 +3180,10 @@ def tail_new_lines(path: str, last_position: int) -> tuple:
 #   the resolver    an ORDERED diff of O against the file now, N. Not a count
 #                   of identical lines: counting is what lost X1 and X2.
 #
-# `lem_machine_config.last_position` is no longer read. It is still mirrored
-# onto the machine (and so published) for a bench rolled back to v3.9.
+# `lem_machine_config.last_position` no longer says where a bench is up to.
+# It is read exactly once, at the first v4 start, as adoption's BOUNDARY
+# (§10.2: what v3.9 had already logged), and is still mirrored onto the
+# machine (and so published) for a bench rolled back to v3.9.
 
 CURSOR_NAME = "cursor.json"
 SNAPSHOT_NAME = "snapshot.bin"
@@ -2995,9 +3227,6 @@ ROTATION_OVERLAP_MAX = 20
 SUFFIX_STRIP_MARGIN = 32
 # How many of O's newest lines the fallback anchors on.
 TAIL_ANCHOR_LINES = 64
-# Timestamps per read when a restarted bench asks LabCore which of the rows it
-# owes already landed — well under SQLite's 999-variable limit on old builds.
-OWED_CHECK_STAMPS = 200
 # multi_csv: a file is moved here before it is read (the move proves the
 # instrument has let go of it) and out to processed/ only after the journal
 # holds it. A kill in between leaves it here, where the next poll finds it.
@@ -3896,6 +4125,78 @@ class SingleCsvSource:
         size, start = max(cands)
         return start, size
 
+    # ── adoption (§10.2) ─────────────────────────────────────────────────────
+
+    def scan_for_adoption(self, final_complete: bool = False) -> dict:
+        """The whole file as the first v4 start sees it: every complete line
+        keyed exactly as a fresh read from offset 0 would key it (the same
+        lineage, the same offsets), so a line adoption puts in the seen-set is
+        the very key a re-read would carry. An unterminated last line is not
+        part of it — unless `final_complete` (the file is quiet), when it is
+        taken whole exactly as the reader would take it: a CR-terminated file
+        (the Eraspec's LIMS export) always ends that way, and leaving its last
+        print out made the reader log and file it a second time. Raises
+        OSError when the file cannot be read."""
+        self.load()
+        with open(self.path, "rb") as f:
+            st = os.fstat(f.fileno())
+            fid = file_identity(st)
+            data = f.read(st.st_size)
+        chunks, partial = _split_chunks(data, final_complete=final_complete)
+        lineage = file_lineage(self.path, fid)
+        encoding = _decode_block(data)
+        lines = []
+        for start, end, body in chunks:
+            lh = line_digest(body).hex()
+            text = data[start:end].decode(encoding, errors="replace")
+            for part, piece in enumerate(text.splitlines()):
+                if piece.strip():
+                    lines.append((start, part, piece, lh,
+                                  file_line_key(lineage, start, part, lh)))
+        end = chunks[-1][1] if chunks else 0
+        return {"fid": fid, "lineage": lineage, "data": data, "chunks": chunks,
+                "lines": lines, "end": end, "partial": partial,
+                "state": (st.st_size, st.st_mtime_ns, fid),
+                "mtime": st.st_mtime}
+
+    def quiet_for_adoption(self, scan: dict, now: datetime) -> bool:
+        """The quiet rule, for adoption: the file has looked exactly like
+        this for QUIET_SECONDS of the bench's clock. A first start that lands
+        in the middle of a whole-file rewrite must not adopt half a file."""
+        return self._observe(scan["state"], now)
+
+    def adopt(self, scan: dict, recovered_pks, records, now: datetime,
+              on_commit) -> _SourceRead:
+        """The read that ends adoption: the recovered prints (origin
+        'recovered'), the `adoption` record, and a cursor at the end of the
+        last complete line, with the whole file as the snapshot. `on_commit`
+        runs first when the read is consumed and returns (ok, notes): not ok
+        means the journal does not hold the adoption, and the cursor is NOT
+        saved — the next poll adopts again."""
+        data, end = scan["data"], scan["end"]
+        keep = set(recovered_pks or ())
+        prints = []
+        for start, part, text, lh, pk in scan["lines"]:
+            if pk in keep:
+                p = _keyed(text, pk, src="file:" + self.key, lh=lh)
+                p.origin = "recovered"
+                prints.append(p)
+        head = data[:min(end, CURSOR_HEAD_BYTES)]
+        tail = data[max(0, end - CURSOR_TAIL_BYTES):end]
+        cursor = {"offset": end, "head_hash": _sha(head), "tail_hash": _sha(tail),
+                  "file_id": scan["fid"], "lineage": scan["lineage"],
+                  "newest_first": False}
+        O = [line_digest(b) for _s, _e, b in scan["chunks"]]
+
+        def commit():
+            ok, notes = on_commit()
+            if not ok:
+                return list(notes)
+            self.full_checked = now
+            self.waiting = ""
+            return list(notes) + self._save(cursor, O)
+        return _SourceRead(prints, records=records, commit=commit, offset=end)
+
     def _drain_sibling(self, cur: dict, O: Optional[list]) -> tuple:
         """X4: lines appended to the old file after the last poll and before it
         was renamed away. Find it in the same folder by its identity and read
@@ -3938,6 +4239,677 @@ class SingleCsvSource:
             return (prints, (O or []) + [line_digest(b) for _s, _e, b in chunks],
                     True)
         return [], O, False
+
+
+# ── Adoption at the first v4 start (transfer v4 §10.2) ───────────────────────
+#
+# A v4 module's first start on a file bench meets a file v3.9 has been reading
+# for months, and v3.9 kept no account of WHICH lines it read: only an offset,
+# saved when somebody last pressed OK in Settings (09-23 and 09-24 on the floor
+# today). Read from the top, the file is a K6 replay — A's prototype logged all
+# 30 lines of a fully-logged file again and sent all 30 cells again. Skipped to
+# the end, a print made while LabStation was down for the upgrade is lost.
+#
+# So the bench asks the RECORD which lines it already has, once:
+#
+#   boundary   the stored `last_position`, when it is inside the file and on a
+#              line boundary; else 0. Lines before it are presumed recorded:
+#              v3.9 logged everything it read before saving the offset.
+#   fast path  the newest ADOPTION_FAST_LINES readings after the boundary all
+#              match → adopt at the end of the file (one lookup).
+#   full match every reading after the boundary, against the uid's recorded
+#              run rows on (lab_id, RAW values) by multiset; a QC standard's
+#              print against its qc verdicts, on the raw reading where the
+#              verdict kept one and on the VALUE it judged where it did not
+#              (`_QcMatch`: a count per standard would be inflated by every
+#              restart's replay and match a print made during the upgrade).
+#   outcome    matched → the seen-set, never journaled; unmatched after the
+#              first match (or after the boundary) → journaled as a `run` with
+#              origin 'recovered', never QC-evaluated, never auto-filed;
+#              unmatched before the first match → pre-LEM history, one count
+#              in the `adoption` record, no alarm.
+#
+# The key is RAW values, so a correction factor changed since logging cannot
+# unmatch a line (U3). A QC verdict that kept no raw reading holds the reading
+# plus the factor OF ITS DAY; the bench reads every factor the record applied
+# back from the run rows' `detail.corrections` (`logged_factors`), so a factor
+# changed, set to 0 or deleted since cannot unmatch that print either. Numbers
+# are compared as numbers ("0.8000" in the
+# file, 0.8 in `detail.raw`). The server publishes the same recipe
+# (`bench_api.adoption_hash`); `test_adoption_plan.py` spells it out byte for
+# byte on both sides.
+
+ADOPTION_FAST_LINES = 20
+# Under a v3.9 server: `lab_id IN (…)` reads on idx_lem_log_lab_ts, at most
+# this many ids each, and at most ADOPTION_MAX_READS LabCore reads in all
+# (one of them the first-ingest read).
+ADOPTION_LAB_IDS_PER_READ = 150
+ADOPTION_MAX_READS = 15
+# The results guard's ledger is seeded from matched legacy rows this recent.
+ADOPTION_LEDGER_DAYS = 30
+V2_ADOPTION_PATH = "/api/v2/bench/{uid}/adoption"
+# How the run-key multiset spells a qc verdict row that kept no raw reading
+# (v3.9 wrote `raw_value` only for a SPEC correction), byte for byte with the
+# server. QC prints are not matched on these keys: a count per (standard,
+# test) is inflated by every restart's replay, and matched a print made while
+# LabStation was down (round-2 critic, Agilent GC 1). They are matched on the
+# verdicts' VALUES instead — `qc_verdict_record`, `_QcMatch`.
+ADOPTION_NO_RAW = "(no raw)"
+
+
+def adoption_value(value) -> str:
+    """One measurement as the adoption key spells it: a number in one
+    canonical form (12 significant digits — far past any instrument's
+    precision and short of float noise), anything else as stripped text."""
+    if isinstance(value, bool):
+        return str(value)
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, ".12g")
+
+
+def adoption_key(lab_id, values: dict) -> str:
+    """H(lab_id, raw values): sha256 of canonical JSON
+    [lab_id, {test: adoption_value(v)}] (sorted keys, ',' ':' separators,
+    UTF-8), first 32 hex digits."""
+    canon = {str(k): adoption_value(v) for k, v in (values or {}).items()}
+    body = json.dumps([str(lab_id or "").strip(), canon], sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
+
+
+def _detail_dict(detail) -> Optional[dict]:
+    if isinstance(detail, dict):
+        return detail
+    if detail in (None, ""):
+        return {}
+    try:
+        out = json.loads(detail)
+    except (TypeError, ValueError):
+        return None
+    return out if isinstance(out, dict) else None
+
+
+def legacy_row_raw_values(row: dict) -> Optional[dict]:
+    """The raw reading a recorded `run`/`qc` row was made from, or None when
+    the row cannot be read (never guessed). A run's `values` with its `raw`
+    laid over them (raw holds only the corrected tests); a qc row's one test
+    at `raw_value` (spec-corrected) or `raw` — and with neither, the test
+    alone (ADOPTION_NO_RAW): the value judged is a corrected number under a
+    factor that may since have changed, so it is no key to the reading."""
+    detail = _detail_dict(row.get("detail"))
+    if detail is None:
+        return None
+    kind = str(row.get("kind") or "")
+    if kind == "run":
+        values = detail.get("values")
+        if not isinstance(values, dict):
+            return None
+        out = {k: v for k, v in values.items() if k not in RESERVED_ROW_KEYS}
+        raw = detail.get("raw")
+        if isinstance(raw, dict):
+            out.update(raw)
+        return out
+    if kind == "qc":
+        test = str(row.get("test_name") or "")
+        if not test:
+            return None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test)
+            if raw not in (None, ""):
+                return {test: raw}
+        return {test: ADOPTION_NO_RAW}
+    return None
+
+
+def legacy_row_adoption_key(row: dict) -> Optional[str]:
+    values = legacy_row_raw_values(row)
+    if values is None:
+        return None
+    return adoption_key(row.get("lab_id"), values)
+
+
+class LegacyRecord(NamedTuple):
+    counts: Counter         # the multiset of adoption keys
+    unreadable: set         # Lab IDs with a row that cannot be read
+    qc: dict                # the qc verdicts, `qc_verdict_record`'s shape
+    factors: dict = {}      # the factors the record applied, `logged_factors`
+
+
+def logged_factors(rows) -> dict:
+    """The machine-level factors the record shows were applied when it was
+    written: {column: sorted distinct offsets}, from the `run` rows'
+    `detail.corrections` (v3.9's `run_log_detail` writes the offset it
+    actually added, per column, whenever it corrected a reading). A QC
+    standard's verdict that kept no raw reading is the reading plus the factor
+    OF THAT DAY; this is where the bench reads that factor back, so a factor
+    removed (or changed) since logging still explains the verdict. A zero, a
+    non-number or a row that cannot be read says nothing. Identical to the
+    server's `bench_api.adoption_logged_factors`."""
+    seen: dict = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "run":
+            continue
+        detail = _detail_dict(r.get("detail"))
+        applied = (detail or {}).get("corrections")
+        if not isinstance(applied, dict):
+            continue
+        for col, off in applied.items():
+            if isinstance(off, bool):
+                continue
+            n = _safe_float(off)
+            if n is None or n == 0 or n != n or n in (float("inf"), float("-inf")):
+                continue
+            seen.setdefault(str(col), set()).add(n)
+    return {col: sorted(offs) for col, offs in seen.items()}
+
+
+def logged_factors_from_digest(digest: dict) -> Optional[dict]:
+    """The digest's `factors` in `logged_factors`' shape: {} when the digest
+    has none (an older v4 server: the bench then knows today's factors only,
+    as before), None when it is misshapen."""
+    raw = (digest or {}).get("factors")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for col, offs in raw.items():
+        if not isinstance(offs, list) or not all(
+                isinstance(n, (int, float)) and not isinstance(n, bool)
+                for n in offs):
+            return None
+        out[str(col)] = sorted({float(n) for n in offs if n})
+    return out
+
+
+def qc_verdict_value(value) -> str:
+    """A verdict's `value` as v3.9 spelled it (f"{value:g}"), so that a v4
+    row with more digits reads the same. Text that is not a number stays
+    text, and matches no reading. Identical to the server's
+    `bench_api._qc_number_text`."""
+    text = str(value).strip() if value is not None else ""
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if number != number or number in (float("inf"), float("-inf")):
+        return text
+    return format(number, "g")
+
+
+def qc_value_under(raw, offset) -> Optional[str]:
+    """The `value` v3.9 wrote on the verdict of this raw reading under this
+    machine-level factor: the corrected number (`corrected_value`, as the
+    parse applies it), at %g. With no factor, or one that cannot be applied,
+    it is the raw reading itself. None when the reading is not a number."""
+    n = corrected_value(raw, offset) if offset else None
+    if n is None:
+        n = _safe_float(raw)
+    return format(n, "g") if n is not None else None
+
+
+def qc_verdict_record(rows) -> dict:
+    """The recorded `qc` verdicts, for adoption: {Lab ID: {test: {"raw":
+    {adoption_value: n}, "value": {qc_verdict_value: n}}}}. "raw" holds the
+    verdicts that kept their raw reading (a spec correction). "value" holds
+    the ones that did not, by the value they judged. Rows whose detail cannot
+    be read are left out here; `legacy_adoption_counts` reports them as
+    unreadable. The server's `bench_api.adoption_qc_verdicts` builds the same
+    record."""
+    out: dict = {}
+    for r in rows:
+        if str(r.get("kind") or "") != "qc":
+            continue
+        detail = _detail_dict(r.get("detail"))
+        test = str(r.get("test_name") or "")
+        if detail is None or not test:
+            continue
+        slot = out.setdefault(str(r.get("lab_id") or "").strip(), {}) \
+            .setdefault(test, {"raw": {}, "value": {}})
+        raw = None
+        for name in ("raw_value", "raw"):
+            raw = detail.get(name)
+            if isinstance(raw, dict):
+                raw = raw.get(test)
+            if raw not in (None, ""):
+                break
+            raw = None
+        if raw is not None:
+            k, side = adoption_value(raw), slot["raw"]
+        else:
+            k, side = qc_verdict_value(r.get("value")), slot["value"]
+        side[k] = side.get(k, 0) + 1
+    return out
+
+
+def qc_verdicts_from_digest(digest: dict) -> Optional[dict]:
+    """The `qc_verdicts` of LEM's adoption digest in `qc_verdict_record`'s
+    shape, or None when it is missing or misshapen. A missing record is not
+    an empty one."""
+    raw = (digest or {}).get("qc_verdicts")
+    if not isinstance(raw, dict):
+        return None
+    out: dict = {}
+    for lab, tests in raw.items():
+        if not isinstance(tests, dict):
+            return None
+        for test, sides in tests.items():
+            if not isinstance(sides, dict):
+                return None
+            slot = {}
+            for side in ("raw", "value"):
+                got = sides.get(side) or {}
+                if not isinstance(got, dict) or not all(
+                        isinstance(n, int) and not isinstance(n, bool)
+                        for n in got.values()):
+                    return None
+                slot[side] = {str(k): n for k, n in got.items()}
+            out.setdefault(str(lab), {})[str(test)] = slot
+    return out
+
+
+def legacy_adoption_counts(rows) -> LegacyRecord:
+    """What the recorded rows say, for adoption. `unreadable` is a statement
+    too: the record holds something for that Lab ID, so it is never "no
+    row". `qc` is what v3.9 judged THEN, verdict by verdict, whatever
+    today's QC assignment is."""
+    counts, bad = Counter(), set()
+    for r in rows:
+        k = legacy_row_adoption_key(r)
+        if not k:
+            bad.add(str(r.get("lab_id") or "").strip())
+            continue
+        counts[k] += 1
+    return LegacyRecord(counts, bad, qc_verdict_record(rows),
+                        logged_factors(rows))
+
+
+@dataclass
+class AdoptionLine:
+    """One print of the file as adoption sees it. `run_key` None: not a
+    reading (a header); "presumed": before the boundary and not parsed."""
+    offset: int
+    part: int
+    pk: str
+    lab_id: str
+    run_key: Optional[str]
+    text: str = ""
+    lh: str = ""
+    # The print's RAW readings, (column, value): what a qc verdict of it is
+    # matched on.
+    values: tuple = ()
+    # (test, column) for today's QC specs of this Lab ID: which reading a
+    # verdict of that test judged. A test the record holds and today's specs
+    # do not is looked up by its own name.
+    cols: tuple = ()
+
+
+@dataclass
+class AdoptionPlan:
+    kind: str                       # "empty" | "fast" | "full"
+    matched: int = 0
+    recovered: list = field(default_factory=list)   # AdoptionLine, file order
+    pre_history: int = 0
+    presumed: int = 0               # before the boundary, or under the fast path
+    unchecked: int = 0              # Lab ID not asked about (read budget)
+    unreadable: int = 0             # the record holds rows of it nobody can read
+    other: int = 0                  # not readings
+    matched_lines: list = field(default_factory=list)
+
+
+def _adoption_take(counts: Counter, line: "AdoptionLine") -> bool:
+    """Match one reading line against the multiset of run keys on its exact
+    raw values, consuming what it matched."""
+    if line.run_key and counts.get(line.run_key, 0) > 0:
+        counts[line.run_key] -= 1
+        return True
+    return False
+
+
+class _QcMatch:
+    """A QC standard's prints against the verdicts v3.9 logged of them.
+
+    A print is one verdict per test, so a print is recorded when its
+    verdicts are: per test, a verdict that kept its raw reading and holds
+    this one (exact), or one whose VALUE is this reading under a factor the
+    bench knows (none, or today's) — exact too, since the file holds every
+    raw reading. Replays log a print again; the multiset absorbs that.
+    "A factor the bench knows" includes every factor the RECORD shows was
+    applied (`logged_factors`: the run rows' `detail.corrections`), so a
+    factor removed or changed since logging still explains its verdicts.
+
+    What the bench cannot know is a factor that has changed since a
+    verdict was logged. Such a verdict's value is explained by NO reading of
+    the file under any known factor (`unexplained`, per test: distinct
+    values only, because a replay of the same print repeats the value and is
+    not another print). It may stand in for a test of a print only:
+
+      pinned   at least as many of the print's tests match exactly as stand
+               in this way, and at least one does (stage "A", any path); or
+      factored every test that stands in has a factor today (stage "B",
+               after every line has had stage A, oldest print first; never on
+               the fast path). That is U3: a one-test standard whose factor
+               moved after it was logged.
+
+    So a print whose numbers are new (a downtime print, a re-processed
+    injection) matches nothing on an unfactored test and is recovered,
+    however many spare verdicts the replays left. A false recovery is shown to
+    a person; a false match is a reading lost without a trace, so where the
+    record cannot tell, the print is recovered."""
+
+    def __init__(self, qc: dict, corrections: dict, lines,
+                 logged: Optional[dict] = None) -> None:
+        self.corrections = dict(corrections or {})
+        self.logged = dict(logged or {})
+        self.pool = {lab: {t: {"raw": Counter(s.get("raw") or {}),
+                               "value": Counter(s.get("value") or {})}
+                           for t, s in tests.items()}
+                     for lab, tests in (qc or {}).items()}
+        explained: dict = {}
+        for line in lines:
+            for t, raw, _col in self._tests(line):
+                explained.setdefault((line.lab_id, t), set()).update(
+                    self._candidates(line, t, raw))
+        self.unexplained = {
+            (lab, t): set(s["value"]) - explained.get((lab, t), set())
+            for lab, tests in self.pool.items() for t, s in tests.items()}
+
+    def is_qc(self, line) -> bool:
+        return bool(line.run_key) and bool(self._tests(line))
+
+    def _tests(self, line) -> list:
+        """(test, raw, column) for each test the record holds verdicts of for
+        this Lab ID and the print holds a number for."""
+        tests = self.pool.get(line.lab_id)
+        if not tests or not line.run_key or line.run_key == "presumed":
+            return []
+        values, cols = dict(line.values), dict(line.cols)
+        out = []
+        for t in tests:
+            col = cols.get(t) or t
+            raw = _ci_lookup(values, col)
+            if raw is not None and _safe_float(raw) is not None:
+                out.append((t, raw, col))
+        return out
+
+    def _today(self, t: str, col: str) -> bool:
+        """Has this test a factor today (stage B's condition)?"""
+        return bool(self.corrections.get(col) or self.corrections.get(t))
+
+    def _offsets(self, t: str, col: str) -> list:
+        """None, today's factor, and every factor the record shows was
+        applied to this column when it was logged."""
+        f = self.corrections.get(col) or self.corrections.get(t) or 0
+        out = [0] + ([f] if f else [])
+        for off in self.logged.get(col) or self.logged.get(t) or ():
+            if off not in out:
+                out.append(off)
+        return out
+
+    def _candidates(self, line, t, raw) -> set:
+        col = dict(line.cols).get(t) or t
+        return {v for v in (qc_value_under(raw, f)
+                            for f in self._offsets(t, col)) if v is not None}
+
+    def take(self, line, stage: str) -> bool:
+        """Match the print, consuming the verdicts it matched; False (and
+        nothing consumed) when it is not recorded at this stage."""
+        exact, wild = [], []
+        for t, raw, col in self._tests(line):
+            slot = self.pool[line.lab_id][t]
+            rk = adoption_value(raw)
+            if slot["raw"].get(rk, 0) > 0:
+                exact.append((slot["raw"], rk))
+                continue
+            hit = next((v for v in sorted(self._candidates(line, t, raw))
+                        if slot["value"].get(v, 0) > 0), None)
+            if hit is not None:
+                exact.append((slot["value"], hit))
+            else:
+                wild.append((t, raw, col))
+        # A test with no verdict for this reading and no unexplained value
+        # left is a MISS: the record lacks it (or the test was not assigned
+        # when the print was logged). One with an unexplained value left may
+        # stand in (`wild`).
+        spare_of = {t: self.unexplained.get((line.lab_id, t)) for t, _r, _c in wild}
+        miss = sum(1 for t, _r, _c in wild if not spare_of[t])
+        wild = [w for w in wild if spare_of[w[0]]]
+        if stage == "A":
+            # Pinned: most of the print's tests match exactly, strictly more
+            # than miss outright.
+            if not exact or len(exact) < len(wild) + miss or len(exact) <= miss:
+                return False
+        elif miss or not wild or not all(
+                self._today(t, col) for t, _r, col in wild):
+            return False
+        for counter, k in exact:
+            counter[k] -= 1
+        for t, raw, _col in wild:
+            left = spare_of[t]
+            # The value nearest the reading: a factor is a small offset.
+            r = _safe_float(raw)
+            v = min(sorted(left), key=lambda x: abs((_safe_float(x) or 0) - r))
+            left.discard(v)
+            values = self.pool[line.lab_id][t]["value"]
+            values[v] = max(0, values.get(v, 0) - 1)
+        return True
+
+
+def plan_adoption(lines, boundary: int, counts, asked=None,
+                  file_predates_history: bool = False,
+                  fast_lines: int = ADOPTION_FAST_LINES,
+                  unreadable=None, qc=None, corrections=None,
+                  reparse=None, logged_factors=None) -> AdoptionPlan:
+    """Classify the file's prints (in file order) against the recorded rows:
+    `counts`, the multiset of run keys, and `qc`, the qc verdicts
+    (`qc_verdict_record`). `asked`: the Lab IDs the record was asked about
+    (None: all of them). `unreadable`: Lab IDs the record holds rows for that
+    cannot be read — an unmatched line of one is not a print the record
+    lacks, so it is counted as unreadable, never recovered. `corrections`:
+    today's machine-level factors; `logged_factors`, the ones the record
+    shows were applied (`logged_factors`). `reparse(line)`: parses a presumed line
+    (before the boundary) that may be a QC standard's print, so that its
+    verdicts are spent on it and not left over for a newer print. Pure;
+    consumes copies."""
+    unreadable = {str(i).strip() for i in (unreadable or ())}
+    qc = qc or {}
+    if reparse is not None and qc:
+        labs = [l.lower() for l in qc if l]
+        lines = [reparse(l) if l.run_key == "presumed" and any(
+                     lab in l.text.lower() for lab in labs) else l
+                 for l in lines]
+    readings, before, other = [], [], 0
+    for line in lines:
+        if not line.run_key:
+            other += 1
+        elif line.offset < boundary:
+            before.append(line)
+        else:
+            readings.append(line)
+    if not readings:
+        return AdoptionPlan("empty", presumed=len(before), other=other)
+    checked = [l for l in readings if asked is None or l.lab_id in asked]
+    unchecked = len(readings) - len(checked)
+
+    def matcher():
+        m = _QcMatch(qc, corrections, before + checked, logged_factors)
+        for line in before:        # presumed recorded: spend their verdicts
+            if m.is_qc(line):
+                m.take(line, "A")
+        return m
+
+    def take(pool, m, line, stage="A"):
+        if m.is_qc(line) and m.take(line, stage):
+            return True
+        return stage == "A" and _adoption_take(pool, line)
+
+    # The fast path: the newest readings of the file, every one of them asked
+    # about and in the record. What lies before them is not looked at.
+    tail = readings[-fast_lines:] if fast_lines else []
+    pool, m = Counter(counts), matcher()
+    if tail and all(asked is None or l.lab_id in asked for l in tail) \
+            and all(take(pool, m, l) for l in tail):
+        return AdoptionPlan("fast", matched=len(tail),
+                            presumed=len(before) + len(readings) - len(tail),
+                            other=other, matched_lines=list(tail))
+    pool, m = Counter(counts), matcher()
+    hits = [take(pool, m, l) for l in checked]
+    # Then stage B, oldest print first: a standard printed while LabStation
+    # was down is the newest print of it, and is the one left over.
+    hits = [h or take(pool, m, l, "B") for l, h in zip(checked, hits)]
+    plan = AdoptionPlan("full", presumed=len(before), unchecked=unchecked,
+                        other=other)
+    plan.matched = sum(hits)
+    plan.matched_lines = [l for l, h in zip(checked, hits) if h]
+    if boundary > 0:
+        first = -1                  # the boundary is the record's own mark
+    elif any(hits):
+        first = hits.index(True)
+    elif file_predates_history:
+        first = len(checked)        # all of it is older than LEM here
+    else:
+        first = -1                  # newer than the record: recover it all
+    for i, (line, hit) in enumerate(zip(checked, hits)):
+        if hit:
+            continue
+        if line.lab_id in unreadable:
+            plan.unreadable += 1
+        elif i < first:
+            plan.pre_history += 1
+        else:
+            plan.recovered.append(line)
+    return plan
+
+
+def adoption_boundary(data: bytes, last_position) -> int:
+    """§10.2 step 1. The stored `last_position` when it is inside the file
+    and sits on a line boundary (the byte before it ends a line, and it is not
+    the middle of a \\r\\n); else 0 — the file shrank, was rotated, or the
+    offset is nonsense, and nothing before it can be presumed recorded."""
+    try:
+        pos = int(last_position or 0)
+    except (TypeError, ValueError):
+        return 0
+    if pos <= 0 or pos > len(data):
+        return 0
+    before = data[pos - 1:pos]
+    if before == b"\n":
+        return pos
+    if before == b"\r" and data[pos:pos + 1] != b"\n":
+        return pos
+    return 0
+
+
+def adoption_line(machine: "Machine", offset: int, part: int, text: str,
+                  lh: str, pk: str) -> AdoptionLine:
+    """One print of the file, keyed for adoption: parsed exactly as the poll
+    would parse it, on its RAW values (a run row is matched on them; a QC
+    standard's verdicts on the values they judged, see `_QcMatch`)."""
+    result = parse_print(machine, text)
+    lab = str(result.lab_id or "").strip()
+    if not lab and not result.values:
+        return AdoptionLine(offset, part, pk, "", None, text, lh)
+    values = {k: v for k, v in result.values.items() if k not in RESERVED_ROW_KEYS}
+    cols = tuple((spec.name, spec.value_col)
+                 for spec in getattr(machine, "tests", None) or ()
+                 if spec.sample_id and lab.lower() == spec.sample_id.strip().lower())
+    return AdoptionLine(offset, part, pk, lab, adoption_key(lab, values),
+                        text, lh, tuple((str(k), v) for k, v in values.items()),
+                        cols)
+
+
+def adoption_lines(machine: "Machine", scan_lines, boundary: int) -> list:
+    """Every line of a scan as adoption sees it. Lines before the boundary
+    are presumed recorded and not parsed (the Agilent's boundary is 10.5 MB
+    in); `plan_adoption` re-parses only the few that may be a QC standard's
+    print (`reparse`)."""
+    return [adoption_line(machine, start, part, text, lh, pk)
+            if start >= boundary else
+            AdoptionLine(start, part, pk, "", "presumed", text, lh)
+            for start, part, text, lh, pk in scan_lines]
+
+
+def adoption_reparse(machine: "Machine"):
+    """`plan_adoption`'s `reparse` for this machine."""
+    return lambda l: adoption_line(machine, l.offset, l.part, l.text, l.lh, l.pk)
+
+
+def _ts_naive(text) -> Optional[datetime]:
+    """A recorded row's ts as naive bench-local time (its first 19 chars:
+    v3.9 wrote "YYYY-MM-DD HH:MM:SS", v4 adds an offset). None if unreadable."""
+    raw = str(text or "").strip().replace("T", " ")[:19]
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def build_adoption_lab_query(lab_ids) -> tuple:
+    """Recorded run/qc rows of these Lab IDs on one bench — an indexed read on
+    idx_lem_log_lab_ts (§10.2 step 3, v3.9 server). The unary `+` keeps
+    SQLite off idx_lem_log_uid_kind_ts, which would walk every row the bench
+    ever logged (84k on the Agilent) instead of the few per Lab ID."""
+    ids = [str(i) for i in lab_ids]
+    marks = ",".join("?" for _ in ids)
+    return ("SELECT ts, kind, lab_id, test_name, value, detail FROM "
+            "lem_machine_log WHERE lab_id IN (%s) AND +machine_uid = ? AND "
+            "+kind IN ('run', 'qc')" % marks, ids)
+
+
+def build_first_ingest_query(machine_uid: str) -> tuple:
+    """When LEM first recorded a reading from this bench: two MIN()s, each one
+    seek on idx_lem_log_uid_kind_ts. NULL and NULL: nothing ever was."""
+    return ("SELECT (SELECT MIN(ts) FROM lem_machine_log WHERE machine_uid = ? "
+            "AND kind = 'run') AS first_run, (SELECT MIN(ts) FROM "
+            "lem_machine_log WHERE machine_uid = ? AND kind = 'qc') AS first_qc",
+            [machine_uid, machine_uid])
+
+
+def adoption_state_from_digest(body: dict) -> dict:
+    """What `_adopt` keeps of LEM's digest (one that passed
+    `adoption_digest_problem`)."""
+    return {"road": "lem", "counts": Counter(body["counts"]),
+            "unreadable": set(str(i) for i in body.get("unreadable_labs") or ()),
+            "qc": qc_verdicts_from_digest(body),
+            "factors": logged_factors_from_digest(body) or {},
+            "history": bool(body.get("rows")), "first": body.get("first_ts"),
+            "recent": list(body.get("recent") or ())}
+
+
+def adoption_digest_problem(doc) -> str:
+    """Why LEM's adoption answer cannot be adopted on, or "" when it can. A
+    digest with a field missing or misshapen is not an empty record."""
+    if not isinstance(doc, dict):
+        return "an answer that is not a digest"
+    counts = doc.get("counts")
+    if not isinstance(counts, dict) or not all(
+            isinstance(v, int) and not isinstance(v, bool)
+            for v in counts.values()):
+        return "a digest without its counts"
+    if qc_verdicts_from_digest(doc) is None:
+        # Without them a QC standard's print could be told from no other:
+        # an older server's digest is not adopted on.
+        return "a digest without its qc verdicts"
+    if logged_factors_from_digest(doc) is None:
+        return "a digest whose logged factors cannot be read"
+    return ""
+
+
+def _adoption_summary(record: dict) -> dict:
+    """What journal.meta keeps of an `adoption` record."""
+    return {k: record.get(k) for k in (
+        "boundary", "history", "path_kind", "matched", "recovered",
+        "pre_history_lines", "presumed", "unchecked", "unreadable",
+        "file_sha256", "road",
+        "labcore_reads", "path") if k in record}
 
 
 # ── Status evaluation (ported from LEM V5.0 data_source.evaluate_box) ────────
@@ -4278,6 +5250,11 @@ def run_log_events(machine: "Machine", rows: List[dict], operator,
         # carries its raw readings and offsets, and those are not measurements.
         raw_by_test = row_raw(row)
         verdicts = []
+        if row.get(ORIGIN_KEY) == "recovered":
+            # Not QC-evaluated (§10.2): a recovered print is recorded as the
+            # reading it was, never as a verdict on today's QC.
+            out.append((row, "run", lab_id, "", "", run_log_detail(row)))
+            continue
         for spec in machine.tests:
             if not spec.sample_id:
                 continue
@@ -6450,6 +7427,12 @@ class _TransferState:
         self.snapshot_sent: Dict[str, float] = {}
         self.attempt_log: deque = deque(maxlen=500)
         self.notices: List[str] = []
+        # §10.2 adoption's question, asked by the poll and answered by the
+        # uploader: {"src", "boundary"}; the answer {"want", "doc"} once LEM's
+        # digest came back whole; why the last ask did not, for the card.
+        self.adoption_want: Optional[dict] = None
+        self.adoption_answer: Optional[dict] = None
+        self.adoption_error = ""
 
 
 def config_cache_path(journal_dir_path: str) -> str:
@@ -7516,6 +8499,9 @@ class LEMStationModule:
         # {journal ref: log rows of that reading still to land}; at zero the
         # reading is marked PROJECTED.
         self._journal_unprojected: dict = {}
+        # Refs whose log rows are ON the queue right now (pending, owed, or a
+        # batch in flight) — at most once each (`_queue_once`).
+        self._queued_refs: set = set()
         # Refs a cap threw out of the results road this process: NOT settled.
         self._journal_dropped: set = set()
         # Frames a previous process journaled and no poll consumed.
@@ -8178,14 +9164,18 @@ class LEMStationModule:
             rec, ref = run["rec"], run["ref"]
             if not run["projected"]:
                 logs = [a for a in rec.get("log") or () if isinstance(a, list)]
-                if logs:
+                if not logs:
+                    no_logs.append(ref)
+                elif not _v2(self) and self._queue_once(ref):
                     entries.extend(_log_entry(args, ref) for args in logs)
                     counts[ref] = len(logs)
-                else:
-                    no_logs.append(ref)
             if not run["settled"]:
                 row = rec.get("row")
-                if isinstance(row, dict) and row:
+                if rec.get("origin") == "recovered":
+                    # Adoption's recovered readings wait for a PERSON to file
+                    # them; the results road never takes them on its own.
+                    no_row.append(ref)
+                elif isinstance(row, dict) and row:
                     row = dict(row)
                     row[JOURNAL_KEY] = ref
                     backlog.append(row)
@@ -8201,12 +9191,23 @@ class LEMStationModule:
             # the uploader sends from acked+1, so nothing is owed to LabCore.
             entries = []
         if entries:
-            # Not queued yet: some of these rows may have LANDED before the
-            # previous process died — written, then killed before the mark said
-            # so (K2: 100 rows logged twice). `_journal_verify_owed` asks
-            # LabCore which are already there before any is sent again.
+            # Some of these rows may have LANDED before the previous process
+            # died — written, then killed before the mark said so (K2). They
+            # are keyed by their record, so sending them again lands only the
+            # ones that did not (`_journal_requeue_owed`).
             self._journal_owed = list(entries) + list(
                 getattr(self, "_journal_owed", None) or [])
+        events = 0
+        if not _v2(self):
+            # The event records after `projected_seq` (and LEM's acked): a
+            # note, override, PM tick or status change the previous process
+            # journaled — on this road, or on the v2 side before a 404 it
+            # did not live to fall back from — and LabCore may not have.
+            # Keyed, so the ones that did land add nothing.
+            events = self._v2_project_bookkeeping(machine, journal)
+            # A rollback's DG2 back-fill the previous process queued but did
+            # not see land.
+            events += self._legacy_dg2(journal, bench_now(), messages)
         if backlog:
             with self._results_lock:
                 if _v2(self):
@@ -8231,6 +9232,10 @@ class LEMStationModule:
             messages.append(
                 f"Picked up {owed + len(self._journal_carry)} reading(s) this "
                 "bench had journaled but not yet delivered; sending them now.")
+        if events:
+            messages.append(f"{events} logged event(s) this bench had "
+                            "journaled but not yet written to LabCore are "
+                            "being written now.")
 
     def _journal_intake(self, journal, prints) -> list:
         """The store check: carried frames first, then this poll's prints,
@@ -8325,6 +9330,8 @@ class LEMStationModule:
                 # an entry the instant it is queued must find its count.
                 with lock:
                     counts[ref] = len(args_list)
+            if args_list and not self._queue_once(ref):
+                continue
             for args in args_list:
                 if len(self._pending_events) >= LOG_EVENT_LIMIT:
                     # Refused, as `_log_event` refuses — but kept: the count
@@ -8335,100 +9342,23 @@ class LEMStationModule:
                 self._pending_events.append(_log_entry(args, ref))
         return True
 
-    def _journal_verify_owed(self, machine, read_sql, messages) -> None:
-        """Re-deliver what a previous process left unprojected — except what
-        already landed.
+    def _journal_requeue_owed(self) -> None:
+        """Put what a previous process left unprojected back at the FRONT of
+        the queue — all of it, without asking LabCore first.
 
         A reading is marked PROJECTED only after LabCore accepted its rows, so
         a process killed between the accept and the mark leaves rows the
-        journal still owes that LabCore already has. Sent again they are
-        duplicates (K2: a kill after the 2nd of 3 log batches cost 100). So
-        before re-queueing, ONE read asks LabCore for this bench's rows at the
-        owed rows' timestamps, and for each exact row (every column) the bench
-        sends only how many more the journal says should exist than LabCore
-        holds. Exact on every column, timestamp included, and counted rather
-        than "exists", so two genuine identical prints in one poll are still
-        two rows. The rows found already there are counted as landed, which
-        marks their readings projected.
-
-        A read that fails is not "none landed": the rows stay owed at the
-        bench, nothing is sent, and the next poll asks again."""
+        journal still owes that LabCore already has (K2: a kill after the 2nd
+        of 3 log batches). This used to cost a read before every such
+        restart — which of these rows, exactly, are already there? — and a
+        count-by-content answer to it. Every owed row now names its record
+        (`detail.jk`) and goes in through the exact key, so the rows that
+        landed match themselves and insert nothing: the drain IS the check,
+        with no read and no counting to get wrong (§10.3)."""
         owed = list(getattr(self, "_journal_owed", None) or [])
-        if not owed:
-            return
-        journal = self._journal_for(machine) if machine is not None else None
-        stamps = sorted({str(e[1][1]) for e in owed})
-        uid = str(owed[0][1][0])
-
-        def key(args):
-            return tuple("" if v is None else str(v) for v in args[:7])
-        res = None
-        if callable(read_sql) and journal is not None:
-            rows: list = []
-            res = {"rows": rows}
-            step = max(1, int(OWED_CHECK_STAMPS))
-            for at in range(0, len(stamps), step):
-                part = stamps[at:at + step]
-                marks = ",".join("?" for _ in part)
-                try:
-                    got = read_sql(
-                        "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                        "detail FROM lem_machine_log WHERE machine_uid = ? AND ts "
-                        f"IN ({marks})", [uid] + part)
-                except Exception as exc:          # noqa: BLE001 — any failure
-                    got = {"error": str(exc) or exc.__class__.__name__}
-                if not isinstance(got, dict) or got.get("error"):
-                    res = got
-                    break
-                rows.extend(got.get("rows") or [])
-        if not isinstance(res, dict) or res.get("error") or journal is None:
-            why = (res or {}).get("error") if isinstance(res, dict) else "no answer"
-            messages.append(
-                f"{len(owed)} machine-log record(s) a previous run left owed "
-                f"are kept at the bench: LabCore could not be asked which of "
-                f"them already landed ({why or 'no journal'}); asking again "
-                "next poll.")
-            return
-        have: Dict[tuple, int] = {}
-        for r in res.get("rows") or []:
-            k = key([r.get("machine_uid"), r.get("ts"), r.get("kind"),
-                     r.get("lab_id"), r.get("test_name"), r.get("value"),
-                     r.get("detail")])
-            have[k] = have.get(k, 0) + 1
-        want: Dict[tuple, int] = {}
-        stamp_set = set(stamps)
-        try:
-            records = journal._scan()
-        except JournalError as exc:
-            messages.append(f"{len(owed)} owed machine-log record(s) are kept "
-                            f"at the bench: the journal could not be read "
-                            f"({exc}); asking again next poll.")
-            return
-        for rec in records:
-            if rec.get("kind") != "run":
-                continue
-            for args in rec.get("log") or ():
-                if isinstance(args, list) and len(args) >= 7 \
-                        and str(args[1]) in stamp_set:
-                    k = key(args)
-                    want[k] = want.get(k, 0) + 1
-        room = {k: want.get(k, 0) - have.get(k, 0) for k in want}
-        send, landed = [], []
-        for entry in owed:
-            k = key(entry[1])
-            if room.get(k, 1) > 0:
-                room[k] = room.get(k, 1) - 1
-                send.append(entry)
-            else:
-                landed.append(entry)
         self._journal_owed = []
-        if send:
-            self._pending_events.extendleft(reversed(send))
-        if landed:
-            self._journal_landed(landed)
-            messages.append(f"{len(landed)} machine-log record(s) a previous "
-                            "run left owed were already in LabCore and were "
-                            "not sent again.")
+        if owed:
+            self._pending_events.extendleft(reversed(owed))
 
     def _journal_landed(self, batch) -> None:
         """The drain got `batch` into lem_machine_log: a reading all of whose
@@ -8449,6 +9379,12 @@ class LEMStationModule:
                 if counts[ref] <= 0:
                     del counts[ref]
                     done.append(ref)
+                    queued = getattr(self, "_queued_refs", None)
+                    if queued:
+                        queued.discard(ref)
+                    events = getattr(self, "_proj_events", None)
+                    if events:
+                        events.discard(ref)
         if done:
             self._journal_mark("projected", done)
 
@@ -8519,19 +9455,33 @@ class LEMStationModule:
         current = getattr(self, "_journal", None)
         if current is not None and current not in journals:
             journals.append(current)
+        legacy = not _v2(self)
         for journal in journals:
             mine = [d for d in decisions
                     if any(journal.holds_run(r) for r in d.get("of") or ())]
             refs_here = [r for r in sorted(settled) if journal.holds_run(r)]
             if not mine and not refs_here:
                 continue
-            try:
-                journal.settle_with(mine, refs_here)
-            except JournalError:
-                # Unrecorded means re-offered after a restart, where the guard
-                # read finds the cell as this poll left it: a re-decided
-                # reading, never a lost or doubled one.
-                pass
+            # On the legacy road a decision that carries a machine-log row
+            # (`log`: a given-up reading's held_expired row) is projected like
+            # any event record — keyed by the ref it is journaled under, and
+            # counted owed in the same breath, under the journal lock, so
+            # `projected_seq` cannot pass it before its row lands.
+            with self._journal_lock_or_new():
+                made: list = []
+                try:
+                    journal.settle_with(mine, refs_here, made)
+                except JournalError:
+                    # Unrecorded means re-offered after a restart, where the
+                    # guard read finds the cell as this poll left it: a
+                    # re-decided reading, never a lost or doubled one.
+                    continue
+                if legacy and journal is current:
+                    for rec, ref in zip(mine, made):
+                        rows = [a for a in rec.get("log") or ()
+                                if isinstance(a, list) and len(a) == 7]
+                        if rows:
+                            self._legacy_owe_event(ref, rows)
 
     # ── Transfer v2 (§6): the uploader thread does all LEM I/O ───────────────
     #
@@ -8663,12 +9613,15 @@ class LEMStationModule:
         up = getattr(self, "_uploader", None)
         return True if up is None else up.wait_idle(timeout)
 
-    def _v2_fell_back(self, machine, journal, messages) -> None:
+    def _v2_fell_back(self, machine, journal, messages,
+                      now: Optional[datetime] = None) -> None:
         """The bench WAS on v2 and LEM now answers 404 (an old server, or a
         rollback). What LEM had not acked goes the old way — its log rows to
-        LabCore (checked against what is already there first, as a restart's
-        are), its results to the results road without the 60 s hold — so a
-        mid-process fall-back loses nothing (§12.2, M5)."""
+        LabCore through the exact key, its results to the results road
+        without the 60 s hold — so a mid-process fall-back loses nothing and
+        doubles nothing (§12.2, M5). And what LEM HAD acked of the last 24 h
+        of QC and status is copied back too (DG2), so the rolled-back floor
+        does not show stale QC."""
         entries = []
         counts = getattr(self, "_journal_unprojected", None)
         if counts is None:
@@ -8677,7 +9630,7 @@ class LEMStationModule:
             if run["projected"]:
                 continue
             logs = [a for a in run["rec"].get("log") or () if isinstance(a, list)]
-            if logs:
+            if logs and self._queue_once(run["ref"]):
                 entries.extend(_log_entry(args, run["ref"]) for args in logs)
                 counts[run["ref"]] = len(logs)
         if entries:
@@ -8689,18 +9642,72 @@ class LEMStationModule:
             self._factor_read_at = {}
             self._identity_backlog = wait + list(self._identity_backlog)
         events = self._v2_project_bookkeeping(machine, journal)
-        if entries or wait or events:
+        if journal.meta("last_v2_handshake") and journal.acked > 0:
+            # Due until its rows have landed (`_note_projected` clears it), so
+            # a process that dies first does it again at its next start.
+            try:
+                journal.update_meta(dg2_due=int(journal.acked))
+            except JournalError:
+                pass
+        back = self._legacy_dg2(journal, now or bench_now(), messages)
+        if entries or wait or events or back:
             messages.append(
                 f"LEM answered as an older server: {len(entries) + events} log "
                 f"row(s) and {len(wait)} held result(s) go the old way "
-                "(LabCore).")
+                "(LabCore)"
+                + (f", and the last 24 h of QC and status ({back} record(s)) "
+                   "are copied back so this floor shows them" if back else "")
+                + ".")
 
     #: Journal kinds that are not an operator's event: the runs (projected by
-    #: their own `log`), the source bookkeeping, and the v2 status/specs/config
-    #: records, which the legacy road re-derives or handles below.
+    #: their own `log`), the source bookkeeping, and the v2 specs/config
+    #: records, which the legacy road re-derives or handles below. A `state`
+    #: record IS projected: it is the status change the v4 server would have
+    #: written into the log, and the floor's history needs it.
+    #:
+    #: Nor are the results road's decisions and the journal's own marks —
+    #: `filed`, `conflict`, `rejected` (what became of a reading's cells),
+    #: `settled` and `projected` (marks over other records) — nor `adoption`
+    #: (a source taken over at the first v4 start). v3.9 never wrote a log
+    #: row for any of them, and projected they showed on the floor's history
+    #: as machine events (critic round 2: M5 left 3 `filed` and 1 `settled`
+    #: row in LabCore). A `given_up` decision IS an event: it is the
+    #: held_expired row v3.9 wrote.
     _V2_NOT_EVENTS = frozenset({
-        "run", "frame", "consumed", "known", "state", "specs", "config",
-        "periodic", "rotation_overlap", "no_snapshot", "ambiguity"})
+        "run", "frame", "consumed", "known", "specs", "config",
+        "periodic", "rotation_overlap", "no_snapshot", "ambiguity",
+        "filed", "settled", "conflict", "rejected", "projected", "adoption"})
+
+    @staticmethod
+    def _record_rows(uid: str, rec: dict) -> List[list]:
+        """The machine-log rows v3.9 would have written for a journal record
+        that is not a reading — the projection of a v2-side record onto
+        today's table, in the shapes the v4 server derives (`state` → a
+        status_change row, `given_up` → held_expired). A record journaled on
+        the legacy road carries its rows in `log` already."""
+        rows = rec.get("log")
+        if isinstance(rows, list):
+            return [a for a in rows if isinstance(a, list) and len(a) == 7]
+        kind = str(rec.get("kind") or "")
+        try:
+            ts = datetime.fromisoformat(str(rec.get("ts")))
+        except (TypeError, ValueError):
+            ts = datetime.now()
+        if kind == "state":
+            detail = {"from": str(rec.get("from") or ""),
+                      "to": str(rec.get("status") or ""),
+                      "reason": str(rec.get("reason") or "")}
+            if isinstance(rec.get("sub"), dict):
+                detail["sub"] = rec["sub"]
+            return [build_log_insert(uid, "status_change", ts,
+                                     detail=detail)[1]]
+        detail = rec.get("detail") if isinstance(rec.get("detail"), dict) \
+            else {}
+        return [build_log_insert(
+            uid, "held_expired" if kind == "given_up" else kind, ts,
+            lab_id=str(rec.get("lab_id") or ""),
+            test_name=str(rec.get("test_name") or ""),
+            value=str(rec.get("value") or ""), detail=detail)[1]]
 
     def _v2_project_bookkeeping(self, machine, journal) -> int:
         """The rest of a fall-back: what the bench did on the v2 side that LEM
@@ -8708,23 +9715,31 @@ class LEMStationModule:
 
         Needed since an UNKNOWN bench holds on the v2 side (only a 404 means
         "old server"): an operator's note, override or maintenance record, a
-        factor saved, the machine's setup saved — all journal records while
-        LEM was unreachable. On an old server they are LabCore rows or they
-        are nowhere. The status and specs the v2 sync journaled are marked
-        unpublished so the legacy sync publishes them.
+        factor saved, the machine's setup saved, a status change — all
+        journal records while LEM was unreachable. On an old server they are
+        LabCore rows or they are nowhere. The specs the v2 sync journaled are
+        marked unpublished so the legacy sync publishes them.
 
-        Exactly once: `legacy_projected_seq` in the journal's meta remembers
-        how far this has gone, so a second fall-back (v2 found, then rolled
-        back) starts after it. Returns the log rows queued."""
+        The same walk is a legacy bench's restart re-delivery of its event
+        records (`_journal_recover_once`): a note journaled on this road
+        whose row never landed, or a v2-side record whose 404 the previous
+        process heard but did not live to fall back from.
+
+        From `projected_seq` (or LEM's acked, whichever is further), keyed by
+        each record's ref like every other projected row, so a second
+        fall-back — or one that overlaps a restart's re-delivery — writes
+        nothing twice. `projected_seq` moves past them only once their rows
+        have landed (`_note_projected`). Returns the records queued."""
         self._published_specs = None
         self._last_status_pushed = None
         if machine is None or journal is None:
             return 0
         try:
-            done = int(journal.meta("legacy_projected_seq") or 0)
+            done = int(journal.meta("projected_seq") or 0)
         except (TypeError, ValueError):
             done = 0
-        start = max(int(journal.acked or 0), done) + 1
+        start = max(int(journal.acked or 0), done,
+                    int(journal.meta("pruned_seq") or 0)) + 1
         last = journal.last_seq()
         if start > last:
             return 0
@@ -8743,14 +9758,15 @@ class LEMStationModule:
                             configured = True
                         if isinstance(rec.get("corrections"), dict):
                             corrections.update(rec["corrections"])
-                            events.append(("config", rec))
+                            events.append(rec)
+                        elif isinstance(rec.get("log"), list):
+                            events.append(rec)       # journaled on this road
                         continue
                     if not kind or kind in self._V2_NOT_EVENTS:
                         continue
-                    events.append(("held_expired" if kind == "given_up"
-                                   else kind, rec))
+                    events.append(rec)
         except JournalError:
-            return 0       # nothing marked: the next fall-back tries again
+            return 0       # nothing queued: the next fall-back tries again
         run_sql = globals().get("labcore_sql")
         if corrections and callable(run_sql):
             who = self._current_operator() or UNKNOWN_OPERATOR
@@ -8766,26 +9782,100 @@ class LEMStationModule:
                         sql, args = build_correction_delete(machine.uid, name)
                     run_sql(sql, args)
             except Exception:                         # noqa: BLE001
-                return 0   # LabCore refused: nothing marked, tried again
+                return 0   # LabCore refused: nothing queued, tried again
             self._corrections_read_at = None
         if configured:
             self._publish_config_labcore(machine)
-        for kind, rec in events:
-            try:
-                ts = datetime.fromisoformat(str(rec.get("ts")))
-            except (TypeError, ValueError):
-                ts = datetime.now()
-            detail = rec.get("detail") if isinstance(rec.get("detail"),
-                                                     dict) else {}
-            self._pending_events.append(build_log_insert(
-                machine.uid, kind, ts, lab_id=str(rec.get("lab_id") or ""),
-                test_name=str(rec.get("test_name") or ""),
-                value=str(rec.get("value") or ""), detail=detail))
-        try:
-            journal.update_meta(legacy_projected_seq=seq - 1)
-        except JournalError:
-            pass
+        with self._journal_lock_or_new():
+            for rec in events:
+                rows = self._record_rows(machine.uid, rec)
+                if rows:
+                    self._legacy_owe_event(
+                        "%s:%d" % (rec["epoch"], rec["seq"]), rows)
         return len(events)
+
+    #: DG2's window: how far back a rollback copies QC and status (§10.4).
+    DG2_HOURS = 24
+
+    def _legacy_dg2(self, journal, now: datetime, messages) -> int:
+        """DG2 (§10.4): a v4 server that held this bench's record has been
+        rolled back to v3.9, whose floor reads QC from LabCore's log. The
+        verdicts and status changes LEM acked in the last 24 h are in the v4
+        store only, so the rolled-back floor would show QC as stale — or as
+        the last verdict v3.9 ever saw — for as long as the rollback lasts.
+        They are copied back: every `qc` reading record and every `state`
+        record at or below `acked` whose time is within DG2_HOURS of `now`.
+        Readings of samples are not: the results road filed them, and the
+        log history of a rollback window is the v4 store's.
+
+        Keyed by each record's ref, so a second rollback adds nothing, and
+        on the re-upgrade the v4 server's bridge recognises every row by its
+        `jk` as a record it already holds. Due while `dg2_due` is in the
+        journal's meta (set by the fall-back, cleared once the rows land), so
+        a process killed in between does it again at its next start.
+        Returns the records queued."""
+        try:
+            due = int(journal.meta("dg2_due") or 0)
+        except (TypeError, ValueError):
+            due = 0
+        if due <= 0:
+            return 0
+        machine = getattr(self, "_machine", None)
+        uid = str(getattr(machine, "uid", "") or journal.uid)
+        try:
+            cutoff = (now - timedelta(hours=self.DG2_HOURS)).astimezone()
+        except (ValueError, OSError, OverflowError):
+            return 0
+        start = int(journal.meta("pruned_seq") or 0) + 1
+        top = min(due, journal.last_seq())
+        picked = []
+        seq = start
+        try:
+            while seq <= top:
+                batch = journal.records_from(seq, 500)
+                if not batch:
+                    break
+                for rec in batch:
+                    seq = int(rec.get("seq") or seq) + 1
+                    if rec["seq"] > top:
+                        break
+                    kind = rec.get("kind")
+                    if kind not in ("run", "state"):
+                        continue
+                    try:
+                        at = datetime.fromisoformat(str(rec.get("ts")))
+                        if at.tzinfo is None:
+                            at = at.astimezone()
+                    except (TypeError, ValueError):
+                        continue
+                    if at < cutoff:
+                        continue
+                    if kind == "run":
+                        rows = [a for a in rec.get("log") or ()
+                                if isinstance(a, list) and len(a) == 7]
+                        if not rows or any(a[2] != "qc" for a in rows):
+                            continue
+                    else:
+                        rows = self._record_rows(uid, rec)
+                    picked.append(("%s:%d" % (rec["epoch"], rec["seq"]), rows))
+        except JournalError as exc:
+            messages.append(f"The last 24 h of QC could not be read back from "
+                            f"the bench journal ({exc}); asked again at the "
+                            "next start.")
+            return 0
+        refs = getattr(self, "_dg2_refs", None)
+        if refs is None:
+            refs = self._dg2_refs = set()
+        with self._journal_lock_or_new():
+            for ref, rows in picked:
+                self._legacy_owe_event(ref, rows)
+                refs.add(ref)
+        if not picked:
+            try:
+                journal.update_meta(dg2_due=None)
+            except JournalError:
+                pass
+        return len(picked)
 
     def _transfer_status(self, now: datetime) -> str:
         """One sentence for the bench card about LEM (§14): said only when
@@ -9311,6 +10401,7 @@ class LEMStationModule:
             if journal.checkpoint_pending() and \
                     not self._upl_checkpoint(now, t, journal):
                 return
+            self._upl_adoption(now, t, journal)
             self._upl_sync(now, t, journal)
             self._upl_file_confirmed(now)
         except RoadsDown as exc:
@@ -9519,6 +10610,51 @@ class LEMStationModule:
         journal.update_meta(checkpoint="done")
         self._upl_log(t, "checkpoint", "resumed %d source(s)" % len(applied))
         return True
+
+    def _upl_adoption(self, now: datetime, t: float, journal) -> None:
+        """§10.2: the digest of what LEM already holds for this bench, once
+        the journal says adoption is due (from the bind on, before the first
+        poll needs it) or the poll has asked (`_adoption_history`), and only
+        until it has an answer. Kept in the transfer state for the poll; never decided here. A
+        404 is an old server (the bench adopts through LabCore instead); any
+        other answer that is not a whole digest is said and asked again."""
+        st = self._transfer_state()
+        with st.lock:
+            want = dict(st.adoption_want) if st.adoption_want else None
+            have = st.adoption_answer
+        if have is not None:
+            return
+        if want is None:
+            # Not asked yet: ask ahead only for a tailed file (the only
+            # source adoption reads) whose journal still has it due.
+            machine = getattr(self, "_machine", None)
+            if getattr(machine, "source_type", "") != "single_csv" or \
+                    not journal.adoption_due():
+                return
+        query = urllib.parse.urlencode(want or {"src": "", "boundary": ""})
+        ans = self._lem("GET", V2_ADOPTION_PATH.format(uid=urllib.parse.quote(
+            self._uploader_uid, safe="")) + "?" + query, now)
+        if ans is None:
+            return
+        if ans.status == 404:
+            self._upl_legacy(t, journal)
+            return
+        if ans.status == 401:
+            with st.lock:
+                st.token = None
+                st.enrol = "LEM does not recognise this bench: re-enrol"
+            self._upl_log(t, "adoption_401", st.enrol)
+            return
+        doc = ans.json() if ans.status == 200 else None
+        why = adoption_digest_problem(doc) if doc is not None else \
+            "HTTP %d" % ans.status
+        with st.lock:
+            if why:
+                st.adoption_error = why
+            else:
+                st.adoption_answer = {"want": want, "doc": doc}
+                st.adoption_error = ""
+        self._upl_log(t, "adoption", why or "digest of %s rows" % doc.get("rows"))
 
     def _apply_checkpoint(self, journal, doc: dict) -> List[dict]:
         """Install LEM's mirrored cursor for each file source, so the bench
@@ -9834,6 +10970,14 @@ class LEMStationModule:
         if (machine.source_type in ("single_csv", "multi_csv")
                 and self._journal_holds_files(machine)):
             return machine, [], None
+        if machine.source_type != "single_csv" and \
+                str(getattr(machine, "uid", "") or ""):
+            journal = self._journal_for(machine)
+            if journal is not None and journal.adoption_due():
+                try:
+                    journal.adoption_not_needed(machine.source_type)
+                except JournalError:
+                    pass
         if machine.source_type == "multi_csv":
             return self._ingest_multi(machine)
         if machine.source_type == "serial":
@@ -9860,6 +11004,21 @@ class LEMStationModule:
         source = self._source_for(machine)
         now = getattr(self, "_poll_clock", None) or datetime.now()
         try:
+            source.load()
+        except (OSError, JournalError) as exc:
+            return machine, [], f"Source cursor error: {exc}"
+        if self._adoption_due(machine, source):
+            # §10.2 step 6: the source keeps its bytes until adoption is
+            # complete; `_process_outcome` adopts once it knows its road. A
+            # file that cannot be opened is said now, exactly as a read says it.
+            try:
+                with open(source.path, "rb"):
+                    pass
+            except OSError as exc:
+                return machine, [], f"File error: {exc}"
+            self._adoption_pending = (machine, source)
+            return machine, [], None
+        try:
             read = source.read(now)
         except OSError as exc:
             return machine, [], f"File error: {exc}"
@@ -9868,6 +11027,332 @@ class LEMStationModule:
         prints = list(read.prints)
         self._source_pending = (prints, read, machine)
         return machine, prints, None
+
+    # ── Adoption at the first v4 start (§10.2) ──────────────────────────────
+    #
+    # `_ingest_single` holds a file source back while its journal says the
+    # adoption is due; `_process_outcome` runs `_adopt` once the poll knows
+    # which road it is on: LEM's digest in v2 (fetched by the uploader), indexed
+    # LabCore reads otherwise. Its answer is kept across polls (`_adoption`),
+    # so a poll that waits for the file to hold still never asks again.
+
+    def _adoption_due(self, machine, source) -> bool:
+        journal = self._journal_for(machine)
+        return (journal is not None and source.cursor is None
+                and journal.adoption_due())
+
+    def _adopt(self, machine, source, now: datetime,
+               messages: List[str]) -> Optional["_SourceRead"]:
+        """Adopt the file the record already holds. Returns the read that
+        completes it, or None while it waits (the record could not be asked,
+        or the file has not held still) — never a guess."""
+        journal = self._journal_for(machine)
+        if journal is None:
+            return None
+        state = getattr(self, "_adoption", None)
+        if state is None or state.get("key") != source.key:
+            state = self._adoption = {"key": source.key, "reads": 0,
+                                      "rows": [], "asked": set(),
+                                      "since": now}
+        name = os.path.basename(source.path)
+        try:
+            scan = source.scan_for_adoption()
+        except (OSError, JournalError) as exc:
+            source._wait_note(f"Adopting history: the instrument's file "
+                              f"{name} cannot be read ({exc}); nothing is "
+                              "read until it can.")
+            return None
+        boundary = adoption_boundary(scan["data"], machine.last_position)
+        if "history" not in state and not self._adoption_history(
+                machine, journal, source, state, boundary, now, messages):
+            return None
+        if not state["history"]:
+            return self._adopt_fresh(machine, journal, source, state, scan,
+                                     boundary, now, messages)
+        quiet = source.quiet_for_adoption(scan, now)
+        if not quiet and now - state["since"] < QUIET_MAX_WAIT:
+            source._wait_note(f"Adopting history: waiting for {name} to hold "
+                              "still before matching it against the record.")
+            return None
+        if quiet and scan.get("partial") is not None:
+            # Quiet: the last line is whole, as the reader would take it.
+            try:
+                whole = source.scan_for_adoption(final_complete=True)
+            except (OSError, JournalError) as exc:
+                source._wait_note(f"Adopting history: the instrument's file "
+                                  f"{name} cannot be read ({exc}); nothing is "
+                                  "read until it can.")
+                return None
+            if whole["state"] != scan["state"]:
+                source._wait_note(f"Adopting history: waiting for {name} to "
+                                  "hold still before matching it against the "
+                                  "record.")
+                return None
+            scan = whole
+        # Lines before the boundary are presumed recorded and never matched,
+        # so they are not parsed (the Agilent's boundary is 10.5 MB in).
+        lines = adoption_lines(machine, scan["lines"], boundary)
+        plan = self._adoption_plan(machine, state, lines, boundary, scan)
+        if plan is None:
+            source._wait_note(
+                f"Adopting history: LabCore could not say which lines of "
+                f"{name} it already holds ({state.get('error') or 'no answer'}"
+                "); the file is read once it can.")
+            return None
+        return self._adopt_plan(machine, journal, source, state, scan,
+                                boundary, plan, now, messages)
+
+    def _adoption_history(self, machine, journal, source, state, boundary,
+                          now, messages) -> bool:
+        """Has LEM ever recorded a reading from this bench, and from when?
+        v2: LEM's digest (0 LabCore ops), which also carries the multiset. A
+        bench not (yet) on v2: one LabCore read. False while it cannot be
+        answered — a failed read is not "no history"."""
+        name = os.path.basename(source.path)
+        if self._v2_active():
+            # The poll never waits on a road (§6.3): it leaves the question
+            # for the uploader thread (`_upl_adoption`) and takes the answer
+            # on a later poll. Until then the file keeps its bytes.
+            # The digest is the whole uid's record, whatever file or boundary
+            # asked for it, so an answer the uploader fetched at bind (it
+            # asks as soon as the journal says adoption is due) serves the
+            # first poll: no poll's worth of lag in which the file could move.
+            st = self._transfer_state()
+            with st.lock:
+                answer = st.adoption_answer
+                why = st.adoption_error
+                st.adoption_want = {"src": name, "boundary": int(boundary)}
+            if answer is None:
+                source._wait_note(
+                    f"Adopting history: waiting for LEM to say which lines of "
+                    f"{name} it already holds"
+                    + (f" ({why})" if why else "")
+                    + "; the file is read once it does.")
+                return False       # the poll's own wake carries the question
+            state.update(adoption_state_from_digest(answer["doc"]))
+            return True
+        read_sql = globals().get("labcore_read_sql")
+        if not callable(read_sql):
+            # Not a failed read: this process has no LabCore at all (not
+            # inside LabStation), so no record exists that could hold a line.
+            state.update(road="none", history=False, first=None)
+            return True
+        state["reads"] += 1
+        try:
+            res = read_sql(*build_first_ingest_query(machine.uid))
+        except Exception as exc:                          # noqa: BLE001
+            res = {"error": str(exc) or exc.__class__.__name__}
+        error = res.get("error") if isinstance(res, dict) else "no answer"
+        if error and "no such table" in str(error).lower():
+            # LabCore's own statement that lem_machine_log does not exist:
+            # nothing was ever recorded from any bench. Not a failed read.
+            state.update(road="labcore", history=False, first=None)
+            return True
+        if error or not isinstance(res.get("rows"), list) or not res["rows"]:
+            why = error or "an answer with no rows"
+            source._wait_note(f"Adopting history: LabCore could not say "
+                              f"whether this bench has a record ({why}); the "
+                              "file is read once it can.")
+            return False
+        row = res["rows"][0]
+        firsts = [t for t in (row.get("first_run"), row.get("first_qc")) if t]
+        # v3.9 wrote "YYYY-MM-DD HH:MM:SS", v4 ISO: compared as times.
+        firsts.sort(key=lambda t: _ts_naive(t) or datetime.max)
+        state.update(road="labcore", history=bool(firsts),
+                     first=firsts[0] if firsts else None)
+        return True
+
+    def _adoption_plan(self, machine, state, lines, boundary, scan):
+        """The plan, asking the record only for what it needs. v2: the
+        digest already holds every key. LabCore: the Lab IDs of the newest
+        ADOPTION_FAST_LINES readings first (the fast path, one read); if those
+        are not all recorded, the rest newest first, ADOPTION_LAB_IDS_PER_READ
+        at a time, never past ADOPTION_MAX_READS reads in all."""
+        first = _ts_naive(state.get("first"))
+        mtime = datetime.fromtimestamp(scan["mtime"])
+        older = first is not None and mtime < first
+        corrections = getattr(machine, "corrections", None) or {}
+        reparse = adoption_reparse(machine)
+        if state["road"] == "lem":
+            return plan_adoption(lines, boundary, state["counts"], None, older,
+                                 unreadable=state.get("unreadable"),
+                                 qc=state.get("qc"), corrections=corrections,
+                                 reparse=reparse,
+                                 logged_factors=state.get("factors"))
+        readings = [l for l in lines if l.run_key and l.offset >= boundary]
+        # Newest first, each Lab ID once (dict keeps first-seen order).
+        order = list(dict.fromkeys(l.lab_id for l in reversed(readings)))
+        tail_ids = list(dict.fromkeys(
+            l.lab_id for l in reversed(readings[-ADOPTION_FAST_LINES:])))
+        if not self._adoption_ask(machine, state, tail_ids):
+            return None
+        rec = legacy_adoption_counts(state["rows"])
+        plan = plan_adoption(lines, boundary, rec.counts, state["asked"], older,
+                             unreadable=rec.unreadable, qc=rec.qc,
+                             corrections=corrections, reparse=reparse,
+                             logged_factors=rec.factors)
+        if plan.kind != "full":
+            return plan
+        if not self._adoption_ask(machine, state, order):
+            return None
+        rec = legacy_adoption_counts(state["rows"])
+        return plan_adoption(lines, boundary, rec.counts, state["asked"], older,
+                             unreadable=rec.unreadable, qc=rec.qc,
+                             corrections=corrections, reparse=reparse,
+                             logged_factors=rec.factors)
+
+    def _adoption_ask(self, machine, state, lab_ids) -> bool:
+        """Read the recorded rows of these Lab IDs (those not asked yet),
+        within the read budget. False when a read failed: nothing is
+        decided on part of an answer."""
+        read_sql = globals().get("labcore_read_sql")
+        todo = [i for i in lab_ids if i not in state["asked"]]
+        step = ADOPTION_LAB_IDS_PER_READ
+        for at in range(0, len(todo), step):
+            if state["reads"] >= ADOPTION_MAX_READS:
+                state["over_budget"] = True
+                return True
+            chunk = todo[at:at + step]
+            state["reads"] += 1
+            try:
+                sql, args = build_adoption_lab_query(chunk)
+                res = read_sql(sql, args + [machine.uid])
+            except Exception as exc:                      # noqa: BLE001
+                res = {"error": str(exc) or exc.__class__.__name__}
+            if not isinstance(res, dict) or res.get("error") or \
+                    not isinstance(res.get("rows"), list):
+                state["error"] = (res or {}).get("error") if isinstance(
+                    res, dict) else "no answer"
+                state["error"] = state["error"] or "an answer with no rows"
+                return False
+            state["rows"].extend(res["rows"])
+            state["asked"].update(chunk)
+        return True
+
+    def _adopt_fresh(self, machine, journal, source, state, scan, boundary,
+                     now, messages):
+        """No reading was ever recorded from this bench: there is no history
+        to adopt, and every line in the file is a reading nobody has — read
+        from the top, exactly as a v4 bench with no cursor does.
+
+        The `adoption` record is journaled HERE, before the read, and not
+        with the poll's own records: it says nothing about any line, so it
+        needs no line to be journaled first, and a poll whose readings fail
+        to reach the journal then re-reads them as an ordinary bench does —
+        it does not adopt the whole file again on every poll. (Riding on the
+        poll's records, a bench whose journaling failed re-read and
+        re-logged its whole file each poll: 4,800 prints a poll in D1 under
+        `journal_poll_off`, until the gate's uploader wait gave up.) A kill
+        after the record and before the read leaves a journal with no cursor:
+        the next start reads from the top, which is this same outcome."""
+        record = {"kind": "adoption", "src": "file:" + source.key,
+                  "path": os.path.basename(source.path), "boundary": boundary,
+                  "history": False, "matched": 0, "recovered": 0,
+                  "pre_history_lines": 0, "presumed": 0, "unchecked": 0,
+                  "unreadable": 0,
+                  "file_sha256": _sha(scan["data"][:scan["end"]]),
+                  "road": state.get("road"), "labcore_reads": state["reads"]}
+        try:
+            journal.append([record], ts=_poll_ts(now))
+            journal.mark_adopted(record["src"], _adoption_summary(record))
+        except JournalError as exc:
+            source._wait_note(f"Adopting history: the bench journal could not "
+                              f"record the adoption ({exc}); trying again "
+                              "next poll.")
+            return None
+        self._adoption = None
+        source.waiting = ""
+        try:
+            return source.read(now)
+        except (OSError, JournalError) as exc:
+            # Adopted; the read itself is retried by the next poll's ordinary
+            # read, as any failed read is.
+            source._wait_note(f"The instrument's file "
+                              f"{os.path.basename(source.path)} cannot be read "
+                              f"({exc}); nothing is read until it can.")
+            return None
+
+    def _adopt_plan(self, machine, journal, source, state, scan, boundary,
+                    plan, now, messages):
+        recovered = {l.pk for l in plan.recovered}
+        src = "file:" + source.key
+        try:
+            journal.add_known(pk for _s, _p, _t, _lh, pk in scan["lines"]
+                              if pk not in recovered)
+            journal.seed_ledger(self._adoption_ledger(state, plan, now))
+        except JournalError as exc:
+            source._wait_note(f"Adopting history: the bench journal could not "
+                              f"keep the adopted lines ({exc}); trying again "
+                              "next poll.")
+            return None
+        record = {"kind": "adoption", "src": src,
+                  "path": os.path.basename(source.path), "boundary": boundary,
+                  "history": True, "path_kind": plan.kind,
+                  "matched": plan.matched, "recovered": len(plan.recovered),
+                  "pre_history_lines": plan.pre_history,
+                  "presumed": plan.presumed, "unchecked": plan.unchecked,
+                  "unreadable": plan.unreadable,
+                  "not_readings": plan.other,
+                  "file_sha256": _sha(scan["data"][:scan["end"]]),
+                  "first_ingest": state.get("first"),
+                  "road": state.get("road"), "labcore_reads": state["reads"]}
+        name = os.path.basename(source.path)
+        parts = [f"Adopted {name}: {plan.matched + plan.presumed} line(s) "
+                 "already in the record"]
+        if plan.recovered:
+            parts.append(f"{len(plan.recovered)} reading(s) that never reached "
+                         "the record are kept as RECOVERED for a person to "
+                         "file (not QC-judged, not sent to LabCore)")
+        if plan.pre_history:
+            parts.append(f"{plan.pre_history} line(s) older than LEM on this "
+                         "bench counted as history")
+        if plan.unchecked:
+            parts.append(f"{plan.unchecked} line(s) beyond the LabCore read "
+                         "budget presumed recorded")
+        if plan.unreadable:
+            parts.append(f"{plan.unreadable} line(s) whose recorded rows "
+                         "cannot be read presumed recorded, not written again")
+        messages.append("; ".join(parts) + ".")
+
+        def on_commit():
+            if not journal.adopted(src):
+                return False, ["The adoption of this bench's file was not "
+                               "recorded in the bench journal; it runs again "
+                               "next poll."]
+            journal.mark_adopted(src, _adoption_summary(record))
+            self._adoption = None
+            return True, []
+        return source.adopt(scan, recovered, [record], now, on_commit)
+
+    def _adoption_ledger(self, state, plan, now) -> List[list]:
+        """[lab_id, test, value] for the matched legacy `run` rows of the
+        last ADOPTION_LEDGER_DAYS, oldest first (the newest wins): the values
+        v3.9 filed, corrected as they were filed."""
+        matched = {l.run_key for l in plan.matched_lines if l.run_key}
+        since = now - timedelta(days=ADOPTION_LEDGER_DAYS)
+        rows = []
+        if state.get("road") == "lem":
+            for r in state.get("recent") or ():
+                if isinstance(r, dict) and r.get("h") in matched:
+                    rows.append((r.get("ts"), r.get("lab_id"), r.get("values")))
+        else:
+            for r in state.get("rows") or ():
+                if str(r.get("kind")) != "run":
+                    continue
+                if legacy_row_adoption_key(r) not in matched:
+                    continue
+                detail = _detail_dict(r.get("detail")) or {}
+                rows.append((r.get("ts"), r.get("lab_id"), detail.get("values")))
+        cells = []
+        for ts, lab, values in sorted(rows, key=lambda x: str(x[0] or "")):
+            at = _ts_naive(ts)
+            if at is None or at < since or not isinstance(values, dict):
+                continue
+            for test, value in values.items():
+                if test in RESERVED_ROW_KEYS or value in (None, ""):
+                    continue
+                cells.append([str(lab or "").strip(), str(test), str(value)])
+        return cells
 
     def _source_for(self, machine: Machine) -> "SingleCsvSource":
         """This module's reader for the machine's file, created on first use.
@@ -10551,7 +12036,7 @@ class LEMStationModule:
                 and LEMStationModule._transfer_state(self).mode == "legacy":
             journal = self._journal_for(machine) if machine is not None else None
             if journal is not None:
-                self._v2_fell_back(machine, journal, messages)
+                self._v2_fell_back(machine, journal, messages, now)
         self._v2_was_active = v2
         if not v2:
             self._probe_live_channel(machine)
@@ -10589,6 +12074,21 @@ class LEMStationModule:
         # changing.
         if machine is not None:
             self._refresh_calibration_epoch(machine, now)
+
+        # Adoption at the first v4 start (§10.2): the file source held its
+        # bytes back; now that the road is known (LEM's digest in v2, LabCore
+        # otherwise) the record is asked which lines it already holds. The
+        # read it returns is this poll's read: the recovered prints, the
+        # `adoption` record, and a cursor at the end of the file.
+        pending_adoption = getattr(self, "_adoption_pending", None)
+        self._adoption_pending = None
+        if pending_adoption is not None and not error and machine is not None \
+                and pending_adoption[0] is machine:
+            adopted = self._adopt(machine, pending_adoption[1], now, messages)
+            if adopted is not None:
+                prints = list(adopted.prints)
+                source_pending = (prints, adopted, machine)
+                payload["raw_prints"] = list(prints)
 
         # The bench journal. Whatever a previous process left owed is queued
         # again first (once per journal); then, on a poll that read something,
@@ -10672,6 +12172,22 @@ class LEMStationModule:
         # (b): only now is the read consumed — the cursor saved, the files
         # moved. A kill before this re-reads, and the journal's keys drop it.
         self._commit_source(machine, prints, messages, source_pending)
+        # Readings adoption found in the file and not in the record (§10.2):
+        # in the record now (journaled, logged with origin 'recovered'), and
+        # NOTHING else — not QC-judged (a print from before the upgrade must
+        # not decide today's status), not filed to LabCore (a person files
+        # them from the instrument page, through the guard), not in history.
+        recovered = [r for r in rows if r.get(ORIGIN_KEY) == "recovered"]
+        if recovered:
+            rows = [r for r in rows if r.get(ORIGIN_KEY) != "recovered"]
+            if journaled:
+                try:
+                    journal.mark_settled([r[JOURNAL_KEY] for r in recovered
+                                          if r.get(JOURNAL_KEY)])
+                except JournalError:
+                    pass       # a restart settles them (`_journal_recover_once`)
+            else:
+                self._queue_run_events(machine, recovered, now)
         payload["rows"] = rows
         combined = history_snapshot + rows
         if rows:
@@ -11435,17 +12951,29 @@ class LEMStationModule:
             # Named, not counted: "1 reading(s)" tells an operator nothing they
             # can act on, and this is the last time anybody hears about it.
             for row in expired:
-                self._log_event("held_expired",
-                                lab_id=str(row.get(LAB_ID_KEY) or "").strip(),
-                                detail=run_log_detail(row), now=now)
+                lab = str(row.get(LAB_ID_KEY) or "").strip()
                 # The journal's own record of the decision: no sample in seven
-                # days. It reaches the LEM store as a `held_expired` row.
-                if row.get(JOURNAL_KEY):
-                    decisions.append({
+                # days. It reaches the LEM store as a `held_expired` row, and
+                # on the legacy road it carries the held_expired row v3.9
+                # wrote (`log`) and is projected keyed by its own ref. It is
+                # the ONE record of the give-up: a second, journaled through
+                # `_log_event`, made the floor's history say it twice.
+                journal = LEMStationModule._journal_for(self, machine) \
+                    if row.get(JOURNAL_KEY) and machine is not None else None
+                if journal is not None:
+                    decision = {
                         "kind": "given_up", "of": [row[JOURNAL_KEY]],
-                        "lab_id": str(row.get(LAB_ID_KEY) or "").strip(),
+                        "lab_id": lab,
                         "why": f"no sample matched in {HELD_ROW_MAX_AGE.days} "
-                               "days"})
+                               "days"}
+                    if not _v2(self):
+                        decision["log"] = [build_log_insert(
+                            machine.uid, "held_expired", now, lab_id=lab,
+                            detail=run_log_detail(row))[1]]
+                    decisions.append(decision)
+                else:
+                    self._log_event("held_expired", lab_id=lab,
+                                    detail=run_log_detail(row), now=now)
                 self._road_forget(row)
             # Carried on the payload like the hold notice, and for the same
             # reason only more sharply: `messages[-1]` wins the status line, and
@@ -11801,6 +13329,10 @@ class LEMStationModule:
                 else:
                     cur_rows = cells.get(cell, [])
                     led = self._ledger_value(machine, lab, test)
+                    if led is None and printed != str(lab):
+                        # Adoption seeds `L` from v3.9's rows, which carry the
+                        # PRINTED Lab ID, not the sample it was filed under.
+                        led = self._ledger_value(machine, printed, test)
                 verdict, expect = decide_cell(cur_rows, value, led)
                 op = {"operation": "update_cell",
                       "params": {"lab_id": lab, "test_name": test,
@@ -12788,7 +14320,7 @@ class LEMStationModule:
             # that click is waiting on these records and the next poll takes
             # them.
             if store:
-                self._journal_verify_owed(machine, read_sql, messages)
+                self._journal_requeue_owed()
                 self._drain_events(run_sql, messages)
 
             # The results road. Runs even with no new prints: it is also where
@@ -13002,12 +14534,160 @@ class LEMStationModule:
         if len(self._pending_events) >= LOG_EVENT_LIMIT:
             self._events_dropped += 1
             return
-        if _v2(self) and self._v2_log_event(
-                kind, lab_id, test_name, value, detail, now):
+        if _v2(self):
+            if self._v2_log_event(kind, lab_id, test_name, value, detail, now):
+                return
+        elif LEMStationModule._legacy_log_event(self, kind, lab_id, test_name,
+                                                value, detail, now):
             return
         self._pending_events.append(build_log_insert(
             self._machine.uid, kind, now or datetime.now(),
             lab_id=lab_id, test_name=test_name, value=value, detail=detail))
+
+    #: Machine-log kinds that are readings: they are journaled as `run`
+    #: records by the poll itself. `_log_event` sees them only on the road
+    #: with no journal (`_queue_run_events`), where there is nothing to key.
+    _READING_KINDS = frozenset({"run", "qc"})
+
+    def _legacy_log_event(self, kind: str, lab_id: str, test_name: str,
+                          value, detail: Optional[dict],
+                          now: Optional[datetime]) -> bool:
+        """`_log_event` on the legacy road (§10.3): the record first, then its
+        row. The event is journaled as the record a v2 bench journals — a
+        status change as a `state` record, a given-up reading as `given_up`,
+        the rest under their own kind — carrying in `log` the exact row v3.9
+        would have written, and that row is queued keyed by the record's ref.
+
+        Under v3.9 an operator's note, an override or a PM tick lived in a
+        memory queue until a poll drained it: a kill before the write lost
+        it, a lost answer wrote it twice. Journaled, a restart re-projects it
+        from `projected_seq`; keyed, a resend lands nothing. And because it
+        is the same record a v2 bench would have sent, a v4 server that later
+        receives this epoch from seq 1 reads it the same way (M6).
+
+        False when there is no journal to hold it: the caller writes today's
+        plain row, which is what the module has always done without one."""
+        if kind in LEMStationModule._READING_KINDS:
+            return False
+        machine = getattr(self, "_machine", None)
+        journal_for = getattr(self, "_journal_for", None)
+        journal = journal_for(machine) \
+            if machine is not None and callable(journal_for) else None
+        if journal is None:
+            return False
+        detail = dict(detail or {})
+        _sql, args = build_log_insert(
+            machine.uid, kind, now or datetime.now(), lab_id=lab_id,
+            test_name=test_name, value=value, detail=detail)
+        if kind == "status_change":
+            rec = {"kind": "state", "status": str(detail.get("to") or ""),
+                   "reason": str(detail.get("reason") or ""),
+                   "from": str(detail.get("from") or "")}
+            if isinstance(detail.get("sub"), dict):
+                rec["sub"] = detail["sub"]
+        elif kind == "held_expired":
+            rec = {"kind": "given_up", "lab_id": lab_id,
+                   "test_name": test_name,
+                   "why": "no sample after %d days" % HELD_ROW_MAX_AGE.days,
+                   "detail": detail}
+        else:
+            rec = {"kind": kind, "lab_id": lab_id, "test_name": test_name,
+                   "value": "" if value is None else str(value),
+                   "detail": detail}
+        rec["log"] = [args]
+        with self._journal_lock_or_new():
+            try:
+                (ref,) = journal.append([rec], ts=_poll_ts(now) if now
+                                        else None)
+            except JournalError:
+                return False
+            self._legacy_owe_event(ref, [args])
+        return True
+
+    def _queue_once(self, ref: str) -> bool:
+        """Claim `ref`'s place on the machine-log queue: True if its rows are
+        not on it already (the caller then queues them), False if they are.
+
+        THE QUEUE HOLDS EACH RECORD'S ROWS AT MOST ONCE. The exact key stops
+        a row sent AGAIN — in a later statement, where NOT EXISTS sees the
+        first copy — and by design not a row sent TWICE in one statement:
+        rows inside one INSERT ... SELECT do not see each other, which is
+        what lets two genuine prints of one sample both land (L2). So a
+        record offered twice in one process — the restart walk
+        (`_journal_recover_once`) and a fall-back (`_v2_fell_back`), or a
+        second fall-back before the first drained — must not be queued
+        twice, or the first drain lands it twice (critic round 2: a bench
+        restarted during a rollback wrote its DG2 verdict, its status
+        changes and an unacked note twice). The claim is released when the
+        record's last row lands (`_journal_landed`); a refused or failed
+        batch goes back on the queue and keeps it."""
+        queued = getattr(self, "_queued_refs", None)
+        if queued is None:
+            queued = self._queued_refs = set()
+        with self._journal_lock_or_new():
+            if ref in queued:
+                return False
+            queued.add(ref)
+            return True
+
+    def _legacy_owe_event(self, ref: str, rows: list, front: bool = False
+                          ) -> None:
+        """Queue an event record's rows for LabCore, keyed by its ref, and
+        count them owed so `projected_seq` cannot pass the record until they
+        have landed. Under the journal lock (the caller's)."""
+        counts = getattr(self, "_journal_unprojected", None)
+        if counts is None:
+            counts = self._journal_unprojected = {}
+        owed = getattr(self, "_proj_events", None)
+        if owed is None:
+            owed = self._proj_events = set()
+        if not self._queue_once(ref):
+            # Already on the queue (or in flight): offered again by a second
+            # walk in this process — the restart's and the fall-back's, say.
+            # Queued twice, both copies went out in ONE keyed statement, whose
+            # rows do not see each other, and both landed.
+            return
+        entries = [_log_entry(args, ref) for args in rows]
+        counts[ref] = len(entries)
+        owed.add(ref)
+        if front:
+            self._pending_events.extendleft(reversed(entries))
+        else:
+            self._pending_events.extend(entries)
+
+    def _note_projected(self) -> None:
+        """Advance `projected_seq` in journal.meta (§10.3): the highest seq at
+        or below which the legacy projection has nothing left to do — every
+        record is in LabCore's log, is in the v4 store (acked), or makes no
+        row. Computed from what the journal still owes (unprojected runs) and
+        the event records whose rows have not landed, under the journal lock
+        so an event journaled on another worker is either counted or above
+        the `last_seq` read here. A restart re-projects event records from
+        here; readings are re-delivered by their own marks."""
+        if _v2(self):
+            return
+        journal = getattr(self, "_journal", None)
+        if journal is None:
+            return
+        prefix = str(journal.epoch) + ":"
+        with self._journal_lock_or_new():
+            mark = journal.last_seq()
+            for run in journal.open_runs():
+                if not run["projected"] and str(run["ref"]).startswith(prefix):
+                    mark = min(mark, _ref_seq(run["ref"]) - 1)
+            for ref in list(getattr(self, "_proj_events", None) or ()):
+                if str(ref).startswith(prefix):
+                    mark = min(mark, _ref_seq(ref) - 1)
+            try:
+                if int(journal.meta("projected_seq") or 0) != mark:
+                    journal.update_meta(projected_seq=max(0, mark))
+                dg2 = getattr(self, "_dg2_refs", None)
+                if dg2 and journal.meta("dg2_due") and not (
+                        dg2 & set(getattr(self, "_proj_events", None) or ())):
+                    journal.update_meta(dg2_due=None)
+                    dg2.clear()
+            except (JournalError, TypeError, ValueError):
+                pass
 
     def _drain_events(self, run_sql, messages: Optional[List[str]] = None
                       ) -> None:
@@ -13063,17 +14743,37 @@ class LEMStationModule:
                     break
             if not batch:
                 break
-            sql, args = build_log_batch([args for _sql, args in batch])
-            try:
-                result = run_sql(sql, args, source="LEM Station")
-            except Exception:
-                self._pending_events.extendleft(reversed(batch))
-                raise
-            refused = refusal_reason(result)
-            if not refused:
-                self._journal_landed(batch)
+            # A row that projects a journal record goes through the exact key
+            # (`build_projection_batch`): sent twice, it lands once. A row
+            # with no record behind it — the journal could not be opened —
+            # is today's plain INSERT; it has nothing to be keyed on.
+            keyed = [e for e in batch if getattr(e, "ref", None)]
+            plain = [e for e in batch if not getattr(e, "ref", None)]
+            refused = ""
+            for part, build in ((keyed, build_projection_batch),
+                                (plain, build_log_batch)):
+                if not part:
+                    continue
+                sql, args = build([projected_args(a, getattr(e, "ref", None))
+                                   for e in part for a in (e[1],)])
+                try:
+                    result = run_sql(sql, args, source="LEM Station")
+                except Exception:
+                    # Back at the FRONT: the keyed rows only if they were not
+                    # taken (a keyed part that WAS taken is already marked).
+                    self._note_projected()
+                    if part is plain:
+                        batch = plain
+                    self._pending_events.extendleft(reversed(batch))
+                    raise
+                refused = refusal_reason(result)
+                if refused:
+                    rest = part if part is plain else batch
+                    self._pending_events.extendleft(reversed(rest))
+                    break
+                self._journal_landed(part)
             if refused:
-                self._pending_events.extendleft(reversed(batch))
+                self._note_projected()
                 already_closed = not self._log_road_open
                 self._log_road_open = False
                 # Through `_report_loss`, not a bare `messages.append`. This is
@@ -13093,6 +14793,7 @@ class LEMStationModule:
                         messages)
                 return
         self._log_road_open = True
+        self._note_projected()
         dropped, self._events_dropped = self._events_dropped, 0
         if dropped:
             # The one loss on this road that nothing else covers, so it is said

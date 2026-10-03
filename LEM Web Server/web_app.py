@@ -1546,11 +1546,24 @@ def create_app(gateway, labcore_gateway=None,
         logging a 404 in every console."""
         return redirect("/static/favicon.svg", code=301)
 
+    # ── the wall kiosks (ia-final §3.8, piece 13) ───────────────────────
+    # /floor and /qc are TV bookmarks a year old, so they answer 200 with no
+    # redirect (O11) and draw the chromeless walls: no sidebar, sign-in, bell
+    # or toast, because nobody stands at a TV. Memory only: the first paint
+    # is the same answer the polls serve, so a wall says something true
+    # before its scripts run, and loading it costs LabCore nothing
+    # (tests/test_wall_pages.py counts).
     @app.route("/floor")
     def floor():
-        """The lab floor: every instrument on its bay, hover for a glance,
-        click for the full record, right-click to act on it."""
-        return render_template("floor.html", active="/floor")
+        """The floor wall: can the lab run? (wall_floor.html)."""
+        return render_template("wall_floor.html", data=_wall_floor_payload(), kind="floor")
+
+    @app.route("/floor/classic")
+    def floor_classic():
+        """The old floor (floor.html), kept reachable until piece 14 deletes
+        it: some of its dialogs have no other door yet. Old pages' Map link
+        lands here."""
+        return render_template("floor.html", active="/floor/classic")
 
     @app.route("/maintenance")
     def maintenance_page():
@@ -1868,7 +1881,9 @@ def create_app(gateway, labcore_gateway=None,
                                    for r in app.url_map.iter_rules())
         if _has_record["v"]:
             return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
-        return "/floor"
+        # /floor is the wall now (piece 13); the old floor is the record
+        # until the record page exists
+        return "/floor/classic"
 
     def _today_round_day():
         """Today's cached `/api/checklists` answer, or the last one read
@@ -2007,6 +2022,27 @@ def create_app(gateway, labcore_gateway=None,
             _inst_memo["key"] = key
         return dict(_inst_memo["value"], **meta)
 
+    def _wall_floor_payload() -> dict:
+        """The Instruments answer plus the wall's words (ui_wall.floor) and
+        the lab's clock. Memory only."""
+        import ui_wall
+        from live_presence import merge_machines
+        p = _instruments_payload()
+        snap = snapshots.get(build_if_missing=False)
+        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+                  if snap.get("ready") else None)
+        return dict(p, wall=ui_wall.floor(p, machines=merged),
+                    details=ui_wall.bay_details(p, now=_now()),
+                    details_short=ui_wall.bay_details(p, now=_now(), short=True), lab_tz=ui_live.lab_tz(),
+                    server_now=_now().astimezone().isoformat(timespec="seconds"))
+
+    @app.route("/api/ui/wall/floor")
+    def api_ui_wall_floor():
+        """/floor's answer: see _wall_floor_payload. 0 LabCore ops."""
+        resp = jsonify(_wall_floor_payload())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
     @app.route("/api/ui/instruments")
     def api_ui_instruments():
         """Readiness per instrument, the Needs-you card and the fleet pill:
@@ -2064,6 +2100,11 @@ def create_app(gateway, labcore_gateway=None,
         return render_template("instrument.html", nav="instruments", data=body,
                                has_quality=any(r.rule == "/quality"
                                                for r in app.url_map.iter_rules()))
+    @app.template_filter("groupby_runs")
+    def _groupby_runs(items, key: str):
+        """Runs of one `key` in their own order (ui_wall.runs)."""
+        import ui_wall as _uw
+        return _uw.runs(items, key)
 
     @app.template_filter("json_island")
     def _json_island(value) -> str:
@@ -5792,7 +5833,76 @@ def create_app(gateway, labcore_gateway=None,
 
     @app.route("/qc")
     def page_qc_wall():
-        return render_template("qc.html")
+        """The QC wall: one card per (instrument, check), worst first."""
+        return render_template("wall_qc.html", qc=_wall_qc_payload(), kind="qc")
+
+    @app.route("/wall")
+    def page_wall():
+        """One TV for both walls: ?show=floor,qc&every=60 alternates them
+        (wall.js). Both first paints ride along, so the switch draws at once."""
+        return render_template("wall.html", data=_wall_floor_payload(),
+                               qc=_wall_qc_payload(), kind="wall")
+
+    # The chart history behind /qc is the local record (the store, or the
+    # log copy), never LabCore. A wall polls; the history moves when a QC
+    # result lands, minutes apart, so it is read at most once a minute and
+    # held here. A read that fails is remembered as a failure (the cards say
+    # the history is missing), never as "no history".
+    _wall_qc_memo: dict = {"at": 0.0, "rows": None, "ok": False, "missing": "unread"}
+    WALL_QC_HISTORY_SECONDS = 60.0
+    WALL_QC_HISTORY_DAYS = 180
+
+    def _wall_qc_rows():
+        """(rows, missing): the QC rows, or None and why they are missing.
+        "filling" is a log copy that has never filled (empty, no fill
+        stamp): nothing failed, there is just nothing local yet. "unread"
+        is a read that failed, or no local record at all."""
+        import time as _time
+        mirror = app.config.get("LOG_MIRROR")
+        now = _time.monotonic()
+        m = _wall_qc_memo
+        if m["at"] and now - m["at"] < WALL_QC_HISTORY_SECONDS:
+            return (m["rows"] if m["ok"] else None), m["missing"]
+        rows, ok, missing = None, False, "unread"
+        try:
+            if mirror is not None:
+                st = None if isinstance(mirror, StoreLogMirror) else mirror.state()
+                if st is not None and not st["rows"] and not st.get("filled_at"):
+                    missing = "filling"
+                else:
+                    since = (_now() - timedelta(days=WALL_QC_HISTORY_DAYS)).isoformat(timespec="seconds")
+                    rows = mirror.query(kind="qc", since=since, limit=20000)
+                    ok = True
+        except Exception:                                   # noqa: BLE001
+            rows, ok, missing = None, False, "unread"
+        m.update(at=now, rows=rows, ok=ok, missing=missing)
+        return (rows if ok else None), missing
+
+    def _wall_qc_payload() -> dict:
+        import ui_wall
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            err = snap.get("error")
+            out = ui_wall.qc(None, rows=None, href=_record_href,
+                             error=(str(err)[:200] if err else None))
+        else:
+            merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+            rows, missing = _wall_qc_rows()
+            out = ui_wall.qc(merged, rows=rows, href=_record_href, now=_now(), missing=missing)
+            out["built_at"] = snap.get("built_at") or None
+            out["stale"] = bool(snap.get("stale"))
+        out["lab_tz"] = ui_live.lab_tz()
+        out["server_now"] = _now().astimezone().isoformat(timespec="seconds")
+        return out
+
+    @app.route("/api/ui/wall/qc")
+    def api_ui_wall_qc():
+        """/qc's cards: verdicts from the snapshot, history from the local
+        record. 0 LabCore ops."""
+        resp = jsonify(_wall_qc_payload())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     # ── the status gutter ─────────────────────────────────────────────
     # The events list with a colour band down its left: for each event, what
