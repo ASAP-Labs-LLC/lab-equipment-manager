@@ -165,3 +165,29 @@ def test_a_kill_off_the_scenario_thread_is_noted_for_the_world(gw, loaded):
     assert seen == ["killed"]
     assert OFF_THREAD_KILLS == ["labcore kill_after"]
     del OFF_THREAD_KILLS[:]
+
+
+def test_a_batch_killed_before_it_executed_was_never_received(gw, loaded):
+    """Phase 1's `cell_sends` counts a batch the moment the bench calls
+    write(), BEFORE the fault plan decides — so a batch killed before it
+    executed (K3's kill_before) is a "send", and the restart's one real
+    filing of the same cells reads as a duplicate send. v3.9's K3 numbers
+    (15 sends, 12 lands) depend on that count, so it stays as it is. Beside
+    it, `cell_received` counts what LabCore actually received: a request
+    killed or dropped before it executed never reached it; a refused one, or
+    one whose answer was lost, did."""
+    lh = loaded[0]
+    gw.plan = lambda kind, cat, op: "kill_before"
+    with pytest.raises(lh.Kill):
+        gw.write("batch", {"operations": [cell("L1", "0.8")]})
+    gw.plan = lambda kind, cat, op: "raise_before"
+    with pytest.raises(ConnectionError):
+        gw.write("batch", {"operations": [cell("L1", "0.8")]})
+    gw.plan = None
+    gw.write("batch", {"operations": [cell("L1", "0.8")]})
+    gw.plan = lambda kind, cat, op: "raise_after"
+    with pytest.raises(TimeoutError):
+        gw.write("batch", {"operations": [cell("L2", "0.9")]})
+    key1, key2 = ("L1", "Density", "0.8"), ("L2", "Density", "0.9")
+    assert gw.cell_sends[key1] == 3                 # phase 1's count, unchanged
+    assert gw.cell_received[key1] == 1 and gw.cell_received[key2] == 1

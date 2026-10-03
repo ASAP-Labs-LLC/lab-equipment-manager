@@ -22,9 +22,18 @@ Exit status:
 With --mutations: 0 if every available mutation was KILLED, 1 if one
 SURVIVED (or, with --strict, one was UNAVAILABLE), 2 on a harness failure —
 including a mutated run that itself had harness errors, or a subprocess whose
-exit status contradicts its own results. On v3.9 five mutations run today (T0
-and four P0 source mutations of v3.9 mechanisms); the seven §15.7 mutations of
-v4 code are UNAVAILABLE until the pieces that own them land that code.
+exit status contradicts its own results. On v4 every mutation in
+gharness/mutations.py runs (the eight of §15.7 among them; `--strict` makes
+an UNAVAILABLE one a failure); on v3.9 only T0 and the four P0 source
+mutations of v3.9 mechanisms have code to break, and the rest are
+UNAVAILABLE there by design.
+
+M1 (today's pairing, §12.2) is the v3.9 drift run itself: gate.py hands its
+results to the scenario through LEM_GATE_DRIFT_JSON, once per invocation
+(and once for a whole self-test).
+
+The 24 h fleet soak is a separate command with the same exit-status
+discipline: soak.py (see its docstring).
 
 Never `gate.py | tail && push` — use the exit status (set -o pipefail).
 
@@ -377,6 +386,13 @@ def run_mutations(args):
             g["economy.json"] = not res.get("economy_drift")
         return g
 
+    if label != "v3.9" and not os.environ.get("LEM_GATE_DRIFT_JSON"):
+        # M1 reads today's reproduction; make it once for the whole self-test
+        # (the mutations touch the v4 tree, never the tagged v3.9.0 one).
+        drc = _drift_once(args)
+        if drc != 0:
+            raise RuntimeError("the v3.9 reproduction failed (exit %d) — the "
+                               "self-test is not trusted" % drc)
     clean, rc = sub([], "clean")     # raises (-> exit 2) on harness errors
     green = greens(clean)
     print("clean run: %d scenarios, %d green against their %s row"
@@ -444,17 +460,30 @@ def _write_results(out, args):
         json.dump(out, f, indent=1, default=str)
 
 
+def _drift_once(args):
+    """The v3.9 drift check, in a subprocess (one process cannot import two
+    versions of the module). Its results are kept and named in
+    LEM_GATE_DRIFT_JSON, so M1 (today's pairing: "baseline reproduced
+    exactly") reports THIS run rather than making a second one. Returns its
+    exit status; the results are only handed on when it exited 0."""
+    root = env.activate(args.tmp)
+    path = os.path.join(root, "drift-v3.9.json")
+    p = subprocess.run([sys.executable, os.path.join(HERE, "gate.py"), "--target",
+                        "v3.9", "--drift-only", "--quiet", "--json", path]
+                       + (["--tmp", args.tmp] if args.tmp else []),
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    print(p.stdout.decode(errors="replace").rstrip())
+    if p.returncode == 0 and os.path.exists(path):
+        os.environ["LEM_GATE_DRIFT_JSON"] = path
+    return p.returncode
+
+
 def _main(args):
     if args.mutations:
         return run_mutations(args)
     drift_rc = None
     if args.target == "v4" and not args.code and not args.skip_drift and not args.drift_only:
-        p = subprocess.run([sys.executable, os.path.join(HERE, "gate.py"), "--target",
-                            "v3.9", "--drift-only", "--quiet"]
-                           + (["--tmp", args.tmp] if args.tmp else []),
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        drift_rc = p.returncode
-        print(p.stdout.decode(errors="replace").rstrip())
+        drift_rc = _drift_once(args)
         if drift_rc != 0:
             print("HARNESS: the v3.9 reproduction failed (exit %d) — the gate is not "
                   "trusted; v4 not judged" % drift_rc)

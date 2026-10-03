@@ -190,10 +190,11 @@
     "dup": 0,
     "res_lost": 0,
     "res_wrong": 0,
-    "cell_dup_sends": 0,
+    "cell_dup_sends": 3,
+    "cell_dup_received": 0,
     "cell_dup_lands": 0
    },
-   "v4_spec": "0/0 · 0/0 · 0/0"
+   "v4_spec": "0/0 · 0/0 · 0/0. Re-baselined deliberately in T-P13 (§9: a changed number is re-baselined, never absorbed): phase 1's cell_dup_sends counts a batch at the bench's call, BEFORE the fault plan acts, so K3's kill_before batch (3 cells, never executed) is a 'send' — that is why v3.9 reads 15 sends but 12 lands. After the restart the v4 guard read finds those 3 cells empty and files each once; not re-sending would lose them (no op_id yet, D9). So cell_dup_sends is pinned at exactly 3 (the killed batch, nothing more), and the spec's 0 is held on what LabCore received: cell_dup_received 0 (a batch killed or dropped before executing is not received; refused or answer-lost ones are), and cell_dup_lands 0."
   },
   "K4": {
    "v3.9_source": "baseline/faults.json (phase 1, v3.9.0); ledger and counter fields measured by this harness on v3.9.0",
@@ -2397,9 +2398,14 @@
     "res_lost": 0,
     "res_wrong": 0,
     "cell_dup_sends": 0,
-    "cell_dup_lands": 0
+    "cell_dup_lands": 0,
+    "restore_witnessed": true,
+    "restore_rolled_back_the_cursor": true,
+    "cursor_409s": 1,
+    "records_resent": 33,
+    "drained": true
    },
-   "v4_spec": "0/0 (409 cursor → resend)"
+   "v4_spec": "0/0 (409 cursor → resend). Built in T-P13: 10 polls synced, the server's own hourly backup (Custody.backup_now: copy, manifest, durable, ledger witness), 10 more polls, the server stopped, custody.restore of that backup (witnessed by the store's ledger), the server booted on it. The row also proves the restore happened and was recovered from: the restored store's acked is below the bench's, the app answered exactly one 409 cursor, and the bench resent exactly the 30 run records of polls 11-20 plus the 3 of the poll the 409 refused (33); drained = the store's acked equals the bench's at the end."
   },
   "T4": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2578,9 +2584,12 @@
    "v3.9": null,
    "v4": {
     "lost": 0,
-    "effective_dup": 0
+    "effective_dup": 0,
+    "baseline_reproduced": 29,
+    "web_reproduced": 4,
+    "economy_reproduced": true
    },
-   "v4_spec": "0 lost; 0 effective dup across every hand-over"
+   "v4_spec": "0 lost; 0 effective dup across every hand-over (§9.2); §12.2 M1 gate: baseline reproduced exactly. Built in T-P13 (gharness/order_matrix.py): today's pairing is the TAGGED v3.9.0 bench and server, so M1 reads the gate's own v3.9 drift run for this invocation (LEM_GATE_DRIFT_JSON; run by M1 itself when gate.py did not) — all 29 baseline scenarios and W1-W4 reproduce phase 1's faults.json/web.json field for field, economy.json reproduces, and the control S0 (the one fault-free run of today's pairing; there is no hand-over in M1) is 0 lost / 0 dup on the §9.4 ledger. On --target v3.9 the drift check itself is M1 and this row stays null there."
   },
   "M2": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
@@ -2613,9 +2622,32 @@
    "v3.9": null,
    "v4": {
     "lost": 0,
-    "effective_dup": 0
+    "effective_dup": 0,
+    "res_lost": 0,
+    "res_wrong": 0,
+    "cell_dup_lands": 0,
+    "analyst_overwritten": 0,
+    "bench_lem_ops_to_labcore": 0,
+    "server_lem_sql_to_labcore": 0,
+    "modes_seen": [
+     "v2"
+    ],
+    "roads_used": [
+     "A",
+     "B"
+    ],
+    "store": "lem",
+    "handovers": {
+     "lan_dropped": 1,
+     "answers_lost": 1,
+     "answered_503": 2,
+     "server_boots": 2
+    },
+    "kills": 1,
+    "lem_requests_on_poll_thread": 0,
+    "uploader_errors": 0
    },
-   "v4_spec": "0 lost; 0 effective dup across every hand-over"
+   "v4_spec": "0 lost; 0 effective dup across every hand-over; §12.2 M4: v2 sync, no lem_* LabCore traffic. Built in T-P13 (gharness/order_matrix.py): one real v4 bench on the real v4 server through enrolment, the LAN dark (1 request dropped, then the public road sticks), a sync executed with its answer lost, a 503 on each road, a kill at after_journal_before_cursor, the server process stopped and booted again on its store, a clean LabStation restart, and an analyst's edit of a filed cell followed by a restart. handovers proves each fault fired; bench_lem_ops_to_labcore counts phase 1's lem_* op categories in the bench's LabCore trace (tests/test_order_matrix.py shows the same counter > 0 for this bench on a 404 server); server_lem_sql_to_labcore is ServerLabCore's count across both server boots; modes_seen says the bench never fell back to legacy projection."
   },
   "M5": {
    "v3.9_source": "none: the scenario needs a v4 capability (unsupported)",
