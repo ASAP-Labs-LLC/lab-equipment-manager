@@ -268,5 +268,93 @@ check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
   check('no detail, no parts', R.tileParts({ key: 'online', detail: '' }, NOW), []);
 }
 
+// Round 2 (critic): Agilent GC 2 read "No QC assigned. Next: assign a QC
+// standard." and nothing on the page could do it, a dead end on the page T1
+// opens. The record now offers "Assign a QC standard…" (the card's primary
+// when nothing is assigned) and "Change which standards…" (the QC section's
+// own action, §3.1), one sheet. Its logic is here so the words and the
+// targets it sends are checked, not eyeballed:
+// * every test of every standard is a tick box, named the way the QC table
+//   names it ("10% Recovery" under "ASTM D2887/D86"), with its band in fmtQC;
+// * what is assigned today starts ticked;
+// * an assignment whose standard or test has left the library is still
+//   shown, ticked, and said to be gone. Leaving it out of the sheet would
+//   silently drop it on Save: the POST replaces the whole set;
+// * the sentence above Save says what the instrument will be checked on, and
+//   says plainly when the answer is "nothing" (it will read No QC assigned);
+// * Save with nothing changed is refused in words, not sent.
+{
+  check('shortTest: a point on a distillation curve is named by the point',
+    R.shortTest('ASTM D2887/D86 - Distillation in Petroleum Products, 10% Recovery'),
+    ['10% Recovery', 'ASTM D2887/D86']);
+  check('shortTest: a plain name is itself', R.shortTest('Flash Point'), ['Flash Point', '']);
+  check('shortTest: a qualifier stays with its name',
+    R.shortTest('ASTM D97 - Pour Point, mini method'), ['Pour Point, mini method', 'ASTM D97']);
+
+  const lib = [
+    { name: 'AF26', sample_id_val: 'L-118', tests: [
+      { name: 'ASTM D2887/D86 - Distillation in Petroleum Products, 90% Recovery', expected: 334.9, low: 331.48, high: 338.32, units: 'C' },
+      { name: 'Flash Point', expected: 40, low: 38.5, high: 41.5, units: 'C' }] },
+    { name: 'S-LOW', sample_id_val: '', tests: [
+      { name: 'Sulfur', expected: 0.0011, low: 0.0008, high: 0.0014, units: '%m/m' }] },
+  ];
+  const g = R.assignGroups(lib, [{ sample: 'AF26', test: 'Flash Point' },
+                                 { sample: 'OLD-7', test: 'Density' }]);
+  check('one group per standard, in library order, then what left the library',
+    g.map(x => [x.name, x.labId, x.gone]), [['AF26', 'L-118', false], ['S-LOW', '', false], ['OLD-7', '', true]]);
+  check('each test named as the table names it, with its band in fmtQC',
+    g[0].tests.map(t => [t.title, t.method, t.band, t.checked]),
+    [['90% Recovery', 'ASTM D2887/D86', '331.48 – 334.90 – 338.32 °C', false],
+     ['Flash Point', '', '38.5 – 40.0 – 41.5 °C', true]]);
+  check('a sulfur band keeps its four places', g[1].tests[0].band, '0.0008 – 0.0011 – 0.0014 %m/m');
+  check('an assignment that left the library is shown ticked, without a band',
+    g[2].tests.map(t => [t.title, t.band, t.checked]), [['Density', '', true]]);
+  check('a tick box\'s key round-trips to the target it stands for',
+    R.assignTargets([g[0].tests[1].key, g[2].tests[0].key]),
+    [{ sample: 'AF26', test: 'Flash Point' }, { sample: 'OLD-7', test: 'Density' }]);
+  check('a key with "||" in a name does not split wrong',
+    R.assignTargets(R.assignGroups([{ name: 'A||B', tests: [{ name: 'x||y' }] }], [])[0].tests.map(t => t.key)),
+    [{ sample: 'A||B', test: 'x||y' }]);
+  check('an empty library still shows what is assigned',
+    R.assignGroups([], [{ sample: 'AF26', test: 'Flash Point' }]).map(x => [x.name, x.gone]), [['AF26', true]]);
+
+  const before = [{ sample: 'AF26', test: 'Flash Point' }];
+  check('the sentence names what it will be checked on',
+    R.assignSentence([{ sample: 'AF26', test: 'Flash Point' }, { sample: 'S-LOW', test: 'Sulfur' }], before),
+    'It will be checked on 2 checks, against AF26 and S-LOW.');
+  check('one check is one check', R.assignSentence(before, []),
+    'It will be checked on 1 check, against AF26.');
+  check('nothing ticked says what that means',
+    R.assignSentence([], before), 'Nothing ticked: it will read No QC assigned, and nothing will judge it.');
+  // the sheet's own sentence already says to tick them; this line says state
+  check('nothing ticked on an instrument with nothing assigned says so, once',
+    R.assignSentence([], []), 'Nothing ticked yet.');
+  check('Save with nothing changed is refused in words',
+    R.assignProblem(before, [{ test: 'Flash Point', sample: 'AF26' }]), 'Nothing has changed.');
+  check('a change can be saved', R.assignProblem(before, []), '');
+  check('order does not count as a change',
+    R.assignProblem([{ sample: 'A', test: 'x' }, { sample: 'B', test: 'y' }],
+                    [{ sample: 'B', test: 'y' }, { sample: 'A', test: 'x' }]), 'Nothing has changed.');
+}
+
+// Round 2 (critic): a QC due row read "QC due · last passed 3 Aug · a pass
+// counts for 24 h" beside a When column saying "3 Aug", under a section
+// whose sentence says "A passing check counts for 24 h". One fact, said three
+// times, wrapped each row to three lines and pushed OptiMPP's chart past the
+// fold. The row keeps only what the When column and the section do not say.
+{
+  const w24 = { hours: 24, from: '' };
+  check('the day is the When column\'s, the window the section\'s',
+    R.rowDetail('last passed 3 Aug · a pass counts for 24 h', w24, '2026-08-03T10:00:00'), '');
+  check('a window the section does not say stays on the row',
+    R.rowDetail('last passed 1 Oct · a pass counts for 4 h', w24, '2026-10-01T09:00:00'), 'a pass counts for 4 h');
+  check('a pass with no time on record keeps saying so (there is no When)',
+    R.rowDetail('when it passed is not on record · a pass counts for 24 h', w24, null), 'when it passed is not on record');
+  check('without a When the day stays on the row',
+    R.rowDetail('last passed 3 Aug · a pass counts for 24 h', w24, null), 'last passed 3 Aug');
+  check('other details are untouched', R.rowDetail('never run · bench stopped', w24, null), 'never run · bench stopped');
+  check('no detail is no detail', R.rowDetail('', w24, null), '');
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

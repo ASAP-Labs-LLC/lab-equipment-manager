@@ -192,7 +192,17 @@
   </div>
 </dialog>
 
+<script src="/static/js/record_logic.js"></script>
 <script>
+
+// fmtQC (§4.2): a band's numbers in the band's own decimals, never cut to two
+// places (a sulfur band 0.0008 – 0.0014 read "0.00 – 0.00"). Without
+// record_logic.js a number is printed whole, never cut.
+function fq(v, s) {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '—';
+  const R = window.LEMRecord;
+  return R ? R.fmtQC(Number(v), s) : String(Number(v));
+}
 const $ = s => document.querySelector(s);
 let MACHINES = [], TESTS = [], SAMPLES = [], AUTHED = false, current = null;
 // The bottom of the precedence chain, taken from `/api/qc-samples` rather than
@@ -263,7 +273,7 @@ function renderSamples() {
       </tr></thead>
       <tbody>${(s.tests || []).map(t => `
         <tr><td>${esc(t.name)}</td><td class="mono">${esc(t.value_col)}</td>
-        <td class="mono">${Number(t.low).toFixed(2)} … ${Number(t.high).toFixed(2)} ${esc(t.units || '')}</td>
+        <td class="mono">${fq(t.low, t)} … ${fq(t.high, t)} ${esc(t.units || '')}</td>
         <td class="mono">${windowText(t)}</td>
         <td></td></tr>`).join('') ||
         '<tr><td colspan="5" class="none">No tests on this sample.</td></tr>'}
@@ -292,7 +302,7 @@ function render() {
           <tr>
             <td>${esc(s.test_name)}</td>
             <td class="mono">${esc(s.sample_id) || '—'}</td>
-            <td class="mono">${(s.expected - s.k * s.std_dev).toFixed(2)} … ${(s.expected + s.k * s.std_dev).toFixed(2)} ${esc(s.units)}</td>
+            <td class="mono">${fq(s.expected - s.k * s.std_dev, {low: s.expected - s.k * s.std_dev, expected: s.expected, high: s.expected + s.k * s.std_dev})} … ${fq(s.expected + s.k * s.std_dev, {low: s.expected - s.k * s.std_dev, expected: s.expected, high: s.expected + s.k * s.std_dev})} ${esc(s.units)}</td>
             <td><button class="danger" data-del="${esc(m.machine_uid)}|${esc(s.test_name)}">×</button></td>
           </tr>`).join('') || '<tr><td colspan="4" class="none">No QC specs — machine stays UNKNOWN.</td></tr>'}
         </tbody>

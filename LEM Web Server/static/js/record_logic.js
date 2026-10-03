@@ -333,7 +333,98 @@
         return parts;
     }
 
-    const api = { tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    // ── "Change which standards…" (round 2: No QC assigned had no door) ──
+    const UNITS = { C: '°C', F: '°F', degC: '°C', degF: '°F', 'mm2/s': 'mm²/s', 'mm^2/s': 'mm²/s',
+        cm3: 'cm³', 'g/cm3': 'g/cm³', 'kg/m3': 'kg/m³' };
+
+    /** [title, method] for a LabCore test name, as ui_record.short_test says
+        it: "ASTM D2887/D86 - …, 10% Recovery" -> ["10% Recovery", "ASTM
+        D2887/D86"]. The sheet names a check the way the QC table does. */
+    function shortTest(name) {
+        const raw = String(name || '').trim();
+        const i = raw.indexOf(' - ');
+        if (i < 0) return [raw, ''];
+        const method = raw.slice(0, i).replace(/\s+/g, ' ').trim();
+        let rest = raw.slice(i + 3).trim();
+        const j = rest.lastIndexOf(', ');
+        if (j >= 0) {
+            const tail = rest.slice(j + 2).trim();
+            if (/^(\d|[A-Z]{2,}\b)/.test(tail)) rest = tail;
+        }
+        return [rest || raw, method];
+    }
+    const tkey = (sample, test) => JSON.stringify([String(sample || ''), String(test || '')]);
+
+    /** The sheet's tick boxes: one group per library standard, in library
+        order, each test ticked when it is assigned; then every assignment
+        whose standard or test is no longer in the library, ticked and marked
+        gone (the POST replaces the whole set, so leaving it out would drop it
+        without anybody choosing to). */
+    function assignGroups(samples, targets) {
+        const on = new Set((targets || []).map(t => tkey(t.sample, t.test)));
+        const seen = new Set();
+        const groups = (samples || []).map(s => ({
+            name: String(s.name || ''), labId: String(s.sample_id_val || ''), gone: false,
+            tests: (s.tests || []).map(t => {
+                const key = tkey(s.name, t.name);
+                seen.add(key);
+                const [title, method] = shortTest(t.name);
+                const spec = { low: num(t.low), expected: num(t.expected), high: num(t.high) };
+                const units = UNITS[t.units] || String(t.units || '');
+                const band = spec.low === null && spec.high === null ? '' : bandText(spec) + (units ? ' ' + units : '');
+                return { key, sample: String(s.name || ''), test: String(t.name || ''), title, method, band, checked: on.has(key) };
+            }),
+        }));
+        const gone = new Map();
+        for (const t of targets || []) {
+            const key = tkey(t.sample, t.test);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const name = String(t.sample || '');
+            if (!gone.has(name)) gone.set(name, { name, labId: '', gone: true, tests: [] });
+            const [title, method] = shortTest(t.test);
+            gone.get(name).tests.push({ key, sample: name, test: String(t.test || ''), title, method, band: '', checked: true });
+        }
+        return groups.concat([...gone.values()]);
+    }
+    /** The targets a set of tick-box keys stands for, in their order. */
+    function assignTargets(keys) {
+        return (keys || []).map(k => { const [sample, test] = JSON.parse(k); return { sample, test }; });
+    }
+    function andList(items) {
+        return items.length <= 1 ? items.join('') : items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
+    }
+    /** The line above Save: what the instrument will be checked on, or what
+        ticking nothing means. */
+    function assignSentence(chosen, before) {
+        const n = (chosen || []).length;
+        if (!n) return (before || []).length
+            ? 'Nothing ticked: it will read No QC assigned, and nothing will judge it.'
+            : 'Nothing ticked yet.';
+        const stds = [...new Set(chosen.map(t => t.sample))];
+        return 'It will be checked on ' + n + ' check' + (n === 1 ? '' : 's') + ', against ' + andList(stds) + '.';
+    }
+    /** Why Save cannot be sent yet, or '' when it can. */
+    function assignProblem(before, chosen) {
+        const a = (before || []).map(t => tkey(t.sample, t.test)).sort();
+        const b = (chosen || []).map(t => tkey(t.sample, t.test)).sort();
+        return JSON.stringify(a) === JSON.stringify(b) ? 'Nothing has changed.' : '';
+    }
+
+    /** A QC row's verdict detail, less what the row's When column and the
+        section's sentence already say: "last passed 3 Aug" beside a When of
+        3 Aug, and "a pass counts for 24 h" under "A passing check counts for
+        24 h". What only the row knows stays. */
+    function rowDetail(detail, win, at) {
+        const hours = win && Number(win.hours);
+        return String(detail || '').split(' · ').map(x => x.trim()).filter(Boolean).filter(p => {
+            if (at && /^last passed /.test(p)) return false;
+            const m = /^a pass counts for ([\d.]+) h$/.exec(p);
+            return !(m && Number(m[1]) === hours);
+        }).join(' · ');
+    }
+
+    const api = { rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

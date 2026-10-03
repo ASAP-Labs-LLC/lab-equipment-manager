@@ -13,7 +13,7 @@
                      provisional, never a second verdict; one U line
    Every failed read has its own sentence, distinct from "none yet". Every
    server string goes in through textContent. GETs on the live feed only;
-   the three sheets POST when a person presses their button. */
+   the four sheets POST when a person presses their button. */
 (function () {
     'use strict';
     const R = window.LEMRecord;
@@ -101,7 +101,7 @@
         if (r.primary) {
             p.textContent = r.primary.label;
             p.dataset.act = r.primary.act;
-            p.dataset.gated = { action: 'open a corrective action', online: 'put it back on line',
+            p.dataset.gated = { action: 'open a corrective action', online: 'put it back on line', assign: 'assign a QC standard',
                 done: 'mark the ' + (r.primary.kind === 'calibration' ? 'calibration' : 'PM') + ' done' }[r.primary.act] || '';
             p.hidden = false;
         } else {
@@ -180,7 +180,7 @@
         }
         $('qc-rows').replaceChildren(...rows.map(c => {
             const sel = c.test === selected;
-            const v = c.verdict;
+            const v = Object.assign({}, c.verdict, { detail: R.rowDetail(c.verdict.detail, data.qc.window, c.at) });
             // the standard is named once, in the section's sentence, unless
             // the checks are against more than one
             const sub = [c.method, data.qc.standards.length > 1 ? c.sample_id : ''].filter(Boolean).join(' · ');
@@ -300,7 +300,7 @@
         $('chart-range').hidden = (empty || !s.logged) && range !== '90d';
         if (empty) {
             // said once, in the plot; the caption line under the title stays
-            // empty rather than repeat it, and the empty plot is not 176px
+            // empty rather than repeat it, and the empty plot is not 164px
             cap.textContent = '';
             plot.classList.add('is-empty');
             plot.replaceChildren(note('none', range === '90d' ? 'No runs of this check in the last 90 days.'
@@ -316,7 +316,7 @@
     }
     function drawChart(s, c) {
         const w = Math.max(320, Math.round($('chart-plot').clientWidth || 640));
-        const H = 176;
+        const H = 164;   // a 2-check record keeps its whole chart card above a 900px fold
         const m = R.chartModel({ points: s.points, low: c.low, high: c.high, expected: c.expected }, { w, h: H });
         const box = svg('svg', { viewBox: '0 0 ' + w + ' ' + H, width: '100%', height: H, class: 'qchart', role: 'img',
             'aria-label': c.title + ': ' + R.rangeCaption(s, range) + '. Limits ' + R.bandText(c) + (c.units ? ' ' + c.units : '') + '.' });
@@ -474,11 +474,74 @@
         openSheet('done-sheet');
         $('done-note').focus();
     }
+    // which standards it is checked on (round 2: "No QC assigned. Next:
+    // assign a QC standard." had no door). The library is read when the
+    // sheet opens: loading, failed (with Try again, Save off) and empty are
+    // each said in words, never drawn as an empty list. The boxes start from
+    // what is assigned, because Save replaces the whole set.
+    let lib = null;            // {state:'loading'|'ok'|'err', samples, error}
+    function chosenTargets() {
+        return R.assignTargets([...$('assign-list').querySelectorAll('input[type=checkbox]:checked')].map(x => x.value));
+    }
+    function assignSum() {
+        const ok = lib && lib.state === 'ok';
+        $('assign-sum').textContent = ok ? R.assignSentence(chosenTargets(), data.qc.targets || []) : '';
+        $('assign-go').disabled = !ok;
+    }
+    function renderAssign() {
+        const list = $('assign-list');
+        const before = data.qc.targets || [];
+        if (!lib || lib.state === 'loading') {
+            list.replaceChildren(h('div', { className: 'assign-note', role: 'status', 'aria-busy': 'true' }, glyph('never'), h('span', { text: 'Reading the QC library…' })));
+        } else if (lib.state === 'err') {
+            list.replaceChildren(h('div', { className: 'assign-note err', role: 'status' }, glyph('error'),
+                h('span', { text: 'Couldn\'t read the QC library: ' + lib.error + '. Nothing has changed.' }),
+                h('button', { type: 'button', className: 'btn btn-ghost btn-sm', onclick: loadLib, text: 'Try again' })));
+        } else {
+            const groups = R.assignGroups(lib.samples, before);
+            if (!groups.length) {
+                list.replaceChildren(h('div', { className: 'assign-note' }, glyph('never'),
+                    h('span', {}, 'No QC standards are defined yet. A standard is defined once in the QC library, with its certified values, then assigned here. ',
+                        h('a', { className: 'link', href: '/floor/classic?open=qc-library', text: 'Open the QC library' }))));
+            } else {
+                list.replaceChildren(...groups.map(g => h('fieldset', { className: 'assign-grp' + (g.gone ? ' gone' : '') },
+                    h('legend', {}, h('b', { text: g.name }), g.labId ? h('span', { className: 'muted', text: ' · lab ID ' + g.labId }) : null,
+                        g.gone ? h('span', { className: 'muted', text: ' · no longer in the QC library' }) : null),
+                    ...g.tests.map(t => h('label', { className: 'assign-row' },
+                        h('input', { type: 'checkbox', value: t.key, checked: t.checked }),
+                        h('span', { className: 'a-name' }, h('span', { text: t.title }), t.method ? h('span', { className: 'sub', text: t.method }) : null),
+                        h('span', { className: 'a-band num', text: t.band || (g.gone ? 'kept unless you untick it' : 'no certified values') }))))));
+            }
+        }
+        assignSum();
+    }
+    function loadLib() {
+        lib = { state: 'loading' };
+        renderAssign();
+        return fetch('/api/qc-samples', { headers: { 'X-LEM-Background': '1' } })
+            .then(r => r.json().catch(() => ({})).then(b => ({ r, b })))
+            .then(({ r, b }) => {
+                if (!r.ok || b.error) throw new Error(b.error || ('LEM answered ' + r.status));
+                lib = { state: 'ok', samples: b.samples || [] };
+            })
+            .catch(e => { lib = { state: 'err', error: why(e) }; })
+            .finally(renderAssign);
+    }
+    // a refusal ("Nothing has changed.") is about the boxes as they were;
+    // ticking one makes it stale, so it goes
+    $('assign-list').addEventListener('change', () => { $('assign-err').hidden = true; assignSum(); });
+    function sheetAssign() {
+        const none = !(data.qc.targets || []).length;
+        $('assign-title').textContent = none ? 'Assign a QC standard to ' + data.title : 'Change which standards ' + data.title + ' is checked on';
+        $('assign-err').hidden = true;
+        openSheet('assign-sheet');
+        loadLib();
+    }
     document.addEventListener('click', (ev) => {
         const b = ev.target.closest('[data-act]');
         if (!b || !page.parentNode.contains(b) || b.closest('dialog')) return;
         const act = b.dataset.act;
-        const go = () => (act === 'action' ? sheetAction() : act === 'done' ? sheetDone() : sheetOnline(act));
+        const go = () => (act === 'action' ? sheetAction() : act === 'done' ? sheetDone() : act === 'assign' ? sheetAssign() : sheetOnline(act));
         if (window.LEMSignIn) window.LEMSignIn.need(b.dataset.gated || '', go); else go();
     });
     function post(url, body) {
@@ -516,6 +579,17 @@
         url: () => '/api/equipment/' + encodeURIComponent(uid) + '/actions',
         body: () => ({ what_happened: $('action-what').value.trim(), trigger_kind: 'qc_fail', test_name: $('action-test').value }),
     }, () => S.toast('Corrective action opened · ' + (window.LEMSignIn ? window.LEMSignIn.user() : '') + ' · ' + hm()));
+
+    submit($('assign-form'), $('assign-err'), $('assign-go'), {
+        check: () => (lib && lib.state === 'ok') ? R.assignProblem(data.qc.targets || [], chosenTargets()) : 'The QC library has not been read, so nothing can be saved.',
+        url: () => '/api/machines/' + encodeURIComponent(uid) + '/qc-targets',
+        body: () => ({ targets: chosenTargets() }),
+    }, () => {
+        // say what it is checked on now; the record redraws when the
+        // snapshot that carries it lands
+        const n = chosenTargets().length;
+        S.toast((n ? 'Checked on ' + n + ' check' + (n === 1 ? '' : 's') : 'QC unassigned') + ' · ' + (window.LEMSignIn ? window.LEMSignIn.user() : '') + ' · ' + hm());
+    });
 
     submit($('done-form'), $('done-err'), $('done-go'), {
         check: () => R.doneProblem($('done-note').value, $('done-when').value),

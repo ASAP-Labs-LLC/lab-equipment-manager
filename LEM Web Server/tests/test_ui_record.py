@@ -200,10 +200,11 @@ class TestOnePrimaryAndItIsTheNextStep:
         online = next(t for t in rec["readiness"]["tiles"] if t["key"] == "online")
         assert online["action"] is None
 
-    @pytest.mark.parametrize("title", ["PAC Flash 2", "Agilent GC 2", "Eravap"])
+    @pytest.mark.parametrize("title", ["PAC Flash 2", "Eravap"])
     def test_nothing_to_do_here_means_no_primary(self, title):
-        """OK, No QC assigned (assigning is the QC section's job) and Can't
-        tell (the remedy is at the bench's own computer) have no button."""
+        """OK (nothing to do) and Can't tell (the remedy is at the bench's own
+        computer) have no button. No QC assigned has one now: see
+        TestNoQcAssignedIsNotADeadEnd."""
         assert record(prod(title))["readiness"]["primary"] is None
 
     def test_the_topbar_takes_it_off_line_when_it_is_on(self):
@@ -1208,6 +1209,23 @@ class TestTheFloorPanelUsesFmtQC:
         bad = [ln.strip() for ln in floor.splitlines() if "toFixed(2)" in ln and "widest" not in ln]
         assert bad == [], bad
 
+    def test_no_band_anywhere_is_cut_to_a_fixed_number_of_places(self):
+        """§4.2's guard is "any spec path", not only the floor's. Round 2's
+        critic found toFixed(2) still printing bands in stations.html and
+        dashboard.html, where a sulfur band (0.0008 – 0.0014) reads
+        "0.00 – 0.00". Those pages are not routed today, but a template kept
+        in the tree is one a later piece can wire back; the guard covers
+        every template and script, and a band's numbers go through fmtQC."""
+        band = re.compile(r"(low|high|std_dev)[^\n]{0,40}\.toFixed\(\d\)")
+        bad = []
+        for f in sorted(list(T.glob("*.html")) + list(JS.glob("*.js"))):
+            for i, ln in enumerate(f.read_text().splitlines(), 1):
+                # pixel coordinates of a chart (y(band.low).toFixed(1)) are
+                # positions, not numbers anyone reads
+                if band.search(ln) and not re.search(r"\by\((z|band)\.(low|high)\)", ln):
+                    bad.append("%s:%d: %s" % (f.name, i, ln.strip()[:90]))
+        assert bad == [], bad
+
     def test_the_floor_loads_the_one_formatter(self):
         floor = (T / "floor.html").read_text()
         assert "/static/js/record_logic.js" in floor
@@ -1270,3 +1288,105 @@ def test_favicon_ico_is_not_a_404(tmp_path):
     assert r.status_code in (301, 302, 308)
     assert r.headers["Location"].split("?")[0].endswith("/static/favicon.svg")
     assert gw.calls == []
+
+
+class TestNoQcAssignedIsNotADeadEnd:
+    """Round 2's critic, on the page T1 opens: production's Agilent GC 2 read
+    "No QC assigned. Next: assign a QC standard." and nothing on the page
+    could do it. The QC tile's "See the checks" led to an empty section, and
+    the "Change which standards…" control §3.1 puts in that section did not
+    exist. Ryan's rule is no dead ends: a sentence that names a next step
+    LEM can take comes with the control that takes it.
+
+    So the step is the card's one primary ("Assign a QC standard…"), and the
+    QC section carries §3.1's "Change which standards…" in every state. Both
+    open one sheet, which writes through the route the old floor's sheet
+    used (POST /api/machines/<uid>/qc-targets), so there is one way in, and
+    one rule for what an assignment is.
+    """
+
+    def test_the_card_offers_the_step_its_sentence_names(self):
+        rec = record(prod("Agilent GC 2"))
+        assert rec["readiness"]["state"] == "no_qc"
+        assert rec["readiness"]["caption"]["next"] == "Assign a QC standard"
+        assert rec["readiness"]["primary"] == {"label": "Assign a QC standard…", "act": "assign"}
+
+    def test_the_record_carries_what_is_assigned_so_the_sheet_starts_from_it(self):
+        """The POST replaces the whole set; a sheet that started blank would
+        unassign every check somebody did not re-tick."""
+        m = prod("Agilent GC 1")
+        assert record(m)["qc"]["targets"] == [
+            {"sample": t["sample"], "test": t["test"]} for t in m["qc_targets"]]
+        assert record(prod("Agilent GC 2"))["qc"]["targets"] == []
+
+    def test_the_qc_section_has_its_own_change_control_in_every_state(self):
+        """§3.1's QC action. A default button (never a second primary), gated
+        by sign-in like every write on the record."""
+        html = (T / "instrument.html").read_text()
+        btn = re.search(r'<button[^>]*id="qc-change"[^>]*>([^<]*)</button>', html)
+        assert btn, "the QC section has no Change which standards… button"
+        assert btn.group(1) == "Change which standards…"
+        tag = btn.group(0)
+        assert 'data-act="assign"' in tag and "data-gated=" in tag
+        assert "btn-primary" not in tag
+        assert 'id="assign-sheet"' in html
+
+    def test_assigning_from_the_record_turns_no_qc_into_no_verdict_yet(self, tmp_path):
+        """The whole road, signed in, on the seeded lab. Multitek NS is made
+        what production's Agilent GC 2 is (no band published, nothing
+        assigned): it reads No QC assigned and offers the step. One check is
+        then assigned through the route the sheet posts to, and the record
+        reads that check as No verdict yet, never No QC assigned again."""
+        app, gw = _seeded(tmp_path)
+        c = app.test_client()
+        assert c.post("/api/login", json={"username": "kaden", "password": "good"}).status_code == 200
+        snaps = app.config["SNAPSHOTS"]
+        demo_floor._Writer(gw)("DELETE FROM lem_machine_specs WHERE machine_uid = ?", ["multitek-ns"])
+        assert c.post("/api/machines/multitek-ns/qc-targets", json={"targets": []}).get_json() == {"ok": True}
+        snaps.refresh()
+        rec = c.get("/api/ui/instruments/multitek-ns").get_json()
+        assert rec["readiness"]["word"] == "No QC assigned"
+        assert rec["readiness"]["primary"] == {"label": "Assign a QC standard…", "act": "assign"}
+        assert rec["qc"]["targets"] == []
+
+        std = c.get("/api/qc-samples").get_json()["samples"][0]
+        want = {"sample": std["name"], "test": std["tests"][0]["name"]}
+        assert c.post("/api/machines/multitek-ns/qc-targets", json={"targets": [want]}).get_json() == {"ok": True}
+        snaps.refresh()
+        rec = c.get("/api/ui/instruments/multitek-ns").get_json()
+        assert rec["qc"]["targets"] == [want]
+        assert rec["readiness"]["word"] != "No QC assigned"
+        assert [ch["verdict"]["word"] for ch in rec["qc"]["checks"]] == ["No verdict yet"]
+        assert rec["readiness"]["primary"] is None or rec["readiness"]["primary"]["act"] != "assign"
+
+    def test_the_foot_link_goes_to_the_floor_panel_not_the_wall(self):
+        """/floor is the chromeless wall kiosk now (piece 13); the panel with
+        corrections, actions and documents lives at /floor/classic. A link
+        that promised the panel and landed on a TV wall is a dead end."""
+        html = (T / "instrument.html").read_text()
+        assert "/floor/classic?machine=" in html
+        assert 'href="/floor?machine=' not in html
+
+
+class TestTheQcTileCountsLikeItsSiblings:
+    """Round 2's critic: on 2-check instruments the chart card ran past the
+    fold at 1440x900. Part of the height was the QC tile spelling out
+    "ASTM D7346 - Pour Point, mini method and ASTM D7689 - Cloud Point,
+    mini method" over two lines, in LabCore's raw test names, a sentence the
+    card's caption had already said in the table's short names. Out of spec
+    and In spec tiles count ("2 of 5 checks"); QC due now counts the same
+    way, and the caption beside it names them."""
+
+    @pytest.mark.parametrize("title,want", [("OptiMPP 1", "2 of 2 checks"),
+                                            ("OptiMPP 2", "2 of 2 checks"),
+                                            ("Aquamax 3", "1 of 1 check")])
+    def test_qc_due_counts(self, title, want):
+        rec = record(prod(title))
+        q = next(t for t in rec["readiness"]["tiles"] if t["key"] == "qc")
+        assert (q["word"], q["detail"]) == ("QC due", want)
+
+    def test_no_tile_on_any_record_carries_a_raw_labcore_test_name(self):
+        for m in PROD["machines"]:
+            rec = record(ui_live.judged([m], AT)[0])
+            for t in rec["readiness"]["tiles"]:
+                assert "ASTM" not in (t.get("detail") or ""), (m["title"], t)

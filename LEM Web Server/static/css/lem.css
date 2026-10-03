@@ -980,7 +980,7 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .chart-title { flex: 1; min-width: 0; }
 .chart-title h3 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
 .chart-title .caption { margin: 2px 0 0; }
-.chart-plot { min-height: 176px; }
+.chart-plot { min-height: 164px; }
 .chart-plot.is-empty { min-height: 0; }
 .chart-plot.is-empty .chart-note { min-height: 72px; }
 .qchart { display: block; overflow: visible; }
@@ -1028,6 +1028,30 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .rec-sheet select { width: 100%; }
 .rec-sheet .choice { border: 0; margin: 0; padding: 0; display: grid; gap: var(--s2); font-size: var(--fs-sm); }
 .rec-sheet .errline { margin: 0; }
+
+/* "Change which standards…": one fieldset per standard, a hairline row per
+   check, its band right-aligned in tabular figures. The list scrolls inside
+   the sheet; Save and the sentence above it stay in view. */
+.assign-sheet { width: min(600px, calc(100vw - 32px)); }
+.assign-list { max-height: min(52vh, 460px); overflow-y: auto; display: grid; gap: var(--s3);
+    border-top: 1px solid var(--border-light); border-bottom: 1px solid var(--border-light); padding: var(--s3) 0; }
+.assign-grp { border: 0; margin: 0; padding: 0; min-width: 0; }
+.assign-grp legend { padding: 0 0 var(--s1); font-size: var(--fs-sm); }
+.assign-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--s2) var(--s3);
+    padding: 7px 2px; border-top: 1px solid var(--border-light); font-size: var(--fs-sm); cursor: pointer; }
+.assign-row:hover { background: var(--bg-hover, transparent); }
+.assign-row input { margin: 0; }
+.assign-row .a-name { display: flex; flex-direction: column; min-width: 0; }
+.assign-row .a-name .sub { font-size: var(--fs-xs, 12px); color: var(--text-muted); }
+.assign-row .a-band { color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.assign-grp.gone .a-band { font-style: italic; }
+.assign-note { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; min-height: 72px; font-size: var(--fs-sm); color: var(--text-muted); }
+.assign-note.err { color: var(--text); }
+.rec-sheet p.assign-sum { color: var(--text); font-size: var(--fs-sm); min-height: 1.4em; }
+@media (max-width: 560px) {
+    .assign-row { grid-template-columns: auto minmax(0, 1fr); }
+    .assign-row .a-band { grid-column: 2; white-space: normal; }
+}
 
 /* the page that cannot show an instrument (404 / 503) */
 .record-missing h1 { font-size: 22px; margin-bottom: var(--s2); }

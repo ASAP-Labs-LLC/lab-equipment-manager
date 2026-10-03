@@ -18,7 +18,8 @@ What this module adds is what only the record shows:
 * the ONE primary button (§0.1): "Open a corrective action…" when QC stopped
   it, "Put back on line…" when somebody took it off line, "Mark the
   calibration done…" / "Mark the PM done…" when that warning is the card's
-  sentence (round 6), and nothing when the next step is not LEM's to take. A control is offered once: when the primary
+  sentence (round 6), "Assign a QC standard…" when nothing is assigned, and
+  nothing when the next step is not LEM's to take. A control is offered once: when the primary
   puts it back on line, the topbar and the On line tile do not;
 * the QC table, one row per check, short names in boiling order for a
   distillation, each with its own verdict word (§4.1). An assigned check that
@@ -282,9 +283,15 @@ def _primary(state: str, rows: List[dict], m: Optional[dict] = None,
     critic: the sentence named a step and the page would not take it). It
     marks the most overdue task of the kind the sentence leads with.
 
-    QC due, Can't tell, No QC assigned and OK have none: QC is filed by the
-    bench, a silent bench is restarted at its own computer, assigning is the
-    QC section's job, and OK has nothing to do."""
+    No QC assigned ends "Next: assign a QC standard", and assigning is LEM's,
+    so it is the button: "Assign a QC standard…" opens the sheet the QC
+    section's "Change which standards…" opens (round 2's critic: the
+    sentence named a step on the page T1 opens and nothing could take it).
+
+    QC due, Can't tell and OK have none: QC is filed by the bench, a silent
+    bench is restarted at its own computer, and OK has nothing to do."""
+    if state == NO_QC:
+        return {"label": "Assign a QC standard…", "act": "assign"}
     if state == OK_BUT and m is not None and not ui_live.is_qc_owed(reason):
         kind = "calibration" if reason.startswith("Calibration") else "pm"
         tasks = sorted(ui_live._overdue(m, kind),
@@ -313,13 +320,20 @@ _OVERRIDE_WORDS = {"Taken off line (SERVICE)": "Taken off line for service",
 _LINK = {"qc": "See the checks", "bench": "See the bench", "maintenance": "See the schedule"}
 
 
-def _tiles(row: dict, primary: Optional[dict]) -> List[dict]:
+def _tiles(row: dict, primary: Optional[dict], rows: Optional[List[dict]] = None) -> List[dict]:
     """The home's tiles, with their links made local to this page. An action
     the topbar or the primary already offers is not offered again."""
     out = []
     for t in row["readiness"]["tiles"]:
         t = dict(t)
         a = t.get("action") or None
+        if t["key"] == "qc" and t.get("word") == ui_live.QC_DUE and rows:
+            # counted, as Out of spec and In spec are: the card's caption
+            # beside it names the checks, in the table's short names (round
+            # 2's critic: LabCore's raw names over two lines pushed the chart
+            # past the fold)
+            n = len([c for c in rows if c["verdict"]["key"] == "due"])
+            t["detail"] = "%d of %d %s" % (n, len(rows), "check" if len(rows) == 1 else "checks")
         if t["key"] == "online":
             act = "online" if t["word"] == "Off line" else "offline"
             if act == "online":
@@ -402,13 +416,18 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
             "state": state, "word": row["readiness"]["word"], "glyph": row["readiness"]["glyph"],
             "caption": caption(m, state, reason, rows, keys),
             "primary": primary,
-            "tiles": _tiles(row, primary),
+            "tiles": _tiles(row, primary, rows),
         },
         "qc": {"assigned": bool(rows), "checks": rows, "selected": _selected(rows),
                # §3.1's intro: "A passing check counts for 24 h", said with
                # the window the verdicts were judged by, not a constant
                "window": ui_live.qc_window(m),
-               "standards": sorted({c["sample_id"] for c in rows if c["sample_id"]})},
+               "standards": sorted({c["sample_id"] for c in rows if c["sample_id"]}),
+               # what is assigned, as the assignment route takes it: the
+               # "Change which standards…" sheet starts from it, because its
+               # POST replaces the whole set
+               "targets": [{"sample": str(t.get("sample") or ""), "test": str(t.get("test") or "")}
+                           for t in m.get("qc_targets") or [] if t.get("test")]},
         "maintenance": maintenance(m),
         "bench": bench(m),
     }

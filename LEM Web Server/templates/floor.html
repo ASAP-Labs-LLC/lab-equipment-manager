@@ -3505,10 +3505,10 @@ function gutterTransition(e) {
   const band = t.band;
   const value = t.value == null ? String(e.value || '') : String(t.value);
   const bandText = band
-    ? `judged against ${Number(band.low).toFixed(1)}…`
-      + `${Number(band.high).toFixed(1)}`
+    ? `judged against ${fq(band.low, band)}…`
+      + `${fq(band.high, band)}`
       + (band.expected == null ? ''
-         : ` (target ${Number(band.expected).toFixed(1)})`)
+         : ` (target ${fq(band.expected, band)})`)
     // A verdict whose row carries no band is judged against nothing recorded.
     // Drawing a line at zero would be inventing the limits it was measured to.
     : 'no band recorded on this verdict';
@@ -4076,6 +4076,9 @@ $('#btnQc').addEventListener('click', async () => {
   $('#qcLib').showModal();
 });
 $('#qcLibClose').addEventListener('click', () => $('#qcLib').close());
+// ?open=qc-library: the record's "Change which standards…" sheet, over an
+// empty library, links here; the library opens once, on arrival.
+if (new URLSearchParams(location.search).get('open') === 'qc-library') $('#btnQc').click();
 
 /* How long a passing result on this standard stays good — a property of the
  * MATERIAL, so it is stated once here instead of on every bench running it.

@@ -75,6 +75,7 @@
         </div>
       </div>
       <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="qc-change" data-act="assign" data-gated="change which standards it is checked on" data-testid="qc-change">Change which standards…</button>
         <a class="btn btn-sm" id="export-qc" href="/api/machines/{{ data.uid|urlencode }}/export.csv?kind=qc" download data-testid="export-qc"><span class="ico ico-download" aria-hidden="true"></span>Export QC (CSV)</a>
       </div>
     </div>
@@ -100,7 +101,7 @@
   {% include "_transfer_section.html" %}
   {%- endif %}
 
-  <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions, documents and the full log are still on the floor map's panel for this instrument. <a class="link" href="/floor?machine={{ data.uid|urlencode }}">Open it there</a></p>
+  <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions, documents and the full log are still on the floor map's panel for this instrument. <a class="link" href="/floor/classic?machine={{ data.uid|urlencode }}">Open it there</a></p>
 </main>
 
 {#- the sheets the card and the topbar open (piece 6 adds the rest). A
@@ -156,6 +157,24 @@
     <div class="actions">
       <button type="button" class="btn" data-close>Cancel</button>
       <button type="submit" class="btn sheet-go" id="done-go">Mark it done</button>
+    </div>
+  </form>
+</dialog>
+{#- which standards it is checked on (§3.1 "Change which standards…", and
+    the card's "Assign a QC standard…" when nothing is). The library is read
+    when the sheet opens, the one read a person pays for by asking; a read
+    that failed says so and offers Try again, never an empty list. Save
+    replaces the whole set, so the sheet starts from what is assigned. -#}
+<dialog class="sheet rec-sheet assign-sheet" id="assign-sheet" aria-labelledby="assign-title" data-testid="assign-sheet">
+  <form class="form" id="assign-form" method="dialog" novalidate>
+    <h2 id="assign-title">Change which standards it is checked on</h2>
+    <p id="assign-why">Tick each check this instrument runs on a standard. The bench judges every ticked check against that standard's certified values; a new one reads No verdict yet until it first runs.</p>
+    <div class="assign-list" id="assign-list" data-testid="assign-list" aria-live="polite"></div>
+    <p class="assign-sum" id="assign-sum" role="status" data-testid="assign-sum"></p>
+    <p class="errline" id="assign-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="assign-go">Save</button>
     </div>
   </form>
 </dialog>
