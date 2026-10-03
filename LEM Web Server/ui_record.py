@@ -25,8 +25,10 @@ What this module adds is what only the record shows:
   distillation, each with its own verdict word (§4.1). An assigned check that
   has never been judged reads **No verdict yet**, and only an instrument with
   nothing assigned reads **No QC assigned** (judge J3's Eravap mislabel);
-* the read-only Maintenance and Bench sections the tiles link to, so no tile
-  is a dead end before pieces 6 and 7 add their actions.
+* the sections the tiles link to. Piece 6 made them act: Maintenance and
+  calibration, Placement and Remove are drawn from this payload; Correction
+  factors, Corrective actions and Documents read their own routes when the
+  page opens, because the snapshot does not carry them.
 
 Numbers stay numbers: formatting is ``fmtQC`` in static/js/record_logic.js,
 one function for the whole page, so a band never mixes decimals.
@@ -41,9 +43,10 @@ import ui_instruments
 import ui_live
 from ui_live import CANT_TELL, NO_QC, NOT_OK, OFF_LINE, OK, OK_BUT
 
-# The record's sections that exist today, in page order. A tile's link must
+# The record's sections, in page order (§3.1's table). A tile's link must
 # land on one of these (tests/test_ui_record.py).
-SECTIONS = ("qc", "maintenance", "log", "bench")
+SECTIONS = ("qc", "maintenance", "corrections", "actions", "documents",
+            "log", "bench", "placement", "remove")
 
 UNITS = {"C": "°C", "F": "°F", "degC": "°C", "degF": "°F",
          # a kinematic viscosity is mm²/s; LabCore stores it in ASCII
@@ -387,6 +390,17 @@ def bench(m: dict) -> dict:
             "replays_not_resent": None}
 
 
+def placement(m: dict, levels: Dict[str, str], uid: str) -> dict:
+    """Where it stands (§3.1 #8). The levels are the snapshot's, in the
+    lab's own order, so "Move to another level…" is one select of names a
+    person says out loud, and no read is paid to open it."""
+    lv = str(m.get("level_uid") or "")
+    return {"level_uid": lv or None, "level": levels.get(lv) or None,
+            "placed": m.get("pos") is not None,
+            "levels": [{"uid": k, "name": v} for k, v in levels.items()],
+            "map": "/?view=map&arrange=1&focus=" + uid}
+
+
 # ── the record ──────────────────────────────────────────────────────────────
 
 def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = "") -> dict:
@@ -430,6 +444,10 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
                            for t in m.get("qc_targets") or [] if t.get("test")]},
         "maintenance": maintenance(m),
         "bench": bench(m),
+        "placement": placement(m, levels, row["uid"]),
+        # the Remove sheet warns before anyone types: removing an instrument
+        # a module is running clears that module's configuration
+        "remove": {"checking_in": b["state"] == "in"},
     }
 
 

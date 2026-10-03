@@ -129,13 +129,15 @@ class TestTheDevSeedSaysOneWord:
 
 class TestTheMaintenanceSectionHasNoStaleGuidance:
     def test_no_until_it_moves_here(self):
-        """Nothing on the record promises a future home for a step: where the
-        card marks the overdue task done, the section says nothing more; where
-        it does not, it links the PM and calibration page as where the task is
-        scheduled, without "until it moves here"."""
-        js = (ROOT / "static" / "js" / "record.js").read_text()
-        assert "until it moves here" not in js
-        assert "The card above marks the overdue one done" not in js
-        fn = js[js.index("function renderMaintenance"):js.index("function renderBench")]
-        assert re.search(r"act === 'done'\s*\?\s*\[\]", fn), \
-            "when the card acts in place, the section adds no guidance"
+        """Nothing on the record promises a future home for a step. Since
+        piece 6 the section schedules, marks done, edits and deletes in
+        place, so it sends nobody to the PM and calibration page either: a
+        pointer to a page piece 14 deletes is a dead end waiting to happen."""
+        for name in ("record.js", "record_actions.js"):
+            js = (ROOT / "static" / "js" / name).read_text()
+            assert "until it moves here" not in js, name
+            assert "The card above marks the overdue one done" not in js, name
+            assert "/maintenance/classic" not in js, name
+        fn = (ROOT / "static" / "js" / "record_actions.js").read_text()
+        fn = fn[fn.index("function drawMaintenance"):fn.index("function recent")]
+        assert "'Mark done…'" in fn and "'Edit…'" in fn
