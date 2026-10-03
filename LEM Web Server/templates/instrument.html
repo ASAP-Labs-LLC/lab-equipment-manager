@@ -87,6 +87,44 @@
     <div class="body" id="mt-body"></div>
   </section>
 
+  {#- Log (§3.1 #6, piece 7): the last 20 entries, chips that are view
+      filters, a row opens the Log entry sheet. Drawn by record_log.js from
+      /api/logs (the same question "Open in the full log" asks), so the
+      section and the page it opens cannot disagree. -#}
+  {%- set enc_uid = data.uid|urlencode %}
+  <section class="sec" id="log" data-testid="section-log" aria-labelledby="log-h">
+    <div class="about"><h2 id="log-h"><span class="ico ico-log" aria-hidden="true"></span>Log</h2>
+      <p id="log-intro">Everything this bench recorded, newest first.</p></div>
+    <div class="body" id="log-body">
+      <div class="chips log-chips" id="log-chips" role="group" aria-label="Show" data-testid="log-chips">
+        {%- for g in log_groups %}
+        <button type="button" class="chip" data-group="{{ g.key }}" aria-pressed="{{ 'true' if g.key == 'all' else 'false' }}">{{ g.label }}</button>
+        {%- endfor %}
+      </div>
+      <div class="card table-card log-card" id="log-card">
+        <table class="tbl log" id="log-tbl" aria-describedby="log-intro" data-testid="log-table">
+          <thead><tr>
+            <th scope="col" class="c-when" id="log-th-when">When</th>
+            <th scope="col" class="c-kind">Kind</th>
+            <th scope="col" class="c-lab">Lab ID</th>
+            <th scope="col" class="c-test">Test</th>
+            <th scope="col" class="c-value">Value</th>
+          </tr></thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+        <p class="log-state" id="log-state" role="status" data-testid="log-state" data-state="loading">
+          <span class="glyph working" aria-hidden="true"></span><span id="log-state-text">Reading this bench's log…</span>
+          <button type="button" class="btn btn-sm" id="log-retry" hidden>Try again</button>
+        </p>
+      </div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm" id="log-older" data-testid="log-older" hidden>Load older</button>
+        <a class="btn btn-sm" id="log-full" href="/logs?equipment={{ enc_uid }}" data-testid="log-full">Open in the full log</a>
+        <a class="btn btn-sm" id="log-export" href="/api/logs.csv?equipment={{ enc_uid }}&amp;limit=all" download data-testid="log-export"><span class="ico ico-download" aria-hidden="true"></span>Export history (CSV)</a>
+      </div>
+    </div>
+  </section>
+
   <section class="sec" id="bench" data-testid="section-bench" aria-labelledby="bench-h">
     <div class="about"><h2 id="bench-h"><span class="ico ico-signal" aria-hidden="true"></span>Bench and results</h2>
       <p>Each reading is filed once, through LabStation. A replay is never sent again, so a value an analyst corrected in LabCore stands.</p></div>
@@ -101,7 +139,7 @@
   {% include "_transfer_section.html" %}
   {%- endif %}
 
-  <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions, documents and the full log are still on the floor map's panel for this instrument. <a class="link" href="/floor/classic?machine={{ data.uid|urlencode }}">Open it there</a></p>
+  <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions and documents are still on the floor map's panel for this instrument. <a class="link" href="/floor/classic?machine={{ data.uid|urlencode }}">Open it there</a></p>
 </main>
 
 {#- the sheets the card and the topbar open (piece 6 adds the rest). A
@@ -178,12 +216,16 @@
     </div>
   </form>
 </dialog>
+{% include "_log_sheet.html" %}
 <script type="application/json" id="record-data">{{ data|json_island }}</script>
 {% endblock %}
 {% block scripts %}
 <script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
 <script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
 <script src="/static/js/record.js?v={{ v('js/record.js') }}"></script>
+<script src="/static/js/log_logic.js?v={{ v('js/log_logic.js') }}"></script>
+<script src="/static/js/log_view.js?v={{ v('js/log_view.js') }}"></script>
+<script src="/static/js/record_log.js?v={{ v('js/record_log.js') }}"></script>
 {%- if transfer_first_paint is defined %}
 <script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
 <script src="/static/js/transfer_section.js?v={{ v('js/transfer_section.js') }}"></script>

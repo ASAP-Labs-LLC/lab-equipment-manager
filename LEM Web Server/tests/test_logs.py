@@ -241,7 +241,8 @@ class TestTheLogsPage:
 
     def test_it_has_the_filters(self, client):
         body = client.get("/logs").get_data(as_text=True)
-        for ident in ("fMachine", "fKindSel", "fSince", "fUntil", "fQuery"):
+        # piece 7: the shell's filter row; every value lives in the URL
+        for ident in ("f-equipment", "f-kind", "f-since", "f-until", "f-q"):
             assert f'id="{ident}"' in body, ident
 
     def test_it_offers_the_csv_export(self, client):

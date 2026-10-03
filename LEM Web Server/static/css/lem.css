@@ -1608,3 +1608,126 @@ a.bay:hover { border-color: var(--border-strong); }
     .tr-tbl .tr-wait-inline { display: block; color: var(--text); font-weight: 600; }
 }
 .tr-wait-inline { display: none; }
+
+/* ── the machine log (ia-final §3.1 #6, §3.6, piece 7; templates/logs.html,
+   the record's #log, templates/_log_sheet.html, js/log_view.js) ──────────
+   GC hub's /results table page: the filter row in pill controls, one table
+   card with a count header and its source line, rows that open a sheet.
+   No row tint and no red fill: a QC row that failed says "Out of spec" with
+   the triangle, in the Kind cell, and that is the only status colour here.
+   Tokens only. */
+.content-wide { max-width: none; }
+.logs-page:focus { outline: none; }
+.ico-search { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='6.5'/%3E%3Cpath d='m16 16 4 4'/%3E%3C/svg%3E"); }
+.ico-log { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M9 6h11M9 12h11M9 18h11'/%3E%3Ccircle cx='4.5' cy='6' r='1' fill='black'/%3E%3Ccircle cx='4.5' cy='12' r='1' fill='black'/%3E%3Ccircle cx='4.5' cy='18' r='1' fill='black'/%3E%3C/svg%3E"); }
+
+/* the filter row (GC results.css) */
+.logs-page .filters { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2) var(--s3); margin-bottom: var(--s5); }
+.logs-page .filters .spacer { flex: 1; }
+.logs-page .filters .search { position: relative; display: inline-flex; align-items: center; }
+.logs-page .filters .search .ico { position: absolute; left: 12px; color: var(--text-muted); pointer-events: none; }
+.gc .logs-page .filters .search input { width: 240px; height: 34px; padding-left: 36px; border-radius: var(--radius-pill); }
+.gc .logs-page .filters select { border-radius: var(--radius-pill); height: 34px; max-width: 220px; }
+.logs-page .filters .dates { display: inline-flex; align-items: center; gap: var(--s2); }
+.logs-page .filters .dates[hidden] { display: none; }
+.gc .logs-page .filters input[type="date"] { height: 34px; border-radius: var(--radius-pill); padding: 0 var(--s3); }
+.logs-page .filters .dash { color: var(--text-muted); }
+
+/* the export menu: one default button in the topbar, three files under it */
+.menu-wrap { position: relative; }
+.export-menu { top: calc(100% + 6px); bottom: auto; left: auto; right: 0; width: 300px; }
+.export-menu[hidden] { display: none; }
+.export-menu a { align-items: flex-start; }
+.export-menu a .ico { margin-top: 2px; color: var(--text-muted); }
+.export-menu a b { display: block; font-weight: 600; }
+.export-menu a .caption { display: block; margin-top: 1px; }
+#export-btn .ico-chev { width: 12px; height: 12px; margin-left: 2px; transform: rotate(90deg); color: var(--text-muted); }
+
+/* the table card */
+.log-card { overflow: hidden; }
+.log-card .table-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2) var(--s3); padding: var(--s4) var(--s5) var(--s3); border-bottom: 1px solid var(--border-light); }
+.log-card .table-head h2 { font-size: var(--fs-md); margin: 0; }
+.log-card .table-head .spacer { flex: 1; }
+.log-card .tablewrap { overflow-x: auto; }
+.tbl.log-tbl, .tbl.log { font-size: var(--fs-sm); }
+.tbl.log-tbl th, .tbl.log-tbl td { padding: 9px var(--s3); white-space: nowrap; }
+.tbl.log-tbl th { background: var(--bg-card); color: var(--text-muted); }
+.tbl.log-tbl th:first-child, .tbl.log-tbl td:first-child,
+.tbl.log th:first-child, .tbl.log td:first-child { padding-left: var(--s5); }
+.tbl.log-tbl th:last-child, .tbl.log-tbl td:last-child,
+.tbl.log th:last-child, .tbl.log td:last-child { padding-right: var(--s5); }
+.tbl.log-tbl tbody tr:last-child td, .tbl.log tbody tr:last-child td { border-bottom: 0; }
+.log-row { cursor: pointer; }
+.log-row:hover td { background: var(--bg-hover); }
+.log-row:focus-within td { background: var(--bg-hover); }
+.row-open { border: 0; background: none; padding: 0; font: inherit; color: var(--text-muted); cursor: pointer; text-align: left; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.log-row:hover .row-open { color: var(--text); }
+.inst-link { color: var(--text); font-weight: 600; text-decoration: none; }
+.inst-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.log-row .c-kind { color: var(--text); }
+.log-row .c-kind .verdict { display: inline-flex; align-items: center; gap: 6px; margin-left: var(--s2); font-weight: 600; font-size: var(--fs-xs); }
+.log-row .c-kind .verdict:not(.s-not_ok):not(.s-ok_but) { color: var(--text-muted); font-weight: 500; }
+.log-row .c-lab { color: var(--text); font-variant-numeric: tabular-nums; }
+.log-row .c-test { color: var(--text); max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.log-row .c-value { color: var(--text); font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.log-row .c-value, .tbl th.c-value { text-align: right; font-variant-numeric: tabular-nums; }
+.log-row .c-who { color: var(--text-muted); }
+.tbl.log-tbl.is-reading tbody, .tbl.log.is-reading tbody { opacity: .55; }
+/* the state line: reading, couldn't read, nothing matches. Glyph + words. */
+.log-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; padding: var(--s4) var(--s5); font-size: var(--fs-sm); color: var(--text); }
+.log-state[hidden] { display: none; }
+.log-state[data-state="empty"] { color: var(--text-muted); }
+.log-state .btn { margin-left: var(--s2); }
+.log-card .more-row, .log-more-row { display: flex; align-items: center; justify-content: center; gap: var(--s3); padding: var(--s3); border-top: 1px solid var(--border-light); }
+.log-card .more-row[hidden] { display: none; }
+.logs-page .unread[hidden] { display: none; }
+
+/* the record's Log section: chips over a compact table, three actions */
+.log-chips { margin-bottom: var(--s3); }
+.record .log-card .tbl.log td, .record .log-card .tbl.log th { padding: 9px var(--s3); white-space: nowrap; }
+.record .log-card .log-row .c-test { max-width: 220px; }
+
+/* Bench and results: the folded "not reported" row */
+.bench-unrep .v b { font-weight: 600; color: var(--text); }
+.bench-unrep .v .caption { display: block; margin-top: 2px; }
+.bench-count .muted { color: var(--text-muted); }
+
+/* the Log entry sheet */
+dialog.sheet.log-sheet { width: min(560px, calc(100vw - 32px)); max-height: min(86vh, 860px); overflow: auto; }
+dialog.sheet.log-sheet .sheet-head h2 { font-size: var(--fs-lg); overflow-wrap: anywhere; }
+dialog.sheet.log-sheet .sheet-head h2:focus { outline: none; }
+dialog.sheet.log-sheet p.log-sheet-sub { margin: 0 0 var(--s3); font-size: var(--fs-sm); color: var(--text-muted); }
+dialog.sheet.log-sheet p.log-sheet-say { margin: 0 0 var(--s3); padding: var(--s3) var(--s4); border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text); font-size: var(--fs-sm); line-height: 1.45; }
+.log-sheet-kv { grid-template-columns: 150px minmax(0, 1fr); }
+.log-sheet-kv[hidden] { display: none; }
+.log-sheet-kv > .v { color: var(--text); font-variant-numeric: tabular-nums; }
+.log-sheet-kv > .v.muted { color: var(--text-muted); }
+.log-sheet-kv > div:nth-last-child(-n+2) { border-bottom: 0; }
+.log-sheet-h { margin: var(--s4) 0 0; font-size: var(--fs-xs); font-weight: 600; color: var(--text-muted); }
+.log-sheet-h[hidden] { display: none; }
+dialog.sheet.log-sheet .actions { align-items: center; }
+dialog.sheet.log-sheet .actions .spacer { flex: 1; }
+.log-sheet-id { font-variant-numeric: tabular-nums; }
+
+/* narrower: Lab ID and Who fold into the sheet (§6: "The Logs table drops
+   Lab ID into the sheet"); nothing scrolls sideways but the table's own wrap */
+@media (max-width: 1260px) {
+    .logs-page .c-who { display: none; }
+}
+@media (max-width: 1099px) {
+    .logs-page .c-lab, .record .log-card .c-lab { display: none; }
+    .gc .logs-page .filters .search input { width: 200px; }
+}
+@media (max-width: 699px) {
+    .logs-page .filters .search, .gc .logs-page .filters .search input { width: 100%; }
+    .logs-page .filters .search { flex: 1 1 100%; }
+    .tbl.log-tbl thead, .tbl.log thead { display: none; }
+    .tbl.log-tbl, .tbl.log-tbl tbody, .tbl.log, .tbl.log tbody { display: block; }
+    .log-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border-light); }
+    .log-row td { display: block; padding: 0 !important; border: 0; white-space: normal; }
+    .log-row td.c-when { grid-column: 1 / -1; order: 0; }
+    .log-row td.c-inst, .log-row td.c-kind { grid-column: 1; }
+    .log-row td.c-test { grid-column: 1; max-width: none; color: var(--text-muted); }
+    .log-row td.c-value { grid-column: 2; grid-row: 2 / span 2; align-self: center; }
+    .log-sheet-kv { grid-template-columns: 120px minmax(0, 1fr); }
+}

@@ -413,9 +413,15 @@
         $('bench-body').replaceChildren(h('div', { className: 'kv' },
             ...kv('Reads from', b.reads_from ? h('span', { className: 'mono', text: b.reads_from }) : h('span', { className: 'muted', text: 'Not reported' })),
             ...kv('Bench', glyph(b.glyph === 'final' ? 'final' : 'dashed'), ' ' + b.word + (b.at ? ' · last poll ' + R.stamp(b.at, undefined, true) : '')),
-            ...(transfer ? [] : kv('Live road', b.live_road ? 'Yes: it reports to LEM directly' : 'No: its readings reach LEM via LabCore')),
-            ...kv('Replays not re-sent', h('span', { className: 'muted', text: b.replays_not_resent === null ? 'Not reported by this bench\'s module version' : String(b.replays_not_resent) }))),
+            ...(transfer ? [] : kv('Live road', b.live_road ? 'Yes: it reports to LEM directly' : 'No: its readings reach LEM via LabCore'))),
+            // Filed today · Held · Replays not re-sent (piece 7): the bench's
+            // own reports, read from LEM's store by record_log.js when the
+            // page opens. Until then they say they are being read, never 0.
+            h('div', { className: 'kv bench-counts', id: 'bench-counts', 'data-testid': 'bench-counts', 'aria-live': 'polite' },
+                ...[['Filed to LabCore today', 'filed_today'], ['Held, waiting for the sample', 'held'], ['Replays not re-sent', 'replays_not_resent']]
+                    .flatMap(([k, key]) => kv(k, h('span', { className: 'muted', 'data-count': key, text: 'Reading…' })))),
             ...(transfer ? [] : [h('p', { className: 'caption', text: 'Instruments are added and configured in LabStation\'s LEM module.' })]));
+        document.dispatchEvent(new CustomEvent('lem:bench-drawn'));
     }
 
     // ── the sheets ────────────────────────────────────────────────────────

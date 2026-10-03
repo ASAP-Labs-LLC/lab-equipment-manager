@@ -38,6 +38,7 @@ from labcore_result import (LabCoreError, LabCoreRefused, LabCoreUnavailable,
                             rows as labcore_rows)
 from labcore_gateway import check_write, refusal_reason
 from labcore_source import LabCoreDataSource
+import ui_log
 from models import (
     AppConfig,
     BoxConfig,
@@ -2088,6 +2089,46 @@ def create_app(gateway, labcore_gateway=None,
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    @app.route("/api/ui/instruments/<machine_uid>/bench")
+    def api_ui_record_bench(machine_uid):
+        """Bench and results' three counters (ia-final §3.1 #7; ui_log.
+        bench_counts): Filed to LabCore today, Held waiting for the sample,
+        Replays not re-sent. LEM's store and memory only, never LabCore, and
+        asked when a person opens the record, not on every live tick. A
+        counter the bench never reported is words, never 0."""
+        status, body = _record_payload(machine_uid)
+        if status == 404:
+            return jsonify({"error": "LEM has no instrument %s." % machine_uid}), 404
+        entry = app.config["BENCH_REGISTRY"].get(machine_uid)
+        cursor, filed, error = None, None, None
+        try:
+            got = labcore_rows(gateway.read_sql(
+                "SELECT mode, stats, last_seen FROM bench_cursor WHERE machine_uid = ? "
+                "ORDER BY last_seen DESC LIMIT 1", [machine_uid]))
+            if got:
+                try:
+                    stats = json.loads(got[0].get("stats") or "{}")
+                except (TypeError, ValueError):
+                    stats = {}
+                cursor = {"mode": got[0].get("mode"), "stats": stats}
+            v2 = entry is not None or str((cursor or {}).get("mode") or "") == "v2"
+            if v2:
+                # the ledger holds LEM's last filing per cell; a cell filed
+                # today counts once (today = this server's local day, as the
+                # bench's wall-clock filed_at is)
+                day = _now().strftime("%Y-%m-%d")
+                n = labcore_rows(gateway.read_sql(
+                    "SELECT COUNT(*) AS n FROM result_ledger WHERE machine_uid = ? "
+                    "AND filed_at >= ?", [machine_uid, day]))
+                filed = int((n[0] if n else {}).get("n") or 0)
+        except LabCoreError as exc:
+            error = str(exc) or exc.__class__.__name__
+        out = ui_log.bench_counts(entry=entry, cursor=cursor, filed_today=filed, error=error)
+        out["uid"] = machine_uid
+        resp = jsonify(out)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
     @app.route("/instruments/<machine_uid>")
     def instrument_record(machine_uid):
         """The record. The first paint carries the answer (a JSON island the
@@ -2098,6 +2139,7 @@ def create_app(gateway, labcore_gateway=None,
             return render_template("instrument_missing.html", nav="instruments",
                                    data=body), status
         return render_template("instrument.html", nav="instruments", data=body,
+                               log_groups=ui_log.chips(),
                                has_quality=any(r.rule == "/quality"
                                                for r in app.url_map.iter_rules()))
     @app.template_filter("groupby_runs")
@@ -4763,23 +4805,35 @@ def create_app(gateway, labcore_gateway=None,
         response.set_data(json.dumps(body))
         return response
 
-    LOG_KINDS = ("run", "qc", "status_change", "override", "comment", "pm",
-                 "calibration", "config")
+    # Every kind a person can filter on (ui_log.KINDS): the v3.9 eight plus
+    # the rows the bench sync writes (`result_conflict`, shown as "Not
+    # re-sent"; `held_expired`) and the module's Re-read. Before piece 7 the
+    # filter knew only the eight, so asking for a conflict returned EVERY row.
+    LOG_KINDS = ui_log.KINDS
 
-    def _log_rows(args, failed=None) -> list:
+    def _log_machine(args) -> str:
+        # `equipment` is the address bar's word (ia-final §3.1 #3 links
+        # /logs?equipment=<uid>&kind=config); `machine` is the API's old one
+        return (args.get("equipment") or args.get("machine") or "").strip()
+
+    def _log_rows(args, failed=None, meta=None) -> list:
         """Every filter the logs page offers, applied in SQL where possible.
 
         `failed` is an out-parameter: a read that times out is reported, not
-        silently turned into an empty result.
+        silently turned into an empty result. `meta`, when given, receives
+        `total` (how many rows match, without the page limit; None when the
+        count could not be read). `before` is the keyset cursor "Load older"
+        sends (ui_log.cursor_for); one that does not parse raises
+        ui_log.BadCursor, never silently serves page one again.
         """
         where, params = [], []
-        machine = (args.get("machine") or "").strip()
+        machine = _log_machine(args)
         if machine:
             where.append("machine_uid = ?")
             params.append(machine)
-        kinds = [k.strip().lower() for k in (args.get("kind") or "").split(",")
-                 if k.strip()]
-        kinds = [k for k in kinds if k in LOG_KINDS]
+        # a chip name is a group of kinds (ui_log.GROUPS): "results" asks for
+        # run, held_expired, result_conflict and reread together
+        kinds = ui_log.expand_kinds(args.get("kind") or "")
         if kinds:
             where.append(f"kind IN ({','.join('?' for _ in kinds)})")
             params += kinds
@@ -4806,23 +4860,47 @@ def create_app(gateway, labcore_gateway=None,
         # and the database was never the reason: 41,903 rows measured at 1.00s.
         _raw = str(args.get("limit") or "").strip()
         limit = None if _raw.lower() == "all" else max(1, int(_raw or 500))
+        count_clause = ("WHERE " + " AND ".join(where)) if where else ""
+        count_params = list(params)
+        before = (args.get("before") or "").strip()
+        if before:
+            # (ts, id) keyset: rows strictly older than the oldest on screen,
+            # ties on ts broken by id, so a page boundary inside a batch of
+            # same-instant verdicts neither skips nor repeats a row
+            b_ts, b_id = ui_log.parse_cursor(before)
+            where.append("(ts < ? OR (ts = ? AND id < ?))")
+            params += [b_ts, b_ts, b_id]
         clause = ("WHERE " + " AND ".join(where)) if where else ""
+        table = ("lem_machine_log" if _truthy(args.get("include_rereads"))
+                 else "lem_machine_log_effective")
         try:
-            if _truthy(args.get("include_rereads")):
+            if table == "lem_machine_log":
                 # The "include re-reads" switch (transfer §5.2): the WHOLE
                 # record, rows an approved annotation hides included. A person
                 # asked for it by name; the default stays the effective view.
-                sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                sql = ("SELECT id, machine_uid, ts, kind, lab_id, test_name, value, "
                        f"detail FROM lem_machine_log {clause} "  # raw-log: the include-re-reads switch
-                       "ORDER BY ts DESC")
+                       "ORDER BY ts DESC, id DESC")
             else:
-                sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
+                sql = ("SELECT id, machine_uid, ts, kind, lab_id, test_name, value, "
                        f"detail FROM lem_machine_log_effective {clause} "
-                       "ORDER BY ts DESC")
+                       "ORDER BY ts DESC, id DESC")
             if limit is not None:
                 sql += " LIMIT ?"
             res = gateway.read_sql(
                 sql, params + ([limit] if limit is not None else []))
+            if meta is not None:
+                # The count header's number ("385 events"). Its own read, so
+                # a count that failed is None (the header then says how many
+                # are shown, not a total), never the page length passed off
+                # as the whole.
+                try:
+                    got = labcore_rows(gateway.read_sql(
+                        f"SELECT COUNT(*) AS n FROM {table} {count_clause}",
+                        count_params))
+                    meta["total"] = int((got[0] if got else {}).get("n") or 0)
+                except (LabCoreError, ValueError, TypeError):
+                    meta["total"] = None
             # `labcore_rows`, not `res.get("error")` (2026-08-25). The verdict
             # was still hand-rolled here, in the file that imports the shared
             # rule and uses it three lines further down — so a refusal carrying
@@ -4845,7 +4923,7 @@ def create_app(gateway, labcore_gateway=None,
                 failed["at"] = True
             return []
 
-    def _log_entries(args, failed=None, unnamed=None, searched=None) -> list:
+    def _log_entries(args, failed=None, unnamed=None, searched=None, meta=None) -> list:
         # TWO FLAGS, NOT ONE (2026-08-25). `_titles()` reaches LabCore when the
         # snapshot has not built, and it raises rather than shrugging — but a
         # missing NAME and a missing EVENT are different facts and folding them
@@ -4886,7 +4964,7 @@ def create_app(gateway, labcore_gateway=None,
         # empty page — the mirror is a cache, never the record.
         mirror = app.config.get("LOG_MIRROR")
         searched_all = False
-        rows = _log_rows(args, failed=failed)
+        rows = _log_rows(args, failed=failed, meta=meta)
 
         if needle and mirror is not None and mirror.state()["rows"]:
             # BOTH SOURCES, because each is missing something the other has.
@@ -4899,14 +4977,19 @@ def create_app(gateway, labcore_gateway=None,
             # read the page was already doing.
             raw = str(args.get("limit") or "").strip()
             lim = None if raw.lower() == "all" else max(1, int(raw or 500))
+            # the mirror filters one kind in SQL; a chip's group (or a list)
+            # is asked without it and narrowed here, never silently dropped
+            wanted = ui_log.expand_kinds(args.get("kind") or "")
             try:
                 deep = mirror.query(
                     term=needle,
-                    machine_uid=(args.get("machine") or "").strip(),
-                    kind=(args.get("kind") or "").strip(),
+                    machine_uid=_log_machine(args),
+                    kind=wanted[0] if len(wanted) == 1 else "",
                     since=(args.get("since") or "").strip(),
                     until=(args.get("until") or "").strip(),
                     limit=lim if lim is not None else 100000)
+                if len(wanted) > 1:
+                    deep = [r for r in deep if str(r.get("kind") or "") in wanted]
             except LabCoreError:
                 # The whole-record search could not be answered — on the LEM
                 # store the mirror IS a read, and reads can fail. Reported
@@ -4944,6 +5027,9 @@ def create_app(gateway, labcore_gateway=None,
                 detail = {}
             uid = str(row.get("machine_uid") or "")
             entry = {
+                # the row's id in the record: "Load older" pages by it and
+                # the Log entry sheet names it (None from the mirror's search)
+                "id": row.get("id") if isinstance(row.get("id"), int) else None,
                 "machine_uid": uid,
                 "machine_title": titles.get(uid, uid),
                 "ts": str(row.get("ts") or ""),
@@ -4981,6 +5067,33 @@ def create_app(gateway, labcore_gateway=None,
             searched["all_time"] = searched_all
         return out
 
+    def _log_source() -> dict:
+        """The count header's source line (ia-final §3.6, §7): who keeps the
+        log and how complete it is. Memory only. "Kept by LEM" once the
+        record is in LEM's store; "complete to" is as of this read, because
+        the store IS the record. While the record is still moving from
+        LabCore (the import, transfer §10.1) or the LabCore copy is
+        refilling, it says the list is incomplete instead of implying it is
+        the whole record."""
+        mirror = app.config.get("LOG_MIRROR")
+        try:
+            st = mirror.live_status() if mirror is not None else {}
+        except Exception:                               # noqa: BLE001
+            st = {}
+        local = is_local_store(gateway)
+        incomplete = ""
+        if local:
+            import legacy_import as _li
+            imp = _li.cached_status(gateway)
+            if imp.get("state") in ("running", "incomplete"):
+                incomplete = "the record is still moving from LabCore"
+        elif (st or {}).get("state") in ("empty", "filling", "partial", "behind"):
+            incomplete = "the log copy is refilling"
+        at = (st or {}).get("complete_to") or _now()
+        return {"kept_by": "LEM" if local else "LabCore",
+                "complete_to": at.isoformat(timespec="seconds") if hasattr(at, "isoformat") else str(at),
+                "incomplete": incomplete or None}
+
     @app.route("/api/logs")
     def api_logs():
         # An unreadable log must not be served as an empty one. The queue bursts,
@@ -4988,7 +5101,13 @@ def create_app(gateway, labcore_gateway=None,
         # about a lab that has plenty.
         failed = {"at": False}
         searched = {"all_time": False}
-        entries = _log_entries(request.args, failed=failed, searched=searched)
+        meta = {"total": None}
+        try:
+            entries = _log_entries(request.args, failed=failed, searched=searched, meta=meta)
+        except ui_log.BadCursor as exc:
+            # refused, never ignored: an ignored cursor serves page one again
+            # under "Load older", and the page then shows every row twice
+            return jsonify({"error": str(exc)}), 400
 
         # "The read failed" and "this lab has no log yet" are two facts, and
         # this used to answer `[]` to both — judged with `res.get("error")`,
@@ -5026,7 +5145,21 @@ def create_app(gateway, labcore_gateway=None,
             # would leave the fallback list in place for days, reported as if
             # it had been read.
             _page_drop("logkinds")
-        out = {"events": entries, "kinds": kinds,
+        limit_raw = str(request.args.get("limit") or "").strip()
+        limit = None if limit_raw.lower() == "all" else max(1, int(limit_raw or 500))
+        needle = (request.args.get("q") or "").strip()
+        last = entries[-1] if entries else None
+        # "Load older": a full page of a plain listing has a next page; a
+        # search already looked at the whole record, and a short page ended
+        nxt = (ui_log.cursor_for(last["ts"], last["id"])
+               if (last and not needle and limit is not None and len(entries) >= limit
+                   and isinstance(last.get("id"), int)) else None)
+        out = {"events": entries, "kinds": ui_log.known_kinds(kinds),
+               "next": nxt,
+               # how many rows match the filters (None: the count failed, or
+               # a search, whose own sentence says what it looked through)
+               "total": None if needle else meta["total"],
+               "source": _log_source(),
                "kinds_known": not kinds_failed["at"],
                # Whether this was a search of the WHOLE record or a page
                # listing. "12 matches" over the newest 500 rows and over
@@ -5072,8 +5205,10 @@ def create_app(gateway, labcore_gateway=None,
 
     @app.route("/logs")
     def logs_page():
-        """Everything that has happened, searchable."""
-        return render_template("logs.html", active="/logs")
+        """Everything that has happened, searchable (ia-final §3.6). The
+        filters are read from the address bar by logs.js; the server draws the
+        frame, the chips and the sheet."""
+        return render_template("logs.html", nav="log", log_groups=ui_log.chips())
 
     @app.route("/api/machines/<machine_uid>/maintenance-history")
     def api_maintenance_history(machine_uid):
