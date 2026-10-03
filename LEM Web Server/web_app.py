@@ -8273,7 +8273,7 @@ def create_app(gateway, labcore_gateway=None,
 
     # ── QC samples: the V4 model, central and shared ──────────────────
     import qc_samples as qc_samples_mod
-    from qc_samples import QcSample, QcSampleStore
+    from qc_samples import QcSample, QcSampleStore, QcSampleTest
 
     sample_store = QcSampleStore(gateway)
 
@@ -8525,6 +8525,427 @@ def create_app(gateway, labcore_gateway=None,
         if names:
             _test_name_cache["names"] = names
         return jsonify({"tests": names or []})
+
+    # ── QC across the lab (ia-final §3.5, piece 8) ─────────────────────
+    # /quality is QA's view: Latest checks (one verdict per instrument and
+    # check, the record's rule) and the standards library. Drawing it costs
+    # LabCore nothing: verdicts come from the snapshot in memory, the control
+    # captions from LEM's own log (memoized, as the /qc wall does), and the
+    # library, its assignments and its certificates from LEM's store. A read
+    # that fails is said on the page, never drawn as an empty table.
+    import ui_quality
+
+    def _snapshot_library():
+        """The QC library as the snapshot read it (0 ops), or None."""
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        rows = (snapshots.tables() or {}).get("qcsample")
+        if rows is None:
+            return None
+        out = []
+        for r in rows:
+            try:
+                tests = json.loads((r or {}).get("c3") or "[]")
+            except (TypeError, ValueError):
+                tests = []
+            out.append({"name": str((r or {}).get("c1") or ""),
+                        "sample_id_val": str((r or {}).get("c2") or ""),
+                        "tests": tests if isinstance(tests, list) else []})
+        return out
+
+    def _store_why(exc) -> str:
+        """A store read's failure, in a sentence the page can carry."""
+        text = str(exc).strip().rstrip(".") or exc.__class__.__name__
+        return "LEM's store did not answer (%s)" % text[:200]
+
+    def _quality_latest() -> dict:
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            err = snap.get("error")
+            out = ui_quality.latest(None, href=_record_href,
+                                    error=("LabCore did not answer the first read" if err else None))
+        else:
+            merged = _ui_merged(snap, _now()) or []
+            rows, missing = _wall_qc_rows()
+            out = ui_quality.latest(merged, href=_record_href, library=_snapshot_library(),
+                                    rows=rows, missing=missing)
+        out["built_at"] = snap.get("built_at") if snap.get("ready") else None
+        out["stale"] = bool(snap.get("stale")) if snap.get("ready") else None
+        return out
+
+    def _read_library():
+        """(samples, error): the library from the store, or why it is unknown."""
+        try:
+            return [s.to_dict() for s in sample_store.list_samples()], None
+        except LabCoreError as exc:
+            return None, _store_why(exc)
+
+    def _read_targets():
+        try:
+            return target_store.all(missing_ok=True), None
+        except LabCoreError as exc:
+            return None, _store_why(exc)
+
+    def _read_certs():
+        try:
+            return certificate_store.by_standard(), None
+        except (CertificateStoreError, LabCoreError) as exc:
+            return None, _store_why(exc)
+
+    def _standards_payload() -> dict:
+        lib, err = _read_library()
+        targets, _terr = _read_targets() if lib is not None else (None, None)
+        certs, _cerr = _read_certs() if lib is not None else (None, None)
+        out = ui_quality.standards(lib, targets, certs, today=_now().date(), error=err)
+        return out
+
+    def _instrument_list():
+        """[{uid, title}] for the chips, from the snapshot (None: not read)."""
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        return sorted(({"uid": str(m.get("machine_uid") or ""), "title": str(m.get("title") or m.get("machine_uid") or "")}
+                       for m in snap.get("machines") or []), key=lambda m: (m["title"].lower(), m["uid"]))
+
+    def _standard_payload(name: str):
+        """-> (status, payload, redirect_to)."""
+        lib, err = _read_library()
+        if lib is None:
+            return 503, {"state": "unreadable", "name": name, "error": err}, None
+        sample, other = ui_quality.resolve(lib, name)
+        if sample is None:
+            if other:
+                return 302, None, other
+            return 404, {"state": "missing", "name": name}, None
+        targets, _terr = _read_targets()
+        try:
+            certs = certificate_store.certificates(sample["name"])
+        except (CertificateStoreError, LabCoreError):
+            certs = None
+        snap = snapshots.get(build_if_missing=False)
+        merged = _ui_merged(snap, _now()) if snap.get("ready") else None
+        out = ui_quality.standard(sample, targets=targets, certs=certs, machines=merged,
+                                  today=_now().date(), href=_record_href)
+        out["instruments"] = _instrument_list()
+        out["built_at"] = snap.get("built_at") if snap.get("ready") else None
+        return 200, out, None
+
+    def _no_store(resp):
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    def _quality_page(view: str):
+        data = {"view": view, "instruments": _instrument_list()}
+        if view == "latest":
+            data["latest"] = _quality_latest()
+        else:
+            data["standards"] = _standards_payload()
+        return render_template("quality.html", nav="qc", view=view, data=data)
+
+    @app.route("/quality")
+    def quality_page():
+        """Latest checks: the latest verdict of every check, worst first."""
+        return _quality_page("latest")
+
+    @app.route("/quality/standards")
+    def quality_standards_page():
+        """The standards library."""
+        return _quality_page("standards")
+
+    @app.route("/quality/standards/<path:name>")
+    def quality_standard_page(name):
+        """One standard. A Lab ID or another spelling redirects to its
+        name; "no such standard" (404) and "could not ask" (503) are two
+        pages, because only one is a statement about the library."""
+        status, body, to = _standard_payload(name)
+        if to:
+            return redirect(ui_quality.standard_href(to), code=302)
+        if status != 200:
+            return render_template("standard.html", nav="qc", data=body), status
+        return render_template("standard.html", nav="qc", data=body)
+
+    @app.route("/api/ui/quality")
+    def api_ui_quality():
+        return _no_store(jsonify(_quality_latest()))
+
+    @app.route("/api/ui/standards")
+    def api_ui_standards():
+        body = _standards_payload()
+        resp = jsonify(body)
+        if body.get("state") == "unreadable":
+            resp.status_code = 503
+        return _no_store(resp)
+
+    @app.route("/api/ui/standards/<path:name>")
+    def api_ui_standard(name):
+        status, body, to = _standard_payload(name)
+        if to:
+            body, status = {"state": "moved", "name": to, "href": ui_quality.standard_href(to)}, 200
+        resp = jsonify(body)
+        resp.status_code = status
+        return _no_store(resp)
+
+    # held on the app so a test can forget it
+    _reporting_memo: dict = app.config.setdefault("QC_REPORTING", {"at": 0.0, "pairs": None})
+    REPORTING_SECONDS = 600.0
+
+    @app.route("/api/ui/quality/reporting")
+    def api_ui_quality_reporting():
+        """normalised test -> instruments that report it (LEM's log, held ten
+        minutes, plus what each instrument is QC'd on now). A log that could
+        not be read is a 503 with a sentence: the sheet then lists the
+        instruments by name and says why, rather than claiming none report."""
+        now = time.monotonic()
+        memo = _reporting_memo
+        if memo["pairs"] is None or now - memo["at"] > REPORTING_SECONDS:
+            mirror = app.config.get("LOG_MIRROR")
+            try:
+                if mirror is None:
+                    raise LabCoreUnavailable("there is no local copy of the log")
+                memo["pairs"] = list(mirror.reported_tests())
+                memo["at"] = now
+            except Exception as exc:                      # noqa: BLE001 said, never swallowed
+                memo["pairs"] = None
+                return _no_store(jsonify({
+                    "error": "Couldn't read which instruments report each test: %s." % (
+                        str(exc).strip().rstrip(".") or exc.__class__.__name__),
+                    "tests": None})), 503
+        snap = snapshots.get(build_if_missing=False)
+        machines = snap.get("machines") if snap.get("ready") else None
+        return _no_store(jsonify({"tests": ui_quality.reporting(memo["pairs"], machines)}))
+
+    def _known_uids():
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        return {str(m.get("machine_uid")) for m in snap.get("machines") or []}
+
+    def _set_instruments(name: str, test: str, wanted: List[str]):
+        """Make `wanted` exactly the instruments checked on (name, test),
+        leaving every other check on those instruments as it was. Read
+        fresh from the store, so two people editing are not undone by a
+        page's stale copy. -> (added, removed, failed)."""
+        all_targets = target_store.all(missing_ok=True)
+        pair = WatchedTarget(name, test)
+        holders = {uid for uid, ts in all_targets.items() if pair in ts}
+        added, removed, failed = [], [], []
+        for uid in sorted(set(wanted) | holders):
+            current = list(all_targets.get(uid, []))
+            want = uid in wanted
+            has = pair in current
+            if want == has:
+                continue
+            new = current + [pair] if want else [t for t in current if t != pair]
+            try:
+                target_store.assign(uid, new)
+            except LabCoreError as exc:
+                failed.append({"uid": uid, "error": str(exc)})
+                continue
+            (added if want else removed).append(uid)
+            _audit("qc-targets assigned", uid, {"targets": [t.to_dict() for t in new],
+                                                 "via": "standard " + name})
+        if added or removed:
+            snapshots.refresh_soon()
+        return added, removed, failed
+
+    def _test_named(sample, test: str):
+        key = " ".join(str(test or "").split()).lower()
+        for t in sample.tests:
+            if key in (" ".join(t.name.split()).lower(), " ".join((t.value_col or "").split()).lower()):
+                return t
+        return None
+
+    def _num_field(raw, what: str, *, required: bool = True, minimum=None):
+        if raw is None or str(raw).strip() == "":
+            if required:
+                raise ValueError("Enter the %s." % what)
+            return None
+        try:
+            v = float(str(raw).strip())
+        except ValueError:
+            raise ValueError("The %s has to be a number, like 63.7." % what)
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ValueError("The %s has to be a number, like 63.7." % what)
+        if minimum is not None and v < minimum:
+            raise ValueError("The %s cannot be negative." % what)
+        return v
+
+    @app.route("/api/qc-samples/new", methods=["POST"])
+    def api_new_qc_sample():
+        """New standard (§3.5, T5): one standard with one check, and the
+        instruments it is checked on, in one request.
+
+        Unlike POST /api/qc-samples (an upsert by name, which the old
+        library's edit dialog needs), a NEW standard refuses a name or a Lab
+        ID the library already holds: a second lot saved over the first
+        would silently replace its certified values, and two standards on
+        one Lab ID leave the bench unable to tell which one it ran. The
+        duplicate check reads the library, and a library that could not be
+        read refuses the save rather than guess."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        name = " ".join(str(body.get("name") or "").split())
+        lab_id = str(body.get("lab_id") or "").strip()
+        t = body.get("test") if isinstance(body.get("test"), dict) else {}
+        test_name = " ".join(str(t.get("name") or "").split())
+        wanted = [str(u) for u in body.get("instruments") or [] if str(u).strip()]
+        try:
+            if not name:
+                raise ValueError("A standard needs a name.")
+            if not lab_id:
+                raise ValueError("A standard needs the Lab ID it runs under.")
+            if not test_name:
+                raise ValueError("Pick the test it certifies, from LabCore's list.")
+            expected = _num_field(t.get("expected"), "expected value")
+            std_dev = _num_field(t.get("std_dev"), "standard deviation", minimum=0.0)
+            k = _num_field(t.get("k"), "k", required=False) or 2.0
+            if k <= 0:
+                raise ValueError("k must be greater than zero.")
+            hours = _num_field(t.get("qc_expire_hours"), "QC window", required=False, minimum=0.0) or 0.0
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "saved": False, "retry": False}), 400
+        known = _known_uids()
+        unknown = [u for u in wanted if known is not None and u not in known]
+        if unknown:
+            return jsonify({"error": "There is no instrument %s in LEM. Nothing was saved."
+                            % ", ".join(unknown), "saved": False, "retry": False}), 400
+        if wanted and known is None:
+            return jsonify({"error": "LEM has not read its instruments yet, so it cannot check them "
+                                     "on this standard. Nothing was saved; try again in a moment.",
+                            "saved": False, "retry": True}), 503
+        try:
+            library = sample_store.list_samples()
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read the QC library to check this name and Lab ID "
+                                     "are new: %s. Nothing was saved." % _store_why(exc),
+                            "saved": False, "retry": True}), 503
+        for s in library:
+            if s.name.strip().lower() == name.lower():
+                return jsonify({"error": "There is already a standard called %s. Give the new lot a "
+                                         "name of its own, or replace that one with a new lot from "
+                                         "its page." % s.name, "saved": False, "retry": False}), 400
+            if s.sample_id_val.strip().lower() == lab_id.lower():
+                return jsonify({"error": "%s is already the Lab ID of %s. A Lab ID names one standard, "
+                                         "or the bench cannot tell which one it ran." % (lab_id, s.name),
+                                "saved": False, "retry": False}), 400
+        sample = QcSample(name=name, sample_id_val=lab_id, tests=[QcSampleTest(
+            name=test_name, value_col=test_name, expected=expected, std_dev=std_dev, k=k,
+            units=str(t.get("units") or "").strip(), qc_expire_hours=hours)])
+        try:
+            sample_store.save(sample)
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "saved": False, "retry": False}), 400
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this QC standard")
+        _audit("qc-sample saved", "", {"standard": name, "lab_id": lab_id, "tests": 1, "new": True})
+        snapshots.refresh_soon()
+        added, failed = [], []
+        if wanted:
+            try:
+                added, _removed, failed = _set_instruments(name, test_name, wanted)
+            except LabCoreError as exc:
+                failed = [{"uid": u, "error": _store_why(exc)} for u in wanted]
+        return jsonify({"ok": True, "name": name, "href": ui_quality.standard_href(name),
+                        "assigned": added, "failed": failed})
+
+    @app.route("/api/qc-samples/assign", methods=["POST"])
+    def api_qc_sample_assign():
+        """Which instruments one check of one standard is checked on (the
+        standard page's Check it on…). Sets exactly that set, for that check
+        only; every other assignment on those instruments stands."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        name = str(body.get("name") or "").strip()
+        test = str(body.get("test") or "").strip()
+        raw = body.get("instruments")
+        if not isinstance(raw, list):
+            return jsonify({"error": "Expected a list of instruments."}), 400
+        wanted = sorted({str(u) for u in raw if str(u).strip()})
+        try:
+            library = {s.name: s for s in sample_store.list_samples(missing_ok=False)}
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read the QC library: %s. Nothing was changed." % _store_why(exc),
+                            "retry": True}), 503
+        sample = library.get(name)
+        if sample is None:
+            return jsonify({"error": "There is no QC standard called %s. Nothing was changed." % name,
+                            "retry": False}), 400
+        t = _test_named(sample, test)
+        if t is None:
+            return jsonify({"error": "%s does not certify %s, so nothing can be checked on it. "
+                                     "Nothing was changed." % (name, test), "retry": False}), 400
+        known = _known_uids()
+        if known is not None:
+            unknown = [u for u in wanted if u not in known]
+            if unknown:
+                return jsonify({"error": "There is no instrument %s in LEM. Nothing was changed."
+                                % ", ".join(unknown), "retry": False}), 400
+        try:
+            added, removed, failed = _set_instruments(name, t.name, wanted)
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read what is assigned now: %s. Nothing was changed."
+                            % _store_why(exc), "retry": True}), 503
+        if failed:
+            return jsonify({"error": "Not every instrument was changed: %s. Those that were stay "
+                                     "changed; save again to finish." % "; ".join(
+                                         "%s (%s)" % (f["uid"], f["error"]) for f in failed),
+                            "added": added, "removed": removed, "failed": failed,
+                            "partial": bool(added or removed)}), 503
+        return jsonify({"ok": True, "added": added, "removed": removed})
+
+    @app.route("/api/qc-samples/rename", methods=["POST"])
+    def api_qc_sample_rename():
+        """Rename a standard and keep everything that hangs off its name.
+
+        The library keys a standard by name, and so do the assignments and
+        the certificates. The old floor renamed by saving the new name and
+        deleting the old, which carried the certificate (renamed_to) but left
+        every assigned instrument pointing at a name that no longer existed:
+        its checks went quietly unassigned. Here it is three steps, each
+        confirmed: the new name with the same Lab ID and values and every
+        instrument moved (``qc_samples.changeover``), the certificates
+        repointed, then the old name removed."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        old = str(body.get("name") or "").strip()
+        new = " ".join(str(body.get("new_name") or "").split())
+        if not new:
+            return jsonify({"error": "Give it a new name.", "retry": False}), 400
+        if new == old:
+            return jsonify({"error": "That is the name it already has. Nothing was changed.",
+                            "retry": False}), 400
+        from qc_samples import changeover
+        try:
+            library = {s.name: s for s in sample_store.list_samples(missing_ok=False)}
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read the QC library: %s. Nothing was changed." % _store_why(exc),
+                            "retry": True}), 503
+        if old not in library:
+            return jsonify({"error": "There is no QC standard called %s." % old, "retry": False}), 400
+        clash = next((n for n in library if n.lower() == new.lower() and n != old), None)
+        if clash:
+            return jsonify({"error": "There is already a standard called %s. Nothing was changed." % clash,
+                            "retry": False}), 400
+        landed = []
+        try:
+            moved = changeover(gateway, old, new, library[old].sample_id_val, retire_old=False)
+            landed.append("the new name, with %d instrument%s moved" % (moved, "" if moved == 1 else "s"))
+            certificate_store.repoint_certificates(old, new)
+            landed.append("the certificates")
+            sample_store.delete(old)
+            landed.append("the old name removed")
+        except (CertificateStoreError, CertificateRejected, LabCoreError, ValueError) as exc:
+            return jsonify({"error": "The rename stopped part-way: %s. Done so far: %s. Rename again "
+                                     "to finish; nothing done twice." % (
+                                         str(exc).strip().rstrip("."), ", ".join(landed) or "nothing"),
+                            "landed": landed, "partial": bool(landed), "retry": True}), 503
+        _audit("qc-sample renamed", "", {"from": old, "to": new, "instruments": moved})
+        snapshots.refresh_soon()
+        return jsonify({"ok": True, "name": new, "href": ui_quality.standard_href(new), "moved": moved})
 
     def _warm() -> None:
         """Fill the caches before anybody asks, on a background thread.

@@ -521,7 +521,7 @@
             if (!groups.length) {
                 list.replaceChildren(h('div', { className: 'assign-note' }, glyph('never'),
                     h('span', {}, 'No QC standards are defined yet. A standard is defined once in the QC library, with its certified values, then assigned here. ',
-                        h('a', { className: 'link', href: '/floor/classic?open=qc-library', text: 'Open the QC library' }))));
+                        h('a', { className: 'link', href: hasQuality ? '/quality/standards?new=1' : '/floor/classic?open=qc-library', text: hasQuality ? 'Add a standard' : 'Open the QC library' }))));
             } else {
                 list.replaceChildren(...groups.map(g => h('fieldset', { className: 'assign-grp' + (g.gone ? ' gone' : '') },
                     h('legend', {}, h('b', { text: g.name }), g.labId ? h('span', { className: 'muted', text: ' · lab ID ' + g.labId }) : null,

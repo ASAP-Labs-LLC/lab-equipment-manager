@@ -1,0 +1,105 @@
+{% extends "_layout.html" %}
+{#- QC across the lab (ia-final §3.5, piece 8): QA's page. One heading in the
+    topbar (as Instruments and GC hub's Results do), the seg Latest checks ·
+    Standards, and the topbar's one default action, New standard, on both
+    views. No primary button: this page reports, and its one write opens a
+    sheet.
+
+    Latest checks is ONE table with ONE verdict column (judge J3): a
+    statistical-control finding is a caption under the verdict, provisional,
+    only when a rule broke. Each row links to its record's QC section.
+
+    The answer rides in a JSON island (data, never code) so it is on screen
+    as the page arrives; static/js/quality.js draws it with textContent and
+    keeps it live. The server draws the frame and every "couldn't" sentence,
+    so a page whose script failed still says what it knows. -#}
+{% block title %}{{ 'QC' if view == 'latest' else 'QC standards' }}{% endblock %}
+{% block topbar %}
+  <h1 class="bar-title">QC</h1>
+  <nav class="seg seg-lg view-seg" aria-label="QC view" data-testid="qc-seg">
+    <a href="/quality"{% if view == 'latest' %} aria-current="page"{% endif %} data-testid="seg-latest">Latest checks</a>
+    <a href="/quality/standards"{% if view == 'standards' %} aria-current="page"{% endif %} data-testid="seg-standards">Standards</a>
+  </nav>
+  <span class="spacer"></span>
+  <button type="button" class="btn btn-sm gate-lock" id="new-open" data-act="new" data-gated="add a QC standard" data-testid="new-standard">New standard</button>
+{% endblock %}
+{% block content %}
+{%- set L = data.latest if view == 'latest' else data.standards %}
+<main class="content quality" id="main" tabindex="-1" data-testid="quality-page" data-view="{{ view }}">
+  <header class="page-head" aria-label="{{ 'Latest checks' if view == 'latest' else 'Standards' }}">
+    <div class="meta" id="q-meta" data-testid="q-meta">
+      {%- if L.state == 'ready' and L.pill %}
+      {#- one pill, neutral: the colour is the glyph's and the word's (§0.1) -#}
+      <span class="pill q-pill" data-testid="q-pill"><span class="glyph {{ L.pill.glyph }}" aria-hidden="true"></span><span class="{{ {'error': 's-not_ok', 'held': 's-ok_but'}.get(L.pill.level, '') }}">{{ L.pill.text }}</span></span>
+      {%- endif %}
+      {%- if L.state == 'ready' and L.count %}<span id="q-count">{{ L.count }}</span>{% endif %}
+    </div>
+  </header>
+
+  {#- what could not be read, said as such (never an empty table) -#}
+  <div class="unread card" id="q-unread" data-testid="q-unread" role="status"{% if L.state == 'ready' %} hidden{% endif %}>
+    {%- if L.state == 'unreadable' %}
+    <span class="glyph error" aria-hidden="true"></span>
+    <div><b id="q-unread-head">{{ 'No checks to show yet.' if view == 'latest' else "Couldn't read the QC library." }}</b>
+      <p class="caption" id="q-unread-text">{{ 'This is not a lab with no QC: LEM has not been able to read it. The table appears by itself as soon as it can.' if view == 'latest' else 'This is not an empty library: ' ~ (L.error or 'the store did not answer') ~ '. Reload to try again.' }}</p></div>
+    {%- else %}
+    <span class="glyph dashed" aria-hidden="true"></span>
+    <div><b id="q-unread-head">Not read yet.</b>
+      <p class="caption" id="q-unread-text">LEM reads every instrument within a few seconds of starting. The table appears by itself.</p></div>
+    {%- endif %}
+  </div>
+
+  {%- if view == 'latest' %}
+  <section class="card table-card q-card" id="q-latest" aria-labelledby="q-h" data-testid="q-latest"{% if L.state != 'ready' %} hidden{% endif %}>
+    <div class="q-head">
+      <div class="q-head-line"><h2 id="q-h">Latest verdict per check</h2><span class="caption" id="q-sub">Worst first · updates by itself</span></div>
+      <p class="q-legend" id="q-legend" data-testid="q-legend"><span class="ico ico-info" aria-hidden="true"></span><span>Verdict is against the certificate band. A control note is provisional and does not change the verdict. A pass counts for {{ '%g'|format(L.window or 24) }} h unless its standard sets its own.</span></p>
+      <p class="q-legend-note" id="q-legend-note" data-testid="q-legend-note">{{ L.legend_note or '' }}</p>
+    </div>
+    <p class="q-stale" id="q-stale" role="status" data-testid="q-stale" hidden>
+      <span class="glyph never" aria-hidden="true"></span><span id="q-stale-text"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="q-stale-retry">Try again</button>
+    </p>
+    <table class="tbl qc qx" id="q-tbl" aria-describedby="q-legend">
+      <thead><tr>
+        <th scope="col" class="c-inst">Instrument</th>
+        <th scope="col" class="c-check">Check</th>
+        <th scope="col" class="c-std">Standard</th>
+        <th scope="col" class="c-last">Last</th>
+        <th scope="col" class="c-band">min – <b>target</b> – max</th>
+        <th scope="col" class="c-track"><span class="visually-hidden">Where the last result sits</span></th>
+        <th scope="col" class="c-verdict">Verdict</th>
+        <th scope="col" class="c-when">When</th>
+      </tr></thead>
+      <tbody id="q-rows"></tbody>
+    </table>
+    <p class="table-empty" id="q-empty" hidden><span class="glyph never" aria-hidden="true"></span><span>No instrument has a QC check assigned, so nothing here is a pass. Assign one from a standard's page, or from an instrument's record.</span></p>
+  </section>
+  {%- else %}
+  <section class="card table-card q-card" id="q-standards" aria-labelledby="s-h" data-testid="q-standards"{% if L.state != 'ready' %} hidden{% endif %}>
+    <div class="q-head">
+      <div class="q-head-line"><h2 id="s-h">Standards</h2><span class="caption">Reference materials and their certified values · A to Z</span></div>
+    </div>
+    <table class="tbl qs" id="s-tbl">
+      <thead><tr>
+        <th scope="col" class="c-name">Standard</th>
+        <th scope="col" class="c-lab">Lab ID</th>
+        <th scope="col" class="c-checks">Checks</th>
+        <th scope="col" class="c-used">Used on</th>
+        <th scope="col" class="c-cert">Certificate</th>
+      </tr></thead>
+      <tbody id="s-rows"></tbody>
+    </table>
+    <p class="table-empty" id="s-empty" hidden><span class="glyph never" aria-hidden="true"></span><span>No QC standards yet. A standard is a reference material with certified values; add the first with New standard.</span></p>
+  </section>
+  {%- endif %}
+</main>
+{% include "_new_standard.html" %}
+<script type="application/json" id="quality-data">{{ data|json_island }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+<script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
+<script src="/static/js/quality_logic.js?v={{ v('js/quality_logic.js') }}"></script>
+<script src="/static/js/quality.js?v={{ v('js/quality.js') }}"></script>
+{% endblock %}

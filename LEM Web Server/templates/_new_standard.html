@@ -1,0 +1,57 @@
+{#- The New standard sheet (ia-final §3.5, T5), opened by the QC topbar's
+    "New standard" on both views. One standard, one check, and the
+    instruments it is checked on, saved in one request
+    (POST /api/qc-samples/new); Save lands on the standard's page.
+
+    The test comes from LabCore's catalogue (the only legal names), read
+    when the sheet opens; a catalogue that could not be read says so and
+    keeps Save off, never an empty list. "Check it on" lists the
+    instruments that already report the picked test first. k = 2 and the
+    lab's 24 h window are the defaults, stated in one line, and open to
+    change behind "Change". static/js/quality.js runs it. -#}
+<dialog class="sheet rec-sheet std-sheet" id="new-sheet" aria-labelledby="new-title" data-testid="new-sheet">
+  <form class="form" id="new-form" method="dialog" novalidate autocomplete="off">
+    <h2 id="new-title">New standard</h2>
+    <p>A reference material and the value its certificate gives for one test. The bench knows a QC run by the standard's Lab ID.</p>
+    <div class="f-row two">
+      <label class="field"><span>Name</span>
+        <input type="text" id="new-name" placeholder="Flash CRM lot 7" spellcheck="false" data-testid="new-name"></label>
+      <label class="field"><span>Lab ID</span>
+        <input type="text" id="new-lab" placeholder="The ID it is run under" spellcheck="false" data-testid="new-lab"></label>
+    </div>
+    <div class="field ta" id="new-test-field">
+      <label for="new-test">Test</label>
+      <input type="text" id="new-test" placeholder="Type to find it in LabCore's list" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-controls="new-test-list" aria-autocomplete="list" data-testid="new-test">
+      <ul class="ta-list" id="new-test-list" role="listbox" aria-label="Tests in LabCore" data-testid="new-test-list" hidden></ul>
+      <p class="ta-state caption" id="new-test-state" role="status" aria-live="polite"></p>
+    </div>
+    <div class="f-row three">
+      <label class="field"><span>Expected</span>
+        <input type="text" inputmode="decimal" id="new-exp" data-testid="new-exp"></label>
+      <label class="field"><span>Std dev (s)</span>
+        <input type="text" inputmode="decimal" id="new-sd" data-testid="new-sd"></label>
+      <label class="field"><span>Units</span>
+        <input type="text" id="new-units" placeholder="°C" spellcheck="false" data-testid="new-units"></label>
+    </div>
+    <p class="std-defaults caption" id="new-defaults" data-testid="new-defaults"><span id="new-band"></span><span id="new-rule">Passes inside expected ± 2 s · a pass counts for 24 h</span>
+      <button type="button" class="linkbtn" id="new-more" aria-expanded="false" aria-controls="new-more-fields">Change</button></p>
+    <div class="f-row two" id="new-more-fields" hidden>
+      <label class="field"><span>k (coverage)</span>
+        <input type="text" inputmode="decimal" id="new-k" value="2"></label>
+      <label class="field"><span>A pass counts for (hours)</span>
+        <input type="text" inputmode="decimal" id="new-hours" placeholder="24 (the lab default)"></label>
+    </div>
+    <fieldset class="check-on" id="new-on" data-testid="new-on">
+      <legend>Check it on</legend>
+      <div class="chips" id="new-chips" role="group" aria-label="Instruments"></div>
+      <p class="caption chip-note" id="new-chip-note"></p>
+    </fieldset>
+    <p class="std-sum" id="new-sum" role="status" data-testid="new-sum"></p>
+    <p class="errline" id="new-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="new-go" data-testid="new-go">Save</button>
+    </div>
+  </form>
+</dialog>
