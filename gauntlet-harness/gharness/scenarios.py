@@ -1203,8 +1203,87 @@ def build(rf, rw, lh, W, mod, GateGateway, server_factory):
     def n503():
         return _unknown_bench("N503", "503")
 
+    # ── T3: the store restored from a backup 10 polls old (§11) ─────────────
+    def t3():
+        """Ten polls are filed and synced; the server takes its hourly backup
+        (`Custody.backup_now`: the copy, its manifest, the durable mark and
+        the ledger witness); ten more polls are synced. Then the server is
+        stopped, that backup is restored with custody's own `restore` (which
+        refuses a file nothing witnesses), and the server boots on it. The
+        store now holds the bench's epoch only through the backup's seq; the
+        bench's next sync starts past it, the server answers 409 `cursor`
+        with what it holds, and the bench resends from there. Every print
+        once, every cell filed once.
+
+        The scenario proves the restore happened, not only that nothing was
+        lost: the restored store's acked must be BELOW the bench's (else the
+        backup was not 10 polls old), and the app must have answered at
+        least one 409 (else the bench never had to recover)."""
+        need_v2("T3", V4_ONLY["T3"])
+        if not _has_store():
+            _unsupported("T3", V4_ONLY["T3"])
+        import custody
+        c = W()
+        for _ in range(10):
+            c.emit(3); c.poll()
+        cust = c.server.app.config.get("CUSTODY")
+        if cust is None:
+            _unsupported("T3", "a custody service on the server (P11)")
+        bk = cust.backup_now()
+        if not bk.get("ok"):
+            raise RuntimeError("T3: the backup failed: %s" % bk.get("error"))
+        for _ in range(10):
+            c.emit(3); c.poll()
+        bench_acked = c.m._journal.acked
+        store_path = c.server.app.config["LEM_STORE"]
+        c.server.reboot()                                    # server stopped
+        out = custody.restore(bk["path"], store_path, offsite_dir=None)
+        restored_acked = _store_acked(store_path, c.uid)
+        answers_before = dict(c.server.sync_answers)
+        for _ in range(3):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("T3 single_csv", "store restored from a backup 10 polls old")
+        answers = c.server.sync_answers
+        return {"lost": t["lost"], "dup": t["dup"],
+                "res_lost": t["res_lost"], "res_wrong": t["res_wrong"],
+                "cell_dup_sends": t["cell_dup_sends"],
+                "cell_dup_lands": t["cell_dup_lands"],
+                "restore_witnessed": not out["unwitnessed"],
+                "bench_acked_before_restore": bench_acked,
+                "store_acked_after_restore": restored_acked,
+                "restore_rolled_back_the_cursor": restored_acked < bench_acked,
+                "cursor_409s": answers.get(409, 0) - answers_before.get(409, 0),
+                "records_resent": t["records_resent"],
+                "bench_acked_at_end": c.m._journal.acked,
+                "store_acked_at_end": _store_acked(store_path, c.uid),
+                "drained": _store_acked(store_path, c.uid) == c.m._journal.acked,
+                "printed": t["printed"], "truth_prints": t["truth_prints"]}
+    reg.add("T3", t3, "new")
+
+    # ── M1 and M4: the two pairings with no hand-over between versions ─────
+    from . import order_matrix as _om
+
+    def m1():
+        # Today's pairing is reproduced on the TAGGED v3.9.0 code, which only
+        # a v4 gate can set beside a v4 target; on --target v3.9 the drift
+        # check IS M1, and the row there stays null.
+        need_v2("M1", V4_ONLY["M1"])
+        from . import env as _env
+        return _om.m1(_env.root())
+    reg.add("M1", m1, "new")
+
+    def m4():
+        need_v2("M4", V4_ONLY["M4"])
+        if not _has_store():
+            _unsupported("M4", "a LEM store (P6) and the v2 bench API (P7)")
+        return _om.m4(W, rf, mod, lab_id)
+    reg.add("M4", m4, "new")
+
     # ── needs a v4 capability with no code yet ─────────────────────────────
     for sid, needs in V4_ONLY.items():
+        if sid in reg.fns:
+            continue
         reg.add(sid, (lambda s, n: lambda: _unsupported(s, n))(sid, needs), "new")
 
     # ── web server (phase 1's run_web.py) ──────────────────────────────────
@@ -1252,6 +1331,21 @@ def sid_of(fn):
 def _has_store():
     from .servers import find_store_gateway
     return find_store_gateway() is not None
+
+
+def _store_acked(path, uid):
+    """The highest acked seq the store holds for this bench (any epoch). A
+    failed read raises: an unreadable cursor is not a cursor at 0."""
+    import sqlite3
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        row = con.execute("SELECT MAX(acked_seq) FROM bench_cursor WHERE "
+                          "machine_uid = ?", [uid]).fetchone()
+    finally:
+        con.close()
+    if row is None or row[0] is None:
+        raise RuntimeError("the store holds no cursor for %s" % uid)
+    return int(row[0])
 
 
 def _labcore_reads(c):

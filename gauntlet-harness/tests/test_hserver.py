@@ -195,3 +195,57 @@ def test_bad_road_or_mode_is_refused(srv):
         srv.set_road("C", "up")
     with pytest.raises(ValueError):
         srv.set_road("A", "sideways")
+
+
+def test_what_the_app_answered_each_sync_is_counted_by_status():
+    """T3 restores the store from a backup and says "409 cursor → resend".
+    A scenario that only counted rows could pass without the server ever
+    having refused the bench's from_seq — a restore that silently did not
+    happen looks exactly like one that was recovered from. So HServer keeps
+    the status the APP answered each sync with (not the road's own faults:
+    those never reached it), and T3 requires at least one 409."""
+    app = Flask("toy409")
+    answers = iter([(409, {"error": "cursor", "acked": 3}), (200, {"acked": 9})])
+
+    @app.route("/api/v2/bench/<uid>/sync", methods=["POST"])
+    def sync(uid):
+        status, body = next(answers)
+        return jsonify(body), status
+    s = HServer(lambda: app)
+    with pytest.raises(urllib.error.HTTPError) as e:
+        call(s, B + "/api/v2/bench/b1/sync", {"from_seq": 10})
+    assert e.value.code == 409
+    assert call(s, B + "/api/v2/bench/b1/sync", {"from_seq": 4}) == (200, {"acked": 9})
+    s.set_road("B", "503")
+    with pytest.raises(urllib.error.HTTPError):
+        call(s, B + "/api/v2/bench/b1/sync", {"from_seq": 4})
+    assert dict(s.sync_answers) == {409: 1, 200: 1}
+
+
+def test_a_reboot_closes_the_store_and_builds_a_new_app_on_the_next_request():
+    """A store is restored with the server STOPPED (custody.restore says so):
+    a restore under a live writer connection would be read back through the
+    old file's WAL and prove nothing. `reboot()` closes the running app's
+    store and forgets the app; the next request boots a fresh one, as the
+    updater's restart does. Counters about the bench (requests, resends,
+    answers) survive — they describe the bench, not one server process."""
+    closed = []
+
+    class Store:
+        def close(self):
+            closed.append(1)
+
+    built = []
+
+    def factory():
+        app = toy_app()
+        app.config["STORE_GATEWAY"] = Store()
+        built.append(app)
+        return app
+    s = HServer(factory)
+    call(s, B + "/api/v2/bench/b1/sync", {"from_seq": 1})
+    s.reboot()
+    assert closed == [1] and len(built) == 1
+    call(s, B + "/api/v2/bench/b1/sync", {"from_seq": 1})
+    assert len(built) == 2
+    assert s.v2_syncs() == 2 and dict(s.sync_answers) == {200: 2}

@@ -110,6 +110,10 @@ class HServer:
         self.outcomes = Counter()          # (road, outcome) -> n
         self.executed = Counter()          # road -> requests the app ran
         self.sync_bodies = []
+        # What the APP answered each v2 sync (status -> n). A road fault
+        # never reaches the app and is not counted here: T3's 409 must be
+        # the server's own answer to a from_seq past what it holds.
+        self.sync_answers = Counter()
         self._seen_seq = set()
         self._seen_pk = set()
         self.records_received = 0
@@ -141,6 +145,16 @@ class HServer:
             self._app = self._factory()
             self._client = self._app.test_client()
         return self._app
+
+    def reboot(self):
+        """The server process stops (its store closed) and boots again on
+        the next request. What was counted about the bench is kept."""
+        app, self._app, self._client = self._app, None, None
+        if app is not None:
+            store = app.config.get("STORE_GATEWAY")
+            close = getattr(store, "close", None)
+            if callable(close):
+                close()
 
     # ── the patched urlopen ──
     def install(self):
@@ -192,6 +206,8 @@ class HServer:
             path, method=method, data=body, headers=hdrs,
             base_url="%s://%s" % (parts.scheme, parts.netloc))
         self.executed[road] += 1
+        if method == "POST" and parts.path.startswith("/api/v2/bench/")                 and parts.path.endswith("/sync"):
+            self.sync_answers[resp.status_code] += 1
         if mode == "lose_response":
             raise socket.timeout("timed out")
         status = resp.status_code

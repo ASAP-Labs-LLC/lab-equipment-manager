@@ -255,6 +255,26 @@ MUTATIONS = {
         "pattern": r"return ts\.astimezone\(\)\.replace\(tzinfo=None\)",
         "replace": "return ts",
         "what": "a projected log row keeps the journal's UTC offset"},
+    # ── T-P13: what T3 and M4 claim to measure ──
+    # A store restored from a backup answers 409 `cursor` with what it
+    # holds; the bench must adopt that acked and resend from it. Treated as
+    # any other error, the bench holds and retries from its OWN acked
+    # forever — T3 must go red.
+    "cursor_409_ignored": {
+        "kind": "source", "owner": "T-P13",
+        "pattern": r'if ans\.status == 409 and isinstance\(doc\.get\("acked"\), int\):',
+        "replace": "if False:",
+        "what": "a 409 cursor answer (a restored store) is not adopted; no resend"},
+    # Only a 404 means "old server" (§12.2): a 503 is LEM busy, and a v2
+    # bench that fell back on it would write lem_* rows to LabCore — M4
+    # (and N503) must go red.
+    "fallback_on_503": {
+        "kind": "source", "owner": "T-P13",
+        "pattern": r'if ans\.status == 404:\n(\s+)self\._upl_legacy\(t, journal\)\n'
+                   r'(\s+)return\n(\s+)if ans\.status != 200 or not isinstance',
+        "replace": r"if ans.status in (404, 503):\n\1self._upl_legacy(t, journal)\n"
+                   r"\2return\n\3if ans.status != 200 or not isinstance",
+        "what": "a v2 sync answered 503 falls back to legacy projection"},
 }
 
 CODE_DIRS = ("LEM Station Module", "LEM Web Server")

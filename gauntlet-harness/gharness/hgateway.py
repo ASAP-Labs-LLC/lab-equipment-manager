@@ -103,6 +103,11 @@ def make_gateway_class(lemharness):
             self.injected = 0
             self.per_index_errors = Counter()      # (lab, test) -> errors answered
             self.batch_results = []                # what each batch answered
+            # (lab, test, value) -> batches carrying it that REACHED LabCore.
+            # Phase 1's cell_sends counts at the call, before the fault plan,
+            # so a batch killed or dropped before it executed is a "send";
+            # this one is not (see test_hgateway).
+            self.cell_received = Counter()
 
         def _apply(self, action, fn):
             try:
@@ -166,7 +171,13 @@ def make_gateway_class(lemharness):
                         self._landed(o, before, count_land=False)
                     return {"ok": True}
                 return self._wop_batch(params or {})
-            res = self._apply(self._fault("write", cat, operation), run)
+            action = self._fault("write", cat, operation)
+            if action not in ("kill_before", "raise_before"):
+                for o in ops:
+                    p = o.get("params") or {}
+                    self.cell_received[(p.get("lab_id"), p.get("test_name"),
+                                        p.get("value"))] += 1
+            res = self._apply(action, run)
             if operation == "batch":
                 self.batch_results.append(res)
             return res
