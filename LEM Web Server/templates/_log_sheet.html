@@ -1,0 +1,32 @@
+{#- The Log entry sheet (ia-final §3.6): one machine-log row, whole. C's side
+    panel, done with GC's dialog.sheet. Opened by a row on /logs and by a row
+    in the record's Log section; static/js/log_view.js fills it with
+    textContent from the row the list already holds (no extra read).
+
+    What it says, in order: what happened (kind and test, the sentence a
+    Not re-sent or Re-read row means), where and when (local, with the
+    zone), then the raw value, the correction applied, the operator and the
+    calibration id; anything the row did not record says "Not recorded".
+    The rest of the detail follows as key/value, never as JSON. Its one
+    button is the way on: "Open <instrument> →" to /instruments/<uid>#log,
+    or, on the record itself, "Open in the full log →". Native <dialog>:
+    focus is trapped, Escape closes, focus returns to the row. -#}
+<dialog class="sheet log-sheet" id="log-sheet" aria-labelledby="log-sheet-title" aria-describedby="log-sheet-sub" data-testid="log-sheet">
+  <div class="sheet-head">
+    <h2 id="log-sheet-title" tabindex="-1" autofocus></h2>
+    <button type="button" class="icon-btn" data-close aria-label="Close" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <p class="log-sheet-sub" id="log-sheet-sub"></p>
+  <p class="log-sheet-say" id="log-sheet-say" hidden></p>
+  <div class="kv log-sheet-kv" id="log-sheet-kv" data-testid="log-sheet-kv"></div>
+  <h3 class="log-sheet-h" id="log-sheet-extra-h" hidden>Detail</h3>
+  <div class="kv log-sheet-kv" id="log-sheet-extra" data-testid="log-sheet-extra" hidden></div>
+  <div class="actions">
+    <span class="caption log-sheet-id" id="log-sheet-id"></span>
+    <span class="spacer"></span>
+    <button type="button" class="btn" data-close>Close</button>
+    <a class="btn sheet-go" id="log-sheet-go" href="/logs" data-testid="log-sheet-go">Open the full log →</a>
+  </div>
+</dialog>

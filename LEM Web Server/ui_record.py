@@ -43,7 +43,7 @@ from ui_live import CANT_TELL, NO_QC, NOT_OK, OFF_LINE, OK, OK_BUT
 
 # The record's sections that exist today, in page order. A tile's link must
 # land on one of these (tests/test_ui_record.py).
-SECTIONS = ("qc", "maintenance", "bench")
+SECTIONS = ("qc", "maintenance", "log", "bench")
 
 UNITS = {"C": "°C", "F": "°F", "degC": "°C", "degF": "°F",
          # a kinematic viscosity is mm²/s; LabCore stores it in ASCII

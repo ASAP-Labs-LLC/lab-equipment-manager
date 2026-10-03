@@ -38,7 +38,9 @@ from web_app import create_app
 # over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
 # round, and /checklists/edit is the round editor and /checklists/trends is
 # Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
-PAGES = ("/floor/classic", "/maintenance/classic", "/logs")
+# /logs moved onto the shell in piece 7 (ia-final §3.6); its shell checks
+# are tests/test_ui_shell_pages.py's.
+PAGES = ("/floor/classic", "/maintenance/classic")
 
 
 @pytest.fixture

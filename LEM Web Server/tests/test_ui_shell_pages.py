@@ -36,7 +36,7 @@ T = ROOT / "templates"
 JS = ROOT / "static" / "js"
 CSS = ROOT / "static" / "css"
 
-SHELL_PAGES = ["/settings", "/help", "/checklists/opening", "/", "/checklists/edit",
+SHELL_PAGES = ["/settings", "/help", "/logs", "/checklists/opening", "/", "/checklists/edit",
                "/checklists/edit/new?slot=opening", "/checklists/trends"]
 # pages still drawn by the old _nav.html (later pieces replace them)
 # "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
@@ -45,7 +45,7 @@ SHELL_PAGES = ["/settings", "/help", "/checklists/opening", "/", "/checklists/ed
 # over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
 # round, and /checklists/edit is the round editor and /checklists/trends is
 # Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
-OLD_PAGES = ["/floor/classic", "/maintenance/classic", "/logs"]
+OLD_PAGES = ["/floor/classic", "/maintenance/classic"]
 WALL_PAGES = ["/floor", "/qc", "/wall"]
 NAV = [("instruments", "Instruments", "/"), ("checklists", "Checklists", "/checklists"),
        ("qc", "QC", None), ("log", "Log", "/logs"), ("settings", "Settings", "/settings")]

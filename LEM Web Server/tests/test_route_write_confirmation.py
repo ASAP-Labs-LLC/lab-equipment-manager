@@ -948,5 +948,8 @@ class TestThePagesReadTheStatusTheyGetBack:
         assert "This is not an empty record" in _tpl("maintenance.html")
 
     def test_the_logs_page_still_shows_its_banner(self):
-        # /api/logs keeps its 200 + `error` shape, so this must stay.
-        assert "b.error" in _tpl("logs.html")
+        # /api/logs keeps its 200 + `error` shape, so this must stay. The
+        # page's code moved to static/js/logs.js in piece 7.
+        src = (Path(__file__).resolve().parent.parent / "static" / "js"
+               / "logs.js").read_text(encoding="utf-8")
+        assert "b.error" in src and "This is not an empty log" in src

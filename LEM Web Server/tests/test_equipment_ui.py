@@ -65,7 +65,18 @@ def floor(client):
 # covers it); "/maintenance" redirects to its filter, and the old PM page
 # lives at /maintenance/classic until the record and Settings › Imports take
 # over its two jobs (ia-final §3.1 #2, §3.7).
-PAGES = ("/floor/classic", "/maintenance/classic", "/checklists", "/logs")
+# /logs left this list in piece 7: it is a shell page now, and the shell
+# says "instrument" on purpose (ia-final §4: one noun, the spec's).
+PAGES = ("/floor/classic", "/maintenance/classic", "/checklists")
+
+
+def _js(name):
+    """A static/js file with its comments stripped FIRST, so a test is never
+    satisfied by the comment that explains the code."""
+    from pathlib import Path
+    code = (Path(__file__).resolve().parent.parent / "static" / "js" / name).read_text(encoding="utf-8")
+    code = re.sub(r"/\*.*?\*/", " ", code, flags=re.S)
+    return re.sub(r"(?m)^\s*//.*$", " ", code)
 
 
 def visible_text(html):
@@ -263,7 +274,9 @@ class TestNothingIsAskedThroughANativeBox:
     #: neither has it yet; listing them here would make this a red test about
     #: work nobody has claimed, and quietly dropping them would make the class
     #: name a lie. When the sheet moves, they go in the tuple.
-    SCRIPTED = ("floor.html", "home.html", "logs.html")
+    # logs.html has no inline script since piece 7; its JS files are
+    # scanned by tests/test_ui_log.py::TestNoNativeDialogs
+    SCRIPTED = ("floor.html", "home.html")
 
     @staticmethod
     def code(name):
@@ -425,11 +438,10 @@ class TestTheDetailBlobIsASentence:
         assert row["machine_uid"] == ""
         assert row["detail_text"] == "Created the level Mezzanine."
         # And the page renders that emptiness as a fact rather than a gap.
-        page = client.get("/logs").get_data(as_text=True)
-        code = re.sub(r"/\*.*?\*/", " ", page, flags=re.S)
-        code = re.sub(r"(?m)^\s*//.*$", " ", code)
-        assert "e.machine_uid ? esc(e.machine_title)" in code
-        assert "Lab-wide" in code
+        # (piece 7: the rows are drawn by static/js/log_view.js)
+        code = _js("log_view.js")
+        assert "e.machine_uid\n                ? h('a'" in code
+        assert "'Lab-wide'" in code
 
     def test_the_run_history_rail_gets_it_too(self, gw):
         """The record's own right rail printed `level_move` raw beside rows
@@ -485,13 +497,13 @@ class TestTheDetailBlobIsASentence:
         assert "esc(eventLabel(e))" in floor
 
     def test_the_logs_page_prints_the_sentence_and_not_the_blob(self, client):
-        page = client.get("/logs").get_data(as_text=True)
-        code = re.sub(r"/\*.*?\*/", " ", page, flags=re.S)
-        code = re.sub(r"(?m)^\s*//.*$", " ", code)
-        fn = re.search(r"function detailText\(e\)\s*\{(.*?)\n\}", code, re.S)
-        assert fn, "detailText() is gone"
+        # piece 7: the sentence is log_logic.js summary(); the rest of the
+        # detail is the sheet's key/value rows, never JSON
+        code = _js("log_logic.js")
+        fn = re.search(r"function summary\(e\)\s*\{(.*?)\n    \}", code, re.S)
+        assert fn, "summary() is gone"
         assert "e.detail_text" in fn.group(1)
-        assert "JSON.stringify" not in fn.group(1)
+        assert "JSON.stringify" not in code
 
 
 class TestTheRename:
@@ -530,7 +542,7 @@ class TestTheRename:
     #: `/checklists` is not one: its static markup is about checklists, and
     #: what it says about equipment it renders from JavaScript — which
     #: `visible_text` strips on purpose, and which floorboot is for.
-    NAMES_THE_THING = ("/floor/classic", "/maintenance/classic", "/logs")
+    NAMES_THE_THING = ("/floor/classic", "/maintenance/classic")
 
     @pytest.mark.parametrize("path", NAMES_THE_THING)
     def test_those_pages_use_the_new_word(self, client, path):
@@ -638,10 +650,8 @@ class TestTheAuditTrailReadsInTheNewWordWithoutBeingRewritten:
         removed, because the block comment explaining the call still sat inside
         the span being searched — a test satisfied by its own documentation.
         """
-        page = client.get("/logs").get_data(as_text=True)
-        code = re.sub(r"/\*.*?\*/", " ", page, flags=re.S)
-        code = re.sub(r"(?m)^\s*//.*$", " ", code)
-        row = re.search(r"e\.kind === 'config'(.*?)</td>", code, re.S)
+        code = _js("log_logic.js")       # piece 7: rowWhat() draws the Test cell
+        row = re.search(r"if \(e\.kind === 'config'\)(.*?);", code, re.S)
         assert row, "the config column is gone from the logs table"
         assert "action_label" in row.group(1)
 
@@ -669,7 +679,7 @@ class TestTheWordsBuiltInJavaScriptOnThePagesWithNoHarness:
 
     #: floor.html is excluded — floorboot.mjs runs it and reads the markup it
     #: actually produces, which is strictly better than this.
-    SCRIPTED = ("home.html", "logs.html", "maintenance.html")
+    SCRIPTED = ("home.html", "maintenance.html")
 
     #: Never prose. `machine` alone is a query-string key and a CSV column;
     #: the rest are identifiers the wire contract is written on.
