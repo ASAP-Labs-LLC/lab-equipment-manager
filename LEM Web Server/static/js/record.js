@@ -13,7 +13,13 @@
                      provisional, never a second verdict; one U line
    Every failed read has its own sentence, distinct from "none yet". Every
    server string goes in through textContent. GETs on the live feed only;
-   the four sheets POST when a person presses their button. */
+   the sheets POST when a person presses their button.
+
+   The action sections below Bench (piece 6) are record_actions.js's. This
+   file shares what both need through window.LEMRecordPage: the record as
+   last read, the one send() every write goes through, the sheet rules, and
+   afterWrite(), which repaints the page in place once the snapshot carries
+   the change. */
 (function () {
     'use strict';
     const R = window.LEMRecord;
@@ -376,33 +382,7 @@
     let resizeT = null;
     window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(renderChart, 120); });
 
-    // ── Maintenance and Bench (read-only; piece 6 and 7 add their actions) ─
-    function day(iso) { return R.dayIn(iso); }
-    function renderMaintenance() {
-        const tasks = data.maintenance;
-        const body = $('mt-body');
-        if (!tasks.length) {
-            body.replaceChildren(h('p', { className: 'empty-note' }, glyph('never'), h('span', { text: 'Nothing scheduled for this instrument.' })));
-            return;
-        }
-        body.replaceChildren(h('div', { className: 'card table-card' }, h('table', { className: 'tbl mt' },
-            h('thead', {}, h('tr', {}, ...[['Task', ''], ['Every', 'm-every'], ['Last done', 'm-last'], ['Due', ''], ['', '']]
-                .map(([t, cls]) => h('th', { scope: 'col', className: cls, text: t })))),
-            h('tbody', {}, ...tasks.map(t => h('tr', {},
-                h('td', {}, h('b', { text: t.name })),
-                h('td', { className: 'm-every', text: t.every ? t.every + ' days' : '—' }),
-                h('td', { className: 'm-last', text: day(t.last_done) }),
-                h('td', { text: day(t.next_due) }),
-                h('td', {}, h('span', { className: 'verdict ' + (t.glyph === 'error' ? 's-not_ok' : t.glyph === 'half' ? 's-ok_but' : '') }, glyph(t.glyph), h('span', { text: t.word })))))))),
-            // When the card marks the overdue task done in place, the step is
-            // on this page and the section says nothing more (round 9's
-            // critic: a promise of a future home under a card that already acts).
-            // Otherwise the schedule is kept on the PM and calibration page.
-            // (spread, not null: replaceChildren would draw null as text)
-            ...((data.readiness.primary || {}).act === 'done' ? []
-                : [h('p', { className: 'caption' }, 'Tasks are scheduled and marked done on the ',
-                    h('a', { className: 'link', href: '/maintenance/classic', text: 'PM and calibration page' }), '.')]));
-    }
+    // ── Bench (read-only; the Log and its counters are piece 7's) ─────────
     function renderBench() {
         const b = data.bench;
         const kv = (k, ...v) => [h('div', { className: 'k', text: k }), h('div', { className: 'v' }, ...v)];
@@ -420,6 +400,19 @@
 
     // ── the sheets ────────────────────────────────────────────────────────
     function openSheet(id) { const d = $(id); if (!d.open) d.showModal(); }
+    // A sheet that acts on a section keeps the address on that section, so
+    // the page a person returns to after the sheet (and after a reload, or a
+    // link they copy) is the section they were working in (§3.1, T3).
+    function keepSection(id) {
+        if (location.hash !== '#' + id) history.replaceState(null, '', '#' + id);
+    }
+    function showSection(id) {
+        const sec = $(id);
+        if (!sec) return;
+        const still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        const r = sec.getBoundingClientRect();
+        if (r.top < 0 || r.top > window.innerHeight * 0.6) sec.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
+    }
     for (const d of document.querySelectorAll('dialog.rec-sheet')) {
         d.addEventListener('click', (ev) => { if (ev.target.closest('[data-close]')) d.close(); });
     }
@@ -437,25 +430,43 @@
         openSheet('online-sheet');
         $('online-comment').focus();
     }
-    function sheetAction() {
-        const p = data.readiness.primary || {};
+    // Opened from the card (QC stopped it: the failing check, its reading
+    // written in) or from the Corrective actions section (anything at all:
+    // "Not about one check" unless a check is failing).
+    function failingText(c) {
+        return c && c.verdict.key === 'out' ? (c.title + ' read ' + R.fmtQC(c.value, c) + (c.units ? ' ' + c.units : '') + ' on ' + (c.sample_id || 'the standard') +
+            ', outside ' + R.bandText(c) + (c.at ? ' (' + R.stamp(c.at, undefined, true) + ')' : '') + '.') : '';
+    }
+    function sheetAction(fromSection) {
+        const p = fromSection ? {} : (data.readiness.primary || {});
         const sel = $('action-test');
         const failing = data.qc.checks.filter(c => c.verdict.key === 'out');
-        const opts = (failing.length ? failing : data.qc.checks);
-        sel.replaceChildren(...opts.map(c => h('option', { value: c.test, text: c.title + (c.sample_id ? ' · ' + c.sample_id : '') })));
-        sel.value = p.test || (opts[0] && opts[0].test) || '';
-        const c = data.qc.checks.find(x => x.test === sel.value);
-        $('action-what').value = c ? (c.title + ' read ' + R.fmtQC(c.value, c) + (c.units ? ' ' + c.units : '') + ' on ' + (c.sample_id || 'the standard') +
-            ', outside ' + R.bandText(c) + (c.at ? ' (' + R.stamp(c.at, undefined, true) + ')' : '') + '.') : '';
+        const opts = fromSection ? data.qc.checks : (failing.length ? failing : data.qc.checks);
+        sel.replaceChildren(...(fromSection ? [h('option', { value: '', text: 'Not about one check' })] : []),
+            ...opts.map(c => h('option', { value: c.test, text: c.title + (c.sample_id ? ' · ' + c.sample_id : '') })));
+        sel.value = p.test || (failing[0] && failing[0].test) || (fromSection ? '' : (opts[0] && opts[0].test)) || '';
+        $('action-test-field').hidden = !sel.options.length || (fromSection && !data.qc.checks.length);
+        $('action-what').value = failingText(data.qc.checks.find(x => x.test === sel.value));
         $('action-err').hidden = true;
+        $('action-form').dataset.from = fromSection ? 'section' : 'card';
+        keepSection('actions');
         openSheet('action-sheet');
         $('action-what').focus();
     }
+    $('action-test').addEventListener('change', () => {
+        // the reading of a failing check is offered once; a person's own
+        // words are never replaced by a choice of check
+        const w = $('action-what');
+        if (!w.value.trim() || w.dataset.auto === '1') { w.value = failingText(data.qc.checks.find(x => x.test === $('action-test').value)); w.dataset.auto = '1'; }
+    });
+    $('action-what').addEventListener('input', () => { $('action-what').dataset.auto = '0'; });
     // a warning's next step (round 6): mark the overdue calibration or PM
     // done. The task is the one the card's sentence is about; when more than
     // one of that kind is overdue the sheet lets you pick, most overdue first.
-    function sheetDone() {
-        const p = data.readiness.primary || {};
+    // From the card's primary (the overdue task the sentence is about) or
+    // from a task row in Maintenance and calibration (that task).
+    function sheetDone(from) {
+        const p = from || data.readiness.primary || {};
         const tasks = p.tasks || [];
         const cal = p.kind === 'calibration';
         // name the task when there is one ("Mark the annual calibration on
@@ -471,6 +482,8 @@
         $('done-when').value = R.localDay();
         $('done-note').value = '';
         $('done-err').hidden = true;
+        $('done-form').dataset.tasks = JSON.stringify(tasks);
+        keepSection('maintenance');
         openSheet('done-sheet');
         $('done-note').focus();
     }
@@ -537,37 +550,68 @@
         openSheet('assign-sheet');
         loadLib();
     }
+    // Every control on the page is a button with a data-act; this is the one
+    // listener. A signed-out press opens the sign-in sheet titled for the act
+    // and the act continues after (piece 3). The card's and the topbar's
+    // acts are opened here; the sections' are record_actions.js's.
+    const OWN = {
+        action: () => sheetAction(false), 'action-new': () => sheetAction(true),
+        done: () => sheetDone(), assign: () => sheetAssign(),
+        offline: () => sheetOnline('offline'), online: () => sheetOnline('online'),
+    };
+    const others = {};
     document.addEventListener('click', (ev) => {
         const b = ev.target.closest('[data-act]');
         if (!b || !page.parentNode.contains(b) || b.closest('dialog')) return;
         const act = b.dataset.act;
-        const go = () => (act === 'action' ? sheetAction() : act === 'done' ? sheetDone() : act === 'assign' ? sheetAssign() : sheetOnline(act));
+        const run = OWN[act] || others[act];
+        if (!run) return;
+        const go = () => run(b);
         if (window.LEMSignIn) window.LEMSignIn.need(b.dataset.gated || '', go); else go();
     });
-    function post(url, body) {
-        return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    // THE one road for a write. A refusal (any non-2xx, an "error", or
+    // ok:false: both of LabCore's refusal shapes arrive as one of these) is
+    // thrown with the server's own sentence, so the sheet that sent it stays
+    // open and says it; nothing is toasted for a write that did not land.
+    function send(url, opts) {
+        const o = opts || {};
+        const init = { method: o.method || 'POST' };
+        if (o.form) init.body = o.form;
+        else if (o.body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(o.body); }
+        return fetch(url, init)
+            .catch(() => { throw new Error('LEM did not answer, so nothing was saved. Try again in a moment.'); })
             .then(r => r.json().catch(() => ({})).then(b => {
-                if (!r.ok || b.error || b.ok === false) throw new Error(b.error || ('LEM answered ' + r.status + ' and did not save it.'));
+                if (!r.ok || b.error || b.ok === false) {
+                    const e = new Error(b.error || ('LEM answered ' + r.status + ' and did not save it.'));
+                    e.status = r.status; e.body = b;
+                    throw e;
+                }
                 return b;
             }));
     }
     function hm() { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
-    function submit(form, err, go, send, done) {
+    // A sheet's submit: refuse in words before sending; send; on a refusal
+    // keep the sheet open with the server's sentence (and no toast); on a
+    // save close it, say so, and repaint in place.
+    function submit(form, err, go, req, done) {
         form.addEventListener('submit', (ev) => {
             ev.preventDefault();
-            const msg = send.check();
+            const msg = req.check();
             if (msg) { err.textContent = msg; err.hidden = false; return; }
             go.disabled = true;
             err.hidden = true;
-            post(send.url(), send.body())
-                .then((b) => { form.closest('dialog').close(); done(b); refetch(); })
+            const before = data.built_at;
+            send(req.url(), { method: req.method ? req.method() : 'POST', body: req.form ? undefined : req.body(), form: req.form ? req.form() : undefined })
+                .then((b) => { form.closest('dialog').close(); done(b); afterWrite(before, req.section ? req.section() : ''); })
                 .catch(e => { err.textContent = (e && e.message) || 'It was not saved.'; err.hidden = false; })
                 .finally(() => { go.disabled = false; });
         });
     }
+    function who() { return window.LEMSignIn ? window.LEMSignIn.user() : ''; }
     submit($('online-form'), $('online-err'), $('online-go'), {
         check: () => $('online-comment').value.trim() ? '' : 'Say why. A comment is kept with every change of state.',
         url: () => '/api/machines/' + encodeURIComponent(uid) + '/override',
+        section: () => '',
         body: () => {
             const off = $('online-form').dataset.act === 'offline';
             const kind = (document.querySelector('#online-kind input:checked') || {}).value || 'SERVICE';
@@ -577,8 +621,15 @@
     submit($('action-form'), $('action-err'), $('action-go'), {
         check: () => $('action-what').value.trim() ? '' : 'Say what happened.',
         url: () => '/api/equipment/' + encodeURIComponent(uid) + '/actions',
-        body: () => ({ what_happened: $('action-what').value.trim(), trigger_kind: 'qc_fail', test_name: $('action-test').value }),
-    }, () => S.toast('Corrective action opened · ' + (window.LEMSignIn ? window.LEMSignIn.user() : '') + ' · ' + hm()));
+        body: () => {
+            // a QC failure only when the check it is about is failing;
+            // anything else is filed as what it is
+            const test = $('action-test').value;
+            const c = data.qc.checks.find(x => x.test === test);
+            return { what_happened: $('action-what').value.trim(), trigger_kind: c && c.verdict.key === 'out' ? 'qc_fail' : 'other', test_name: test };
+        },
+        section: () => 'actions',
+    }, () => { S.toast('Corrective action opened · ' + who() + ' · ' + hm()); reloadSection('actions'); });
 
     submit($('assign-form'), $('assign-err'), $('assign-go'), {
         check: () => (lib && lib.state === 'ok') ? R.assignProblem(data.qc.targets || [], chosenTargets()) : 'The QC library has not been read, so nothing can be saved.',
@@ -595,13 +646,18 @@
         check: () => R.doneProblem($('done-note').value, $('done-when').value),
         url: () => '/api/maintenance/' + encodeURIComponent($('done-task').value) + '/complete',
         body: () => ({ when: $('done-when').value, note: $('done-note').value.trim() }),
+        section: () => 'maintenance',
     }, (b) => {
         // the schedule moved but the history row did not land: a 200 that
         // must be said, never a quiet "done" (web_app's complete route)
         // (neutral toast: the page spends no red on fills, §0.1)
         if (b && b.logged === false) { S.toast(b.warning || 'Marked done, but not written to its history.'); return; }
-        const t = ((data.readiness.primary || {}).tasks || []).find(x => x.uid === $('done-task').value);
+        let tasks = [];
+        try { tasks = JSON.parse($('done-form').dataset.tasks || '[]'); } catch (_e) { tasks = []; }
+        const t = tasks.find(x => x.uid === $('done-task').value);
         S.toast(R.doneToast(t, window.LEMSignIn ? window.LEMSignIn.user() : '', hm()));
+        // "Recently completed" gains the line this completion wrote
+        reloadSection('history');
     });
 
     // ── live: refetch when this instrument or the snapshot changed ─────────
@@ -668,14 +724,72 @@
     // times ("Wed 15:04") age on their own; no request
     setInterval(() => { if (!document.hidden) { renderHead(); renderCard(); renderQc(); showStale(); } }, 60000);
 
+    // ── after a write: repaint in place ───────────────────────────────────
+    // The write landed (send() only resolves on an acknowledged save); the
+    // snapshot that the card and the sections are drawn from refreshes right
+    // after it. Ask until the record is newer than it was before the write,
+    // then repaint the page where it stands: no reload, no lost place. If
+    // the snapshot is slow the section says so; it never claims the old
+    // drawing is the new state.
+    const pending = {};
+    function afterWrite(before, section) {
+        if (section) { pending[section] = true; renderPending(); showSection(section); }
+        let tries = 0;
+        const again = () => {
+            tries += 1;
+            fetchRecord().then(d => {
+                if (d && d.built_at && d.built_at !== before) { accept(d); for (const k of Object.keys(pending)) delete pending[k]; renderPending(); return; }
+                if (tries < 16) setTimeout(again, Math.min(1500, 250 * tries));
+                else { for (const k of Object.keys(pending)) pending[k] = 'slow'; renderPending(); }
+            }).catch(() => { if (tries < 16) setTimeout(again, 1500); });
+        };
+        again();
+    }
+    function renderPending() {
+        for (const sec of ['maintenance', 'placement', 'corrections', 'actions', 'documents']) {
+            const el = $(sec);
+            if (!el) continue;
+            let note = el.querySelector('.sec-pending');
+            const st = pending[sec];
+            if (!st) { if (note) note.remove(); el.removeAttribute('aria-busy'); continue; }
+            if (!note) { note = h('p', { className: 'sec-pending caption', role: 'status' }); el.querySelector('.body').prepend(note); }
+            note.textContent = st === 'slow' ? 'Saved. The record has not refreshed yet; this section updates by itself when it does.' : 'Saved · updating…';
+            el.setAttribute('aria-busy', st === 'slow' ? 'false' : 'true');
+        }
+    }
+    function fetchRecord() {
+        return fetch('/api/ui/instruments/' + encodeURIComponent(uid), { headers: { 'X-LEM-Background': '1' } })
+            .then(r => r.ok ? r.json() : null);
+    }
+    function accept(d) {
+        if (!d || d.state !== 'ready') return;
+        data = d;
+        if (!data.qc.checks.some(c => c.test === selected)) selected = data.qc.selected;
+        readAt = Date.now();
+        failed = null;
+        render();
+    }
+    const hooks = [];
+    function reloadSection(name) { for (const f of hooks) if (f.reload) f.reload(name); }
+    window.LEMRecordPage = {
+        data: () => data, uid, send, submit, openSheet, keepSection, showSection, afterWrite, who, hm, why,
+        sheetDone, glyph,
+        // a section module registers its acts and is drawn on every render
+        register(mod) {
+            hooks.push(mod);
+            Object.assign(others, mod.acts || {});
+            if (mod.render) mod.render(data);
+        },
+    };
+
     function render() {
+        for (const f of hooks) if (f.render) f.render(data);
         renderHead();
         renderCard();
         showStale();
         renderQcIntro();
         renderQc();
         renderChart();
-        renderMaintenance();
         renderBench();
     }
     render();

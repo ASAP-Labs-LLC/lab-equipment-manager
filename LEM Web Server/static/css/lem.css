@@ -1101,6 +1101,102 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
     .chart-head { flex-wrap: wrap; }
     .chart-card { padding: var(--s3); }
 }
+/* ── the record's action sections (piece 6) ────────────────────────────
+   Tokens only, and no red fill or border: a section's state is a glyph and
+   a word, a destructive button is red WORDS (.btn-danger), never a red box. */
+.ico-pin { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linejoin='round'%3E%3Cpath d='M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0 1 13 0c0 4.8-6.5 11-6.5 11z'/%3E%3Ccircle cx='12' cy='10' r='2.3'/%3E%3C/svg%3E"); }
+.record .sec .sec-actions:empty { display: none; }
+.record .sec-pending { display: flex; align-items: center; gap: var(--s2); color: var(--text-muted); }
+.record .sec-pending::before { content: ""; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--border); border-top-color: var(--st-working); animation: gc-spin 0.9s linear infinite; flex: none; }
+.record .sec[aria-busy="false"] .sec-pending::before { animation: none; border-color: var(--text-muted); }
+.record .sec-err { color: var(--text); flex-wrap: wrap; }
+.record .sec-err .btn { margin-left: auto; }
+.record .sec-err-line { display: flex; align-items: center; gap: var(--s1); flex-wrap: wrap; color: var(--text); }
+
+/* Maintenance: the task table gains its actions; Recently completed is a
+   quiet list under it, three lines, newest first */
+.tbl.mt .sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); }
+.tbl.mt td .verdict + .sub { padding-left: 18px; }
+.tbl.mt .m-act { text-align: right; white-space: nowrap; }
+.tbl.mt .m-act .btn + .btn { margin-left: var(--s1); }
+#mt-body, #corr-body, #ca-body, #doc-body { display: grid; gap: var(--s4); min-width: 0; }
+.mt-recent { display: grid; gap: var(--s1); }
+.mt-recent h3 { font-size: var(--fs-sm); font-weight: 600; margin: 0; }
+.mt-recent .caption { margin: 0; }
+.mt-done-list { list-style: none; margin: 0; padding: 0; font-size: var(--fs-sm); }
+.mt-done-list li { display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; gap: var(--s3); padding: 6px 0; border-top: 1px solid var(--border-light); }
+.mt-done-list li:first-child { border-top: 0; }
+.mt-done-list .d-when, .mt-done-list .d-who { color: var(--text-muted); white-space: nowrap; }
+.mt-done-list .d-what { overflow-wrap: anywhere; }
+
+/* Correction factors: kv rows, the offset in tabular figures, its own two
+   quiet buttons at the row's end */
+.record .corr-kv { grid-template-columns: minmax(160px, 36%) minmax(0, 1fr); }
+.record .corr-kv .k { display: flex; flex-direction: column; color: var(--text); }
+.record .corr-kv .k .sub { font-size: var(--fs-xs); color: var(--text-muted); }
+.record .corr-v .num { font-variant-numeric: tabular-nums; font-size: 15px; }
+.record .corr-v .grow { flex: 1; }
+.record .corr-v .caption { margin: 0; }
+
+/* Corrective actions: one row per action, its step track, its next step */
+.ca-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-light); border-radius: var(--radius-card); background: var(--bg-card); }
+.ca-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s2) var(--s4); padding: var(--s3) var(--s4); border-top: 1px solid var(--border-light); align-items: start; }
+.ca-row:first-child { border-top: 0; }
+.ca-main { display: grid; gap: 6px; min-width: 0; }
+.ca-main p { margin: 0; }
+.ca-what { font-weight: 600; overflow-wrap: anywhere; }
+.ca-latest { overflow-wrap: anywhere; }
+.ca-act { display: flex; flex-direction: column; align-items: flex-end; gap: var(--s1); }
+.ca-track { display: inline-flex; flex-wrap: wrap; gap: 4px; list-style: none; margin: 0; padding: 0; font-size: var(--fs-xs); color: var(--text-muted); }
+.ca-track li { display: inline-flex; align-items: center; gap: 4px; }
+.ca-track li + li::before { content: "→"; color: var(--text-muted); }
+.ca-track li.past { color: var(--text); }
+.ca-track li.now { color: var(--text); font-weight: 700; }
+.ca-more { justify-self: start; }
+.ca-list.finished .ca-what { font-weight: 500; }
+
+/* Documents: a hairline list, name over its facts, Download and Delete… */
+.doc-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border-light); border-radius: var(--radius-card); background: var(--bg-card); }
+.doc-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; gap: var(--s3); align-items: center; padding: 10px var(--s4); border-top: 1px solid var(--border-light); }
+.doc-row:first-child { border-top: 0; }
+.doc-row .ico { color: var(--text-muted); }
+.doc-main { display: flex; flex-direction: column; min-width: 0; }
+.doc-name { font-weight: 550; overflow-wrap: anywhere; }
+.doc-main .caption { margin: 0; }
+
+/* Remove: the consequence in a sentence, then the two buttons */
+.record .rm-what { max-width: 62ch; }
+.removed-card p { color: var(--text-muted); margin: 0 0 var(--s4); }
+
+/* the sheets piece 6 adds */
+.rec-sheet .sched-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s3); align-items: end; }
+.rec-sheet .sched-presets { gap: var(--s2); }
+.rec-sheet .sched-presets .chip { height: 32px; font-size: var(--fs-xs); }
+.rec-sheet .with-unit { display: flex; align-items: center; gap: var(--s2); }
+.rec-sheet .with-unit input { width: 100%; }
+.rec-sheet .with-unit .unit { color: var(--text-muted); }
+.gc .rec-sheet input[type="text"], .gc .rec-sheet input[type="password"], .gc .rec-sheet input[type="date"] { width: 100%; }
+.gc .rec-sheet input[type="date"] { height: 36px; padding: 0 var(--s3); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-card); color: var(--text); font: inherit; }
+.rec-sheet .field .muted { color: var(--text-muted); font-weight: 400; }
+.rec-sheet p.sched-dup { color: var(--text); font-size: var(--fs-sm); }
+.rec-sheet .actions .sched-del { margin-right: auto; }
+.rec-sheet .step-what { color: var(--text); overflow-wrap: anywhere; }
+.rec-sheet .seg[hidden] { display: none; }
+.rec-sheet .form > .seg, .rec-sheet .field > .seg { justify-self: start; }
+.rec-sheet p.remove-live { display: flex; gap: var(--s2); align-items: baseline; color: var(--text); }
+.rec-sheet p.remove-live .glyph { flex: none; transform: translateY(1px); }
+@media (max-width: 699px) {
+    .tbl.mt .m-act { white-space: normal; }
+    .tbl.mt .m-act .btn { margin: 2px 0 0 0; }
+    .ca-row { grid-template-columns: 1fr; }
+    .ca-act { flex-direction: row; flex-wrap: wrap; align-items: center; }
+    .doc-row { grid-template-columns: 16px minmax(0, 1fr); }
+    .doc-row > .btn { grid-column: 2; justify-self: start; }
+    .record .corr-kv { grid-template-columns: 1fr; }
+    .record .corr-kv .k { border-bottom: 0; padding-bottom: 0; }
+    .rec-sheet .sched-row { grid-template-columns: 1fr; }
+}
+
 /* ── end of the record ─────────────────────────────────────────────────── */
 
 /* ── the floor map (/?view=map, piece 12; js/plan.js draws, js/floor_map.js runs) ──

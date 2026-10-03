@@ -1359,13 +1359,16 @@ class TestNoQcAssignedIsNotADeadEnd:
         assert [ch["verdict"]["word"] for ch in rec["qc"]["checks"]] == ["No verdict yet"]
         assert rec["readiness"]["primary"] is None or rec["readiness"]["primary"]["act"] != "assign"
 
-    def test_the_foot_link_goes_to_the_floor_panel_not_the_wall(self):
-        """/floor is the chromeless wall kiosk now (piece 13); the panel with
-        corrections, actions and documents lives at /floor/classic. A link
-        that promised the panel and landed on a TV wall is a dead end."""
+    def test_the_record_sends_nobody_to_the_classic_floor_panel(self):
+        """Until piece 6 the record's foot sent people to /floor/classic for
+        corrections, actions and documents. They are sections of this page
+        now (tests/test_ui_record_actions.py), so the record links neither to
+        the classic panel (piece 14 deletes it) nor to /floor (the wall)."""
         html = (T / "instrument.html").read_text()
-        assert "/floor/classic?machine=" in html
+        assert "/floor/classic" not in html
         assert 'href="/floor?machine=' not in html
+        for anchor in ("corrections", "actions", "documents"):
+            assert 'id="%s"' % anchor in html
 
 
 class TestTheQcTileCountsLikeItsSiblings:

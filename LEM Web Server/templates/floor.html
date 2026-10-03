@@ -1013,8 +1013,8 @@ floor opens on">Levels…</button>
 
     <div class="tip" id="tip"></div>
     <div class="legend" id="legend"></div>
-    <div class="hint" id="hint">click a piece of equipment · right-click for
-      actions</div>
+    <div class="hint" id="hint">click a piece of equipment to open its
+      record</div>
     <div class="menu" id="menu"></div>
 
     <!-- Arrange mode. Dragging an instrument always worked, but only if you
@@ -1046,7 +1046,7 @@ floor opens on">Levels…</button>
       <button id="dbgRandom">Randomise every status</button>
       <button id="dbgAllGreen">Set everything GREEN</button>
       <button id="dbgClear" class="warn">Clear all simulation</button>
-      <p class="dbgnote">One piece at a time: right-click it on the floor.</p>
+      <p class="dbgnote">One piece at a time: Settings › Developer.</p>
     </div>
   </main>
 
@@ -1929,7 +1929,7 @@ function paintLevelEmpty() {
   $('#levelEmptyHead').textContent = 'Nothing on ' + levelButtonLabel();
   $('#levelEmptyBody').textContent =
     'This level exists and no equipment stands on it. Equipment is placed on '
-    + 'a level from its record, from the right-click menu, or here.';
+    + 'a level from its record (Placement), or here.';
   const where = elsewhereText();
   $('#levelEmptyWhere').textContent = where
     ? 'Elsewhere in the lab: ' + where + '.'
@@ -3086,10 +3086,10 @@ function diagnosis(m) {
   if (!checked) {
     return warn('ink2', m.status === 'UNKNOWN'
       ? 'Parsing fine, but no QC standard is assigned — that is why it reads '
-        + 'UNKNOWN. Right-click → Assign QC samples.'
+        + 'UNKNOWN. Use Assign QC samples on its record.'
       : `Parsing fine, and it reports ${esc(m.status)} for itself — but no QC `
         + `standard is assigned here, so nothing is being checked against a `
-        + `band. Right-click → Assign QC samples.`);
+        + `band. Use Assign QC samples on its record.`);
   }
   return '';
 }
@@ -3183,8 +3183,8 @@ function qcChecksHtml(m) {
       + `<p class="empty" style="padding-top:6px">Checked whenever that
          standard's Lab ID runs on this equipment.</p>`;
   }
-  return `<p class="empty">No QC assigned. Right-click the equipment, or use
-          <b>Assign QC samples</b>, to check it against a standard.</p>`;
+  return `<p class="empty">No QC assigned. Use <b>Assign QC samples</b> to
+          check it against a standard.</p>`;
 }
 
 // Getting OUT of an instrument has to be as easy as getting in: click the
@@ -5111,7 +5111,6 @@ function planWire(g, m) {
   g.addEventListener('keydown', e => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); br.onSelect(uid); }
   });
-  g.addEventListener('contextmenu', e => { e.preventDefault(); br.onContext(uid, e); });
   g.addEventListener('mouseenter', e => showTip(m, {x: e.clientX, y: e.clientY}));
   g.addEventListener('mouseleave', hideTip);
 }
@@ -5683,7 +5682,7 @@ function lockGlyph(open) {
 
 /* The hint under the floor. It is instructions, so it must not name an action
  * that cannot be taken here — on an EMPTY level it read "drag to rearrange ·
- * right-click for actions", both of which need a piece of equipment. */
+ * open the record", both of which need a piece of equipment. */
 function paintHint() {
   const hint = $('#hint');
   if (!hint) return;
@@ -5698,8 +5697,8 @@ function paintHint() {
   hint.textContent = ARRANGING
     ? 'drag a piece of equipment onto a bay'
     : (!LOCKED && AUTHED)
-      ? 'drag to rearrange · right-click for actions'
-      : 'click a piece of equipment · right-click for actions';
+      ? 'drag to rearrange · click to open the record'
+      : 'click a piece of equipment to open its record';
 }
 
 // ── correction factors ──────────────────────────────────────────────────

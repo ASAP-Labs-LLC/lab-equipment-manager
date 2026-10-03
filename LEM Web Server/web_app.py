@@ -4159,6 +4159,33 @@ def create_app(gateway, labcore_gateway=None,
         snapshots.refresh_soon()
         return jsonify({"ok": True})
 
+    @app.route("/api/machines/<machine_uid>/position", methods=["DELETE"])
+    def api_machine_position_reset(machine_uid):
+        """Reset position (the record's Placement section, piece 6): forget
+        the stored position, so the map lists the instrument as "Not on the
+        map · Place it" until somebody places it again.
+
+        The classic floor "reset" by POSTing (0, 0), which stood the
+        instrument in the plan's corner and called that its default. The same
+        lock applies as to a drag, and for the same reason: a frozen floor is
+        one the lab chose to freeze."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        try:
+            locked = map_settings.locked()
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this equipment's position")
+        if locked:
+            return jsonify({"error": "The map is locked. Unlock it to "
+                                     "rearrange the floor.", "saved": False}), 409
+        try:
+            layout_store.forget(machine_uid)
+        except (MachineMapError, LabCoreError) as exc:
+            return _labcore_failed(exc, "this equipment's position")
+        snapshots.refresh_soon()
+        _audit("position reset", machine_uid, {})
+        return jsonify({"ok": True})
+
     @app.route("/api/machines/<machine_uid>/qc-targets", methods=["POST"])
     def api_machine_targets(machine_uid):
         """Assign which QC sample + test this instrument is checked against."""
@@ -4208,7 +4235,12 @@ def create_app(gateway, labcore_gateway=None,
                                             "equipment")
         if refusal is not None:
             return refusal
+        return _retire_machine(machine_uid, bool(body.get("purge_history")))
 
+    def _retire_machine(machine_uid: str, purge_history: bool = False):
+        """The retirement itself, after whatever gate the caller keeps: the
+        DELETE route's live-module guard, or the record's Remove sheet (the
+        typed name and the password, checked in `api_ui_remove`)."""
         # Retiring a machine is seven separate writes into a queue that takes
         # one statement at a time, so it CANNOT be atomic. What it can be is
         # honest: each step is confirmed, and the first refusal stops the
@@ -4320,7 +4352,7 @@ def create_app(gateway, labcore_gateway=None,
             # this store refuses to create.
             ("documents", _tolerating_missing(_forget_documents)),
         ]
-        if body.get("purge_history"):
+        if purge_history:
             # PURGE IS HIDE (transfer §5.2, D4). This was
             # `DELETE FROM lem_machine_log WHERE machine_uid = ?` — the one
             # route in the app that destroyed the 17025 record, on a click.
@@ -4365,7 +4397,7 @@ def create_app(gateway, labcore_gateway=None,
         # Audited AFTER the purge on purpose: wiping a machine's history is the
         # one action whose record must survive the wipe.
         _audit("machine deleted", machine_uid,
-               {"purged_history": bool(body.get("purge_history"))})
+               {"purged_history": bool(purge_history)})
         return jsonify({"ok": True})
 
     # ── equipment configuration, held centrally ────────────────────────
@@ -4637,7 +4669,14 @@ def create_app(gateway, labcore_gateway=None,
         # Raises if refused; the schedule has NOT moved and the handler says
         # so, rather than the floor showing the task as done for a write that
         # never happened.
-        maint_store.complete(uid, when, note)
+        try:
+            maint_store.complete(uid, when, note)
+        except LabCoreError as exc:
+            # said as the operator's thing, not the queue's: "LabCore is
+            # busy" alone does not say the PM is still showing as overdue
+            return _labcore_failed(
+                exc, "marking “{0}” done".format(task.name),
+                "Its schedule has not moved.")
         snapshots.refresh_soon()
         # The completion belongs in the machine's history too. Second
         # statement, no transaction — so if this one is refused the schedule
@@ -6142,7 +6181,8 @@ def create_app(gateway, labcore_gateway=None,
         is the honest `{}` rather than an invented one.
         """
         res = gateway.read_sql(
-            "SELECT test_name, correction, units FROM lem_correction_factors "
+            "SELECT test_name, correction, units, updated_at, updated_by "
+            "FROM lem_correction_factors "
             "WHERE machine_uid = ? ORDER BY test_name", [machine_uid])
         out = {}
         for r in labcore_rows(res):
@@ -6150,9 +6190,13 @@ def create_app(gateway, labcore_gateway=None,
             if not name:
                 continue
             try:
+                # who and when ride along (the record's "test → offset, who
+                # and when", §3.1 #3); the guard compares `correction` only
                 out[name] = {"test_name": name,
                              "correction": float(r.get("correction") or 0.0),
-                             "units": str(r.get("units") or "")}
+                             "units": str(r.get("units") or ""),
+                             "updated_at": str(r.get("updated_at") or "") or None,
+                             "updated_by": str(r.get("updated_by") or "") or None}
             except (TypeError, ValueError):
                 continue
         return out
@@ -6206,8 +6250,16 @@ def create_app(gateway, labcore_gateway=None,
             # again over one that is already there.
             return _labcore_unreadable(exc, "this equipment's correction "
                                             "factors")
+        # How many changes the §7.8.2 trail holds, for the record's "Change
+        # history (n)". A count that could not be read is None, never 0: "no
+        # changes" is a claim about the trail.
+        try:
+            history = len(correction_audit.history(machine_uid))
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("correction history count unreadable: %s", exc)
+            history = None
         return jsonify({"corrections": list(saved.values()),
-                        "methods": methods})
+                        "methods": methods, "history": history})
 
     @app.route("/api/machines/<machine_uid>/corrections", methods=["POST"])
     def api_save_correction(machine_uid):
@@ -8394,6 +8446,39 @@ def create_app(gateway, labcore_gateway=None,
 
     dedupe_routes.register(app, gateway,
                            verify_password=_dedupe_password_ok)
+
+    # ── the record's Remove (ia-final §3.1 #9, piece 6) ────────────────
+    # The one action the page cannot undo, so both halves of its gate are
+    # the server's, not the sheet's: the name typed must be the
+    # instrument's, and the person's password is checked again at the moment
+    # of removing (the admin unlock; the same check D7 uses for approvals).
+    # The typed name is also the confirmation the DELETE route asks for when
+    # a module is running it: the sheet says so before anyone types.
+    @app.route("/api/ui/instruments/<machine_uid>/remove", methods=["POST"])
+    def api_ui_remove(machine_uid):
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        status, rec = _record_payload(machine_uid)
+        if status == 404:
+            return jsonify({"error": "No such instrument.", "saved": False}), 404
+        if status != 200:
+            return jsonify({"error": "LEM could not read this instrument, so "
+                                     "nothing was removed. Try again in a "
+                                     "moment.", "saved": False}), 503
+        title = str(rec.get("title") or machine_uid)
+        typed = str(body.get("name") or "").strip()
+        if typed != title.strip():
+            return jsonify({"error": "Type the instrument's name exactly as "
+                                     "it is shown: \u201c%s\u201d. Nothing "
+                                     "was removed." % title,
+                            "saved": False, "field": "name"}), 400
+        if not _dedupe_password_ok(session.get("user", ""),
+                                   str(body.get("password") or "")):
+            return jsonify({"error": "That password was not accepted. "
+                                     "Nothing was removed.",
+                            "saved": False, "field": "password"}), 403
+        return _retire_machine(machine_uid, False)
 
     # ── what people see of the transfer (transfer §14, T-P12) ───────────
     # The instrument's Data transfer section, /results/conflicts, Settings ›
