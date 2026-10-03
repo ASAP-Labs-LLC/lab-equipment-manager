@@ -343,6 +343,12 @@ const report = (what, err) => {
 process.on('unhandledRejection', err =>
   report('a promise rejected during load — the floor would paint nothing', err));
 
+/* The page loads static/js/record_logic.js (fmtQC, ia-final §4.2) before its
+ * own script, as a <script src>: run the real file here too, so the numbers
+ * asserted below are the ones a browser draws. */
+new vm.Script(fs.readFileSync(new URL('../../static/js/record_logic.js', import.meta.url), 'utf8'),
+  {filename: 'record_logic.js'}).runInContext(context);
+
 try {
   new vm.Script(src, {filename: 'floor.html <script>'}).runInContext(context);
   console.log('  ok   the floor script runs to completion');
@@ -2892,10 +2898,14 @@ if (!failed) {
    * target the large one (Ryan: the number a person hovering came for was the
    * smallest thing on the card, and the centre was not there at all). The
    * claim is still about the numbers RENDERED, whichever list they came off. */
+  /* 2026-10-02 (ia-final §4.2): fmtQC replaced toFixed(2). A band's decimals
+   * are the most its own low / expected / high use, at least 1, so this band
+   * of whole degrees reads -16.0 – -14.0 – -12.0, and a density band is no
+   * longer cut to "0.80 – 0.80". */
   claim('…and draws the effective band the module published',
-        /-16\.00[\s\S]*?-12\.00/.test(tip));
+        /-16\.0(?!\d)[\s\S]*?-12\.0(?!\d)/.test(tip));
   claim('…with the target it was published around, between the limits',
-        /-16\.00[\s\S]*?-14\.00[\s\S]*?-12\.00/.test(tip));
+        /-16\.0(?!\d)[\s\S]*?-14\.0(?!\d)[\s\S]*?-12\.0(?!\d)/.test(tip));
   claim('…and the whole test name, not sixteen characters of it',
         /Cloud Point/.test(tip));
 

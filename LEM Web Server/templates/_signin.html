@@ -6,7 +6,11 @@
     The form is a real one: action /signin, method post, with `next`. If the
     script never ran, the same fields still sign you in and bring you back.
     The user name is not required: an NFC reader may type the card's code into
-    either field, and LabCore matches it in both (labcore_auth.py). -#}
+    either field, and LabCore matches it in both (labcore_auth.py).
+
+    Its submit is a SHEET's go button (`.sheet-go`, the same ink fill), not a
+    `.btn-primary`: this sheet is in every page's DOM, closed, and §0.1 counts
+    one primary per page, the page's own next step. -#}
 <dialog class="sheet signin-sheet" id="signin-sheet" data-testid="signin-sheet" aria-labelledby="signin-title" aria-describedby="signin-why">
   <form method="post" action="/signin" class="form" id="signin-form" novalidate>
     <input type="hidden" name="next" id="signin-next" value="{{ request.full_path if request.query_string else request.path }}">
@@ -19,7 +23,7 @@
     <p id="signin-error" class="errline" role="alert" hidden></p>
     <div class="actions">
       <button type="button" class="btn" id="signin-cancel">Cancel</button>
-      <button type="submit" class="btn btn-primary" id="signin-ok">Sign in</button>
+      <button type="submit" class="btn sheet-go" id="signin-ok">Sign in</button>
     </div>
   </form>
 </dialog>

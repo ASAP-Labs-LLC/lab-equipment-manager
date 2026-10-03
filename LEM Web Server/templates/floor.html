@@ -6,6 +6,8 @@
 <title>LEM — Lab Floor</title>
 <link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
 <script src="/static/lem.js?v={{ v('lem.js') }}"></script>
+{# fmtQC (ia-final §4.2): the one QC number format, shared with the record #}
+<script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
 <style>
 
   /* ── plant signage: condensed, wide-tracked, stencil-adjacent ── */
@@ -62,6 +64,10 @@
              border-radius:20px;font-size:11px;font-weight:800;letter-spacing:.12em;
              text-transform:uppercase;margin-top:8px}
   .reason{color:var(--ink2);font-size:12px;line-height:1.55;margin-top:9px}
+  .recverdict{color:var(--ink2);font-size:12.5px;line-height:1.5;margin-top:6px}
+  .recverdict b{color:var(--ink)}
+  .recverdict .cap{color:var(--ink3);font-size:11px}
+  .recverdict a{color:inherit;text-decoration:underline}
   .meta{color:var(--ink3);font-size:10.5px;margin-top:8px}
 
   .qc{border:1px solid var(--edge);border-radius:9px;padding:9px 10px;margin-bottom:8px;
@@ -2035,8 +2041,18 @@ function panelSignature(m) {
  * from it, so the centre is the headline and the limits flank it. Used by the
  * hover tip, the QC library and the assign sheet, so a person reads the same
  * shape in all three. A value the row does not carry is a dash, never "NaN". */
+// fmtQC (§4.2): every number of a band in the band's own decimals, so a
+// density band reads 0.8012 – 0.8013, never "0.80 – 0.80".
+// Without record_logic.js (a harness that runs this script alone) a number
+// is printed whole, never cut: the failure mode is too many digits, not a
+// band that reads "0.80 – 0.80".
+const fq = (v, s) => {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '—';
+  const R = window.LEMRecord;
+  return R ? R.fmtQC(Number(v), s) : String(Number(v));
+};
 function bandHtml(low, expected, high, units) {
-  const n = v => Number.isFinite(Number(v)) ? Number(v).toFixed(2) : '—';
+  const n = v => Number.isFinite(Number(v)) ? fq(v, {low, expected, high}) : '—';
   return `<span class="lim3"><span class="lo">${n(low)}</span><span class="dash">–</span>`
     + `<b class="tg">${n(expected)}</b><span class="dash">–</span>`
     + `<span class="hi">${n(high)}</span>`
@@ -2955,6 +2971,33 @@ function uncertaintyLine(body) {
  * changes when somebody computes and approves one, which is not a two-second
  * event, and a per-equipment fetch on the poll is the N+1 this page exists to
  * avoid. */
+// "Can it run?" as the record says it (ia-final §3.1), from the same
+// /api/ui/instruments/<uid> the record draws: 0 LabCore ops. A failed read
+// says so; it never leaves the bench's GREEN as the only answer on screen.
+async function loadVerdict(m) {
+  const box = $('#panelVerdict');
+  if (!box) return;
+  const uid = m.machine_uid;
+  const href = '/instruments/' + encodeURIComponent(uid);
+  let rec = null, why = 'LEM did not answer';
+  try {
+    const res = await fetch('/api/ui/instruments/' + encodeURIComponent(uid), {cache: 'no-store'});
+    if (res.ok) rec = await res.json();
+    else why = 'LEM answered ' + res.status;
+  } catch (e) { /* network: why stays */ }
+  if (!selected || selected.machine_uid !== uid || !$('#panelVerdict')) return;
+  const r = rec && rec.readiness;
+  if (!r || !r.word) {
+    box.innerHTML = `Couldn't read the verdict (${esc(why)}). `
+      + `<a href="${href}">Open the record</a>`;
+    return;
+  }
+  const lead = (r.caption && r.caption.lead) || '';
+  box.innerHTML = `<span class="cap">Can it run?</span> <b>${esc(r.word)}</b>`
+    + (lead ? ` · ${esc(lead)}` : '')
+    + ` · <a href="${href}">Open the record</a>`;
+}
+
 async function loadUncertainty(m) {
   const box = $('#panelU');
   if (!box) return;
@@ -3093,19 +3136,19 @@ function qcChecksHtml(m) {
       return `
       <div class="qc">
         <div class="n">${esc(s.test_name)}<span class="val">${
-          v == null ? '—' : Number(v).toFixed(2)} ${esc(s.units || '')}</span></div>
+          fq(v, s)} ${esc(s.units || '')}</span></div>
         <div class="band"><div class="fill"></div>${
           at == null ? '' :
           `<div class="mark" style="left:${at}%;background:${col};
                 box-shadow:0 0 6px ${col}"></div>`}</div>
-        <div class="lim"><span>min ${lo.toFixed(2)}</span>
-          <span>target ${Number(s.expected).toFixed(2)}</span>
-          <span>max ${hi.toFixed(2)}</span></div>
+        <div class="lim"><span>min ${fq(s.low, s)}</span>
+          <span>target ${fq(s.expected, s)}</span>
+          <span>max ${fq(s.high, s)}</span></div>
         <div class="lim" style="margin-top:3px">
           <span>${esc(s.sample_id) ? 'sample ' + esc(s.sample_id) : ''}${
             s.correction ? ` · <b style="color:var(--brass)">correction ${
               Number(s.correction) > 0 ? '+' : ''}${
-              Number(s.correction).toFixed(2)}</b>` : ''}</span>
+              fq(s.correction, s)}</b>` : ''}</span>
           <span style="color:${col}">${
             ok === true ? 'in spec' : ok === false ? 'OUT OF SPEC'
             : s.last_qc_superseded_by
@@ -3122,12 +3165,12 @@ function qcChecksHtml(m) {
     return specs.map(s => `
       <div class="qc">
         <div class="n">${esc(s.test_name)}<span class="val">${
-          Number(s.expected).toFixed(2)} ${esc(s.units || '')}</span></div>
+          fq(s.expected, s)} ${esc(s.units || '')}</span></div>
         <div class="band"><div class="fill"></div>
           <div class="mark" style="left:50%"></div></div>
-        <div class="lim"><span>${Number(s.low).toFixed(2)}</span>
+        <div class="lim"><span>${fq(s.low, s)}</span>
           <span>sample ${esc(s.sample_id) || '—'}</span>
-          <span>${Number(s.high).toFixed(2)}</span></div>
+          <span>${fq(s.high, s)}</span></div>
       </div>`).join('');
   }
   if (targets.length) {
@@ -3167,9 +3210,13 @@ async function select(m) {
               aria-label="Close this equipment">✕</button>
       <div class="cap">Equipment</div>
       <h2 class="sign">${esc(m.title)}</h2>
+      <!-- The lab's verdict (readiness, the record's own) first; the bench's
+           word for itself second and labelled as the bench's. GREEN over an
+           overdue calibration is true of the bench and not the answer. -->
+      <div class="recverdict" id="panelVerdict" aria-live="polite">Reading the verdict…</div>
       <div class="statechip" style="background:${c}22;color:${c}">
         <span style="width:8px;height:8px;border-radius:50%;background:${c};
-              box-shadow:0 0 8px ${c}"></span>${esc(m.status)}
+              box-shadow:0 0 8px ${c}"></span>Bench reports ${esc(m.status)}
       </div>
       <div class="reason">${esc(m.reason)}</div>
 
@@ -3351,6 +3398,7 @@ async function select(m) {
   if (more) more.addEventListener('click', () => loadMoreHistory());
 
   drawTrend(m);
+  loadVerdict(m);
   loadUncertainty(m);
   await loadTimeline(m);
 }
@@ -3457,10 +3505,10 @@ function gutterTransition(e) {
   const band = t.band;
   const value = t.value == null ? String(e.value || '') : String(t.value);
   const bandText = band
-    ? `judged against ${Number(band.low).toFixed(1)}…`
-      + `${Number(band.high).toFixed(1)}`
+    ? `judged against ${fq(band.low, band)}…`
+      + `${fq(band.high, band)}`
       + (band.expected == null ? ''
-         : ` (target ${Number(band.expected).toFixed(1)})`)
+         : ` (target ${fq(band.expected, band)})`)
     // A verdict whose row carries no band is judged against nothing recorded.
     // Drawing a line at zero would be inventing the limits it was measured to.
     : 'no band recorded on this verdict';
@@ -3633,6 +3681,7 @@ function renderTally() {
 }
 
 let FIRST_LOAD = true;
+let FOCUS_DONE = false;   // ?machine= opened (or not on this floor)
 
 async function load() {
   // A slow first call (LabCore waking up) must not blank the floor — keep the
@@ -3709,6 +3758,14 @@ async function load() {
   // the tab back to QC, threw away the scroll position and reflashed the trend
   // — a blink on the old 30s timer, a flicker at 2s. Same idea as the
   // signature guard in lem.js: decide what "changed" means, then honour it.
+  // ?machine=<uid>: the record's "Show on the floor map" names an instrument;
+  // its panel opens once, on the first picture that has it.
+  if (!selected && !FOCUS_DONE) {
+    const want = new URLSearchParams(location.search).get('machine');
+    const hit = want ? MACHINES.find(x => x.machine_uid === want) : null;
+    if (!want || hit) FOCUS_DONE = true;
+    if (hit) selected = hit;
+  }
   if (selected) {
     const sig = panelSignature(selected);
     if (sig !== PANEL_SIG) { PANEL_SIG = sig; select(selected); }
@@ -4019,6 +4076,9 @@ $('#btnQc').addEventListener('click', async () => {
   $('#qcLib').showModal();
 });
 $('#qcLibClose').addEventListener('click', () => $('#qcLib').close());
+// ?open=qc-library: the record's "Change which standards…" sheet, over an
+// empty library, links here; the library opens once, on arrival.
+if (new URLSearchParams(location.search).get('open') === 'qc-library') $('#btnQc').click();
 
 /* How long a passing result on this standard stays good — a property of the
  * MATERIAL, so it is stated once here instead of on every bench running it.
@@ -5717,8 +5777,8 @@ async function renderCorrections() {
           <button class="tool corrsave">Save</button>
           ${by[name] ? '<button class="tool corrdel">Remove</button>' : ''}
           ${spec ? `<span style="color:var(--ink3);font-size:11px;
-             margin-left:auto">band ${Number(spec.low).toFixed(2)} –
-             ${Number(spec.high).toFixed(2)}</span>` : ''}
+             margin-left:auto">band ${fq(spec.low, spec)} –
+             ${fq(spec.high, spec)}</span>` : ''}
         </div>
       </div>`;
   }).join('');

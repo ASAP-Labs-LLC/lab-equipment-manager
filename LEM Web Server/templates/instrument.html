@@ -1,0 +1,191 @@
+{% extends "_layout.html" %}
+{#- The instrument record (ia-final §3.1, piece 5): GC hub's /instruments/<id>
+    anatomy. Crumbs and at most two actions in the topbar; one h1 and its meta
+    line; ONE card, the answer the page exists for ("can it run?"), with the
+    page's one primary button; then sections, each a title and one sentence
+    on the left and the body on the right.
+
+    The answer rides in a JSON island (data, never code) so the verdict is on
+    screen as the page arrives; static/js/record.js draws it with textContent
+    and keeps it live. The server draws the frame and every sentence that
+    must survive a script that failed. -#}
+{% block title %}{{ data.title }}{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Instruments</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page" id="crumb-name">{{ data.title }}</span></nav>
+  <span class="spacer"></span>
+  <a class="btn btn-ghost btn-sm" id="show-map" href="{{ data.topbar.map }}" data-testid="show-map">Show on the floor map</a>
+  <button type="button" class="btn btn-sm gate-lock" id="topbar-online" data-act="offline" data-gated="take it off line" data-testid="topbar-online"{% if not data.topbar.online %} hidden{% endif %}>Take off line…</button>
+{% endblock %}
+{% block content %}
+<main class="content record" id="main" tabindex="-1" data-testid="record-page" data-uid="{{ data.uid }}"
+      data-has-quality="{{ 'true' if has_quality else 'false' }}">
+  <header class="page-head">
+    <h1 id="rec-title">{{ data.title }}</h1>
+    <div class="meta" id="rec-meta" data-testid="record-meta"></div>
+  </header>
+
+  {#- the answer: "can it run?" (§3.1). The h2 is the verdict; the caption is
+      one sentence ending in the next step; the button is that step. -#}
+  <section class="card checklist ready-card" id="readiness" aria-labelledby="ready-title" data-testid="readiness">
+    <div class="bar">
+      <h2 id="ready-title"><span class="rglyph" id="ready-glyph" aria-hidden="true"></span><span id="ready-word">{{ data.readiness.word }}</span></h2>
+      <p class="ready-cap" id="ready-cap" data-testid="ready-caption"></p>
+      <button type="button" class="btn btn-primary" id="ready-primary" data-testid="ready-primary" hidden></button>
+    </div>
+    {#- a refresh that failed is said here, never swallowed: the card keeps
+        what it last read, dimmed, and this line says it is not current -#}
+    <p class="ready-stale" id="ready-stale" role="status" data-testid="ready-stale" hidden>
+      <span class="glyph never" aria-hidden="true"></span><span id="ready-stale-text"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="ready-stale-retry">Try again</button>
+    </p>
+    <div class="rtiles" id="ready-tiles" data-testid="ready-tiles"></div>
+  </section>
+
+  <section class="sec" id="qc" data-testid="section-qc" aria-labelledby="qc-h">
+    <div class="about"><h2 id="qc-h"><span class="ico ico-target" aria-hidden="true"></span>QC</h2>
+      <p id="qc-intro">{% if data.qc.standards %}Checked against {{ data.qc.standards|join(', ') }} by assignment. {% endif %}A passing check counts for {{ '%g'|format(data.qc.window.hours) }} h{% if data.qc.window.from %}, as {{ data.qc.window.from }} sets{% endif %}. The bench reads these off the instrument; nobody types QC here.</p></div>
+    <div class="body" id="qc-body">
+      <div class="card table-card qc-card" id="qc-card">
+        <table class="tbl qc" id="qc-tbl" aria-describedby="qc-intro">
+          <thead><tr>
+            <th scope="col" class="c-check">Check</th>
+            <th scope="col" class="c-band">min – <b>target</b> – max</th>
+            <th scope="col" class="c-track"><span class="visually-hidden">Where the last result sits</span></th>
+            <th scope="col" class="c-last">Last</th>
+            <th scope="col" class="c-verdict">Verdict</th>
+            <th scope="col" class="c-when">When</th>
+          </tr></thead>
+          <tbody id="qc-rows"></tbody>
+        </table>
+        <p class="qc-none" id="qc-none" hidden></p>
+      </div>
+      <div class="card chart-card" id="qc-chart" data-testid="qc-chart" aria-labelledby="chart-h" hidden>
+        <div class="chart-head">
+          <div class="chart-title"><h3 id="chart-h"></h3><p class="caption" id="chart-cap" role="status"></p></div>
+          <div class="seg" role="radiogroup" aria-label="How much history" id="chart-range" data-testid="chart-range">
+            <button type="button" role="radio" data-range="24" aria-checked="true">24 runs</button>
+            <button type="button" role="radio" data-range="90d" aria-checked="false">90 days</button>
+            <button type="button" role="radio" data-range="all" aria-checked="false">All</button>
+          </div>
+        </div>
+        <div class="chart-plot" id="chart-plot"></div>
+        <div class="chart-foot">
+          <p class="chart-line" id="chart-control" hidden></p>
+          <p class="chart-line" id="chart-u"></p>
+        </div>
+      </div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="qc-change" data-act="assign" data-gated="change which standards it is checked on" data-testid="qc-change">Change which standards…</button>
+        <a class="btn btn-sm" id="export-qc" href="/api/machines/{{ data.uid|urlencode }}/export.csv?kind=qc" download data-testid="export-qc"><span class="ico ico-download" aria-hidden="true"></span>Export QC (CSV)</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="maintenance" data-testid="section-maintenance" aria-labelledby="mt-h">
+    <div class="about"><h2 id="mt-h"><span class="ico ico-key" aria-hidden="true"></span>Maintenance and calibration</h2>
+      <p>Scheduled PM and calibration. A task is due on its date and overdue the day after.</p></div>
+    <div class="body" id="mt-body"></div>
+  </section>
+
+  <section class="sec" id="bench" data-testid="section-bench" aria-labelledby="bench-h">
+    <div class="about"><h2 id="bench-h"><span class="ico ico-signal" aria-hidden="true"></span>Bench and results</h2>
+      <p>Each reading is filed once, through LabStation. A replay is never sent again, so a value an analyst corrected in LabCore stands.</p></div>
+    <div class="body" id="bench-body"></div>
+  </section>
+
+  {#- Data transfer (transfer §14, piece T-P12): how this bench's readings
+      reach LEM and LabCore. Drawn by the server, kept live by
+      transfer_section.js; read-only, so it adds no button to the page. -#}
+  {%- if transfer_first_paint is defined %}
+  {%- set t = transfer_first_paint(data.uid) or {"uid": data.uid, "rows": [], "pending": true} %}
+  {% include "_transfer_section.html" %}
+  {%- endif %}
+
+  <p class="rec-foot caption" data-testid="record-foot">Correction factors, corrective actions, documents and the full log are still on the floor map's panel for this instrument. <a class="link" href="/floor/classic?machine={{ data.uid|urlencode }}">Open it there</a></p>
+</main>
+
+{#- the sheets the card and the topbar open (piece 6 adds the rest). A
+    refused write keeps the sheet open with the server's sentence. -#}
+<dialog class="sheet rec-sheet" id="online-sheet" aria-labelledby="online-title" data-testid="online-sheet">
+  <form class="form" id="online-form" method="dialog" novalidate>
+    <h2 id="online-title">Take off line</h2>
+    <p id="online-why"></p>
+    <fieldset class="choice" id="online-kind">
+      <legend class="visually-hidden">Why it is off line</legend>
+      <label class="check"><input type="radio" name="override" value="SERVICE" checked> Out for service</label>
+      <label class="check"><input type="radio" name="override" value="DEAD-LINE"> Dead line: no results expected</label>
+    </fieldset>
+    <label class="field"><span>Comment (required)</span>
+      <textarea id="online-comment" rows="3" required></textarea></label>
+    <p class="errline" id="online-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="online-go">Take off line</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="action-sheet" aria-labelledby="action-title" data-testid="action-sheet">
+  <form class="form" id="action-form" method="dialog" novalidate>
+    <h2 id="action-title">Open a corrective action</h2>
+    <p>Open → record → verify → close. Your name and the time are kept with each step.</p>
+    <label class="field"><span>Check</span>
+      <select id="action-test"></select></label>
+    <label class="field"><span>What happened (required)</span>
+      <textarea id="action-what" rows="4" required></textarea></label>
+    <p class="errline" id="action-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="action-go">Open it</button>
+    </div>
+  </form>
+</dialog>
+{#- a warning's next step (round 6): marking an overdue calibration or PM
+    done. The work happened at the instrument; this records it, with a note,
+    and moves the schedule. Same rules as the other sheets: a refusal keeps
+    it open with the server's sentence. -#}
+<dialog class="sheet rec-sheet" id="done-sheet" aria-labelledby="done-title" data-testid="done-sheet">
+  <form class="form" id="done-form" method="dialog" novalidate>
+    <h2 id="done-title">Mark the calibration done</h2>
+    <p id="done-why"></p>
+    <label class="field" id="done-task-field"><span>Task</span>
+      <select id="done-task"></select></label>
+    <label class="field"><span>Done on</span>
+      <input type="date" id="done-when" required></label>
+    <label class="field"><span>Note (required)</span>
+      <textarea id="done-note" rows="3" required placeholder="What was done, and by whom if not you"></textarea></label>
+    <p class="errline" id="done-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="done-go">Mark it done</button>
+    </div>
+  </form>
+</dialog>
+{#- which standards it is checked on (§3.1 "Change which standards…", and
+    the card's "Assign a QC standard…" when nothing is). The library is read
+    when the sheet opens, the one read a person pays for by asking; a read
+    that failed says so and offers Try again, never an empty list. Save
+    replaces the whole set, so the sheet starts from what is assigned. -#}
+<dialog class="sheet rec-sheet assign-sheet" id="assign-sheet" aria-labelledby="assign-title" data-testid="assign-sheet">
+  <form class="form" id="assign-form" method="dialog" novalidate>
+    <h2 id="assign-title">Change which standards it is checked on</h2>
+    <p id="assign-why">Tick each check this instrument runs on a standard. The bench judges every ticked check against that standard's certified values; a new one reads No verdict yet until it first runs.</p>
+    <div class="assign-list" id="assign-list" data-testid="assign-list" aria-live="polite"></div>
+    <p class="assign-sum" id="assign-sum" role="status" data-testid="assign-sum"></p>
+    <p class="errline" id="assign-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="assign-go">Save</button>
+    </div>
+  </form>
+</dialog>
+<script type="application/json" id="record-data">{{ data|json_island }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+<script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
+<script src="/static/js/record.js?v={{ v('js/record.js') }}"></script>
+{%- if transfer_first_paint is defined %}
+<script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
+<script src="/static/js/transfer_section.js?v={{ v('js/transfer_section.js') }}"></script>
+{%- endif %}
+{% endblock %}

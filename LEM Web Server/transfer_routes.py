@@ -158,6 +158,28 @@ def register(app, store, *, registry, machines: Callable[[], Optional[List[dict]
 
     app.jinja_env.globals["transfer_section"] = section_for
 
+    def first_paint(uid: str) -> Optional[dict]:
+        """What a page that includes _transfer_section.html draws before its
+        script runs. Never raises: a page carrying this section must not
+        become a 500 because the store did not answer.
+
+        * not split (store and LabCore are one gateway): no read at all, as
+          `register` promises; the frame says it is reading and the browser
+          asks /api/ui/transfer/<uid>, the one read a person pays for by
+          opening the page;
+        * the store failed: the frame with that sentence, never empty rows;
+        * the store has no such instrument: None (the page decides).
+        """
+        if not split:
+            return {"uid": uid, "rows": [], "pending": True}
+        try:
+            return section_for(uid)
+        except _Unread as exc:
+            return {"uid": uid, "rows": [], "error": "%s" % (exc or "the store did not answer")}
+
+    app.jinja_env.globals["transfer_first_paint"] = first_paint
+    app.jinja_env.filters["transfer_display"] = ui_transfer.display_rows
+
     # ── conflicts ────────────────────────────────────────────────────────
     def conflicts_view(machine: str = "") -> dict:
         since = _iso(_utc() - timedelta(days=DECIDED_DAYS))

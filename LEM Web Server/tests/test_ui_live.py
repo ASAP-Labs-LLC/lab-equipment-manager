@@ -387,8 +387,11 @@ class TestTheBell:
         inside "not OK to run"; since calibration is a warning (Ryan,
         2026-10-01) it needs its own line, merged across instruments."""
         m = [{"machine_uid": u, "title": u.upper(), "module_state": "running", "module_running": True,
-              "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True}],
-              "maintenance": [{"kind": "calibration", "status": "RED"}]} for u in ("a", "b")]
+              "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True,
+                                   "last_qc_at": "2026-10-01T09:00:00"}],
+              "maintenance": [{"kind": "calibration", "status": "RED"}],
+              "qc_judged": {"at": "2026-10-01T10:00:00", "hours": 24.0, "from": ""}}
+             for u in ("a", "b")]
         ready = {x["machine_uid"]: ui_live.readiness(x, "") for x in m}
         items = ui_live.conditions(machines=m, ready=ready, overrides={}, round_=None,
                                    audit_spool=0, live_road=None, certificates=None,
@@ -405,15 +408,22 @@ class TestTheBell:
                                    audit_spool=0, live_road=None, certificates=None,
                                    href=lambda u, s: "/floor", now=datetime(2026, 10, 1, 10))
         assert [i["message"] for i in items] == [
-            "2 instruments are due for QC: OptiMPP 1 and OptiMPP 2."]
+            # neither has ever run: not "due" (§4.1, round 9)
+            "2 instruments have no QC verdict yet: OptiMPP 1 and OptiMPP 2."]
 
 
 # ── readiness (§3.1) ────────────────────────────────────────────────────────
 
 class TestReadiness:
+    # A pass counts for 24 h (§3.1), so a pass carries when it ran and the
+    # machine when it is judged; without them the pass would be judged by
+    # today's wall clock (ui_live.judged).
+    JUDGED = {"at": "2026-10-01T10:00:00", "hours": 24.0, "from": ""}
     BASE = {"machine_uid": "u", "title": "GC", "status": "GREEN", "module_state": "running",
-            "module_running": True, "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True}],
-            "qc_targets": [{"test": "IBP"}], "maintenance": []}
+            "module_running": True,
+            "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True,
+                                 "last_qc_at": "2026-10-01T09:00:00"}],
+            "qc_targets": [{"test": "IBP"}], "maintenance": [], "qc_judged": JUDGED}
 
     def _r(self, override="", **kw):
         return ui_live.readiness(dict(self.BASE, **kw), override)["state"]
@@ -428,6 +438,9 @@ class TestReadiness:
         assert self._r(maintenance=[{"kind": "pm", "status": "RED"}]) == ui_live.OK_BUT
         assert self._r(module_running=False, module_state="stopped") == ui_live.CANT_TELL
         assert self._r(effective_specs=[], qc_targets=[]) == ui_live.NO_QC
+        # a pass older than its window is QC due, a warning, not In spec
+        assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": True,
+                                         "last_qc_at": "2026-09-30T10:00:00"}]) == ui_live.OK_BUT
 
     def test_only_qc_or_an_override_can_say_no(self):
         """Ryan, 2026-10-01: "PM overdue = warning, Calibration overdue =
@@ -445,9 +458,59 @@ class TestReadiness:
                                         effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False}]), "")
         assert failed["state"] == ui_live.NOT_OK, "QC out of spec still says No"
 
+    def test_a_silent_bench_is_cant_tell_even_with_a_warning(self):
+        """"OK to run, but…" says the instrument may run. Saying that needs a
+        bench that is vouching for it now. Round 5's critic found Multitek S
+        (dev seed) reading "OK to run, but… Calibration overdue" while its
+        head and Bench tile said "Bench never checked in": the warning ranked
+        above Can't tell, so the page told an analyst it could run off a
+        bench nobody has heard from. A warning (calibration, PM, QC due) is
+        something to do; it is not evidence the instrument reads true. So a
+        bench that is not checking in reads Can't tell, whatever the
+        warnings, and the warnings are still said behind it (``problems``).
+        Only a failed QC (a stop stands until somebody reruns it) and an
+        override rank above it."""
+        quiet = dict(self.BASE, module_running=False, module_state="unknown", last_poll=None)
+        cal = [{"kind": "calibration", "status": "RED"}]
+        pm = [{"kind": "pm", "status": "RED"}]
+        r = ui_live.readiness(dict(quiet, maintenance=cal), "")
+        assert r == {"state": ui_live.CANT_TELL, "reason": "Bench never checked in"}
+        assert ui_live.readiness(dict(quiet, maintenance=pm), "")["state"] == ui_live.CANT_TELL
+        stopped = dict(quiet, module_state="stopped", last_poll="2026-09-30T10:00:00")
+        due = ui_live.readiness(dict(stopped, effective_specs=[
+            {"test_name": "IBP", "last_qc_in_spec": None}]), "")
+        assert due == {"state": ui_live.CANT_TELL, "reason": "Bench stopped"}
+        # the verdict's own fact first, every other one still said behind it
+        assert ui_live.problems(dict(quiet, maintenance=cal + pm), "") == [
+            "cant_tell-never", "ok_but-cal", "ok_but-pm"]
+        # a failed QC and an override still outrank it
+        assert ui_live.readiness(dict(quiet, effective_specs=[
+            {"test_name": "IBP", "last_qc_in_spec": False}]), "")["state"] == ui_live.NOT_OK
+        assert ui_live.readiness(dict(quiet, maintenance=cal), "SERVICE")["state"] == ui_live.OFF_LINE
+        # A shut lab is not silence: the bench vouched until closing time and
+        # rests on purpose, so its warning is still the answer overnight and
+        # "Lab closed" only when there is nothing else to say.
+        closed = dict(quiet, module_state="closed", last_poll="2026-10-01T17:00:00")
+        assert ui_live.readiness(dict(closed, maintenance=cal), "") == {
+            "state": ui_live.OK_BUT, "reason": "Calibration overdue"}
+        assert ui_live.problems(dict(closed, maintenance=cal), "") == ["ok_but-cal"]
+        assert ui_live.readiness(closed, "") == {"state": ui_live.CANT_TELL, "reason": "Lab closed"}
+        assert ui_live.problems(closed, "") == ["cant_tell-closed"]
+
     def test_a_superseded_failure_is_not_a_failure(self):
-        assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False,
-                                         "last_qc_superseded_by": "AF26"}]) == ui_live.OK
+        """A failure against the OLD standard says nothing about the new one,
+        so it is not a stop. Nor is it a pass: the new standard has not been
+        run, which is No verdict yet (§4.1: never run against this standard),
+        the word the record's row says for it (piece 5, round 2: one rule for
+        the card and every row; round 9: and one word)."""
+        r = ui_live.readiness(dict(self.BASE, effective_specs=[
+            {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
+             "last_qc_superseded_by": "AF26"}]), "")
+        assert r == {"state": ui_live.OK_BUT, "reason": "No verdict yet: IBP"}
+        (c,) = ui_live.qc_checks(dict(self.BASE, effective_specs=[
+            {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
+             "last_qc_superseded_by": "AF26"}]))
+        assert c["verdict"]["detail"] == "not yet run against AF27"
 
     def test_dead_line_from_silence_is_not_off_line(self):
         """A bench says DEAD-LINE when no data arrives. That is not a decision

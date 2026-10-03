@@ -63,15 +63,260 @@ NEEDS_YOU = (NOT_OK, OK_BUT, CANT_TELL)
 
 # ── readiness ───────────────────────────────────────────────────────────────
 
+_BENCH_WORDS = {"stopped": "bench stopped", "closed": "lab closed"}
+
+
+def _bench_word(machine: dict) -> str:
+    """Why a bench that is not checking in vouches for nothing, in the words
+    a QC row says it ("bench stopped"), lower case to follow a verdict."""
+    st = machine.get("module_state") or "unknown"
+    if st in _BENCH_WORDS:
+        return _BENCH_WORDS[st]
+    return "bench stopped" if machine.get("last_poll") else "bench never checked in"
+
+
+# ── how long a pass counts (§3.1: "A passing check counts for 24 h") ────────
+#
+# A pass says the instrument read true WHEN it ran. "Can it run?" is about
+# now, so a pass older than its window is QC due, never In spec (round 3's
+# critic: OptiMPP 1 and 2 read "OK to run" in production off 3 Aug passes).
+# The number is the lab's (qc_samples.resolve_qc_window: a standard that
+# states its own life, else 24 h); the boundary is the bench's
+# (data_source.qc_is_stale: age >= window is stale), so the record and the
+# bench never disagree about one pass at one second.
+#
+# The moment and the window ride on the machine as `qc_judged`, stamped by
+# ``judged`` on the merged copies the UI reads (never on /api/machines, which
+# stays byte-for-byte). Every function below takes a machine, so the stamp
+# reaches the card, the tiles, the rows, the home, the bell and the nav count
+# through the one rule without a clock argument threaded through each.
+
+QC_WINDOW_HOURS = 24.0
+
+
+def judged(machines: Optional[List[dict]], now: datetime,
+           windows: Optional[Dict[str, tuple]] = None) -> Optional[List[dict]]:
+    """Copies of `machines`, each stamped with the moment its QC is judged at
+    and the window a pass counts for: ``qc_judged = {at, hours, from}``.
+
+    `windows` is uid -> (hours, what said so), from the standards assigned
+    to it (``qc_samples.window_from_standards``); a uid without one gets
+    24 h. None in, None out: a list nobody read stays unread."""
+    if machines is None:
+        return None
+    out = []
+    for m in machines:
+        m = dict(m)
+        hours, what = (windows or {}).get(m.get("machine_uid"), (0.0, "")) or (0.0, "")
+        try:
+            hours = float(hours)
+        except (TypeError, ValueError):
+            hours = 0.0
+        if not (hours > 0 and hours != float("inf")):
+            hours, what = QC_WINDOW_HOURS, ""
+        m["qc_judged"] = {"at": now.isoformat(), "hours": hours, "from": str(what or "")}
+        out.append(m)
+    return out
+
+
+def qc_window(machine: dict) -> dict:
+    """``{hours, from}``: how long a pass on this machine counts, and which
+    standard said so ("" = the lab default)."""
+    j = machine.get("qc_judged") or {}
+    try:
+        hours = float(j.get("hours"))
+    except (TypeError, ValueError):
+        hours = 0.0
+    if not hours > 0:
+        return {"hours": QC_WINDOW_HOURS, "from": ""}
+    return {"hours": hours, "from": str(j.get("from") or "")}
+
+
+def _local(iso: Any) -> Optional[datetime]:
+    """A timestamp as naive lab-local time, or None when it cannot be read.
+    The bench writes naive local time; an offset (a v2 bench's "Z") is
+    converted, never compared across zones."""
+    try:
+        t = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if t.tzinfo is not None:
+        t = t.astimezone().replace(tzinfo=None)
+    return t
+
+
+def _judged_at(machine: dict) -> datetime:
+    # A machine nobody stamped is judged NOW: a forgotten stamp can only make
+    # a pass due, never keep an old one in spec.
+    return _local((machine.get("qc_judged") or {}).get("at")) or datetime.now()
+
+
+def hours_words(hours: float) -> str:
+    """24.0 -> "24 h", 4.5 -> "4.5 h"."""
+    return ("%g h" % round(float(hours), 2))
+
+
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _stale_pass(spec: dict, machine: dict) -> Optional[str]:
+    """None while a pass still counts; else the row's reason it does not."""
+    w = qc_window(machine)
+    tail = "a pass counts for " + hours_words(w["hours"])
+    at = _local(spec.get("last_qc_at"))
+    if at is None:
+        return "when it passed is not on record · " + tail
+    if (_judged_at(machine) - at).total_seconds() < w["hours"] * 3600.0:
+        return None
+    return "last passed %d %s · %s" % (at.day, _MONTHS[at.month - 1], tail)
+
+
+def check_verdict(spec: Optional[dict], machine: dict) -> dict:
+    """ONE check's verdict (§4.1), by the rule ``readiness`` judges the whole
+    instrument with, so a QC row, the QC tile and the card cannot disagree.
+
+    `spec` is the check's effective spec, or None for an assignment the bench
+    has not published a band for (Eravap's Pentane / RVP). In order, the
+    same order ``readiness`` takes:
+
+    * a failed result is **Out of spec**, whatever the bench is doing: a
+      stop stands until somebody reruns the standard;
+    * on a bench that is stopped or never checked in (not a shut lab),
+      every other check is **No verdict yet · bench stopped**: the card says
+      Can't tell, and "QC due" would ask for a run nothing would pick up;
+    * an assigned check with no verdict in the window is due (key "due"):
+      that is what makes the card say "OK to run, but… QC due on X". Its
+      word is **QC due** when it has run before, and **No verdict yet ·
+      never run** when it has not (§4.1's definition, and the Instruments
+      list's word for the same fact). A check whose
+      band is not published yet counts once its bench is checking in, since
+      then a run could judge it and nobody has;
+    * a pass on a bench that is checking in, older than its window
+      (``qc_window``: 24 h unless its standard says otherwise), is **QC due
+      · last passed 3 Aug**: it said the instrument read true then, not now
+      (checked after the stopped-bench rule below, which says why nothing
+      new is judged);
+    * a pass is **In spec** only while its bench is checking in. A stopped
+      bench vouches for nothing new, so its card says Can't tell and the
+      check says **No verdict yet · bench stopped** (round 2's critic:
+      Viscocity's 3 Sep pass read In spec under a Can't tell card). The
+      pass itself stays on the row, as history.
+    """
+    running = _checking_in(machine)
+    moved = spec is not None and spec.get("last_qc_superseded_by")
+    # A superseded result was run against the OLD standard: it judges
+    # nothing about this one, so the check is assigned and not yet run.
+    ok = None if spec is None or moved else spec.get("last_qc_in_spec")
+    if ok is False:
+        return {"key": "out", "word": "Out of spec", "glyph": "error", "detail": ""}
+    if _silent(machine):
+        # Nobody is vouching for this bench now, so the card says Can't tell
+        # (``readiness``) and no row may say "QC due" under it as if a run
+        # would settle it: the bench has to check in first.
+        return {"key": "none", "word": "No verdict yet", "glyph": "never",
+                "detail": _bench_word(machine)}
+    if spec is not None and ok is None or spec is None and running:
+        ran = spec is not None and spec.get("last_qc_at") and not moved
+        parts = ["no verdict in the window" if ran else
+                 "not yet run against %s" % spec.get("sample_id") if moved and spec.get("sample_id")
+                 else "never run"]
+        if not running:
+            parts.append(_bench_word(machine))
+        # Still key "due": a run is owed, and that is what makes the card say
+        # "OK to run, but… QC due on X". But a check that has never run (or
+        # never against this standard) is §4.1's **No verdict yet**, the word
+        # the Instruments list's Last QC column uses for the same fact (round
+        # 8's critic: "QC due · never run" here, "No verdict yet" there).
+        if ran:
+            return {"key": "due", "word": "QC due", "glyph": "half", "detail": " · ".join(parts)}
+        return {"key": "due", "word": "No verdict yet", "glyph": "never", "detail": " · ".join(parts)}
+    if not running:
+        return {"key": "none", "word": "No verdict yet", "glyph": "never",
+                "detail": _bench_word(machine)}
+    aged = _stale_pass(spec, machine) if spec is not None else None
+    if aged:
+        return {"key": "due", "word": "QC due", "glyph": "half", "detail": aged}
+    return {"key": "in", "word": "In spec", "glyph": "final", "detail": ""}
+
+
+def qc_checks(machine: dict) -> List[dict]:
+    """Every check in force: ``{test_name, sample_id, spec, verdict}``. The
+    effective specs (a superseded one is the new standard's band, not yet
+    run), then each assignment the bench has not published a band for
+    (spec None)."""
+    out, seen = [], set()
+    for s in machine.get("effective_specs") or []:
+        name = str(s.get("test_name") or "")
+        seen.add(name)
+        out.append({"test_name": name, "sample_id": str(s.get("sample_id") or ""),
+                    "last_qc_at": None if s.get("last_qc_superseded_by") else s.get("last_qc_at"),
+                    "spec": s,
+                    "verdict": check_verdict(s, machine)})
+    for t in machine.get("qc_targets") or []:
+        name = str(t.get("test") or "")
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({"test_name": name, "sample_id": str(t.get("sample") or ""),
+                    "last_qc_at": None, "spec": None, "verdict": check_verdict(None, machine)})
+    return out
+
+
 def _out_of_spec(machine: dict) -> list:
-    return [s for s in machine.get("effective_specs") or []
-            if s.get("last_qc_in_spec") is False and not s.get("last_qc_superseded_by")]
+    return [c for c in qc_checks(machine) if c["verdict"]["key"] == "out"]
 
 
-def _qc_due(machine: dict) -> list:
-    """Assigned checks with no verdict inside the window."""
-    return [s for s in machine.get("effective_specs") or []
-            if s.get("last_qc_in_spec") is None and not s.get("last_qc_superseded_by")]
+def qc_due(machine: dict) -> list:
+    """Assigned checks with no verdict inside the window (``check_verdict``)."""
+    return [c for c in qc_checks(machine) if c["verdict"]["key"] == "due"]
+
+
+_qc_due = qc_due
+
+
+# §4.1 tells two kinds of owed QC apart: **QC due** is a pass that aged out
+# of its window (it read true once, nobody has shown it still does), **No
+# verdict yet** is an assigned check that has never run (against this
+# standard). Both make the card "OK to run, but…", share the problem key
+# "ok_but-qc" and the next step (run the standard); only the words differ,
+# and they must differ the same way in every sentence (round 9's critic:
+# Koehler K23000's tile said "No verdict yet · Never run" and its card "QC
+# due on Viscosity 40C").
+QC_DUE, NO_VERDICT = "QC due", "No verdict yet"
+
+
+def is_qc_owed(reason: str) -> bool:
+    """Is a ``readiness`` reason about owed QC (either kind)?"""
+    return str(reason or "").startswith((QC_DUE, NO_VERDICT))
+
+
+def owed_split(due: list) -> tuple:
+    """(ran before, never run) out of owed checks (``qc_due``'s, or any rows
+    carrying ``check_verdict``'s verdict)."""
+    ran = [c for c in due if c["verdict"]["word"] == QC_DUE]
+    return ran, [c for c in due if c["verdict"]["word"] != QC_DUE]
+
+
+def owed_word(due: list) -> str:
+    """The one word for a set of owed checks: QC due if any ran before (the
+    stronger: a pass lapsed), else No verdict yet."""
+    ran, _ = owed_split(due)
+    return QC_DUE if ran else NO_VERDICT
+
+
+def owed_phrase(due: list, names: Callable[[list], str]) -> str:
+    """"QC due on Density", "No verdict yet on Vapour", or both, each under
+    its own word: "QC due on Density · no verdict yet on Vapour" (the
+    separator the home's and the walls' sentences use). `names` turns
+    a list of checks into the page's way of naming them."""
+    ran, never = owed_split(due)
+    parts = []
+    if ran:
+        parts.append("%s on %s" % (QC_DUE, names(ran)))
+    if never:
+        w = NO_VERDICT if not parts else NO_VERDICT[:1].lower() + NO_VERDICT[1:]
+        parts.append("%s on %s" % (w, names(never)))
+    return " · ".join(parts)
 
 
 def _overdue(machine: dict, kind: str) -> list:
@@ -83,6 +328,18 @@ def _overdue(machine: dict, kind: str) -> list:
 
 def _checking_in(machine: dict) -> bool:
     return bool(machine.get("live") or machine.get("module_running"))
+
+
+def _silent(machine: dict) -> str:
+    """"Bench stopped" / "Bench never checked in" for a bench that is not
+    vouching for anything now, "" for one checking in or resting because
+    the lab is shut."""
+    if _checking_in(machine):
+        return ""
+    st = machine.get("module_state") or "unknown"
+    if st == "closed":
+        return ""
+    return "Bench stopped" if st == "stopped" else "Bench never checked in"
 
 
 def readiness(machine: dict, override: Optional[str] = None) -> dict:
@@ -104,21 +361,32 @@ def readiness(machine: dict, override: Optional[str] = None) -> dict:
     if bad:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in bad}))
         return {"state": NOT_OK, "reason": "QC out of spec: " + names}
+    # "OK to run, but…" says it MAY run, which needs a bench vouching for it
+    # now. A bench that is not checking in is Can't tell whatever the
+    # warnings (round 5's critic: Multitek S read "OK to run, but…
+    # Calibration overdue" under "Bench never checked in"). The warnings are
+    # still said behind it (``problems``). A failed QC stands above it: a
+    # stop holds until somebody reruns the standard. A shut lab is not this:
+    # the bench was vouching until closing time and rests on purpose, so
+    # there its warnings still come first and "Lab closed" only when it is
+    # all there is to say (as before, so the home does not fill with "Lab
+    # closed" every night).
+    quiet = _silent(machine)
+    if quiet:
+        return {"state": CANT_TELL, "reason": quiet}
     # Ryan, 2026-10-01: only QC (and an override) can make the answer No.
     # An overdue calibration is a warning, like an overdue PM; the QC check
     # against the certificate band is what says whether it still reads true.
     due = _qc_due(machine)
     if due:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in due}))
-        return {"state": OK_BUT, "reason": "QC due: " + names}
+        return {"state": OK_BUT, "reason": "%s: %s" % (owed_word(due), names)}
     if _overdue(machine, "calibration"):
         return {"state": OK_BUT, "reason": "Calibration overdue"}
     if _overdue(machine, "pm"):
         return {"state": OK_BUT, "reason": "PM overdue"}
     if not _checking_in(machine):
-        st = machine.get("module_state") or "unknown"
-        return {"state": CANT_TELL, "reason": "Bench stopped" if st == "stopped"
-                else "Lab closed" if st == "closed" else "Bench never checked in"}
+        return {"state": CANT_TELL, "reason": "Lab closed"}
     if not (machine.get("effective_specs") or machine.get("qc_targets")):
         return {"state": NO_QC, "reason": "No QC assigned"}
     return {"state": OK, "reason": ""}
@@ -153,15 +421,19 @@ def problems(machine: dict, override: Optional[str] = None) -> List[str]:
     tasks = (["ok_but-cal"] if cal else []) + (["ok_but-pm"] if pm else [])
     if state == OFF_LINE:
         return tasks
-    out = (["not_ok-qc"] if _out_of_spec(machine) else []) \
-        + (["ok_but-qc"] if _qc_due(machine) else []) + tasks
+    rest = (["ok_but-qc"] if _qc_due(machine) else []) + tasks
+    out = ["not_ok-qc"] if _out_of_spec(machine) else []
     if not _checking_in(machine):
         st = machine.get("module_state") or "unknown"
         slug = {"stopped": "stopped", "closed": "closed"}.get(st, "never")
-        # "Lab closed" is a problem only when it is all there is to say
-        if slug != "closed" or not out:
+        # A silent bench outranks every warning (``readiness``), so it comes
+        # before them. "Lab closed" is a problem only when it is all there
+        # is to say.
+        if slug != "closed":
             out.append("cant_tell-" + slug)
-    return out
+        elif not (out or rest):
+            rest.append("cant_tell-closed")
+    return out + rest
 
 
 def overrides_from_tables(tables: Optional[dict]) -> Optional[Dict[str, str]]:
@@ -408,10 +680,14 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
         if not hit:
             continue
         n = len(hit)
+        verb = _plural(n, "instrument is", "instruments are")
+        if key == "ok_but-qc" and owed_word([c for m in hit for c in qc_due(m)]) == NO_VERDICT:
+            # every one of them has never run: not "due" (§4.1, round 9)
+            words, verb = "no QC verdict yet", _plural(n, "instrument has", "instruments have")
         out.append({"key": prefix + ":" + ",".join(sorted(m["machine_uid"] for m in hit)),
                     "level": "warning", "about": "instruments",
                     "message": "%d %s %s: %s." % (
-                        n, _plural(n, "instrument is", "instruments are"), words,
+                        n, verb, words,
                         _names([title[m["machine_uid"]] for m in hit])),
                     "href": href(hit[0]["machine_uid"], section) if n == 1 else "/?cause=" + key,
                     "link": "Open " + title[hit[0]["machine_uid"]] if n == 1 else "Show them"})

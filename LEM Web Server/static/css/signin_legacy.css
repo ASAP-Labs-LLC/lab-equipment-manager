@@ -29,8 +29,8 @@ dialog.signin-sheet .btn, dialog.lem-sheet .btn {
   background: transparent; color: var(--ink); border: 1px solid var(--edge);
 }
 dialog.signin-sheet .btn:hover, dialog.lem-sheet .btn:hover { border-color: var(--ink2); }
-dialog.signin-sheet .btn-primary, dialog.lem-sheet .btn-primary { background: var(--amber); border-color: var(--amber); color: var(--void); }
-dialog.signin-sheet .btn-primary:hover, dialog.lem-sheet .btn-primary:hover { filter: brightness(1.08); border-color: var(--amber); }
+dialog.signin-sheet .btn-primary, dialog.signin-sheet .sheet-go, dialog.lem-sheet .btn-primary { background: var(--amber); border-color: var(--amber); color: var(--void); }
+dialog.signin-sheet .btn-primary:hover, dialog.signin-sheet .sheet-go:hover, dialog.lem-sheet .btn-primary:hover { filter: brightness(1.08); border-color: var(--amber); }
 dialog.signin-sheet .btn:disabled, dialog.lem-sheet .btn:disabled { opacity: .55; cursor: default; }
 dialog.signin-sheet .btn:focus-visible, dialog.lem-sheet .btn:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
 

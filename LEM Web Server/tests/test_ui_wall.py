@@ -48,7 +48,11 @@ def machine(uid, title=None, *, specs=None, targets=None, maint=None, status="GR
             "qc_targets": targets or [], "maintenance": maint or [], "status": status,
             "reason": "", "module_running": running, "module_state": module_state,
             "live": False, "level_uid": level, "pos": list(pos) if pos else None,
-            "watching": "single_csv C:/r.csv", "last_poll": last_poll}
+            "watching": "single_csv C:/r.csv", "last_poll": last_poll,
+            # Judged at NOW. A pass counts for 24 h (ui_live.check_verdict), so
+            # a machine judged by the wall clock reads these 11:23 passes as
+            # QC due from 11:23 the next day and the suite goes red on its own.
+            "qc_judged": {"at": NOW.isoformat(), "hours": 24.0, "from": ""}}
 
 
 def spec(test, ok, at="2026-10-01T11:23:00", sample="AF26", value=1.4,
@@ -273,7 +277,7 @@ class TestBayDetails:
 
     def test_ok_says_when_qc_last_ran(self):
         d = self.details([machine("a", specs=[spec("X", True, at="2026-10-01T13:10:00")]),
-                          machine("b", specs=[spec("X", True, at="2026-09-30T08:00:00")])])
+                          machine("b", specs=[spec("X", True, at="2026-09-30T18:00:00")])])
         assert d == {"a": "QC 13:10", "b": "QC 30\u00a0Sep"}
 
     def test_a_stopped_bench_says_since_when(self):

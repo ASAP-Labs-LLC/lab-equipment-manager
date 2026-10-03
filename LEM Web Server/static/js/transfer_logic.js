@@ -315,6 +315,29 @@
 
     // ── the shell foot ─────────────────────────────────────────────────────
 
+    /** How the page draws the section's rows (the server's
+     *  ui_transfer.display_rows, in the same words): two or more rows that
+     *  read NOT_REPORTED with no action and no note become ONE row, where the
+     *  first of them was, naming every quantity it covers. One unknown, and
+     *  any row with an action, stays as it is. */
+    function displayRows(rows) {
+        const list = Array.isArray(rows) ? rows : [];
+        const fold = list.filter(r => r && r.value === NOT_REPORTED && !r.href && !r.action && !r.note);
+        if (fold.length < 2) return list.slice();
+        const names = fold.map(r => String(r.label || r.key));
+        const named = [names[0], ...names.slice(1).map(n => n.charAt(0).toLowerCase() + n.slice(1))];
+        const group = { key: 'unreported', label: 'Not reported',
+            value: named.slice(0, -1).join(', ') + ' and ' + named[named.length - 1],
+            note: "This bench's module version does not report these. They are unknown, not 0.",
+            glyph: 'never', href: null, action: null, keys: fold.map(r => r.key) };
+        const out = [];
+        for (const r of list) {
+            if (r === fold[0]) out.push(group);
+            else if (!fold.includes(r)) out.push(r);
+        }
+        return out;
+    }
+
     /** The foot's Data line from /api/ui/live's `transfer`, or null. */
     function footLine(t) {
         if (!t || typeof t.text !== 'string') return null;
@@ -323,7 +346,7 @@
 
     const api = { ago, send, why, createPoller, sectionRows, createSection, createConflicts,
                   conflictPill, benchRow, benchGroups, names, bridgeView, journalPreview, journalOutcome,
-                  createSettingsTransfer, dedupeRows, footLine, NOT_REPORTED,
+                  createSettingsTransfer, dedupeRows, footLine, displayRows, NOT_REPORTED,
                   SECTION_EVERY_MS, CONFLICTS_EVERY_MS, OVERVIEW_EVERY_MS };
     if (typeof module !== 'undefined' && module.exports) { module.exports = api; }
     if (root) root.LEMTransfer = api;

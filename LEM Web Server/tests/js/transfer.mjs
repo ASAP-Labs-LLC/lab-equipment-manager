@@ -303,5 +303,24 @@ check('the foot line from /api/ui/live', T.footLine({ text: 'Data · 2 of 17 rep
 }
 check('no line when the server has none', T.footLine(null), null);
 
+// An older bench's seven "Not reported" rows are one row on the page, in the
+// same words the server's first paint uses (ui_transfer.display_rows), so the
+// section does not change shape when the script repaints it.
+{
+  const NR = T.NOT_REPORTED;
+  const rows = [{ key: 'road', label: 'Road', value: 'LabCore, through the older module', note: 'n', glyph: 'never' },
+    ...[['delivered', 'Last delivered'], ['waiting', 'Waiting at the bench'], ['results', 'Results'],
+        ['adoption', 'Never recorded'], ['ambiguous', 'Ambiguous repeats'], ['module', 'Module'], ['clock', 'Clock']]
+      .map(([key, label]) => ({ key, label, value: NR, note: '', glyph: 'never' }))];
+  const shown = T.displayRows(rows);
+  check('seven unknowns are one row', shown.map(r => r.key), ['road', 'unreported']);
+  check('the row names them all', shown[1].value,
+        'Last delivered, waiting at the bench, results, never recorded, ambiguous repeats, module and clock');
+  check('and says unknown, not 0', shown[1].note, 'This bench\'s module version does not report these. They are unknown, not 0.');
+  check('one unknown stays its own row', T.displayRows(rows.slice(0, 2)), rows.slice(0, 2));
+  const withAct = [rows[1], { key: 'decide', label: 'Needs a decision', value: NR, glyph: 'error', href: '/x', action: 'Decide' }, rows[2]];
+  check('a row with an action is never folded', T.displayRows(withAct).map(r => r.key), ['unreported', 'decide']);
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

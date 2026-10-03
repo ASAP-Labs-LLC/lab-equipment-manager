@@ -1684,7 +1684,17 @@
         </div>
     </div>
 
+    <script src="/static/js/record_logic.js"></script>
     <script>
+
+// fmtQC (§4.2): a band's numbers in the band's own decimals, never cut to two
+// places (a sulfur band 0.0008 – 0.0014 read "0.00 – 0.00"). Without
+// record_logic.js a number is printed whole, never cut.
+function fq(v, s) {
+  if (v == null || v === '' || !Number.isFinite(Number(v))) return '—';
+  const R = window.LEMRecord;
+  return R ? R.fmtQC(Number(v), s) : String(Number(v));
+}
         // --- State & Utils ---
         console.log("Multi-Dimensional Status UI Loaded - v2-fixed");
         const state = {
@@ -2241,7 +2251,7 @@
                     <div class="result-row">
                         <div class="flex-col" style="gap:0; flex:1">
                             <span class="text-sm muted">${r.label}</span>
-                            ${r.expected !== null ? `<span class="text-sm" style="font-size:0.75em; opacity:0.6">T: ${r.expected}${(r.low !== null) ? ` (${r.low.toFixed(2)}-${r.high.toFixed(2)})` : ''}</span>` : ''}
+                            ${r.expected !== null ? `<span class="text-sm" style="font-size:0.75em; opacity:0.6">T: ${r.expected}${(r.low !== null) ? ` (${fq(r.low, r)}-${fq(r.high, r)})` : ''}</span>` : ''}
                         </div>
                         <div class="flex-col" style="align-items:flex-end; gap:0">
                             <span class="text-sm muted" style="font-size:0.7em; margin-bottom:0.1em; white-space:nowrap">${timeStr}</span>

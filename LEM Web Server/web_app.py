@@ -1539,6 +1539,13 @@ def create_app(gateway, labcore_gateway=None,
                                has_quality=any(r.rule == "/quality"
                                                for r in app.url_map.iter_rules()))
 
+    @app.route("/favicon.ico")
+    def favicon_ico():
+        """Browsers ask for /favicon.ico on a first load whatever the page's
+        <link rel=icon> says; send it to the one icon there is rather than
+        logging a 404 in every console."""
+        return redirect("/static/favicon.svg", code=301)
+
     # ── the wall kiosks (ia-final §3.8, piece 13) ───────────────────────
     # /floor and /qc are TV bookmarks a year old, so they answer 200 with no
     # redirect (O11) and draw the chromeless walls: no sidebar, sign-in, bell
@@ -1889,12 +1896,46 @@ def create_app(gateway, labcore_gateway=None,
             return cached
         return _round_last["value"] if _round_last["day"] == day else None
 
-    def _live_payload(cursor):
+    # ── QC is judged at a moment (§3.1: "A passing check counts for 24 h") ──
+    # Every UI answer (home, record, nav count, bell) reads the merged
+    # machines through this one door, stamped with the moment it is judged
+    # at and the window each machine's passes count for. /api/machines does
+    # not: it stays byte-for-byte what the benches and GC hub read.
+    _windows_memo: dict = {"key": None, "value": {}}
+
+    def _qc_windows(snap: dict) -> Dict[str, tuple]:
+        """uid -> (hours, which standard said so), for machines whose
+        assigned standards state their own life; the rest get 24 h. Built
+        once per snapshot from the library the benches read (qcsample arm),
+        by the bench's own rule (qc_samples.window_from_standards)."""
+        key = snap.get("built_at")
+        if _windows_memo["key"] == key and key is not None:
+            return _windows_memo["value"]
+        from qc_samples import window_from_standards
+        tables = snapshots.tables() or {}
+        library = [{"name": str((r or {}).get("c1") or ""), "tests": (r or {}).get("c3")}
+                   for r in tables.get("qcsample") or []]
+        out = {}
+        for m in snap.get("machines") or []:
+            hours, what = window_from_standards(library, m.get("qc_targets") or [])
+            if hours:
+                out[m.get("machine_uid")] = (hours, what)
+        _windows_memo.update(key=key, value=out)
+        return out
+
+    def _ui_merged(snap: dict, now: Optional[datetime] = None) -> Optional[List[dict]]:
+        """The merged machines the UI judges, or None when nothing was read."""
         from live_presence import merge_machines
+        if not snap.get("ready"):
+            return None
+        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        return ui_live.judged(merged, now or _now(), _qc_windows(snap))
+
+    def _live_payload(cursor):
         snap = snapshots.get(build_if_missing=False)
         ready = bool(snap.get("ready"))
-        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
-                                 STATUS_COLORS) if ready else None)
+        now = _now()
+        merged = _ui_merged(snap, now)
         tables = snapshots.tables() if ready else None
         mirror = app.config.get("LOG_MIRROR")
         try:
@@ -1907,7 +1948,7 @@ def create_app(gateway, labcore_gateway=None,
             notices=app.config["NOTICES"], audit_spool=len(audit_spool),
             certificates=_certs["items"], mirror=mstatus,
             jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
-            now=_now(), tz=ui_live.lab_tz(),
+            now=now, tz=ui_live.lab_tz(),
             custody=((app.config["CUSTODY"].status_items()
                       if app.config.get("CUSTODY") is not None else [])
                      + (app.config["BRIDGE"].status_items()
@@ -1962,9 +2003,12 @@ def create_app(gateway, labcore_gateway=None,
                 err = "LabCore did not answer the first read: %s" % (
                     (m.group(2) if m else str(err)).strip().rstrip(".")[:200])
             return dict(ui_instruments.unread(err), **meta)
-        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        now = _now()
+        merged = _ui_merged(snap, now) or []
         overrides = ui_live.overrides_from_tables(snapshots.tables())
-        key = (snap.get("built_at"),
+        # A pass ages out with no new data at all, so the minute it is judged
+        # in is part of the key: the memo holds for a minute, never all night.
+        key = (snap.get("built_at"), now.strftime("%Y-%m-%dT%H:%M"),
                tuple((m.get("machine_uid"), m.get("status"), bool(m.get("live")),
                       m.get("last_poll"), m.get("module_state")) for m in merged),
                tuple(sorted((overrides or {}).items())) if overrides is not None else None)
@@ -1972,6 +2016,9 @@ def create_app(gateway, labcore_gateway=None,
             _inst_memo["value"] = ui_instruments.build(
                 machines=merged, overrides=overrides, levels=snap.get("levels") or [],
                 href=_record_href, default_level=snap.get("default_level") or "")
+            # the record judges its rows at this same instant, so its table
+            # cannot disagree with the row it opened from
+            _inst_memo["value"]["judged_at"] = now.isoformat()
             _inst_memo["key"] = key
         return dict(_inst_memo["value"], **meta)
 
@@ -2004,6 +2051,55 @@ def create_app(gateway, labcore_gateway=None,
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    # ── the record (ia-final §3.1, piece 5) ────────────────────────────
+    # One instrument, out of the same memory the home reads: its row of
+    # /api/ui/instruments (so the verdict is the home's) and its merged
+    # machine. Three answers, three sentences: the record, "no such
+    # instrument" (404, a statement about the lab) and "could not ask" (503,
+    # a statement about LEM). A record page that answered 404 while LabCore
+    # was down would tell a tech their instrument had been deleted.
+    def _record_payload(machine_uid: str):
+        """-> (status, payload). 0 LabCore ops: snapshot memory only."""
+        import ui_record
+        from live_presence import merge_machines
+        home = _instruments_payload()
+        meta = {k: home.get(k) for k in ("built_at", "stale", "labcore_online")}
+        if home.get("state") != "ready":
+            return 503, dict({"state": home.get("state"), "error": home.get("error"),
+                              "uid": machine_uid}, **meta)
+        row = next((r for r in home["instruments"] if r["uid"] == machine_uid), None)
+        snap = snapshots.get(build_if_missing=False)
+        merged = _ui_merged(snap, home.get("judged_at") and datetime.fromisoformat(home["judged_at"])) or []
+        m = next((x for x in merged if x.get("machine_uid") == machine_uid), None)
+        if row is None or m is None:
+            return 404, dict({"state": "missing", "uid": machine_uid}, **meta)
+        overrides = ui_live.overrides_from_tables(snapshots.tables()) or {}
+        levels = {str(lv.get("uid")): str(lv.get("name") or "")
+                  for lv in snap.get("levels") or []}
+        rec = ui_record.build(row, m, levels, override=overrides.get(machine_uid, ""))
+        return 200, dict(rec, **meta)
+
+    @app.route("/api/ui/instruments/<machine_uid>")
+    def api_ui_record(machine_uid):
+        """The record's answer: see ui_record. 0 LabCore ops."""
+        status, body = _record_payload(machine_uid)
+        resp = jsonify(body)
+        resp.status_code = status
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.route("/instruments/<machine_uid>")
+    def instrument_record(machine_uid):
+        """The record. The first paint carries the answer (a JSON island the
+        page draws with textContent); record.js keeps it live and fetches the
+        chart's history, the one read a person pays for by opening it."""
+        status, body = _record_payload(machine_uid)
+        if status != 200:
+            return render_template("instrument_missing.html", nav="instruments",
+                                   data=body), status
+        return render_template("instrument.html", nav="instruments", data=body,
+                               has_quality=any(r.rule == "/quality"
+                                               for r in app.url_map.iter_rules()))
     @app.template_filter("groupby_runs")
     def _groupby_runs(items, key: str):
         """Runs of one `key` in their own order (ui_wall.runs)."""
@@ -5469,6 +5565,13 @@ def create_app(gateway, labcore_gateway=None,
             },
         }
 
+    def _trim_qc_points(points, rng):
+        """`ui_record.trim_points` over QcPoint objects (it reads dicts)."""
+        import ui_record
+        keyed = [{"ts": str(p.ts or ""), "i": i} for i, p in enumerate(points)]
+        kept = ui_record.trim_points(keyed, rng, _now().isoformat())
+        return [points[k["i"]] for k in kept]
+
     @app.route("/api/machines/<machine_uid>/qc-trend")
     def api_qc_trend(machine_uid):
         """The control chart: is this instrument IN CONTROL, and what does its
@@ -5481,6 +5584,13 @@ def create_app(gateway, labcore_gateway=None,
         moved, reported as perfect.
         """
         import qc_series
+        import ui_record
+        # ?range=24|90d|all is the record's "24 runs · 90 days · All" seg.
+        # Without it the answer is the floor's: the last CHART_POINTS.
+        rng = (request.args.get("range") or "").strip()
+        if rng and rng not in ui_record.RANGES:
+            return jsonify({"error": "A chart range is one of %s, not %r."
+                            % (", ".join(ui_record.RANGES), rng[:20])}), 400
         try:
             events = _qc_events(machine_uid)
         except LabCoreError as exc:
@@ -5527,9 +5637,11 @@ def create_app(gateway, labcore_gateway=None,
             # the series it was found in, so analysing the whole history and
             # then trimming the points would leave every index off by the
             # number dropped and the UI circling the wrong readings.
+            pts = (series.points[-CHART_POINTS:] if not rng else
+                   _trim_qc_points(series.points, rng))
             shown = qc_series.QcSeries(
                 machine_uid=series.machine_uid, test_name=series.test_name,
-                points=series.points[-CHART_POINTS:],
+                points=pts,
                 pass_band=series.pass_band, sample_id=series.sample_id)
             std_dev, k = certs.get((name, sample_id), (None, None))
             limits = qc_series.certificate_limits(
