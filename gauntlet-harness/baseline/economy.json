@@ -1,0 +1,145 @@
+[
+ {
+  "source_type": "single_csv",
+  "prints_per_poll": 0,
+  "poll_s": 30,
+  "bind_ops": {
+   "sql:DDL": 1,
+   "sql:config": 1
+  },
+  "first_poll_ops": {
+   "sql:DDL": 10,
+   "read:corrections": 1,
+   "sql:heartbeat": 1,
+   "read:qc_samples": 1,
+   "read:qc_targets": 1,
+   "read:qc_specs": 1,
+   "sql:machine_log": 1,
+   "read:held": 1,
+   "sql:effective_specs": 1,
+   "read:maintenance": 1,
+   "read:override": 1,
+   "sql:status": 1,
+   "sql:substatus": 1,
+   "read:lem_meta": 1
+  },
+  "first_poll_split": {
+   "read": 8,
+   "write": 15
+  },
+  "steady_minutes": 55,
+  "steady_per_min": {
+   "read:config": 0.2,
+   "read:corrections": 0.491,
+   "read:maintenance": 0.491,
+   "read:override": 2.0,
+   "read:qc_samples": 0.491,
+   "read:qc_specs": 0.491,
+   "read:qc_targets": 0.491,
+   "sql:heartbeat": 0.2
+  },
+  "steady_split_per_min": {
+   "read": 4.655,
+   "write": 0.2
+  },
+  "prints": 0,
+  "log_rows": 0
+ },
+ {
+  "source_type": "manual",
+  "prints_per_poll": 0,
+  "poll_s": 30,
+  "bind_ops": {
+   "sql:DDL": 1,
+   "sql:config": 1
+  },
+  "first_poll_ops": {
+   "sql:DDL": 10,
+   "read:corrections": 1,
+   "sql:heartbeat": 1,
+   "read:qc_samples": 1,
+   "read:qc_targets": 1,
+   "read:qc_specs": 1,
+   "sql:machine_log": 1,
+   "read:held": 1,
+   "sql:effective_specs": 1,
+   "read:maintenance": 1,
+   "read:override": 1,
+   "sql:status": 1,
+   "sql:substatus": 1,
+   "read:lem_meta": 1
+  },
+  "first_poll_split": {
+   "read": 8,
+   "write": 15
+  },
+  "steady_minutes": 55,
+  "steady_per_min": {
+   "read:config": 0.2,
+   "read:corrections": 0.491,
+   "read:maintenance": 0.491,
+   "read:override": 2.0,
+   "read:qc_samples": 0.491,
+   "read:qc_specs": 0.491,
+   "read:qc_targets": 0.491,
+   "sql:heartbeat": 0.2
+  },
+  "steady_split_per_min": {
+   "read": 4.655,
+   "write": 0.2
+  },
+  "prints": 0,
+  "log_rows": 0
+ },
+ {
+  "source_type": "single_csv",
+  "prints_per_poll": 1,
+  "poll_s": 30,
+  "bind_ops": {
+   "sql:DDL": 1,
+   "sql:config": 1
+  },
+  "first_poll_ops": {
+   "sql:DDL": 10,
+   "read:corrections": 1,
+   "sql:heartbeat": 1,
+   "read:qc_samples": 1,
+   "read:qc_targets": 1,
+   "read:qc_specs": 1,
+   "sql:machine_log": 1,
+   "read:held": 1,
+   "read:identity": 1,
+   "write:batch": 1,
+   "sql:effective_specs": 1,
+   "read:maintenance": 1,
+   "read:override": 1,
+   "sql:status": 1,
+   "sql:substatus": 1,
+   "read:lem_meta": 1
+  },
+  "first_poll_split": {
+   "read": 9,
+   "write": 16
+  },
+  "steady_minutes": 55,
+  "steady_per_min": {
+   "read:config": 0.2,
+   "read:corrections": 0.491,
+   "read:identity": 2.0,
+   "read:maintenance": 0.491,
+   "read:override": 2.0,
+   "read:qc_samples": 0.491,
+   "read:qc_specs": 0.491,
+   "read:qc_targets": 0.491,
+   "sql:heartbeat": 0.2,
+   "sql:machine_log": 2.0,
+   "write:batch": 2.0
+  },
+  "steady_split_per_min": {
+   "read": 6.655,
+   "write": 4.2
+  },
+  "prints": 120,
+  "log_rows": 120
+ }
+]

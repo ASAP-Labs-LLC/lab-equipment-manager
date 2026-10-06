@@ -403,11 +403,16 @@ def placement(m: dict, levels: Dict[str, str], uid: str) -> dict:
 
 # ── the record ──────────────────────────────────────────────────────────────
 
-def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = "") -> dict:
-    """The record's payload for one instrument that was read."""
+def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = "",
+          library: Optional[list] = None) -> dict:
+    """The record's payload for one instrument that was read. `library` is
+    the QC library as the snapshot read it; None means it was not read, and
+    a check with no published band then says so rather than "no certified
+    values" (``ui_quality.fill_certified_bands``)."""
+    import ui_quality      # here, not at the top: ui_quality imports this module
     state = row["readiness"]["state"]
     reason = str(row["readiness"].get("reason") or "")
-    rows = checks(m)
+    rows = ui_quality.fill_certified_bands(checks(m), library)
     keys = ui_live.problems(m, override)
     primary = _primary(state, rows, m, reason)
     off = state == OFF_LINE

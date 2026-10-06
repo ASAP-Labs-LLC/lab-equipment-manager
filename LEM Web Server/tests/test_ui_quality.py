@@ -42,6 +42,7 @@ from pathlib import Path
 import pytest
 
 import demo_floor
+import ui_instruments
 import ui_live
 import ui_quality
 import ui_record
@@ -461,6 +462,28 @@ class TestNewStandard:
         lib_targets = c.get("/api/ui/standards/Diesel%20-%20AO25").get_json()["used_on"]["rows"]
         assert any(r["uid"] == "gc-2" and r["test"] == "Sulfur" for r in lib_targets)
 
+    def test_the_record_shows_the_certified_band_the_standard_page_shows(self, tmp_path):
+        """The integration critic's T5: right after "Flash CRM lot 7" is
+        assigned to GC-2, the standard's page shows GC-2's band 58.0 – 60.0 –
+        62.0, while GC-2's record said "No certified values on file" — false:
+        LEM has them, the bench just has not published a band for the new
+        check yet. The record shows the same band the standard's page does
+        (same numbers, so the two pages cannot disagree) and says where it
+        came from: the certified values, not yet picked up by the bench."""
+        app, _ = _seeded(tmp_path)
+        c = _signed_in(app)
+        assert c.post("/api/qc-samples/new", json=self.BODY).status_code == 200
+        std = c.get("/api/ui/standards/Flash%20CRM%20lot%207").get_json()
+        used = next(r for r in std["used_on"]["rows"] if r["uid"] == "gc-2")
+        rec = c.get("/api/ui/instruments/gc-2").get_json()
+        row = next(r for r in rec["qc"]["checks"] if r["test"] == "Flash Point")
+        assert (row["low"], row["expected"], row["high"]) == (58.0, 60.0, 62.0)
+        assert (row["low"], row["expected"], row["high"], row["units"]) == \
+            (used["low"], used["expected"], used["high"], used["units"])
+        assert row["band_from"] == "library"
+        # a band the bench published is the bench's, and says so
+        assert {r["band_from"] for r in rec["qc"]["checks"] if r["test"] != "Flash Point"} <= {"bench"}
+
     def test_signed_out_is_refused(self, tmp_path):
         app, _ = _seeded(tmp_path)
         assert app.test_client().post("/api/qc-samples/new", json=self.BODY).status_code == 401
@@ -617,3 +640,27 @@ def test_an_assignment_with_no_published_band_takes_its_band_from_the_library():
     er = next(r for r in out["rows"] if r["title"] == "Eravap")
     assert (er["low"], er["expected"], er["high"], er["units"]) == (15.2, 15.6, 16.0, "psi")
     assert er["verdict"]["word"] == "No verdict yet"
+
+
+def test_a_library_the_record_could_not_read_is_not_no_certified_values():
+    """A failed read is never an empty result. The record takes the library
+    from the snapshot; when it has none (not read), a check the bench has not
+    published a band for must not claim "no certified values on file" — the
+    row says the values were not read ("unread"). Only a library that WAS
+    read and does not certify the check is "none". Eravap's Pentane / RVP is
+    production's own unpublished assignment."""
+    er = next(m for m in prod_machines() if m["title"] == "Eravap")
+    row = ui_instruments.instrument(er, "", {}, href)
+    lib = [{"name": "Pentane", "sample_id_val": "PENT", "tests": [
+        {"name": "ASTM D6378 - Reid Vapor Pressure (VPx)", "expected": 15.6, "std_dev": 0.2,
+         "k": 2.0, "units": "psi"}]}]
+
+    def rvp(library):
+        rec = ui_record.build(row, er, {}, library=library)
+        return next(c for c in rec["qc"]["checks"] if "Reid" in c["test"])
+    unread = rvp(None)
+    assert (unread["low"], unread["high"], unread["band_from"]) == (None, None, "unread")
+    assert rvp([])["band_from"] == "none"
+    got = rvp(lib)
+    assert (got["low"], got["expected"], got["high"], got["units"], got["band_from"]) == \
+        (15.2, 15.6, 16.0, "psi", "library")

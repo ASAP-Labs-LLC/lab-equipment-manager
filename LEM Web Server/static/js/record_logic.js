@@ -47,6 +47,18 @@
         return [s.low, s.expected, s.high].map(v => fmtQC(v, s)).join(' – ');
     }
 
+    /** The one line a QC row's band cell adds about where its band came
+        from (``band_from``, ui_quality.fill_certified_bands). A bench band
+        needs none; a certified band the bench has not published yet says
+        so; with no band, "none on file" only when the library was read. */
+    function bandNote(c) {
+        const from = (c || {}).band_from;
+        if (from === 'library') return 'Certified values; the bench hasn\'t picked them up yet';
+        if (from === 'unread') return 'Couldn\'t read the certified values';
+        if (num((c || {}).low) === null && num((c || {}).high) === null) return 'No certified values on file';
+        return '';
+    }
+
     // ── the band track ─────────────────────────────────────────────────────
     /** Where min, target, max and the last result sit on a track, in %.
         The track runs a quarter-band past each limit; a result outside the
@@ -490,7 +502,7 @@
         };
     }
 
-    const api = { chartLast, chartRows, changeIds, rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    const api = { chartLast, chartRows, changeIds, rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandNote, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

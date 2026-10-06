@@ -85,6 +85,50 @@ def _index(library: Optional[Iterable[Any]]) -> Tuple[Dict[str, dict], Dict[str,
     return by_id, by_name
 
 
+def certified_band(test: str, known: Optional[dict]) -> Optional[Tuple[float, float, float, str]]:
+    """(low, expected, high, units) a standard certifies for `test`, by the
+    rule the standard's own page uses (``_band``), or None when `known` (an
+    ``_index`` entry) does not certify it. One rule for Latest checks, the
+    record and the standard's Used on, so the three cannot print two bands."""
+    if not known:
+        return None
+    t = next((t for t in known.get("tests") or []
+              if _norm(test) in (_norm(t.get("name")), _norm(t.get("value_col")))), None)
+    if not t:
+        return None
+    units = str(t.get("units") or "")
+    return _band(t) + (ui_record.UNITS.get(units, units),)
+
+
+def fill_certified_bands(rows: List[dict], library: Optional[Iterable[Any]]) -> List[dict]:
+    """The record's QC rows (``ui_record.checks``), each told where its band
+    came from in ``band_from``:
+
+    * "bench": the band the bench published and judges by;
+    * "library": the bench has not published one yet (a new assignment), so
+      the row carries the standard's certified band, the one the standard's
+      page shows under Used on, and says the bench has not picked it up;
+    * "none": the library was read and does not certify this check;
+    * "unread": the library could not be read (`library` None). A failed
+      read is never "no certified values on file"."""
+    by_id, by_name = _index(library) if library is not None else ({}, {})
+    for c in rows:
+        if c.get("low") is not None or c.get("high") is not None:
+            c["band_from"] = "bench"
+            continue
+        if library is None:
+            c["band_from"] = "unread"
+            continue
+        sid = str(c.get("sample_id") or "").lower()
+        band = certified_band(c["test"], by_id.get(sid) or by_name.get(sid))
+        if band is None:
+            c["band_from"] = "none"
+            continue
+        c["low"], c["expected"], c["high"], c["units"] = band
+        c["band_from"] = "library"
+    return rows
+
+
 # ── Latest checks ───────────────────────────────────────────────────────────
 
 def _control(series) -> Optional[dict]:
@@ -129,14 +173,10 @@ def latest(machines: Optional[List[dict]], *, href: Callable[[str, str], str],
                 if series is not None and series.points:
                     control = _control(series)
             band = (c["low"], c["expected"], c["high"], c["units"])
-            if c["low"] is None and c["high"] is None and known:
+            if c["low"] is None and c["high"] is None:
                 # an assignment the bench has not published a band for: the
                 # library still knows what its first run will be judged by
-                t = next((t for t in known["tests"]
-                          if _norm(c["test"]) in (_norm(t.get("name")), _norm(t.get("value_col")))), None)
-                if t:
-                    units = str(t.get("units") or "")
-                    band = _band(t) + (ui_record.UNITS.get(units, units),)
+                band = certified_band(c["test"], known) or band
             out.append({
                 "uid": uid, "title": title, "href": href(uid, "qc"),
                 # how long a pass counts on this instrument; the page says the

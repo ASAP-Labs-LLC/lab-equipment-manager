@@ -168,9 +168,12 @@
         return el;
     }
     function bandCell(c) {
-        if (c.low === null && c.high === null) return h('span', { className: 'muted', text: 'No certified values on file' });
+        const note = R.bandNote(c);
+        if (c.low === null && c.high === null) return h('span', { className: 'muted', text: note });
         const f = (v) => R.fmtQC(v, c);
-        return h('span', { className: 'bandtxt' }, f(c.low) + ' – ', h('b', { text: f(c.expected) }), ' – ' + f(c.high) + (c.units ? ' ' + c.units : ''));
+        const band = h('span', { className: 'bandtxt' }, f(c.low) + ' – ', h('b', { text: f(c.expected) }), ' – ' + f(c.high) + (c.units ? ' ' + c.units : ''));
+        // a certified band the bench has not published yet says so, once, under it
+        return note ? h('span', { className: 'bandwrap' }, band, h('span', { className: 'sub band-note', text: note })) : band;
     }
     function renderQc() {
         const rows = data.qc.checks;

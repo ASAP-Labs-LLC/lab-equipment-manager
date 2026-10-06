@@ -49,7 +49,14 @@ def note_kill(where):
     if threading.current_thread() is not threading.main_thread():
         OFF_THREAD_KILLS.append(where)
 
-LABCORE_MAIN = os.path.join(BASELINE, "prod", "LabCore_main.py")
+# LabCore's op tables and error strings, excerpted verbatim from the
+# production LabCore_main.py of 2026-10-01 (the whole file is not committed).
+# An override baseline from phase 1 (LEM_GATE_BASELINE) may hold the full file
+# instead; it carries the same tables, so either is read the same way.
+LABCORE_MAIN = os.path.join(BASELINE, "prod", "LabCore_tables.excerpt")
+if not os.path.exists(LABCORE_MAIN) and \
+        os.path.exists(os.path.join(BASELINE, "prod", "LabCore_main.py")):
+    LABCORE_MAIN = os.path.join(BASELINE, "prod", "LabCore_main.py")
 
 
 def _table_keys(src, header):

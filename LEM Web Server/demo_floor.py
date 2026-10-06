@@ -354,6 +354,39 @@ def _seed_fleet(write, rng, now, ladder) -> int:
     return placed
 
 
+def keep_alive(gateway, now: Optional[datetime] = None) -> int:
+    """Stamp every seeded bench that checks in with a heartbeat of `now`.
+
+    The seeder writes one heartbeat per bench at boot, and nothing in a demo
+    writes another: no station module is running. Fifteen minutes later
+    (``MachineStateReader.HEARTBEAT_GRACE``) every bench read "Bench stopped"
+    and the demo floor showed a lab where everything had died, which is a
+    state the demo invented. `--dev --seed` runs this on the snapshot poller
+    (web_server.attach_demo_keepers). The "offline" story bench is left
+    silent, exactly as seeded. Dev only: nothing in production calls it.
+    Returns how many benches it stamped; a write that fails raises."""
+    now = now or datetime.now()
+    write = _Writer(gateway)
+    n = 0
+    for bench in FLEET:
+        if bench.story == "offline":
+            continue
+        write("UPDATE lem_machine_heartbeat SET last_poll = ? WHERE machine_uid = ?",
+              [now.isoformat(), bench.uid])
+        n += 1
+    return n
+
+
+def attach_keeper(snapshots, gateway, clock=None) -> None:
+    """Ride `keep_alive` on the snapshot poller, keeping whatever else rides
+    it (live_presence.attach_to_poller). Called only by `--dev --seed`'s boot
+    (web_server.attach_demo_keepers)."""
+    from live_presence import attach_to_poller
+
+    now = clock or datetime.now
+    attach_to_poller(snapshots, lambda: keep_alive(gateway, now()))
+
+
 BAY_PITCH = 2.05      # static/js/plan.js PITCH: the one production saves at
 
 
