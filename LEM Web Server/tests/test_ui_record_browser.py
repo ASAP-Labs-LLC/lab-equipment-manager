@@ -132,10 +132,14 @@ def test_a_refresh_that_fails_is_said_not_swallowed(server, drv):
     assert text.startswith("Couldn't refresh this instrument (LabCore did not answer the first read: LabCore is not running).")
     assert "Shown as of" in text and "may be out of date" in text
     assert "is-stale" in drv.find_element("id", "readiness").get_attribute("class")
-    # the last answer stays (a blank card answers nothing), dimmed
+    # the last answer stays (a blank card answers nothing), greyed: its
+    # colours go, its words stay at full contrast (piece 15: the old half
+    # opacity took them under AA)
     assert drv.find_element("id", "ready-word").text == word
-    assert float(drv.execute_script(
-        "return getComputedStyle(document.querySelector('#readiness .rtiles')).opacity")) < 1
+    assert drv.execute_script(
+        "return getComputedStyle(document.querySelector('#readiness .rtiles')).filter") == "grayscale(1)"
+    assert drv.execute_script(
+        "return getComputedStyle(document.querySelector('#readiness .rtiles')).opacity") == "1"
     # the line's button is not a second primary
     assert drv.execute_script("return document.querySelector('#ready-stale .btn-primary')") is None
     drv.execute_script(FAIL_OFF)

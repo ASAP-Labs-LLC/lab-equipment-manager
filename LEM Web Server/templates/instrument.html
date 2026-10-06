@@ -61,7 +61,9 @@
       </div>
       <div class="card chart-card" id="qc-chart" data-testid="qc-chart" aria-labelledby="chart-h" hidden>
         <div class="chart-head">
-          <div class="chart-title"><h3 id="chart-h"></h3><p class="caption" id="chart-cap" role="status"></p></div>
+          <div class="chart-title"><h3 id="chart-h"></h3>
+            {#- the chart in words, and the same runs as rows (§9.1 rule 5) -#}
+            <div class="chart-sum"><p class="caption" id="chart-cap" role="status"></p><button type="button" class="linkbtn chart-as" id="chart-as" aria-controls="chart-plot" aria-pressed="false" data-testid="chart-as" hidden>Show as a table</button></div></div>
           <div class="seg" role="radiogroup" aria-label="How much history" id="chart-range" data-testid="chart-range">
             <button type="button" role="radio" data-range="24" aria-checked="true">24 runs</button>
             <button type="button" role="radio" data-range="90d" aria-checked="false">90 days</button>

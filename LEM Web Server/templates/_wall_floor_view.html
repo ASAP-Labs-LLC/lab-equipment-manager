@@ -47,6 +47,9 @@
       </ol>
       <p class="wa-more" id="wf-attn-more"{% if not w.attention_more %} hidden{% endif %}>{% if w.attention_more %}and {{ w.attention_more }} more on Instruments{% endif %}</p>
       <p class="wa-none" id="wf-attn-none"{% if w.attention is none or w.attention %} hidden{% endif %}>Nothing needs attention.</p>
+      {#- a phone has no room for a TV's floor plan (piece 15): the plan it
+          would shrink to unreadable bays is one tap away, at a phone's size -#}
+      <a class="wall-maplink" href="/?view=map" data-testid="wall-maplink">See the floor plan ›</a>
     </aside>
   </div>
   <footer class="wall-foot">

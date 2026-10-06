@@ -174,7 +174,10 @@
         const c = r.certificate;
         const checks = r.checks.slice(0, 3).join(', ') + (r.checks.length > 3 ? ' and ' + (r.checks.length - 3) + ' more' : '');
         const tr = h('tr', { className: 'srow', 'data-testid': 's-row' },
-            h('td', { className: 'c-name' }, h('a', { className: 'iname', href: r.href, text: r.name })),
+            // the phone shows the name, Used on and the certificate; the
+            // Lab ID and the checks fold under the name rather than go
+            h('td', { className: 'c-name' }, h('a', { className: 'iname', href: r.href, text: r.name }),
+                h('span', { className: 'sub fold-qs', text: 'Lab ID ' + r.lab_id + ' · ' + r.n_checks + (r.n_checks === 1 ? ' check' : ' checks') + (checks ? ': ' + checks : '') })),
             h('td', { className: 'c-lab mono', text: r.lab_id }),
             h('td', { className: 'c-checks' }, h('span', { text: r.n_checks + (r.n_checks === 1 ? ' check' : ' checks') }), checks ? h('span', { className: 'sub', text: checks }) : null),
             h('td', { className: 'c-used', text: r.used_on ? r.used_on + (r.used_on === 1 ? ' instrument' : ' instruments') : 'Not in use' }),

@@ -65,7 +65,7 @@
   <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists">Checklists</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page">Rounds</span></nav>
   <span class="spacer"></span>
   <a class="btn btn-ghost" href="/checklists/trends">Readings</a>
-  <a class="btn" href="/checklists/edit/new" id="new-round"><span class="ico ico-plus" aria-hidden="true"></span>New round</a>
+  <a class="btn" href="/checklists/edit/new" id="new-round" aria-label="New round"><span class="ico ico-plus" aria-hidden="true"></span>New<span class="bar-long"> round</span></a>
   {%- elif view == 'edit' %}
   <nav class="crumbs" aria-label="Breadcrumb"><a href="/checklists/edit">Rounds</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page" id="crumb-name">{{ R.name if not R.new else 'New round' }}</span></nav>
   <span class="spacer"></span>
@@ -123,7 +123,7 @@
       <tbody>
       {%- for r in rows %}
         <tr class="can" data-uid="{{ r.uid }}">
-          <td><a class="rlink" href="/checklists/edit/{{ r.uid }}">{{ r.name }}</a><span class="caption rfold">{{ slot_word(r.slot) }} · {{ ('Due ' ~ r.due) if r.due else 'No due time' }}</span></td>
+          <td><a class="rlink" href="/checklists/edit/{{ r.uid }}">{{ r.name }}</a><span class="caption rfold">{{ slot_word(r.slot) }} · {{ ('Due ' ~ r.due) if r.due else 'No due time' }} · {% if r.edited %}edited by {{ r.edited.by or 'someone' }} · {{ r.edited_words }}{% elif r.edits_unread %}edits could not be read{% else %}before LEM kept edits{% endif %}</span></td>
           <td>{{ slot_word(r.slot) }}</td>
           <td>{{ r.due or 'No due time' }}</td>
           <td>{{ r['items'] }} item{{ '' if r['items'] == 1 else 's' }}{% if r.readings %} <span class="muted">· {{ r.readings }} reading{{ '' if r.readings == 1 else 's' }}</span>{% endif %}</td>

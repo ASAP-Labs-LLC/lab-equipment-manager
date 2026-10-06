@@ -96,18 +96,30 @@
             return;
         }
         const f = (v, t) => R.fmtQC(v, t);
+        const band = (t) => h('span', { className: 'bandtxt' }, f(t.low, t) + ' – ', h('b', { text: f(t.expected, t) }), ' – ' + f(t.high, t) + (t.units ? ' ' + t.units : ''));
+        const win = (t) => t.window.replace(' (the lab default)', '');
+        const dflt = (t) => / \(the lab default\)$/.test(t.window);
+        const used = (t) => t.used_on ? t.used_on + (t.used_on === 1 ? ' instrument' : ' instruments') : 'None yet';
+        // The narrow screens fold, they never drop (§6, §9.1 rule 6). Below
+        // 1100 px the band column goes and the band is said again under the
+        // test's name, as the record and /quality say theirs; below 700 the
+        // s, k, Window and Used on columns go too and their words follow as
+        // one quiet line. Round 1 hid the band and drew nothing in its place:
+        // the page lost the very numbers it exists to hold.
+        const fold = (t) => h('span', { className: 'fold-band' }, band(t),
+            h('span', { className: 'fold-std', text: 's ' + t.std_dev + ' · k ' + t.k + ' · ' + win(t) + (dflt(t) ? ' (default)' : '') + ' · used on ' + used(t).toLowerCase() }));
         body.replaceChildren(h('div', { className: 'card table-card' }, h('table', { className: 'tbl qc qv' },
-            h('thead', {}, h('tr', {}, ...[['Test', 'c-check'], ['min – target – max', 'c-band'], ['s', 'num'], ['k', 'num'], ['Window', ''], ['Used on', '']]
+            h('thead', {}, h('tr', {}, ...[['Test', 'c-check'], ['min – target – max', 'c-band'], ['s', 'num c-sk'], ['k', 'num c-sk'], ['Window', 'c-win'], ['Used on', 'c-used']]
                 .map(([t, cls]) => h('th', { scope: 'col', className: cls }, t === 'min – target – max' ? h('span', {}, 'min – ', h('b', { text: 'target' }), ' – max') : t)))),
             h('tbody', {}, ...vals.map(t => h('tr', {},
-                h('td', { className: 'c-check' }, h('b', { text: t.check }), t.method ? h('span', { className: 'sub', text: t.method }) : null),
-                h('td', { className: 'c-band' }, h('span', { className: 'bandtxt' }, f(t.low, t) + ' – ', h('b', { text: f(t.expected, t) }), ' – ' + f(t.high, t) + (t.units ? ' ' + t.units : ''))),
-                h('td', { className: 'num', text: String(t.std_dev) }),
-                h('td', { className: 'num', text: String(t.k) }),
+                h('td', { className: 'c-check' }, h('b', { text: t.check }), t.method ? h('span', { className: 'sub', text: t.method }) : null, fold(t)),
+                h('td', { className: 'c-band' }, band(t)),
+                h('td', { className: 'num c-sk', text: String(t.std_dev) }),
+                h('td', { className: 'num c-sk', text: String(t.k) }),
                 // "24 h (the lab default)" said once per row would be the
                 // same words seven times: the word, then a quiet "default"
-                h('td', {}, t.window.replace(' (the lab default)', ''), / \(the lab default\)$/.test(t.window) ? h('span', { className: 'dflt', text: ' · default' }) : null),
-                h('td', { text: t.used_on ? t.used_on + (t.used_on === 1 ? ' instrument' : ' instruments') : 'None yet' })))))));
+                h('td', { className: 'c-win' }, win(t), dflt(t) ? h('span', { className: 'dflt', text: ' · default' }) : null),
+                h('td', { className: 'c-used', text: used(t) })))))));
     }
 
     // ── Certificate (file only) ───────────────────────────────────────────

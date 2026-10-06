@@ -239,7 +239,9 @@ def test_at_820_the_status_is_in_words(drv, base, scheme):
     strip = _js(d, "const s = document.getElementById('rail-status'); const r = s.getBoundingClientRect();"
                    "return {shown: getComputedStyle(s).display !== 'none', text: s.innerText.replace(/\\s+/g, ' ').trim(),"
                    " bottom: r.bottom, h: r.height, vh: innerHeight};")
-    assert strip["shown"] and strip["h"] == 36
+    # 36px in desktop rail mode; 44px on the tablet, where its two links are
+    # finger targets (piece 15, §9.1 rule 7)
+    assert strip["shown"] and strip["h"] == 44
     # ia-final 2.1 gives the strip's words: "Live · updated 4 s ago · 15 of 17
     # benches checking in". Piece 1 drew static placeholders ("Updated ...");
     # the live feed (piece 2) now writes the spec's sentence, so pin that.
@@ -257,7 +259,9 @@ def test_at_820_the_status_is_in_words(drv, base, scheme):
                    "return {shown: getComputedStyle(b).display !== 'none', n: b.textContent.trim(),"
                    " label: b.closest('a').getAttribute('aria-label')};")
     assert badge["shown"] and badge["n"].isdigit() and int(badge["n"]) > 0
-    assert badge["label"] == "QC, %s out of spec" % badge["n"]
+    # "checks", said (test_ui_shell_pages: round 2's critic read "QC 3 out
+    # of spec" as three standards)
+    assert badge["label"] == "QC, %s %s out of spec" % (badge["n"], "check" if badge["n"] == "1" else "checks")
     # an item with nothing to count shows no badge at all (never "0")
     assert _js(d, "return getComputedStyle(document.querySelector('.nav-item[data-nav=log] .rail-badge')).display;") == "none"
 

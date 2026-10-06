@@ -274,6 +274,8 @@
         const plot = $('chart-plot');
         const ctl = $('chart-control');
         const cap = $('chart-cap');
+        const as = $('chart-as');
+        as.hidden = true;     // shown only over runs to list
         renderU();
         ctl.hidden = true;
         // no certified values: the row already says so, and a chart with
@@ -314,18 +316,41 @@
             return;
         }
         plot.classList.remove('is-empty');
-        cap.textContent = R.rangeCaption(s, range) + ' · centre is the certificate value';
-        plot.replaceChildren(drawChart(s, c));
+        const last = R.chartLast(s, c);
+        cap.textContent = R.rangeCaption(s, range) + (last ? ' · ' + last : '') + ' · centre is the certificate value';
+        as.hidden = false;
+        as.setAttribute('aria-pressed', asTable ? 'true' : 'false');
+        as.textContent = asTable ? 'Show as a chart' : 'Show as a table';
+        plot.replaceChildren(asTable ? chartTable(s, c) : drawChart(s, c));
         const cc = R.controlCaption(s);
         ctl.hidden = !cc;
         ctl.replaceChildren(cc ? h('span', { className: 'ctl-k', text: 'Control' }) : '', cc ? h('span', { text: cc }) : '');
     }
+    // the same runs as rows, newest first, verdict in words (§9.1 rule 5)
+    let asTable = false;
+    function chartTable(s, c) {
+        const u = c.units ? ' (' + c.units + ')' : '';
+        const rows = R.chartRows(s, c);
+        return h('div', { className: 'tablewrap chart-table' },
+            h('table', { className: 'tbl', 'aria-label': c.title + ': ' + R.rangeCaption(s, range) },
+                h('thead', {}, h('tr', {},
+                    h('th', { scope: 'col', text: 'When' }),
+                    h('th', { scope: 'col', className: 'num', text: 'Result' + u }),
+                    h('th', { scope: 'col', text: 'Against the limits' }))),
+                h('tbody', {}, ...rows.map(r => h('tr', { className: r.outside ? 'out' : '' },
+                    h('td', { text: r.when }),
+                    h('td', { className: 'num', text: r.value }),
+                    h('td', {}, r.outside ? glyph('error') : null, h('span', { text: r.verdict || '—' }),
+                        r.note ? h('span', { className: 'caption', text: ' · ' + r.note }) : null))))));
+    }
+    $('chart-as').addEventListener('click', () => { asTable = !asTable; renderChart(); });
     function drawChart(s, c) {
         const w = Math.max(320, Math.round($('chart-plot').clientWidth || 640));
         const H = 164;   // a 2-check record keeps its whole chart card above a 900px fold
         const m = R.chartModel({ points: s.points, low: c.low, high: c.high, expected: c.expected }, { w, h: H });
         const box = svg('svg', { viewBox: '0 0 ' + w + ' ' + H, width: '100%', height: H, class: 'qchart', role: 'img',
-            'aria-label': c.title + ': ' + R.rangeCaption(s, range) + '. Limits ' + R.bandText(c) + (c.units ? ' ' + c.units : '') + '.' });
+            'aria-label': c.title + ': ' + R.rangeCaption(s, range) + (R.chartLast(s, c) ? ', ' + R.chartLast(s, c) : '') +
+                '. Limits ' + R.bandText(c) + (c.units ? ' ' + c.units : '') + '.' });
         const P = m.plot;
         box.appendChild(svg('rect', { x: P.x0, y: m.lines.high, width: P.x1 - P.x0, height: Math.max(0, m.lines.low - m.lines.high), class: 'qband' }));
         const hline = (y, cls) => box.appendChild(svg('line', { x1: P.x0, x2: P.x1, y1: y, y2: y, class: cls }));

@@ -218,21 +218,47 @@
         button.setAttribute('aria-expanded', show ? 'true' : 'false');
     }
     let catcher = null;
+    // The phone's menu is a modal while it is open (ia-final §2.1, §9.1):
+    // the page behind is inert (no tab stop, no tap, not read out), Tab and
+    // Shift+Tab wrap inside the sidebar, Escape or a tap outside closes it,
+    // and focus goes back to the menu button.
+    function drawerFocusables() {
+        return [...document.querySelectorAll('#sidebar a[href], #sidebar button:not([disabled])')]
+            .filter(e => !e.closest('[hidden]') && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden');
+    }
+    function drawerTab(ev) {
+        if (ev.key !== 'Tab' || !document.documentElement.hasAttribute('data-drawer')) return;
+        const f = drawerFocusables();
+        if (!f.length) return;
+        const first = f[0], last = f[f.length - 1], at = document.activeElement;
+        const inside = at && at.closest && at.closest('#sidebar');
+        if (ev.shiftKey && (at === first || !inside)) { ev.preventDefault(); last.focus(); }
+        else if (!ev.shiftKey && (at === last || !inside)) { ev.preventDefault(); first.focus(); }
+    }
     function drawer(open, byKeyboard) {
         const btn = $('drawer-open');
+        const behind = document.querySelector('.main-col');
         if (open) {
             document.documentElement.setAttribute('data-drawer', 'open');
             if (!catcher) {
+                // a tap target only: Escape is the keyboard's way out
                 catcher = h('button', { type: 'button', className: 'drawer-catch', 'aria-label': 'Close the menu',
-                                        onclick: () => drawer(false) });
+                                        tabindex: '-1', onclick: () => drawer(false) });
                 document.body.appendChild(catcher);
             }
-            // a keyboard opener lands in the menu; a tap does not draw a focus ring
-            const first = document.querySelector('#sidebar .nav-item');
-            if (first && byKeyboard) first.focus();
+            if (behind) behind.inert = true;
+            document.addEventListener('keydown', drawerTab, true);
+            // focus goes into the menu (the page it came from is inert now);
+            // Chrome draws the ring only when the opener was the keyboard
+            const here = document.querySelector('#sidebar .nav-item[aria-current="page"]') ||
+                         document.querySelector('#sidebar .nav-item');
+            if (here) here.focus({ preventScroll: true });
+            void byKeyboard;
         } else {
             if (!document.documentElement.hasAttribute('data-drawer')) return;
             document.documentElement.removeAttribute('data-drawer');
+            if (behind) behind.inert = false;
+            document.removeEventListener('keydown', drawerTab, true);
             if (catcher) { catcher.remove(); catcher = null; }
             if (btn) btn.focus();
         }
