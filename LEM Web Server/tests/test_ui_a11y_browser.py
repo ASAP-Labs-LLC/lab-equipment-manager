@@ -33,6 +33,14 @@ it, in both themes, and checked by what a person would hit:
 * **Every page, not only the record and the round**: nothing clipped or
   overlapping at 820 and 390, 44 px targets at 820 and 390, the phone bar
   names the page, and a wall's headline, counts and live line are whole.
+* **Nothing pinned to the screen covers the page**, on every page at 1440,
+  820, 390 and 320, Light and Dark, signed in and out: every word and every
+  control can be scrolled to a place where no sticky bar, strip, version
+  stamp or toast is drawn on it, a tap on a control lands on it, and the
+  pinned layers do not draw on each other. The whole document, not only
+  ``main`` (round 2: the overlap check read ``main`` and so never held the
+  fixed stamp or the "Live · record as of" strip against anything). A
+  planted fault proves the check fails when it should.
 * **Reduced motion stops the walls' rotation** and leaves dots plus
   Previous / Next (§9.1 rule 6); without it the wall does rotate, so the
   check is not passing on a wall that never moves.
@@ -297,10 +305,15 @@ def test_a_stale_wall_is_still_readable(fast, server, theme):
 
 
 # ── reflow ──────────────────────────────────────────────────────────────────
+@pytest.mark.parametrize("theme,who", [("light", "Cody"), ("dark", "Cody"), ("light", ""), ("dark", "")],
+                         ids=["light-in", "dark-in", "light-out", "dark-out"])
 @pytest.mark.parametrize("w,h", [(390, 844), (320, 640), (640, 450)], ids=["phone-390", "reflow-320", "zoom-200"])
-def test_nothing_scrolls_sideways(drv, server, w, h):
-    _sign(drv, server["base"], "Cody")
-    _theme(drv, server["base"], "light")
+def test_nothing_scrolls_sideways(drv, server, w, h, theme, who):
+    """Signed out draws different controls (the locks, "Sign in to change"),
+    and Dark is a different stylesheet branch: round 2 checked only signed-in
+    Light, so each of the four is walked."""
+    _sign(drv, server["base"], who)
+    _theme(drv, server["base"], theme)
     _size(drv, w, h)
     bad = {}
     for path in PAGES:
@@ -811,3 +824,187 @@ def test_every_app_page_takes_a_finger_on_a_tablet_and_a_phone(drv, server, w, h
         if got:
             bad[path] = got[:6]
     assert bad == {}, bad
+
+
+# ── nothing the page pins to the screen covers what scrolls under it ────────
+#: Round 2's critic: OVERLAP_JS reads only ``main``, so the things the shell
+#: pins to the screen (the sticky top bar, the sticky "Live · record as of"
+#: strip and bench bar at the foot, the fixed version stamp, a toast) were
+#: never held against the page under them. Round 1 had seen the strip sit on
+#: page text at 390 and 820. A pinned layer is allowed to pass over content
+#: while it scrolls (that is what pinning is), but every word and every
+#: control of the page must have a scroll position at which nothing pinned
+#: is drawn over it: otherwise the last rows of a page can never be read or
+#: tapped. So each one is scrolled to the middle of the screen (or as near as
+#: the page lets it go, which for the last row is the very bottom) and held
+#: against every pinned box drawn at that moment. Controls are also asked of
+#: the browser itself: the element at their centre must be them (a pinned
+#: box with pointer-events: none still covers what it draws on, which is why
+#: the box test is not left to elementFromPoint alone). Then the pinned
+#: layers are held against each other, at the top and at the bottom of the
+#: page: the version stamp must not sit on the strip's words.
+PINNED_JS = """
+const W = document.documentElement.clientWidth, H = innerHeight;
+// drawn at all: a closed <details>' body still answers getClientRects() in
+// Chrome (content-visibility: hidden) but is not on the screen
+const shown = e => { const cs = getComputedStyle(e);
+  return cs.display !== 'none' && cs.visibility !== 'hidden' && +cs.opacity > 0.05
+    && e.checkVisibility({contentVisibilityAuto: true, opacityProperty: true, visibilityProperty: true})
+    && !e.closest('[hidden], dialog:not([open]), .visually-hidden, .sr-only'); };
+const pinned = [...document.querySelectorAll('body *')].filter(e => {
+  const p = getComputedStyle(e).position; return (p === 'fixed' || p === 'sticky') && shown(e);
+}).filter((e, _, all) => !all.some(o => o !== e && o.contains(e)));
+// a sticky box that is not stuck is just page; it is pinned only when it sits
+// at the edge it sticks to. A full-height side column (the sidebar) never
+// shares a column with the page, so the box test handles it like the rest.
+const inPinned = e => pinned.some(p => p.contains(e));
+const name = e => (e.id ? '#' + e.id : (e.className && e.className.baseVal === undefined ? '.' + String(e.className).split(' ')[0] : e.tagName));
+const label = e => (e.innerText || e.getAttribute('aria-label') || e.value || e.id || e.tagName).trim().replace(/\\s+/g, ' ').slice(0, 32);
+const ink = p => {
+  // what a pinned box actually draws on: its whole box if it has a
+  // background or a border, else only its words (the version stamp)
+  const cs = getComputedStyle(p);
+  const solid = cs.backgroundColor !== 'rgba(0, 0, 0, 0)' && cs.backgroundColor !== 'transparent'
+    || parseFloat(cs.borderTopWidth) > 0 || cs.boxShadow !== 'none';
+  if (solid) return [p.getBoundingClientRect()];
+  const out = [];
+  const w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+  while (w.nextNode()) { if (!w.currentNode.textContent.trim() || !shown(w.currentNode.parentElement)) continue;
+    const r = document.createRange(); r.selectNodeContents(w.currentNode); out.push(...r.getClientRects()); }
+  for (const c of p.querySelectorAll('svg, img, input, button, select, textarea'))
+    if (shown(c)) out.push(c.getBoundingClientRect());
+  return out;
+};
+const hit = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+const coveredBy = (rect, self) => {
+  for (const p of pinned) {
+    if (p.contains(self) || self.contains(p)) continue;
+    for (const r of ink(p)) if (r.width > 1 && r.height > 1 && hit(rect, r)) return p;
+  }
+  return null;
+};
+const bad = [];
+// 1. every word on the page
+const seen = new Set();
+const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+const leaves = [];
+while (tw.nextNode()) {
+  const t = tw.currentNode, el = t.parentElement;
+  if (!t.textContent.trim() || !el || seen.has(t) || inPinned(el) || !shown(el) || el.closest('svg, script, style, noscript')) continue;
+  seen.add(t); leaves.push(t);
+}
+for (const t of leaves) {
+  const el = t.parentElement;
+  el.scrollIntoView({block: 'center', inline: 'nearest'});
+  const range = document.createRange(); range.selectNodeContents(t);
+  for (const r of range.getClientRects()) {
+    if (r.width < 2 || r.height < 2) continue;
+    // a word a scroller of its own has put out of its view is the
+    // scroller's business (OVERLAP_JS and the table checks read those)
+    let cut = false;
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+      const ps = getComputedStyle(p);
+      if (/(hidden|clip|auto|scroll)/.test(ps.overflowX + ps.overflowY)) { const pr = p.getBoundingClientRect();
+        if (!hit(r, pr)) cut = true; break; }
+    }
+    if (cut) continue;
+    const by = coveredBy(r, el);
+    if (by) { bad.push('"' + t.textContent.trim().slice(0, 32) + '" under ' + name(by)); break; }
+  }
+}
+// 2. every control: nothing pinned on it, and it is what a tap lands on
+const ctl = [...document.querySelectorAll('a[href], button, input:not([type=hidden]), select, textarea, [role=button], [tabindex]:not([tabindex="-1"])')]
+  .filter(e => !inPinned(e) && shown(e));
+for (const e of ctl) {
+  let r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) continue;
+  e.scrollIntoView({block: 'center', inline: 'nearest'});
+  r = e.getBoundingClientRect();
+  const by = coveredBy(r, e);
+  if (by) { bad.push('control "' + label(e) + '" under ' + name(by)); continue; }
+  // a link that wraps inside a sentence is two boxes, and the middle of the
+  // box around both is the sentence: tap the middle of its first line
+  const q = e.getClientRects()[0] || r;
+  const x = q.left + q.width / 2, y = q.top + q.height / 2;
+  if (x < 0 || y < 0 || x > W || y > H) continue;  // in a scroller's hidden part
+  const h = document.elementFromPoint(x, y);
+  if (h && h !== e && !e.contains(h) && !(e.labels && [...e.labels].some(l => l.contains(h))) && !(e.closest('label') || {contains: () => false}).contains(h))
+    bad.push('control "' + label(e) + '" under ' + name(h));
+}
+// 3. the pinned layers against each other, at the top and the bottom
+for (const y of [0, document.documentElement.scrollHeight]) {
+  window.scrollTo(0, y);
+  for (let i = 0; i < pinned.length; i++) for (let j = i + 1; j < pinned.length; j++) {
+    const a = pinned[i], b = pinned[j];
+    // words against words: two bars meeting edge to edge are fine, a stamp
+    // drawn on a strip's sentence is not
+    const words = p => { const o = []; const w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+      while (w.nextNode()) { if (!w.currentNode.textContent.trim() || !shown(w.currentNode.parentElement)) continue;
+        const r = document.createRange(); r.selectNodeContents(w.currentNode); o.push(...r.getClientRects()); } return o; };
+    for (const ra of words(a)) for (const rb of words(b))
+      if (ra.width > 1 && rb.width > 1 && hit(ra, rb)) bad.push('pinned ' + name(a) + ' on ' + name(b));
+  }
+}
+window.scrollTo(0, 0);
+return [...new Set(bad)].slice(0, arguments[0] || 12);
+"""
+
+
+@pytest.mark.parametrize("theme,who", [("light", "Cody"), ("dark", "Cody"), ("light", "")],
+                         ids=["light-in", "dark-in", "light-out"])
+@pytest.mark.parametrize("w,h", [(1440, 900), (820, 1180), (390, 844), (320, 640)],
+                         ids=["desktop-1440", "tablet-820", "phone-390", "reflow-320"])
+def test_nothing_pinned_to_the_screen_covers_the_page(drv, server, w, h, theme, who):
+    """Every word and every control of every page can be scrolled to a place
+    where no pinned bar, strip, stamp or toast is drawn on it, and a tap on a
+    control lands on that control. Whole page, not only ``main``."""
+    _sign(drv, server["base"], who)
+    _theme(drv, server["base"], theme)
+    _size(drv, w, h)
+    bad = {}
+    for path in PAGES:
+        _open(drv, server["base"] + path, 1.0)
+        got = drv.execute_script(PINNED_JS)
+        assert isinstance(got, list), (path, got)
+        if got:
+            bad[path] = got
+    assert bad == {}, bad
+
+
+def test_the_pinned_check_catches_what_it_should(drv, server):
+    """The check above passing means nothing unless it fails on the defect
+    it is for. On a real page, three planted faults: a solid bar fixed over
+    the bottom 120 px with the page given no room for it (so the last words
+    can never scroll out from under it), a see-through stamp with
+    pointer-events: none parked on a link (elementFromPoint looks through
+    it; the box test must not), and that stamp's words drawn on the strip's
+    words. Each must be named."""
+    _sign(drv, server["base"], "Cody")
+    _size(drv, 390, 844)
+    _open(drv, server["base"] + "/help", 0.9)
+    assert drv.execute_script(PINNED_JS) == []
+    drv.execute_script("""
+      const m = document.getElementById('main');
+      const p = document.createElement('p'); p.id = 'planted-last'; p.textContent = 'The very last words';
+      m.appendChild(p);
+      document.querySelectorAll('.rail-status, .bench-bar').forEach(e => e.remove());
+      const bar = document.createElement('div'); bar.id = 'planted-bar';
+      bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:120px;background:#fff;z-index:50';
+      document.body.appendChild(bar);
+      const a = document.createElement('a'); a.href = '#x'; a.id = 'planted-link'; a.textContent = 'Planted link';
+      a.style.cssText = 'display:inline-block;margin-top:400px'; m.prepend(a);
+      const stamp = document.createElement('div'); stamp.id = 'planted-stamp'; stamp.textContent = 'STAMP STAMP';
+      stamp.style.cssText = 'position:fixed;pointer-events:none;z-index:60;font:14px sans-serif';
+      document.body.appendChild(stamp);
+      // the stamp sits wherever the link is once centred: the middle of the screen
+      a.scrollIntoView({block: 'center'});
+      const r = a.getBoundingClientRect();
+      stamp.style.left = r.left + 'px'; stamp.style.top = (innerHeight / 2 - 8) + 'px';
+      const t = document.createElement('div'); t.id = 'planted-strip'; t.textContent = 'Live record as of now';
+      t.style.cssText = 'position:fixed;left:' + r.left + 'px;top:' + (innerHeight / 2 - 8) + 'px;font:14px sans-serif';
+      document.body.appendChild(t);
+      window.scrollTo(0, 0);
+    """)
+    got = " | ".join(drv.execute_script(PINNED_JS, 1000))
+    assert '"The very last words" under #planted-bar' in got, got
+    assert 'control "Planted link" under #planted-stamp' in got, got
+    assert "pinned #planted-stamp on #planted-strip" in got or "pinned #planted-strip on #planted-stamp" in got, got

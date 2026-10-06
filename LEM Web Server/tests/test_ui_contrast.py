@@ -386,14 +386,37 @@ def _pair(theme, fg, stack):
     return ratio(_over(_rgba(_resolve(t, t[fg])), back), back)
 
 
-TEXT_USED = sorted({tok for _f, sel, body in _rules()
-                    for tok in re.findall(r"(?<![-\w])color\s*:\s*var\((--[\w-]+)\)", body)} |
-                   {"--chart-axis"})
+COLOR_DECL = re.compile(r"(?<![-\w])color\s*:\s*([^;]+)")
+
+
+def _text_tokens(body):
+    """The token each `color:` in a rule body draws in. `var(--a, var(--b,
+    #777))` draws in --a when --a is defined, so the first defined token is
+    the one that counts; round 2's scan matched only the bare `var(--a)`
+    and so never saw `color: var(--badge-fg, ...)` or `var(--accent, ...)`."""
+    defined = _themes()["light"]
+    for value in COLOR_DECL.findall(body):
+        toks = re.findall(r"var\((--[\w-]+)", value)
+        hit = next((t for t in toks if t in defined), None)
+        if hit:
+            yield hit
+
+
+TEXT_USED = sorted({tok for _f, sel, body in _rules() for tok in _text_tokens(body)} | {"--chart-axis"})
+
+
+def test_the_text_scan_reads_colours_with_a_fallback():
+    """The scan is only as good as what it can see: a `color:` with a
+    fallback is still a text colour, and the version stamp's is one."""
+    assert list(_text_tokens("color: var(--badge-fg, var(--text-muted, #7d8590));")) == ["--badge-fg"]
+    assert list(_text_tokens("color: var(--no-such, var(--accent));")) == ["--accent"]
+    assert "--badge-fg" in TEXT_USED
 
 
 def test_every_text_colour_is_classified():
     unknown = [t for t in TEXT_USED if t not in SITS_ON and t not in MARK_ONLY
-               and t not in ("--text", "--text-muted-sunken", "--nav-meta", "--st-error", "--bad")]
+               and t not in ("--text", "--text-muted-sunken", "--nav-meta", "--st-error", "--bad",
+                        "--badge-fg")]  # checked on every surface: the stamp is fixed, anything scrolls under it
     assert unknown == [], f"say where these sit (SITS_ON) or that they only colour glyphs: {unknown}"
 
 
@@ -408,9 +431,9 @@ def test_every_text_token_on_every_surface_it_can_sit_on(theme, fg):
 
 def test_mark_only_colours_colour_only_marks():
     for name, sel, body in _rules():
-        m = re.search(r"(?<![-\w])color\s*:\s*var\((--[\w-]+)\)", body)
-        if m and m.group(1) in MARK_ONLY:
-            assert MARK_SELECTOR.search(sel), (name, sel, m.group(1))
+        for tok in _text_tokens(body):
+            if tok in MARK_ONLY:
+                assert MARK_SELECTOR.search(sel), (name, sel, tok)
 
 
 MARKS_USED = sorted({tok for _f, _sel, body in _rules()

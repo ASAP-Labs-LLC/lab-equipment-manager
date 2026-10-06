@@ -66,7 +66,11 @@
     --pill-error-fg: #991b1b;
     /* the nav's step count on a hovered or active item; the version badge */
     --nav-meta:      #475569;
-    --badge-fg:      var(--text-muted);
+    /* the version stamp is fixed bottom-right, so whatever scrolls under it
+       is its ground: a hovered or selected row, a sunken tile. --text-muted
+       is under 4.5:1 on those (3.93:1 on a current sidebar item); the
+       sunken-track muted reaches 4.5:1 on every surface (test_ui_contrast). */
+    --badge-fg:      var(--text-muted-sunken);
 
     /* Deviation fill (GC): above = sample higher than the standard */
     --dev-above:       #dc2626;
