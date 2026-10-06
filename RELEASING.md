@@ -117,6 +117,25 @@ Then also run all three existing suites green: web pytest, module pytest
 is not trustworthy (drift, a write outside its temp folder, a fault that did
 not fire). It is not a pass and not a verdict. Tagging is still Ryan's call.
 
+**The first v4 module on a bench.** Benches move to v4 one at a time, and
+nothing forces the pace (Ryan, 2026-10-06): a v3.x module keeps working
+unchanged until its bench is updated, and a v4 module next to a v3.9/v3.10
+server runs in legacy projection mode. In that mode the module still writes its
+`last_position` back to `lem_machine_config` whenever it moves, so a bench
+rolled back to v3.x resumes from the right place. That is one small LabCore
+write per moving poll, accepted for compatibility. It stops once the bench is
+on the v2 road.
+
+v4 reads `last_position` exactly once, at its first start, as the cut-off for
+what v3.x already logged. So **before updating GC-1 and GC-2**, press OK in each
+one's Settings on the running old module (that saves today's position), then
+mark cell 1 as the result time on both. Skip it and v4 adopts from a stale
+offset.
+
+A line the reader could not place (`ambiguous`) whose dated injection it has
+already seen is dropped as a repeat, with a status-line message, not filed
+twice. That follows main's "a line is read once" rule (Ryan, 2026-10-06).
+
 Do **not** create a `VERSION` file by hand — CI writes it and it is gitignored.
 
 Confirm CI built it:
