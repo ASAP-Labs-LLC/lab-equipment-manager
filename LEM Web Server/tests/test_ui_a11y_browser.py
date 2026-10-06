@@ -26,6 +26,13 @@ it, in both themes, and checked by what a person would hit:
 * **The record and the round at 390 have nothing clipped or overlapping**:
   no two pieces of text drawn over each other, no word cut by a box that
   does not say so with an ellipsis.
+* **No table loses a column** at 820, 390 or 320: a cell a narrow screen
+  hides has its every word visible elsewhere in its row, and no shown cell
+  runs past the card that would cut it (round 2: a standard's min – target
+  – max vanished below 1100 px while the page stayed 390 px wide).
+* **Every page, not only the record and the round**: nothing clipped or
+  overlapping at 820 and 390, 44 px targets at 820 and 390, the phone bar
+  names the page, and a wall's headline, counts and live line are whole.
 * **Reduced motion stops the walls' rotation** and leaves dots plus
   Previous / Next (§9.1 rule 6); without it the wall does rotate, so the
   check is not passing on a wall that never moves.
@@ -355,8 +362,12 @@ def test_every_target_is_at_least_24px(drv, server, w, h):
 
 
 @pytest.mark.parametrize("w,h", [(820, 1180), (390, 844)])
-@pytest.mark.parametrize("path", ["/checklists/opening", "/instruments/gc-1"])
+@pytest.mark.parametrize("path", ["/checklists/opening", "/instruments/gc-1", "/instruments/pac-flash-2"])
 def test_the_round_and_the_record_take_a_finger(drv, server, path, w, h):
+    """gc-1 has no QC section; pac-flash-2 does, and its check names (the
+    buttons that pick the chart) and "Show as a table" are the record's
+    smallest targets. A record checked only on gc-1 would miss them, as
+    round 1's did (70x24 and 93x24 at 820)."""
     _sign(drv, server["base"], "Cody")
     _size(drv, w, h)
     _open(drv, server["base"] + path, 1.2)
@@ -492,9 +503,26 @@ while (walk.nextNode()) {
   const t = walk.currentNode; if (!t.textContent.trim()) continue;
   const el = t.parentElement; if (!el || seen.has(el)) continue; seen.add(el);
   const cs = getComputedStyle(el);
-  if (cs.visibility === 'hidden' || el.closest('[hidden], .visually-hidden, svg, dialog:not([open])')) continue;
+  if (cs.visibility === 'hidden' || el.closest('[hidden], .visually-hidden, .sr-only, svg, dialog:not([open])')) continue;
+  // a box that cuts its text and says so (an ellipsis, a line clamp) shows
+  // only what is inside it: the text past its edge is not drawn, so it can
+  // neither leave the screen nor sit on anything
+  let keep = null;
+  for (let p = el; p && p !== document.body; p = p.parentElement) {
+    const ps = getComputedStyle(p);
+    if (/(hidden|clip)/.test(ps.overflowX + ps.overflowY)) {
+      if (ps.textOverflow === 'ellipsis' || (ps.webkitLineClamp && ps.webkitLineClamp !== 'none')) keep = p.getBoundingClientRect();
+      break;
+    }
+  }
   const range = document.createRange(); range.selectNodeContents(t);
-  for (const r of range.getClientRects()) if (r.width > 1 && r.height > 1) leaves.push({el, r, s: t.textContent.trim().slice(0, 30)});
+  for (let r of range.getClientRects()) {
+    if (keep) {
+      const l = Math.max(r.left, keep.left), rt = Math.min(r.right, keep.right), tp = Math.max(r.top, keep.top), b = Math.min(r.bottom, keep.bottom);
+      r = {left: l, right: rt, top: tp, bottom: b, width: rt - l, height: b - tp};
+    }
+    if (r.width > 1 && r.height > 1) leaves.push({el, r, s: t.textContent.trim().slice(0, 30)});
+  }
 }
 const bad = [];
 for (let i = 0; i < leaves.length; i++) {
@@ -563,3 +591,223 @@ def test_reduced_motion_stops_the_qc_wall_and_leaves_dots_and_steps(fast, server
     d.find_element(By.ID, "wq-next").click()
     assert _wait(lambda: d.execute_script(
         "return [...document.querySelectorAll('#wq-pages i')].findIndex(i => i.classList.contains('on'))") != first)
+
+
+# ── no loss: a column a narrow screen hides is said again in its row ────────
+#: Round 1's lesson. /quality/standards/<id> hid its min – target – max
+#: column below 1100 px and drew nothing in its place, and the sideways-scroll
+#: check above still passed, because the card that cut the table hid its
+#: overflow and so kept the page 390 px wide. A page can lose its most
+#: important numbers and stay narrow. This check reads the table itself:
+#: every cell a media query hides must have each of its words and numbers
+#: somewhere visible in the same row (the fold under the name), and every
+#: visible cell must sit inside its card.
+NO_LOSS_JS = """
+const W = document.documentElement.clientWidth;
+const ALLOWED = arguments[0] || [];
+const words = (s) => (s || '').toLowerCase().replace(/[·–—,():…]/g, ' ').split(/\\s+/).filter(w => w && w !== '-');
+// the words of an element's text nodes, each node its own words (textContent
+// would run "Not OK to run" and "Cloud Point" together as "runCloud")
+const textOf = (e) => { const out = []; const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
+  while (w.nextNode()) out.push(w.currentNode.textContent); return out.join(' '); };
+const shown = (e) => { const cs = getComputedStyle(e);
+  // a cell laid out as display:contents (the phone's two-line rows) has no
+  // box of its own: it is shown when what it holds is
+  if (cs.display === 'contents') return [...e.children].some(shown);
+  const r = e.getBoundingClientRect();
+  return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden'; };
+const bad = [];
+for (const tbl of document.querySelectorAll('main table')) {
+  if (!shown(tbl) || tbl.closest('[hidden], dialog:not([open])')) continue;
+  const scrolls = tbl.closest('.tablewrap, .chart-table');
+  for (const tr of tbl.querySelectorAll('tbody tr')) {
+    if (!shown(tr)) continue;
+    // what a person can read in this row: the visible text of its visible cells
+    let seen = '';
+    for (const td of tr.children) if (shown(td)) seen += ' ' + td.innerText;
+    const have = new Set(words(seen));
+    for (const td of tr.children) {
+      const text = textOf(td).replace(/\\s+/g, ' ').trim();
+      if (!text) continue;
+      if (!shown(td)) {
+        if (ALLOWED.some(sel => td.matches(sel))) continue;
+        const lost = words(text).filter(w => !have.has(w));
+        if (lost.length) bad.push('hidden, not folded: "' + text.slice(0, 40) + '" (missing ' + lost.slice(0, 4).join(' ') + ')');
+        continue;
+      }
+      if (scrolls) continue;      // a .tablewrap says that it scrolls
+      // a shown cell is inside the box that would cut it, and inside the screen
+      const r = td.getBoundingClientRect();
+      let box = null;
+      for (let p = td.parentElement; p && p !== document.body; p = p.parentElement) {
+        const ps = getComputedStyle(p);
+        if (/(hidden|clip)/.test(ps.overflowX)) { box = p.getBoundingClientRect(); break; }
+      }
+      const right = Math.min(W, box ? box.right : W);
+      if (r.right > right + 1) bad.push('cut: "' + text.slice(0, 40) + '" ends at ' + Math.round(r.right) + ' > ' + Math.round(right));
+    }
+  }
+}
+return [...new Set(bad)].slice(0, 10);
+"""
+
+
+#: The one table the spec itself cuts down on a phone (ia-final §6, <700:
+#: "Tables become two-line rows (name + verdict word; the detail line
+#: below)"): the Instruments list keeps each instrument's name, verdict and
+#: reason, and its last QC, bench and level are the record's first screen,
+#: one tap away (T1). The tablet hides nothing without folding it.
+PHONE_DROPS = [".tbl.inst .c-qc", ".tbl.inst .c-bench", ".tbl.inst .c-where"]
+#: And one the spec moves at every narrow width (§6, 700–1099: "The Logs
+#: table drops Lab ID into the sheet"): a log row's Lab ID and who did it
+#: are the first lines of the sheet the row opens, one tap.
+SHEET_DROPS = [".log-row .c-lab", ".log-row .c-who"]
+
+
+@pytest.mark.parametrize("w,h", [(820, 1180), (390, 844), (320, 640)], ids=["tablet-820", "phone-390", "reflow-320"])
+def test_no_table_loses_a_column_on_a_narrow_screen(drv, server, w, h):
+    _sign(drv, server["base"], "Cody")
+    _size(drv, w, h)
+    bad = {}
+    for path in PAGES:
+        if path in WALLS:
+            continue
+        _open(drv, server["base"] + path, 0.9)
+        got = drv.execute_script(NO_LOSS_JS, SHEET_DROPS + (PHONE_DROPS if w < 700 else []))
+        if got:
+            bad[path] = got
+    assert bad == {}, bad
+
+
+def test_a_standards_certified_values_survive_every_width(drv, server):
+    """The standard's whole reason for a page: each test's min, target and
+    max. Read at the desktop, then asked for at 820, 390 and 320: the same
+    numbers, on screen, inside the card."""
+    d = drv
+    _sign(d, server["base"], "Cody")
+    url = server["base"] + "/quality/standards/" + demo_floor.STANDARD
+    BANDS = """return [...document.querySelectorAll('.tbl.qv tbody tr')].map(tr => {
+      const b = [...tr.querySelectorAll('.bandtxt')].find(e => { const r = e.getBoundingClientRect();
+        return r.width > 0 && r.right <= document.documentElement.clientWidth + 1; });
+      return b ? b.innerText.trim() : null; });"""
+    _size(d, 1440, 900)
+    _open(d, url)
+    want = d.execute_script(BANDS)
+    assert want and all(want), want
+    for (w, h) in ((820, 1180), (390, 844), (320, 640)):
+        _size(d, w, h)
+        _open(d, url)
+        assert d.execute_script(BANDS) == want, (w, d.execute_script(BANDS))
+
+
+# ── nothing clipped or overlapping, on every page ───────────────────────────
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("w,h", [(820, 1180), (390, 844)], ids=["tablet-820", "phone-390"])
+def test_no_page_has_text_clipped_or_overlapping(drv, server, w, h, theme):
+    """The record-and-round check above, run on every page (the walls
+    included: a TV may cut a long line, but with an ellipsis, and two lines
+    never draw over each other)."""
+    _sign(drv, server["base"], "Cody")
+    _theme(drv, server["base"], theme)
+    _size(drv, w, h)
+    bad = {}
+    for path in PAGES:
+        _open(drv, server["base"] + path, 1.0)
+        got = drv.execute_script(OVERLAP_JS)
+        if got:
+            bad[path] = got
+    assert bad == {}, bad
+
+
+# ── the phone bar names the page (§2.1: mark, page title, menu button) ──────
+BAR_JS = """
+const bar = document.querySelector('.topbar');
+const W = document.documentElement.clientWidth;
+const t = [...bar.querySelectorAll('.bar-title, .crumbs .here, .topbar > h1')].find(e => {
+  const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== 'hidden'; });
+if (!t) return ['no title in the bar'];
+const out = [];
+const r = t.getBoundingClientRect();
+if (!t.innerText.trim()) out.push('the title is empty');
+if (r.right > W || r.left < 0) out.push('the title is off screen');
+if (t.scrollWidth > t.clientWidth + 1 && arguments[0]) out.push('the title is cut: ' + t.innerText);
+// nothing in the bar draws over anything else in it
+const kids = [...bar.children].filter(e => { const q = e.getBoundingClientRect(); return q.width > 0 && getComputedStyle(e).display !== 'none'; });
+for (let i = 0; i < kids.length; i++) for (let j = i + 1; j < kids.length; j++) {
+  const a = kids[i].getBoundingClientRect(), b = kids[j].getBoundingClientRect();
+  if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1)
+    out.push('overlap in the bar: ' + (kids[i].id || kids[i].className) + ' / ' + (kids[j].id || kids[j].className));
+}
+return out;
+"""
+
+
+@pytest.mark.parametrize("w,h,whole", [(390, 844, True), (320, 640, False)], ids=["phone-390", "reflow-320"])
+def test_the_phone_bar_names_every_page(drv, server, w, h, whole):
+    """At 390 the title is whole; at 320 a long one may end in an ellipsis
+    (it is the page's own h1 again just below), but it is there."""
+    _sign(drv, server["base"], "Cody")
+    _size(drv, w, h)
+    bad = {}
+    for path in PAGES:
+        if path in WALLS:
+            continue
+        _open(drv, server["base"] + path, 0.6)
+        got = drv.execute_script(BAR_JS, whole)
+        if got:
+            bad[path] = got
+    assert bad == {}, bad
+
+
+# ── the walls on a tablet: their key words whole ────────────────────────────
+WALL_WORDS_JS = """
+const out = [];
+for (const v of document.querySelectorAll('.wall-view:not([hidden])')) {
+  for (const e of v.querySelectorAll('.wh-title > span:last-child, .wall-foot > span, .wc')) {
+    const r = e.getBoundingClientRect();
+    if (!r.width || getComputedStyle(e).display === 'none') continue;
+    const cs = getComputedStyle(e);
+    // cut by itself (an ellipsis, a clamp) ...
+    const self = cs.overflowX !== 'visible' && (e.scrollWidth > e.clientWidth + 1 || e.scrollHeight > e.clientHeight + 2);
+    // ... or by the screen or a box around it that hides what overflows
+    let edge = document.documentElement.clientWidth;
+    for (let p = e.parentElement; p && p !== document.body; p = p.parentElement)
+      if (getComputedStyle(p).overflowX !== 'visible') { edge = Math.min(edge, p.getBoundingClientRect().right); break; }
+    if (self || r.right > edge + 1)
+      out.push('cut: "' + e.textContent.trim().slice(0, 50) + '"' + (self ? '' : ' ends at ' + Math.round(r.right) + ' > ' + Math.round(edge)));
+  }
+}
+return out;
+"""
+
+
+@pytest.mark.parametrize("w,h", [(1440, 900), (820, 1180)])
+@pytest.mark.parametrize("path", WALLS)
+def test_a_walls_headline_counts_and_foot_are_whole(drv, server, path, w, h):
+    """"2 in…" is not a headline and "updated 11:02:03 PD" is not a time.
+    The sentence, the counts and the live line are what the wall is for:
+    they wrap, they are never cut."""
+    _size(drv, w, h)
+    _open(drv, server["base"] + path, 1.2)
+    assert drv.execute_script(WALL_WORDS_JS) == []
+
+
+# ── 44 px on every app page at 820 and 390 ──────────────────────────────────
+@pytest.mark.parametrize("w,h", [(820, 1180), (390, 844)], ids=["tablet-820", "phone-390"])
+def test_every_app_page_takes_a_finger_on_a_tablet_and_a_phone(drv, server, w, h):
+    """§6 asks 44 px of the round and of the record's tablet layout; the
+    ≤1099 px stylesheet promises it of every target. Round 1 checked two
+    pages and missed the rest (the QC seg at 30 px, a round editor's
+    move/remove buttons at 30 px, the Log filters at 34). The walls are
+    left out: nobody touches a TV."""
+    _sign(drv, server["base"], "Cody")
+    _size(drv, w, h)
+    bad = {}
+    for path in PAGES:
+        if path in WALLS:
+            continue
+        _open(drv, server["base"] + path, 0.9)
+        got = drv.execute_script(TARGETS_JS, 44, None)
+        if got:
+            bad[path] = got[:6]
+    assert bad == {}, bad

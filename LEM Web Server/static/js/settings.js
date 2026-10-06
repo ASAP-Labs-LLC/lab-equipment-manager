@@ -155,8 +155,10 @@
             nameCell.appendChild(form);
             setTimeout(() => input.focus(), 0);
         } else {
+            // the phone hides the count column: the count rides under the name
             add(nameCell, h('b', { text: r.name }),
-                r.isGround ? h('span', { className: 'caption lv-tag', text: 'Ground' }) : null);
+                r.isGround ? h('span', { className: 'caption lv-tag', text: 'Ground' }) : null,
+                h('span', { className: 'caption lv-fold', text: r.count }));
         }
         const act = h('td', { className: 'lv-act' });
         if (levels.renaming !== r.uid) {

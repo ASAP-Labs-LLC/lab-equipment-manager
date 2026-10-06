@@ -180,7 +180,10 @@
         const benchWhen = b.at ? L.when(b.at, now) : '';
         const name = h('td', { className: 'c-name' },
             h('a', { className: 'iname', href: r.href }, r.title),
-            sub([b.word, benchWhen].filter(Boolean).join(' · '), 'fold-bench'));
+            // the tablet hides Bench and Where (§6); their words, all of
+            // them, ride under the name
+            sub([b.word, benchWhen ? (b.state === 'in' ? 'last poll ' : 'since ') + benchWhen : '',
+                r.where.level, r.where.placed ? '' : 'not on the map'].filter(Boolean).join(' · '), 'fold-bench'));
         const run = h('td', { className: 'c-run' },
             h('span', { className: 'verdict s-' + rd.state }, glyph(rd.glyph), h('span', { text: rd.word })),
             rd.detail ? sub(rd.detail) : null);

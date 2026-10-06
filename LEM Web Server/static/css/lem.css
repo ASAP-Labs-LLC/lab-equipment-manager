@@ -365,8 +365,6 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
 /* phone: a reading's field and Save wrap under the label; the byline too.
    The bar becomes two short lines. The edit link moves under the card. */
 @media (max-width: 699px) {
-    /* one heading: the h1 says which round, the seg says it again as a control */
-    .topbar .crumbs { display: none; }
     .round-edit { display: none; }
     .round-foot { display: block; }
     .seg-links a { padding: 0 12px; }
@@ -637,6 +635,7 @@ body:not(.anon) .set-main .unlock-chip { display: none; }
 .set-main .lv-act .btn-ghost:hover, .set-main .hol-list .btn-ghost:hover { color: var(--text); }
 .lv-tbl .lv-name b { font-weight: 600; }
 .lv-tbl .lv-tag { margin-left: var(--s2); }
+.lv-tbl .lv-fold { display: none; }
 .lv-tbl tbody tr:last-child td { border-bottom: 0; }
 .rename-form { display: flex; gap: var(--s2); align-items: center; }
 .gc .rename-form input[type="text"] { width: 220px; height: 32px; }
@@ -721,6 +720,7 @@ body:not(.anon) .set-main .unlock-chip { display: none; }
     .imp { padding: var(--s3) var(--s4) var(--s4); }
     .imp-head { flex-direction: column; }
     .lv-tbl th:nth-child(2), .lv-tbl td:nth-child(2) { display: none; }
+    .lv-tbl .lv-fold { display: block; margin-top: 2px; }
 }
 
 /* ── defining rounds (ia-final §3.4, piece 10; templates/round_edit.html) ──
@@ -1099,7 +1099,7 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
        result, band and track; nothing is clipped and nothing scrolls */
     #show-map { display: none; }
     /* the schedule on a phone: task, due and its word; how often and when
-       it was last done are one tap away on the classic page */
+       it was last done ride on the task's sub line (.fold-mt, below) */
     .tbl.mt .m-every, .tbl.mt .m-last { display: none; }
     .tbl.qc .c-when, .tbl.qc .c-last { display: none; }
     .tbl.qc td, .tbl.qc th { padding: 10px var(--s3); }
@@ -1128,6 +1128,8 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 /* Maintenance: the task table gains its actions; Recently completed is a
    quiet list under it, three lines, newest first */
 .tbl.mt .sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); }
+.tbl.mt .fold-mt { display: none; }
+@media (max-width: 699px) { .tbl.mt .fold-mt { display: inline; } }
 .tbl.mt td .verdict + .sub { padding-left: 18px; }
 .tbl.mt .m-act { text-align: right; white-space: nowrap; }
 .tbl.mt .m-act .btn + .btn { margin-left: var(--s1); }
@@ -1895,6 +1897,7 @@ dialog.sheet.log-sheet .actions .spacer { flex: 1; }
 .tbl.qs tbody tr:last-child td { border-bottom: 0; }
 .tbl.qs .sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); }
 .tbl.qs td.c-lab { font-family: var(--mono); font-size: var(--fs-sm); }
+.tbl.qs .fold-qs { display: none; }
 .tbl.qs .verdict { display: inline-flex; align-items: center; gap: var(--s2); font-weight: 600; }
 .tbl.qs .c-cert .sub { padding-left: 18px; }
 .q-card .table-empty { display: flex; align-items: center; gap: var(--s2); }
@@ -1931,6 +1934,21 @@ dialog.sheet.log-sheet .actions .spacer { flex: 1; }
 .tbl.qv .num { text-align: right; font-variant-numeric: tabular-nums; }
 .tbl.qv tbody tr:last-child td { border-bottom: 0; }
 .tbl.qv .dflt { color: var(--text-muted); }
+/* the standard's values on a narrow screen (piece 15): below 1100 px the
+   band rides under the test's name, as on the record and /quality; below
+   700 px s, k, the window and Used on follow it as one quiet line, and the
+   table is the test and its fold, nothing else, so nothing is cut */
+.tbl.qv .fold-std { display: none; }
+@media (max-width: 1099px) {
+    .tbl.qv .fold-band { flex-wrap: wrap; row-gap: 4px; }
+    .tbl.qv .fold-band .bandtxt { color: var(--text); }
+}
+@media (max-width: 699px) {
+    .tbl.qv thead { display: none; }
+    .tbl.qv .c-sk, .tbl.qv .c-win, .tbl.qv .c-used { display: none; }
+    .tbl.qv .fold-std { display: block; flex-basis: 100%; white-space: normal; }
+    .tbl.qv .fold-band .bandtxt { white-space: normal; }
+}
 .cert-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--border-light); }
 .cert-row { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto auto; align-items: center; gap: var(--s3); padding: 10px 0; border-bottom: 1px solid var(--border-light); font-size: var(--fs-sm); }
 .cert-row .cert-main { display: grid; gap: 2px; min-width: 0; }
@@ -2005,6 +2023,7 @@ dialog.std-sheet { width: min(680px, calc(100vw - 32px)); }
     .tbl.qs .srow { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border-light); }
     .tbl.qs .srow td { border: 0; padding: 0; }
     .tbl.qs .c-lab, .tbl.qs .c-checks { display: none !important; }
+    .tbl.qs .fold-qs { display: block; }
     .tbl.qs .c-cert { grid-column: 2; grid-row: 1 / span 2; text-align: right; }
     .tbl.qs .c-used { font-size: var(--fs-xs); color: var(--text-muted); }
     .uon-row { grid-template-columns: 14px minmax(0, 1fr); grid-template-areas: "g line" "g method" "g detail"; align-items: start; }
@@ -2074,7 +2093,11 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
     .btn-sm { height: auto; }
     .btn { height: auto; }
     .icon-btn { width: 44px; height: 44px; }
-    .gc .seg button { min-height: 40px; padding-inline: 14px; }
+    .gc .seg button { min-height: 44px; padding-inline: 14px; }
+    /* the record's QC: a check's name picks the chart, and the chart's door
+       to its rows; both were 24px tall at 820 in round 1 */
+    .qc-pick { display: inline-flex; align-items: center; min-height: 44px; }
+    .chart-sum .chart-as { min-height: 44px; }
     .seg { padding: 2px; }
     .nav-item { height: 44px; }
     .sb-mark { min-height: 44px; min-width: 44px; justify-content: center; }
@@ -2086,6 +2109,27 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
     .gc input[type="datetime-local"], .gc input[type="date"], .gc input:not([type]), .gc select { height: 44px; }
     .menu a, .menu button.menu-item { min-height: 44px; }
     .sb-recent li a { min-height: 44px; align-items: center; }
+    /* round 2: every app page, not only the record and the round, takes a
+       finger at 820 and 390 (tests/test_ui_a11y_browser.py walks them all) */
+    .view-seg a { display: inline-flex; align-items: center; min-height: 44px; }
+    .topbar .crumbs a { min-width: 44px; }
+    .ed-tools .icon-btn { width: 44px; height: 44px; }
+    .ed-trackw { height: 44px; }
+    .gc .seg button { min-width: 44px; }
+    .tr-stopped .btn { min-height: 44px; }
+    /* a name that is a link inside a line of words or a table row: its box
+       is 44px tall but gives the height back as negative margin, so the
+       line it sits on keeps its height and nothing moves */
+    .rrow .rcap .link, .tbl td a.inst-link, .tr-tbl th a.link {
+        display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; margin-block: -14px; padding-block: 0;
+    }
+    .tr-stopped a.link { display: inline-flex; align-items: center; min-height: 44px; }
+    .uon-row { min-height: 44px; }
+    .cert-main a.link, .help .pages a { min-height: 44px; }
+    .gc input[type="time"] { height: 44px; }
+    .file-btn input[type="file"] { inset: -1px; }
+    .gc .logs-page .filters .search input, .gc .logs-page .filters select,
+    .gc .logs-page .filters input[type="date"] { height: 44px; }
 }
 
 /* ── the record on a phone (§6: tiles 1-up as compact rows) ─────────────── */
@@ -2110,6 +2154,27 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
     .kv > .v, .tr-kv > .v, .cf-kv > .v { padding-top: 2px; }
 }
 
+/* ── the walls on a tablet (≤1099px; piece 15, round 2) ─────────────────
+   At 820 the head's three columns left the sentence 280px: "2 in…" was the
+   headline, and the foot's live line ran under the bench count ("updated
+   11:02:03 PD"). A wall's sentence, counts and live line are what it is
+   for, so on a tablet they wrap rather than cut: the mark and the sentence
+   share the first row (the sentence wraps), the counts take the row under
+   them, and the foot wraps its three facts onto two lines if it must. */
+@media (max-width: 1099px) {
+    .wall-head { grid-template-columns: auto minmax(0, 1fr); row-gap: 12px; }
+    .wh-title { align-items: flex-start; }
+    .wh-title > span:last-child { white-space: normal; overflow: visible; text-overflow: clip; }
+    .wall .wh-glyph { margin-top: 0.42em; }
+    .wall-counts, .wall-counts.cols-1, .wall-counts.cols-2, .wall-counts.cols-3 {
+        grid-column: 2; display: flex; flex-wrap: wrap; justify-content: start; gap: 6px 28px; margin-top: 0;
+    }
+    .wall-counts[hidden] { display: none; }
+    .wall-head .wq-pages { grid-column: 2; margin-top: 0; }
+    .wall-foot { flex-wrap: wrap; height: auto; min-height: 44px; padding-block: 8px; row-gap: 2px; white-space: normal; }
+    .wall-foot > span { overflow: visible; }
+}
+
 /* ── the walls on a phone (piece 15) ────────────────────────────────────
    A wall is a TV's page, but a link to it opened on a phone must still be
    read without scrolling sideways. The head stacks (way home, the sentence,
@@ -2122,12 +2187,14 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
     .wall-head { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
     .wall-mark { justify-self: start; margin-left: -8px; }
     .wh-title { font-size: 26px; gap: 10px; }
-    .wh-title > span:last-child { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+    .wh-title > span:last-child { white-space: normal; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
     .wall .wh-glyph { scale: 1.6; margin: 0 6px 0 4px; }
     .wh-sub { font-size: 16px; }
     .wall-counts, .wall-counts.cols-1, .wall-counts.cols-2, .wall-counts.cols-3 {
-        justify-content: start; grid-template-columns: repeat(2, minmax(0, max-content)); gap: 6px 20px;
+        grid-column: 1; display: grid; justify-content: start; grid-template-columns: repeat(2, minmax(0, max-content)); gap: 6px 20px;
     }
+    .wall-counts[hidden] { display: none; }
+    .wall-head .wq-pages { grid-column: 1; }
     .wc { font-size: 15px; }
     .wc .wc-n { font-size: 24px; }
     .wall-main, .wall-main.tight-plan, .wall-main[data-layout="hole"] { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
@@ -2147,11 +2214,21 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
 }
 
 /* ── the phone's top bar, and the tables that still had columns ─────────
-   §6: the phone bar is the menu, the mark and the page's actions; the
-   crumbs already give way to the page's own h1 below 700px (piece 9: one
-   heading, J3). The actions keep their words with tighter sides. At 320 CSS
-   px (WCAG reflow) the mark goes too: the menu holds the same way home. */
+   §2.1: the phone bar is the menu button, the mark and the page title, then
+   the page's actions. The crumbs keep only their last word, the page you
+   are on ("GC-1", "Opening", "Diesel - AO25"), in the bar's own weight; the
+   way back up is the menu, one tap away. Round 1 hid the crumbs whole and
+   the bar said nothing about where you were once the h1 scrolled away. The
+   actions keep their words with tighter sides. At 320 CSS px (WCAG reflow)
+   the mark goes too: the menu holds the same way home. */
 @media (max-width: 699px) {
+    .topbar .crumbs { flex: 1 1 auto; font-size: var(--fs-md); }
+    .topbar .crumbs > a, .topbar .crumbs > .sep { display: none; }
+    .topbar .crumbs .here { min-width: 0; }
+    .topbar .crumbs + .spacer { display: none; }
+    /* "New round" says "New" in a bar that already says "Rounds" */
+    .topbar .bar-long { display: none; }
+    .topbar > h1, .topbar .bar-title { font-size: var(--fs-md); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .topbar .btn { padding-inline: var(--s3); flex: none; }
     /* the schedule: the task and its due word, then its two buttons */
     .tbl.mt thead { display: none; }

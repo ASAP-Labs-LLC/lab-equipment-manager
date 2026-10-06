@@ -83,7 +83,10 @@
             h('thead', {}, h('tr', {}, ...[['Task', ''], ['How often', 'm-every'], ['Last done', 'm-last'], ['Due', ''], ['', 'm-act']]
                 .map(([t, cls]) => h('th', { scope: 'col', className: cls, text: t }, t ? null : h('span', { className: 'visually-hidden', text: 'Actions' }))))),
             h('tbody', {}, ...tasks.map(t => h('tr', { 'data-task': t.uid, 'data-testid': 'mt-row' },
-                h('td', {}, h('b', { text: t.name }), h('span', { className: 'sub', text: KIND[t.kind] || '' })),
+                // the phone hides How often and Last done (§6 two-line rows):
+                // their words ride on the task's own sub line instead
+                h('td', {}, h('b', { text: t.name }), h('span', { className: 'sub' }, KIND[t.kind] || '',
+                    h('span', { className: 'fold-mt', text: (KIND[t.kind] ? ' · ' : '') + A.everyText(t.every) + ' · last done ' + (t.last_done ? R.dayIn(t.last_done) : 'never') }))),
                 h('td', { className: 'm-every', text: A.everyText(t.every) }),
                 h('td', { className: 'm-last', text: t.last_done ? R.dayIn(t.last_done) : 'Never' }),
                 h('td', {}, h('span', { className: 'verdict ' + (t.glyph === 'half' ? 's-ok_but' : '') }, glyph(t.glyph === 'half' ? 'half' : 'final'), h('span', { text: t.word })),
