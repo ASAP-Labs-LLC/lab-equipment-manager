@@ -202,11 +202,20 @@ def start_transfer(app, store, *, dev: bool, import_mirror=None,
     * The bridge thread starts on every writable store with a separate
       LabCore; it does nothing until the import is verified and the switch
       is on.
-    A read-only store (the updater's candidate boot) does none of it."""
+    A read-only store (the updater's candidate boot) does none of it.
+
+    Under `--dev` the bridge is dropped, not started. It can never be on there
+    (the import it waits for is never verified on a scratch store), and the
+    foot counts a v3.9 bench as reporting only when its road works, which with
+    a bridge means the bridge being on: a fresh `--dev --seed` said "Data · 0
+    of 13 reporting". The seeded benches were never behind a bridge; their
+    records are written straight into the store, the no-bridge case."""
     out = {"held": False, "importing": False, "bridge": False}
     if getattr(store, "read_only", False):
         return out
     import legacy_import
+    if dev:
+        app.config.pop("BRIDGE", None)
     if not dev:
         out["held"] = legacy_import.hold_until_verified(store)
         if out["held"] and import_mirror:
@@ -222,6 +231,19 @@ def start_transfer(app, store, *, dev: bool, import_mirror=None,
         bridge.start()
         out["bridge"] = True
     return out
+
+
+def attach_demo_keepers(app, store, *, dev: bool, seed: bool, clock=None) -> bool:
+    """`--dev --seed` only: keep the seeded benches' heartbeats current on
+    every snapshot cycle (demo_floor.keep_alive), so the demo does not age into
+    "Bench stopped" fifteen minutes after boot. Anything else (production, an
+    unseeded dev store) is left exactly as it was. Returns whether attached."""
+    if not (dev and seed):
+        return False
+    import demo_floor
+
+    demo_floor.attach_keeper(app.config["SNAPSHOTS"], store, clock=clock)
+    return True
 
 
 def app_options(args) -> dict:
@@ -269,6 +291,7 @@ def main(argv) -> int:
     # requests are served from memory and LabCore sees one reader, not one per
     # screen. Started before serving so the first page has something to show.
     snapshots = app.config["SNAPSHOTS"]
+    attach_demo_keepers(app, store, dev=args.dev, seed=args.seed)
     snapshots.start()
     # Backup and custody (transfer §11): the hourly checked backup, the
     # nightly off-host copy and the monthly restore drill. A read-only store
