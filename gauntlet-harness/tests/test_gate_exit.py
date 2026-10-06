@@ -37,6 +37,10 @@ def _copy_gate(tmp_path, with_package=True):
     if with_package:
         shutil.copytree(os.path.join(HERE, "gharness"), dst / "gharness",
                         ignore=shutil.ignore_patterns("__pycache__"))
+        # the phase-1 baseline is part of the harness now (committed beside
+        # gharness/, the default when LEM_GATE_BASELINE is unset)
+        shutil.copytree(os.path.join(HERE, "baseline"), dst / "baseline",
+                        ignore=shutil.ignore_patterns("__pycache__"))
     return dst
 
 

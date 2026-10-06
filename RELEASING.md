@@ -96,7 +96,11 @@ git push origin v1.2.3
 **Transfer v4 (server or module 4.x): the gate first.** CI runs no tests, so
 nothing else stands between a transfer regression and the floor. Before a
 4.x tag (transfer spec §15), every one of these must exit 0. Judge by the exit
-status, never a piped `| tail`:
+status, never a piped `| tail`. Nothing needs setting: the phase-1 baseline
+the gate reproduces (its harness, `faults.json`, `web.json`, `economy.json`
+and an excerpt of LabCore's op tables) is committed in
+`gauntlet-harness/baseline/`. `LEM_GATE_BASELINE=/path` points the gate at a
+different baseline instead; leave it unset for a release.
 
 ```bash
 set -o pipefail

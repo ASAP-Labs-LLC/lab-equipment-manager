@@ -6,13 +6,13 @@
   --target v4     this worktree (the parent of gauntlet-harness/).
   --code PATH     any tree with "LEM Station Module" and "LEM Web Server".
 
-The baseline harness (`baseline/harness/lemharness.py`) is imported read-only,
-and it hard-codes the MAIN checkout onto the front of sys.path. Left alone,
-that would silently run the main checkout's module under a gate that says it
-ran v3.9.0 or this worktree. So the target's modules are imported FIRST (they
-are then in sys.modules and win), the main-checkout paths lemharness inserts
-are removed again, and `verify_loaded()` fails the gate if any loaded module
-came from anywhere but the target.
+The baseline harness (`gauntlet-harness/baseline/harness/lemharness.py`,
+committed; LEM_GATE_BASELINE overrides) is imported read-only. In phase 1 it
+hard-coded the MAIN checkout onto the front of sys.path; the vendored copy
+inserts code paths only when run standalone. Either way the target's modules
+are imported FIRST (they are then in sys.modules and win), any main-checkout
+paths are removed again, and `verify_loaded()` fails the gate if any loaded
+module came from anywhere but the target.
 """
 import os
 import subprocess
@@ -23,10 +23,12 @@ import io
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # gauntlet-harness/
 WORKTREE = os.path.dirname(HERE)
 MAIN_CHECKOUT = "/Users/rynatical/Projects/lab-equipment-manager"
-BASELINE = os.environ.get(
-    "LEM_GATE_BASELINE",
-    "/private/tmp/claude-501/-Users-rynatical/d75f6110-132a-4335-bd09-5d98bf281f0c"
-    "/scratchpad/gauntlet/baseline")
+# The phase-1 baseline the gate reproduces: harness/ (lemharness, run_faults,
+# run_web), faults.json, web.json, economy.json and prod/LabCore_tables.excerpt.
+# Committed under gauntlet-harness/baseline so a clean clone can run the
+# release gate. LEM_GATE_BASELINE overrides it (a baseline re-measured
+# elsewhere); unset or empty means the committed copy.
+BASELINE = os.environ.get("LEM_GATE_BASELINE") or os.path.join(HERE, "baseline")
 BASELINE_HARNESS = os.path.join(BASELINE, "harness")
 
 TAGS = {"v3.9": "v3.9.0"}
