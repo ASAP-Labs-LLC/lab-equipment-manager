@@ -189,7 +189,7 @@ class TestThe3DSiteIsDeleted:
 
     def test_the_floor_page_cannot_ask_for_it(self, tmp_path):
         app, _ = _seeded(tmp_path)
-        for path in ("/floor", "/floor/classic"):
+        for path in ("/floor", "/", "/?view=map"):
             self._cannot_ask(app.test_client().get(path).get_data(as_text=True))
 
     @staticmethod

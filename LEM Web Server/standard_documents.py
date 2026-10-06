@@ -54,9 +54,9 @@ certificates folder underneath it would put every COA in the lab on that list.
 **Read this before touching anything named `rename`.** `QcSampleStore` has
 `save` (upsert-by-name), `delete`, `list_samples`, `as_payload` and `by_lab_id`
 — and nothing that renames. A standard is renamed by **save-new-then-delete-
-old**, and three places in this tree say so in those words: `templates/
-floor.html`, `templates/stations.html` and `web_app.py`'s `/api/qc-samples`
-handler.
+old**, and this tree said so in those words in three places: the old
+floor and stations pages (deleted in piece 14) and `web_app.py`'s
+`/api/qc-samples` handler.
 
 So a rename never reaches this table. The certificates keep naming the old
 standard, which no longer exists: `certificates(new_name)` answers `[]` while
@@ -1236,9 +1236,9 @@ class StandardCertificateStore:
         **There is no rename verb in this application, and this method has no
         caller.** `QcSampleStore` has `save` (upsert-by-name), `delete`,
         `list_samples`, `as_payload` and `by_lab_id` — and nothing that renames.
-        A standard is renamed by save-new-then-delete-old, and three places say
-        so in those words: `templates/floor.html`, `templates/stations.html`
-        and `web_app.py`'s `/api/qc-samples` handler.
+        A standard is renamed by save-new-then-delete-old, and this tree said
+        so in those words in three places: the old floor and stations pages
+        (deleted in piece 14) and `web_app.py`'s `/api/qc-samples` handler.
 
         What that means for certificates, plainly: **a rename does not reach
         this table at all.** The certificates keep naming the old standard,
@@ -1330,8 +1330,8 @@ class StandardCertificateStore:
         """Destroy one standard's whole certificate set. Returns how many.
 
         **Do NOT wire this into `DELETE /api/qc-samples`.** This application
-        renames a standard by save-new-then-delete-old — `templates/floor.html`,
-        `templates/stations.html` and `web_app.py` all say so — so a rename
+        renames a standard by save-new-then-delete-old — `web_app.py` says so,
+        as the old floor and stations pages did — so a rename
         ENDS in that route. Hooked there, renaming a standard would destroy
         the lab's certificates: the rows and the PDFs, in one click, in the year
         of a PJLA assessment. CLAUDE.md's own precedent points straight at the

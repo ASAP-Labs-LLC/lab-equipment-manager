@@ -185,7 +185,7 @@ class TestIdleReporting:
     @pytest.mark.parametrize("path", [
         "/healthz",
         "/api/machines",
-        # All four of these are on floor.html's 2-second timers. The first
+        # All four of these were on the old floor page's 2-second timers. The first
         # version of this list had only /api/machines, the second added
         # /api/me and /api/map, and /api/qc-samples was still missing - each
         # time pinning idle below a second so a deploy could never fire.

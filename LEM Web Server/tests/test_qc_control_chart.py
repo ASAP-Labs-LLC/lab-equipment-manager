@@ -477,8 +477,9 @@ class TestTheEndpointUsesQcSeries:
 
 class TestTheExistingContractSurvives:
     def test_points_band_and_counts_are_still_where_they_were(self, gw, client):
-        """floor.html is being rewritten against this payload right now. The
-        new fields are additions; the old names still mean what they meant."""
+        """The record's chart reads this payload (the old floor page did
+        too). The new fields are additions; the old names still mean what
+        they meant."""
         seed_attributed(gw)
         s = series_of(client, "m1")
         assert [p["value"] for p in s["points"]] == VALUES

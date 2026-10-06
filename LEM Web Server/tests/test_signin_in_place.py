@@ -37,16 +37,12 @@ STATIC = ROOT / "static"
 
 SHELL_PAGES = ["/settings", "/help", "/", "/logs", "/checklists/edit", "/checklists/edit/new",
                "/checklists/trends"]
-# the pages still drawn by _nav.html that have a Sign in of their own
-# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
-# covers it); "/maintenance" redirects to its filter, and the old PM page
-# lives at /maintenance/classic until the record and Settings › Imports take
-# over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
-# round, and /checklists/edit is the round editor and /checklists/trends is
-# Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
-# /logs moved onto the shell in piece 7 (ia-final §3.6); its shell checks
-# are tests/test_ui_shell_pages.py's.
-OLD_PAGES = ["/maintenance/classic"]
+# Every page is a shell page now. The pages drawn by the old nav partial,
+# each with a Sign in of its own (the home chooser, the PM page, the floor),
+# were deleted in piece 14; /checklists is a 302 to the round, and the round,
+# the record and Instruments have their own sign-in checks
+# (tests/test_round_page.py, test_ui_record*.py, test_ui_shell_pages.py).
+SHELL_PAGES += ["/quality", "/quality/standards", "/instruments"]
 
 
 class StubAuth:
@@ -99,14 +95,14 @@ def body_tag(html):
 # ── one sheet, everywhere there is a Sign in ────────────────────────────────
 
 class TestOneSheet:
-    @pytest.mark.parametrize("path", SHELL_PAGES + OLD_PAGES)
+    @pytest.mark.parametrize("path", SHELL_PAGES)
     def test_exactly_one_sign_in_sheet(self, client, path):
         html = page(client, path)
         sheets = re.findall(r'<dialog\b[^>]*\bid="signin-sheet"[^>]*>', html)
         assert len(sheets) == 1, f"{path}: {len(sheets)} sign-in sheets"
         assert re.search(r'class="[^"]*\bsheet\b', sheets[0])
 
-    @pytest.mark.parametrize("path", SHELL_PAGES + OLD_PAGES)
+    @pytest.mark.parametrize("path", SHELL_PAGES)
     def test_the_controller_is_loaded(self, client, path):
         assert re.search(r'<script src="/static/js/signin\.js\?v=', page(client, path)), path
 
@@ -115,22 +111,15 @@ class TestOneSheet:
         uses = [p.name for p in T.glob("*.html") if 'id="signin-sheet"' in p.read_text()]
         assert uses == ["_signin.html"], uses
 
-    @pytest.mark.parametrize("name", ["home.html", "round_edit.html", "maintenance.html", "logs.html"])
-    def test_no_page_sends_you_to_the_floor_to_sign_in(self, name):
-        src = (T / name).read_text()
-        assert "the sign-in dialog lives there" not in src
-        assert not re.search(r"location\.href\s*=\s*['\"]/floor['\"]", src), name
-
-    @pytest.mark.parametrize("path", OLD_PAGES)
-    def test_sign_in_is_a_link_that_works_without_script(self, client, path):
-        """The button is an <a href="/signin?next=<this page>">; the script
-        turns the click into the sheet, and without a script it still works."""
-        html = page(client, path)
-        m = re.search(r'<a\b[^>]*\bid="btnAuth"[^>]*>', html)
-        assert m, f"{path}: Sign in is not a link"
-        nxt = path if path != "/" else "/"
-        assert 'href="/signin?next=' + nxt.replace("/", "%2F") + '"' in m.group(0) or \
-            'href="/signin?next=' + nxt + '"' in m.group(0), m.group(0)
+    def test_no_page_sends_you_to_the_floor_to_sign_in(self):
+        """Every template and script, not a list of names: the pages this
+        once named are gone, and the rule is for all of them."""
+        files = sorted(T.glob("*.html")) + sorted((STATIC / "js").glob("*.js"))
+        assert len(files) > 40
+        for p in files:
+            src = p.read_text()
+            assert "the sign-in dialog lives there" not in src, p.name
+            assert not re.search(r"location\.href\s*=\s*['\"]/floor['\"]", src), p.name
 
     def test_the_shell_chip_is_the_sign_in_when_signed_out(self, client):
         """T0 is two clicks: the chip, then Sign in. A chip that opens a menu
@@ -144,13 +133,13 @@ class TestOneSheet:
 # ── signed out is known before any script runs ──────────────────────────────
 
 class TestAnonOnFirstPaint:
-    @pytest.mark.parametrize("path", SHELL_PAGES + OLD_PAGES)
+    @pytest.mark.parametrize("path", SHELL_PAGES)
     def test_signed_out_body_is_anon(self, client, path):
         tag = body_tag(page(client, path))
         assert re.search(r'class="[^"]*\banon\b', tag), tag
         assert 'data-user=""' in tag
 
-    @pytest.mark.parametrize("path", SHELL_PAGES + OLD_PAGES)
+    @pytest.mark.parametrize("path", SHELL_PAGES)
     def test_signed_in_body_is_not(self, client, path):
         with client.session_transaction() as s:
             s["user"] = "Cody"
@@ -237,7 +226,8 @@ class TestSwitchPerson:
 # ── dimmed, never dead ──────────────────────────────────────────────────────
 
 class TestGatedIsDimNotDead:
-    CSS = [STATIC / "css" / "lem.css", STATIC / "css" / "signin_legacy.css"]
+    # signin_legacy.css dimmed the old nav partial's pages; it went with them
+    CSS = [STATIC / "css" / "lem.css"]
 
     @pytest.mark.parametrize("css", CSS, ids=lambda p: p.name)
     def test_a_gated_rule_exists_and_never_kills_the_click(self, css):
@@ -258,14 +248,17 @@ class TestGatedIsDimNotDead:
 # ── the acts that wait for you ──────────────────────────────────────────────
 
 class TestTheActsThatWait:
+    # Mark done lives on the record's Maintenance and calibration section
+    # (the fleet-wide PM page that had it was deleted in piece 14).
+
     def test_mark_done_is_gated_and_uses_a_sheet(self):
-        src = (T / "maintenance.html").read_text()
-        assert 'data-gated="mark done"' in src
-        assert "prompt(" not in src, "a prompt() cannot be handed over to after sign-in"
-        assert re.search(r'<dialog\b[^>]*id="done-sheet"', src)
+        js = (STATIC / "js" / "record_actions.js").read_text()
+        assert "gated('mt-done', 'mark ' + lower(t.name) + ' done', 'Mark done…'" in js
+        assert "prompt(" not in js, "a prompt() cannot be handed over to after sign-in"
+        assert re.search(r'<dialog\b[^>]*id="done-sheet"', (T / "instrument.html").read_text())
 
     def test_the_note_is_required(self):
-        src = (T / "maintenance.html").read_text()
+        src = (T / "instrument.html").read_text()
         assert re.search(r'<textarea\b[^>]*id="done-note"[^>]*\brequired\b', src)
 
     def test_saving_a_round_waits_for_sign_in(self):

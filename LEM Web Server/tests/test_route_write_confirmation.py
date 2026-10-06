@@ -819,10 +819,14 @@ class TestTheMapLockDegradesTowardsLocked:
 
 # ── the panels: a failure the page ignores is still a silent failure ───────
 
-def _tpl(name):
+def _src(*parts):
     import pathlib
-    return (pathlib.Path(__file__).resolve().parent.parent / "templates"
-            / name).read_text(encoding="utf-8")
+    return (pathlib.Path(__file__).resolve().parent.parent.joinpath(*parts)
+            .read_text(encoding="utf-8"))
+
+
+def _js(name):
+    return _src("static", "js", name)
 
 
 class TestThePagesReadTheStatusTheyGetBack:
@@ -834,118 +838,72 @@ class TestThePagesReadTheStatusTheyGetBack:
     rendered as an empty schedule, an empty archive, a bench with no
     corrections.
 
-    WHAT THIS CLASS IS AND IS NOT (2026-08-25). Everything below greps the
-    template for a string. That is honest coverage for "does this call site
-    exist" — a call site either is written or is not, and a rename or a
-    refactor that drops one is exactly what these catch. It is NOT coverage of
-    BEHAVIOUR, and it was standing in for behaviour coverage of `failure()`,
-    which is the single function every write on the floor is judged by.
-
-    Demonstrated, not assumed: replacing the body of `failure()` with
-
-        const unused = b.error || '…';
-        return null;
-
-    leaves every string these tests look for in the file, so all twelve pass —
-    while every dialog on the floor closes on "Saved" for a write LabCore
-    refused, which is the whole branch undone. `test_the_floor_actually_runs`
-    below runs the function instead and fails on it in three cases.
+    These held the old floor page and the old PM page,
+    which piece 14 deleted; the floor's `failure()` was also RUN by
+    tests/js/floorboot.mjs, deleted with it. The same promises are held on
+    the record now, where every write goes through record.js's one send()
+    and one submit(). What a grep cannot settle (a refused write keeps its
+    sheet open with the server's sentence) is walked in a real browser by
+    tests/test_ui_record_actions_browser.py.
     """
 
-    def test_the_floor_actually_runs_its_reader(self):
-        """Execute `failure()`, do not grep for it.
+    def _send(self):
+        js = _js("record.js")
+        body = js[js.index("    function send(url, opts)"):]
+        return body[:body.index("\n    }\n")]
 
-        tests/js/floorboot.mjs pulls the page's classic script into a `vm`
-        context against a stub DOM and calls `failure()` with response objects
-        shaped like the ones `_labcore_failed` and `_labcore_unreadable` send.
-        A grep cannot tell a working function from a gutted one; the engine
-        can, and it is the same engine the browser uses.
-        """
-        import shutil
-        import subprocess
-        node = shutil.which("node")
-        if not node:
-            pytest.skip("node is not installed; run tests/js/floorboot.mjs "
-                        "directly on a machine that has it")
-        here = os.path.dirname(os.path.abspath(__file__))
-        done = subprocess.run(
-            [node, os.path.join(here, "js", "floorboot.mjs")],
-            capture_output=True, text=True, timeout=120)
-        assert done.returncode == 0, done.stdout + done.stderr
-        # And the assertion this test exists for actually ran, rather than the
-        # harness quietly skipping it after an earlier failure.
-        assert "failure() judges" in done.stdout, done.stdout
+    def test_the_record_has_one_reader_for_a_refused_write(self):
+        """Any non-2xx, an `error`, or `ok: false` (both of LabCore's refusal
+        shapes arrive as one of these) is thrown with the server's sentence."""
+        assert "if (!r.ok || b.error || b.ok === false)" in self._send()
 
-    def test_the_floor_has_one_reader_for_a_refused_write(self):
-        src = _tpl("floor.html")
-        assert "async function failure(r" in src
-        # Kept as a NAME check only. What the body does is settled by
-        # test_the_floor_actually_runs_its_reader above; this one catches the
-        # rename, which that one reports differently ("failure() is gone").
-        #
-        # It no longer reads `b.error` itself. The formatting moved into
-        # `LEM.failure` (static/lem.js) so every page says the same thing about
-        # a refusal — including `landed`/`not_landed` and the retry hint, which
-        # this local copy never carried. ONE reader that DELEGATES is what is
-        # held; the arity is not, because a caller with a better fallback
-        # sentence of its own passes it in.
-        body = src.split("async function failure(r", 1)[1].split("\n}", 1)[0]
-        assert "if (r.ok) return null;" in body
-        assert "LEM.failure(" in body
+    def test_the_record_closes_a_sheet_only_after_the_answer(self):
+        js = _js("record.js")
+        sub = js[js.index("    function submit(form, err, go, req, done)"):]
+        sub = sub[:sub.index("\n    }\n")]
+        assert ".then((b) => { form.closest('dialog').close(); done(b);" in sub
+        assert ".catch(e => { err.textContent =" in sub
 
-    @pytest.mark.parametrize("call", [
-        # every write on the floor that used to be fire-and-forget
-        "await failure(gone)",           # renaming a QC standard
-        "await failure(r)",              # the rest
-    ])
-    def test_the_floor_checks_before_it_closes_a_dialog(self, call):
-        assert call in _tpl("floor.html")
-
-    def test_the_floor_never_swallows_a_qc_sample_delete(self):
-        src = _tpl("floor.html")
-        # Both delete paths (the rename's tidy-up and the explicit button) run
-        # through `failure`, so neither can leave two lots under one Lab ID.
-        assert src.count("'/api/qc-samples', {method: 'DELETE'") == 2
-        # The explicit delete asks in the page's own sheet now, not a native
-        # confirm(), so its refusal is RETURNED to that sheet rather than
-        # painted behind it. Either way it is read and shown, which is the
-        # thing this test exists to hold.
-        assert "$('#sampleErr').textContent = bad" in src or (
-            "askConfirm({" in src and "return bad;" in src)
-
-    def test_the_qc_assignment_sheet_stays_open_on_a_failure(self):
-        src = _tpl("floor.html")
-        head = src.split("$('#qcSave')", 1)[1][:900]
-        assert "alert(bad)" in head and "return;" in head
+    def test_deleting_a_standard_is_never_swallowed(self):
+        """standard.js's Delete goes through its own send(), which throws on
+        a refusal, and lands on the library only in the .then."""
+        js = _js("standard.js")
+        assert "send('DELETE', '/api/qc-samples', { name: data.name }).then(" in js
+        snd = js[js.index("    function send(method, url, body, isForm)"):]
+        snd = snd[:snd.index("\n    }\n")]
+        assert "r.ok" in snd and "throw" in snd
 
     def test_a_partial_completion_reaches_the_person(self):
-        # The reschedule landed and the history line did not. Both pages that
-        # can complete a task have to show that, or the audit gap is invisible.
-        assert "logged === false" in _tpl("floor.html")
-        assert "logged === false" in _tpl("maintenance.html")
+        # The reschedule landed and the history line did not. The page that
+        # completes a task (the record, since piece 6) has to show that, or
+        # the audit gap is invisible.
+        assert "b.logged === false" in _js("record.js")
 
     def test_the_map_lock_says_when_it_is_a_fallback(self):
-        src = _tpl("floor.html")
-        assert "LOCK_KNOWN" in src
-        assert "mp.known !== false" in src
+        js = _js("floor_map.js")
+        assert "known: false" in js and "j.known === false" in js
 
-    def test_the_corrections_dialog_never_falls_back_to_zero(self):
-        src = _tpl("floor.html")
-        assert "{corrections: [], methods: []}" not in src, \
-            "showing 0.0 for a bench running at -3.0 is the failure itself"
+    def test_no_page_falls_back_to_an_empty_answer(self):
+        """Showing 0.0 for a bench running at -3.0, or "nothing scheduled"
+        for a schedule that could not be read, is the failure itself."""
+        for p in sorted(__import__("pathlib").Path(__file__).resolve().parent.parent
+                        .joinpath("static", "js").glob("*.js")):
+            src = p.read_text(encoding="utf-8")
+            for empty in ("{corrections: [], methods: []}", "{ corrections: [], methods: [] }",
+                          "{tasks: []}", "{ tasks: [] }", "{history: []}", "{ history: [] }"):
+                assert empty not in src, (p.name, empty)
 
-    def test_the_pm_panels_do_not_render_a_blip_as_nothing_scheduled(self):
-        src = _tpl("floor.html")
-        assert "{tasks: []}" not in src
-        assert "{history: []}" not in src
+    def test_the_record_tells_unreadable_from_empty(self):
+        js = _js("record_actions.js")
+        assert "This is not an empty list." in js
+        assert "Couldn\\'t read what was done: " in js
+        for sec in ("corrections", "actions", "documents"):
+            assert "body.replaceChildren(failed('its " in js and "'%s'))" % sec in js, sec
 
     def test_the_checklist_archive_tells_unreadable_from_empty(self):
         src = (Path(__file__).resolve().parent.parent / "static" / "js"
                / "round_archive.js").read_text(encoding="utf-8")
         assert "This is not an empty archive" in src
-
-    def test_the_maintenance_page_tells_unreadable_from_nothing_done(self):
-        assert "This is not an empty record" in _tpl("maintenance.html")
 
     def test_the_logs_page_still_shows_its_banner(self):
         # /api/logs keeps its 200 + `error` shape, so this must stay. The

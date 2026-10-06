@@ -45,8 +45,8 @@
         for (const r of (data && data.instruments) || []) hrefs[r.uid] = r.href;
     }
     function hrefFor(uid, section) {
-        const base = hrefs[uid] || '/floor/classic';
-        return section && base.indexOf('/instruments/') === 0 ? base + '#' + section : base;
+        const base = hrefs[uid] || '/instruments/' + encodeURIComponent(uid);
+        return section ? base + '#' + section : base;
     }
 
     // ── glyphs: a shape per state (§4.1) ──────────────────────────────────

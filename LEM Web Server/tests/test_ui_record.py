@@ -834,12 +834,15 @@ class TestTheRoutes:
         assert r.status_code == 200
         assert "floor_map.js" in r.get_data(as_text=True)
 
-    def test_the_floor_opens_the_machine_it_was_sent(self):
-        """Until the map moves into the shell, the floor's own record panel is
-        where corrections, documents and actions live: the record's ghost
-        button has to land on THIS instrument, not on the whole floor."""
-        floor = (T / "floor.html").read_text()
-        assert "get('machine')" in floor
+    def test_an_old_floor_link_to_a_machine_opens_its_record(self, tmp_path):
+        """The old floor's panel opened from `/floor?machine=<uid>`, and
+        people saved those links. The panel is the record now and the old
+        floor is gone (piece 14): the link lands on THIS instrument's
+        record, not on the whole floor."""
+        app, _ = _seeded(tmp_path)
+        r = app.test_client().get("/floor?machine=optimpp-1")
+        assert r.status_code == 302
+        assert r.headers["Location"].endswith("/instruments/optimpp-1")
 
 
 class TestNoRedAnywhere:
@@ -1196,25 +1199,18 @@ class TestASilentBenchIsCantTell:
         assert [p["key"] for p in row["problems"]] == ["cant_tell-never", "ok_but-cal"]
 
 
-class TestTheFloorPanelUsesFmtQC:
-    """§4.2: fmtQC "replaces toFixed(2) at floor.html:2131, 3188, 3193–3194",
-    and a guard fails on toFixed(2) in any spec path. The record's "Show on
-    the floor map" still lands on the floor's panel, and round 2's critic
-    found Anton Paar's density band there as "0.80 – 0.80": a band two
+class TestNoBandIsCutToFixedPlaces:
+    """§4.2: fmtQC replaced toFixed(2) on the old floor's panel, where round
+    2's critic found Anton Paar's density band as "0.80 – 0.80": a band two
     decimals cannot tell apart is a band nobody can check a reading against.
-    The one toFixed(2) left is the expanded uncertainty's ± (not a band)."""
-
-    def test_no_spec_number_is_cut_to_two_decimals(self):
-        floor = (T / "floor.html").read_text()
-        bad = [ln.strip() for ln in floor.splitlines() if "toFixed(2)" in ln and "widest" not in ln]
-        assert bad == [], bad
+    The floor is gone (piece 14); tests/test_ia_guards.py fails on any
+    toFixed(2) in anything shipped. This one is the band-specific rule for
+    any fixed number of places."""
 
     def test_no_band_anywhere_is_cut_to_a_fixed_number_of_places(self):
-        """§4.2's guard is "any spec path", not only the floor's. Round 2's
-        critic found toFixed(2) still printing bands in stations.html and
-        dashboard.html, where a sulfur band (0.0008 – 0.0014) reads
-        "0.00 – 0.00". Those pages are not routed today, but a template kept
-        in the tree is one a later piece can wire back; the guard covers
+        """§4.2's guard is "any spec path". Round 2's critic found toFixed(2)
+        still printing bands in the stations and dashboard pages, where a
+        sulfur band (0.0008 – 0.0014) reads "0.00 – 0.00". The guard covers
         every template and script, and a band's numbers go through fmtQC."""
         band = re.compile(r"(low|high|std_dev)[^\n]{0,40}\.toFixed\(\d\)")
         bad = []
@@ -1225,25 +1221,6 @@ class TestTheFloorPanelUsesFmtQC:
                 if band.search(ln) and not re.search(r"\by\((z|band)\.(low|high)\)", ln):
                     bad.append("%s:%d: %s" % (f.name, i, ln.strip()[:90]))
         assert bad == [], bad
-
-    def test_the_floor_loads_the_one_formatter(self):
-        floor = (T / "floor.html").read_text()
-        assert "/static/js/record_logic.js" in floor
-        assert "window.LEMRecord" in floor and "R.fmtQC(" in floor
-
-    def test_the_panel_says_the_records_verdict_not_only_the_benchs(self):
-        """Round 2's critic followed "Show on the floor map" from Anton Paar's
-        record (OK to run, but… calibration overdue) to a panel headed "GREEN
-        / System nominal". GREEN is what the bench says of itself; the lab's
-        verdict is readiness's. The panel now says the record's verdict first,
-        read from the same /api/ui/instruments/<uid> the record draws, labels
-        the bench's own word as the bench's, and says when it could not read
-        the verdict instead of drawing nothing (a failed read is never empty)."""
-        floor = (T / "floor.html").read_text()
-        assert 'id="panelVerdict"' in floor
-        assert "/api/ui/instruments/" in floor
-        assert "Bench reports" in floor
-        assert "Couldn't read the verdict" in floor
 
 
 class TestSignedOutPrimaryKeepsItsContrast:

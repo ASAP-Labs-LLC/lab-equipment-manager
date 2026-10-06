@@ -75,30 +75,19 @@ def test_the_client_cache_only_repaints_on_real_change():
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-@pytest.mark.skipif(not shutil.which("node"), reason="node not installed")
-def test_the_floor_script_actually_boots():
-    """Serving 200 is not the same as working.
-
-    Replacing the SVG renderer removed a block of the page that happened to
-    contain `esc()` and `col()`, while 96 calls to them stayed. Every Python
-    test still passed — the markup was right — and the page threw on load, so
-    every listener registered after that point was dead: sign-in, lab hours,
-    the debug panel, the map lock, the poll loop. It looked completely normal.
-
-    `tests/js/floorboot.mjs` runs the shipped script against a stub DOM and
-    then puts a live-shaped instrument through every render path, which is the
-    only thing that catches this class. A static check does not: the first
-    attempt passed with `col` deleted, because `col` is also a local inside
-    another function.
-    """
-    script = Path(__file__).parent / "js" / "floorboot.mjs"
-    proc = subprocess.run(["node", str(script)], capture_output=True, text=True,
-                          timeout=60)
-    assert proc.returncode == 0, proc.stdout + proc.stderr
+# `test_the_floor_script_actually_boots` ran tests/js/floorboot.mjs against
+# the old floor page; piece 14 deleted both. The new pages' scripts are loaded by a
+# real browser in tests/test_ui_*_browser.py, which fails on a page that
+# throws on load in the same way.
 
 
-def test_the_floor_registers_one_resize_listener():
-    """Two identical listeners meant every resize redrew the whole SVG twice."""
-    src = (Path(__file__).parent.parent / "templates" / "floor.html").read_text(
-        encoding="utf-8")
-    assert src.count("window.addEventListener('resize'") == 1
+def test_every_drawing_registers_one_resize_listener():
+    """Two identical listeners meant every resize redrew the whole SVG twice
+    (the old floor). The plan is drawn by the map view and the floor wall
+    now, and the chart by the record and the QC wall: each registers one."""
+    js = Path(__file__).parent.parent / "static" / "js"
+    counts = {p.name: p.read_text(encoding="utf-8").count("window.addEventListener('resize'")
+              for p in sorted(js.glob("*.js"))}
+    for name in ("floor_map.js", "wall_floor.js", "wall_qc.js", "record.js"):
+        assert counts[name] == 1, (name, counts[name])
+    assert all(n <= 1 for n in counts.values()), counts

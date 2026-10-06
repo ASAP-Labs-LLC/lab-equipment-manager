@@ -242,13 +242,14 @@ class TestTheRoutesStayWired:
         import web_app
         assert "repoint_certificates" in open(web_app.__file__).read()
 
-    def test_the_floor_can_reach_the_certificate_routes(self):
+    def test_a_page_can_reach_the_certificate_routes(self):
         """The routes existed for a whole release with no caller in any
-        template. That is not shipped."""
+        template. That is not shipped. The caller was the old floor's QC
+        library; since piece 14 it is the standard's page (standard.js)."""
         import os
 
         import web_app
         page = os.path.join(os.path.dirname(web_app.__file__),
-                            "templates", "floor.html")
+                            "static", "js", "standard.js")
         markup = open(page, encoding="utf-8").read()
         assert "/api/qc-standards/certificates" in markup

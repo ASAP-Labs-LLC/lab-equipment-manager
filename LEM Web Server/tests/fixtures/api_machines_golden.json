@@ -1,0 +1,1001 @@
+{
+ "age_seconds": 0.0,
+ "default_level": "LEVEL-0",
+ "ground_level": "LEVEL-0",
+ "labcore_online": true,
+ "levels": [
+  {
+   "name": "Ground Floor",
+   "rank": 0,
+   "uid": "LEVEL-0"
+  },
+  {
+   "name": "Mezzanine",
+   "rank": 1,
+   "uid": "LEVEL-1"
+  },
+  {
+   "name": "Upper Lab",
+   "rank": 2,
+   "uid": "LEVEL-2"
+  }
+ ],
+ "machines": [
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 0.8412,
+     "high": 0.843,
+     "last_qc_at": "2026-10-01T10:04:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 0.8418,
+     "low": 0.8394,
+     "sample_id": "STD-1",
+     "test_name": "Density 15C",
+     "units": "g/cm3"
+    }
+   ],
+   "last_activity": "2026-10-01T13:04:00",
+   "last_poll": "2026-10-01T13:29:35",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-1",
+   "live": false,
+   "machine_uid": "anton-paar-1",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-26",
+     "machine_uid": "anton-paar-1",
+     "name": "Monthly PM",
+     "next_due": "2026-10-26",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-26",
+     "status": "GREEN",
+     "uid": "anton-paar-1-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-07-24",
+     "machine_uid": "anton-paar-1",
+     "name": "Annual calibration",
+     "next_due": "2026-07-24",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-07-24)",
+     "status": "RED",
+     "uid": "anton-paar-1-calibration"
+    }
+   ],
+   "maintenance_due": 1,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    2.05,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Density 15C"
+    }
+   ],
+   "reason": "System nominal",
+   "status": "GREEN",
+   "status_color": "#21c071",
+   "sub_statuses": {
+    "calibration": "YELLOW",
+    "pm": "YELLOW",
+    "qc": "GREEN"
+   },
+   "title": "Anton Paar DMA 4500",
+   "updated_at": "2026-10-01T13:28:54",
+   "watching": "C:\\LabData\\dma-4500"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 47.2,
+     "high": 50.0,
+     "last_qc_at": "2026-10-01T13:17:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 44.8,
+     "low": 44.4,
+     "sample_id": "STD-1",
+     "test_name": "Cetane Index",
+     "units": ""
+    }
+   ],
+   "last_activity": "2026-10-01T13:17:00",
+   "last_poll": "2026-10-01T13:29:11",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-1",
+   "live": false,
+   "machine_uid": "cetane-calc",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-08-26",
+     "machine_uid": "cetane-calc",
+     "name": "Monthly PM",
+     "next_due": "2026-09-25",
+     "note": "",
+     "reason": "Overdue: Monthly PM (was due 2026-09-25)",
+     "status": "RED",
+     "uid": "cetane-calc-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-12-18",
+     "machine_uid": "cetane-calc",
+     "name": "Annual calibration",
+     "next_due": "2026-12-18",
+     "note": "",
+     "reason": "Annual calibration: next due 2026-12-18",
+     "status": "GREEN",
+     "uid": "cetane-calc-calibration"
+    }
+   ],
+   "maintenance_due": 1,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    4.1,
+    0.0
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Cetane Index"
+    }
+   ],
+   "reason": "System nominal",
+   "status": "GREEN",
+   "status_color": "#21c071",
+   "sub_statuses": {
+    "calibration": "YELLOW",
+    "pm": "GREEN",
+    "qc": "GREEN"
+   },
+   "title": "Cetane Bench",
+   "updated_at": "2026-10-01T13:29:21",
+   "watching": "C:\\LabData\\cetane"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [],
+   "last_activity": "2026-10-01T13:17:00",
+   "last_poll": "2026-10-01T13:29:56",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-0",
+   "live": false,
+   "machine_uid": "gc-1",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-08-26",
+     "machine_uid": "gc-1",
+     "name": "Monthly PM",
+     "next_due": "2026-09-25",
+     "note": "",
+     "reason": "Overdue: Monthly PM (was due 2026-09-25)",
+     "status": "RED",
+     "uid": "gc-1-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2026-07-22",
+     "machine_uid": "gc-1",
+     "name": "Annual calibration",
+     "next_due": "2027-07-22",
+     "note": "",
+     "reason": "Annual calibration: next due 2027-07-22",
+     "status": "GREEN",
+     "uid": "gc-1-calibration"
+    }
+   ],
+   "maintenance_due": 1,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    4.1,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [],
+   "reason": "No QC assigned",
+   "status": "UNKNOWN",
+   "status_color": "#718096",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "GREEN",
+    "qc": "UNKNOWN"
+   },
+   "title": "GC-1",
+   "updated_at": "2026-10-01T13:28:43",
+   "watching": "C:\\LabData\\gc-1"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 0.0015,
+     "high": 0.0019,
+     "last_qc_at": "2026-10-01T11:59:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 0.0012,
+     "low": 0.0011,
+     "sample_id": "STD-1",
+     "test_name": "Sulfur",
+     "units": "%m/m"
+    }
+   ],
+   "last_activity": "2026-10-01T13:26:00",
+   "last_poll": "2026-10-01T13:29:52",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-2",
+   "live": false,
+   "machine_uid": "gc-2",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-16",
+     "machine_uid": "gc-2",
+     "name": "Monthly PM",
+     "next_due": "2026-10-16",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-16",
+     "status": "GREEN",
+     "uid": "gc-2-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-05-17",
+     "machine_uid": "gc-2",
+     "name": "Annual calibration",
+     "next_due": "2026-05-17",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-05-17)",
+     "status": "RED",
+     "uid": "gc-2-calibration"
+    }
+   ],
+   "maintenance_due": 1,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    2.05,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Sulfur"
+    }
+   ],
+   "reason": "System nominal",
+   "status": "GREEN",
+   "status_color": "#21c071",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "GREEN",
+    "qc": "GREEN"
+   },
+   "title": "GC-2",
+   "updated_at": "2026-10-01T13:29:20",
+   "watching": "C:\\LabData\\gc-2"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [],
+   "last_activity": "2026-10-01T02:30:00",
+   "last_poll": "2026-10-01T13:29:34",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-2",
+   "live": false,
+   "machine_uid": "karl-fischer",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-28",
+     "machine_uid": "karl-fischer",
+     "name": "Monthly PM",
+     "next_due": "2026-10-28",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-28",
+     "status": "GREEN",
+     "uid": "karl-fischer-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2026-02-15",
+     "machine_uid": "karl-fischer",
+     "name": "Annual calibration",
+     "next_due": "2027-02-15",
+     "note": "",
+     "reason": "Annual calibration: next due 2027-02-15",
+     "status": "GREEN",
+     "uid": "karl-fischer-calibration"
+    }
+   ],
+   "maintenance_due": 0,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    0.0,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [],
+   "reason": "Out for service",
+   "status": "SERVICE",
+   "status_color": "#8d99ae",
+   "sub_statuses": {
+    "calibration": "YELLOW",
+    "pm": "GREEN",
+    "qc": "UNKNOWN"
+   },
+   "title": "Karl Fischer V20",
+   "updated_at": "2026-10-01T13:29:28",
+   "watching": "C:\\LabData\\kf-v20"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 2.98,
+     "high": 3.2,
+     "last_qc_at": "",
+     "last_qc_in_spec": null,
+     "last_qc_superseded_by": "",
+     "last_qc_value": null,
+     "low": 2.76,
+     "sample_id": "STD-1",
+     "test_name": "Viscosity 40C",
+     "units": "mm2/s"
+    }
+   ],
+   "last_activity": "2026-10-01T12:49:00",
+   "last_poll": "2026-10-01T13:29:32",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-1",
+   "live": false,
+   "machine_uid": "koehler-visc",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-29",
+     "machine_uid": "koehler-visc",
+     "name": "Monthly PM",
+     "next_due": "2026-10-29",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-29",
+     "status": "GREEN",
+     "uid": "koehler-visc-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2026-07-25",
+     "machine_uid": "koehler-visc",
+     "name": "Annual calibration",
+     "next_due": "2027-07-25",
+     "note": "",
+     "reason": "Annual calibration: next due 2027-07-25",
+     "status": "GREEN",
+     "uid": "koehler-visc-calibration"
+    }
+   ],
+   "maintenance_due": 0,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    4.1,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Viscosity 40C"
+    }
+   ],
+   "reason": "QC has not run inside the window",
+   "status": "YELLOW",
+   "status_color": "#f5c542",
+   "sub_statuses": {
+    "calibration": "YELLOW",
+    "pm": "YELLOW",
+    "qc": "YELLOW"
+   },
+   "title": "Koehler K23000",
+   "updated_at": "2026-10-01T13:29:52",
+   "watching": "C:\\LabData\\koehler-k23"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 0.0015,
+     "high": 0.0019,
+     "last_qc_at": "2026-10-01T11:46:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 0.0016,
+     "low": 0.0011,
+     "sample_id": "STD-1",
+     "test_name": "Sulfur",
+     "units": "%m/m"
+    },
+    {
+     "correction": 0.0,
+     "expected": 0.8412,
+     "high": 0.843,
+     "last_qc_at": "2026-10-01T11:30:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 0.8418,
+     "low": 0.8394,
+     "sample_id": "STD-1",
+     "test_name": "Density 15C",
+     "units": "g/cm3"
+    }
+   ],
+   "last_activity": "2026-10-01T12:36:00",
+   "last_poll": "2026-10-01T13:29:56",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-0",
+   "live": false,
+   "machine_uid": "multitek-ns",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-26",
+     "machine_uid": "multitek-ns",
+     "name": "Monthly PM",
+     "next_due": "2026-10-26",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-26",
+     "status": "GREEN",
+     "uid": "multitek-ns-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-10-31",
+     "machine_uid": "multitek-ns",
+     "name": "Annual calibration",
+     "next_due": "2026-10-31",
+     "note": "",
+     "reason": "Annual calibration: next due 2026-10-31",
+     "status": "GREEN",
+     "uid": "multitek-ns-calibration"
+    }
+   ],
+   "maintenance_due": 0,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    2.05,
+    0.0
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Sulfur"
+    },
+    {
+     "sample": "Diesel - AO25",
+     "test": "Density 15C"
+    }
+   ],
+   "reason": "System nominal",
+   "status": "GREEN",
+   "status_color": "#21c071",
+   "sub_statuses": {
+    "calibration": "YELLOW",
+    "pm": "YELLOW",
+    "qc": "GREEN"
+   },
+   "title": "Multitek NS",
+   "updated_at": "2026-10-01T13:29:26",
+   "watching": "C:\\LabData\\multitek-ns"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 0.0015,
+     "high": 0.0019,
+     "last_qc_at": "2026-10-01T11:11:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 0.0018,
+     "low": 0.0011,
+     "sample_id": "STD-1",
+     "test_name": "Sulfur",
+     "units": "%m/m"
+    }
+   ],
+   "last_activity": "2026-09-30T11:30:00",
+   "last_poll": null,
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-2",
+   "live": false,
+   "machine_uid": "multitek-s",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-05",
+     "machine_uid": "multitek-s",
+     "name": "Monthly PM",
+     "next_due": "2026-10-05",
+     "note": "",
+     "reason": "Overdue: Monthly PM (was due 2026-10-05)",
+     "status": "RED",
+     "uid": "multitek-s-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-05-26",
+     "machine_uid": "multitek-s",
+     "name": "Annual calibration",
+     "next_due": "2026-05-26",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-05-26)",
+     "status": "RED",
+     "uid": "multitek-s-calibration"
+    }
+   ],
+   "maintenance_due": 2,
+   "module_running": false,
+   "module_state": "unknown",
+   "pos": [
+    4.1,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Sulfur"
+    }
+   ],
+   "reason": "No data received",
+   "status": "DEAD-LINE",
+   "status_color": "#0f172a",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "YELLOW",
+    "qc": "GREEN"
+   },
+   "title": "Multitek S",
+   "updated_at": "2026-10-01T13:29:20",
+   "watching": ""
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": -14.0,
+     "high": -12.0,
+     "last_qc_at": "2026-10-01T11:38:00",
+     "last_qc_in_spec": false,
+     "last_qc_superseded_by": "",
+     "last_qc_value": -16.8,
+     "low": -16.0,
+     "sample_id": "STD-1",
+     "test_name": "Cloud Point",
+     "units": "C"
+    },
+    {
+     "correction": 0.0,
+     "expected": -21.0,
+     "high": -17.0,
+     "last_qc_at": "2026-10-01T10:35:00",
+     "last_qc_in_spec": false,
+     "last_qc_superseded_by": "",
+     "last_qc_value": -14.8,
+     "low": -25.0,
+     "sample_id": "STD-1",
+     "test_name": "Pour Point",
+     "units": "C"
+    }
+   ],
+   "last_activity": "2026-10-01T13:09:00",
+   "last_poll": "2026-10-01T13:29:40",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-0",
+   "live": false,
+   "machine_uid": "optimpp-1",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-26",
+     "machine_uid": "optimpp-1",
+     "name": "Monthly PM",
+     "next_due": "2026-10-26",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-26",
+     "status": "GREEN",
+     "uid": "optimpp-1-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-08-08",
+     "machine_uid": "optimpp-1",
+     "name": "Annual calibration",
+     "next_due": "2026-08-08",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-08-08)",
+     "status": "RED",
+     "uid": "optimpp-1-calibration"
+    }
+   ],
+   "maintenance_due": 1,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    4.1,
+    0.0
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Cloud Point"
+    },
+    {
+     "sample": "Diesel - AO25",
+     "test": "Pour Point"
+    }
+   ],
+   "reason": "Cloud Point -16.8 C \u2014 outside -14.0 \u00b1 2.0.",
+   "status": "RED",
+   "status_color": "#f85b5b",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "GREEN",
+    "qc": "RED"
+   },
+   "title": "OptiMPP 1",
+   "updated_at": "2026-10-01T13:29:05",
+   "watching": "C:\\LabData\\optimpp-1"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [],
+   "last_activity": "2026-10-01T13:10:00",
+   "last_poll": "2026-10-01T13:29:57",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-1",
+   "live": false,
+   "machine_uid": "optimpp-2",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-08-20",
+     "machine_uid": "optimpp-2",
+     "name": "Monthly PM",
+     "next_due": "2026-09-19",
+     "note": "",
+     "reason": "Overdue: Monthly PM (was due 2026-09-19)",
+     "status": "RED",
+     "uid": "optimpp-2-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-06-17",
+     "machine_uid": "optimpp-2",
+     "name": "Annual calibration",
+     "next_due": "2026-06-17",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-06-17)",
+     "status": "RED",
+     "uid": "optimpp-2-calibration"
+    }
+   ],
+   "maintenance_due": 2,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    0.0,
+    0.0
+   ],
+   "qc_specs": [],
+   "qc_targets": [],
+   "reason": "No QC assigned",
+   "status": "UNKNOWN",
+   "status_color": "#718096",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "GREEN",
+    "qc": "UNKNOWN"
+   },
+   "title": "OptiMPP 2",
+   "updated_at": "2026-10-01T13:29:08",
+   "watching": "C:\\LabData\\optimpp-2"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 63.7,
+     "high": 65.8,
+     "last_qc_at": "2026-10-01T13:14:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 63.5,
+     "low": 61.6,
+     "sample_id": "STD-1",
+     "test_name": "Flash Point",
+     "units": "C"
+    }
+   ],
+   "last_activity": "2026-10-01T13:21:00",
+   "last_poll": "2026-10-01T13:29:32",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-0",
+   "live": false,
+   "machine_uid": "pac-flash-1",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-12",
+     "machine_uid": "pac-flash-1",
+     "name": "Monthly PM",
+     "next_due": "2026-10-12",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-12",
+     "status": "GREEN",
+     "uid": "pac-flash-1-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-07-10",
+     "machine_uid": "pac-flash-1",
+     "name": "Annual calibration",
+     "next_due": "2026-07-10",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-07-10)",
+     "status": "RED",
+     "uid": "pac-flash-1-calibration"
+    }
+   ],
+   "maintenance_due": 1,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    0.0,
+    2.05
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Flash Point"
+    }
+   ],
+   "reason": "System nominal",
+   "status": "GREEN",
+   "status_color": "#21c071",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "YELLOW",
+    "qc": "GREEN"
+   },
+   "title": "PAC Flash 1",
+   "updated_at": "2026-10-01T13:29:54",
+   "watching": "C:\\LabData\\pac-flash-1"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": -3.0,
+     "expected": 63.7,
+     "high": 65.8,
+     "last_qc_at": "2026-10-01T13:06:00",
+     "last_qc_in_spec": true,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 63.6,
+     "low": 61.6,
+     "sample_id": "STD-1",
+     "test_name": "Flash Point",
+     "units": "C"
+    }
+   ],
+   "last_activity": "2026-10-01T13:06:00",
+   "last_poll": "2026-10-01T13:29:19",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-0",
+   "live": false,
+   "machine_uid": "pac-flash-2",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-21",
+     "machine_uid": "pac-flash-2",
+     "name": "Monthly PM",
+     "next_due": "2026-10-21",
+     "note": "",
+     "reason": "Monthly PM: next due 2026-10-21",
+     "status": "GREEN",
+     "uid": "pac-flash-2-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-11-07",
+     "machine_uid": "pac-flash-2",
+     "name": "Annual calibration",
+     "next_due": "2026-11-07",
+     "note": "",
+     "reason": "Annual calibration: next due 2026-11-07",
+     "status": "GREEN",
+     "uid": "pac-flash-2-calibration"
+    }
+   ],
+   "maintenance_due": 0,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    0.0,
+    0.0
+   ],
+   "qc_specs": [
+    {
+     "expected": 63.7,
+     "k": 2.0,
+     "machine_uid": "pac-flash-2",
+     "sample_id": "STD-1",
+     "std_dev": 1.05,
+     "test_name": "Flash Point",
+     "units": "C"
+    }
+   ],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Flash Point"
+    }
+   ],
+   "reason": "System nominal",
+   "status": "GREEN",
+   "status_color": "#21c071",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "YELLOW",
+    "qc": "GREEN"
+   },
+   "title": "PAC Flash 2",
+   "updated_at": "2026-10-01T13:29:49",
+   "watching": "C:\\LabData\\pac-flash-2"
+  },
+  {
+   "closed_reason": "",
+   "effective_specs": [
+    {
+     "correction": 0.0,
+     "expected": 63.7,
+     "high": 65.8,
+     "last_qc_at": "2026-10-01T10:39:00",
+     "last_qc_in_spec": false,
+     "last_qc_superseded_by": "",
+     "last_qc_value": 61.0,
+     "low": 61.6,
+     "sample_id": "STD-1",
+     "test_name": "Flash Point",
+     "units": "C"
+    }
+   ],
+   "last_activity": "2026-10-01T13:22:00",
+   "last_poll": "2026-10-01T13:29:35",
+   "level_moved_at": "SEEDED",
+   "level_moved_by": "demo",
+   "level_uid": "LEVEL-2",
+   "live": false,
+   "machine_uid": "pensky-1",
+   "maintenance": [
+    {
+     "interval_days": 30,
+     "kind": "pm",
+     "last_done": "2026-09-01",
+     "machine_uid": "pensky-1",
+     "name": "Monthly PM",
+     "next_due": "2026-10-01",
+     "note": "",
+     "reason": "Overdue: Monthly PM (was due 2026-10-01)",
+     "status": "RED",
+     "uid": "pensky-1-pm"
+    },
+    {
+     "interval_days": 365,
+     "kind": "calibration",
+     "last_done": "2025-06-20",
+     "machine_uid": "pensky-1",
+     "name": "Annual calibration",
+     "next_due": "2026-06-20",
+     "note": "",
+     "reason": "Overdue: Annual calibration (was due 2026-06-20)",
+     "status": "RED",
+     "uid": "pensky-1-calibration"
+    }
+   ],
+   "maintenance_due": 2,
+   "module_running": false,
+   "module_state": "stopped",
+   "pos": [
+    4.1,
+    0.0
+   ],
+   "qc_specs": [],
+   "qc_targets": [
+    {
+     "sample": "Diesel - AO25",
+     "test": "Flash Point"
+    }
+   ],
+   "reason": "Flash Point 61.0 C \u2014 outside 63.7 \u00b1 2.1.",
+   "status": "RED",
+   "status_color": "#f85b5b",
+   "sub_statuses": {
+    "calibration": "GREEN",
+    "pm": "YELLOW",
+    "qc": "RED"
+   },
+   "title": "Pensky-Martens 1",
+   "updated_at": "2026-10-01T13:28:40",
+   "watching": "C:\\LabData\\pensky-1"
+  }
+ ],
+ "stale": false
+}

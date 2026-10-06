@@ -6,9 +6,9 @@ those facts is a test here:
 
 * **The bookmarks keep working.** ``/floor`` and ``/qc`` answer 200 with no
   redirect (O11). A 302 to a page with a sidebar would put a sign-in button
-  and a bell on a screen nobody can touch. The old floor stays reachable at
-  ``/floor/classic`` until piece 14 deletes it, because some of its dialogs
-  have no other door yet.
+  and a bell on a screen nobody can touch. The old floor that lived at
+  ``/floor/classic`` meanwhile was deleted in piece 14; an old
+  ``/floor?machine=<uid>`` link lands on that instrument's record.
 * **Chromeless, with a way home.** No sidebar, top bar, sign-in sheet, bell,
   toast or gated control: none of them can be used on a wall. The one thing
   that can be is the mark, which reads "LEM ›" and goes to ``/``, and the
@@ -115,11 +115,12 @@ class TestTheBookmarksKeepWorking:
         body = app.test_client().get("/floor").get_data(as_text=True)
         assert "signin" not in body.lower()
 
-    def test_the_old_floor_is_kept_at_classic(self, seeded):
+    def test_the_old_floor_is_gone_and_its_machine_links_land_on_the_record(self, seeded):
         app, _s, _l = seeded
-        r = app.test_client().get("/floor/classic")
-        assert r.status_code == 200
-        assert "<title>LEM — Lab Floor</title>" in r.get_data(as_text=True)
+        c = app.test_client()
+        assert c.get("/floor/classic").status_code == 404
+        r = c.get("/floor?machine=gc-1")
+        assert r.status_code == 302 and r.headers["Location"].endswith("/instruments/gc-1")
 
     def test_retired_pages_still_land_on_the_wall(self, seeded):
         app, _s, _l = seeded
@@ -136,7 +137,7 @@ class TestChromelessWithAWayHome:
         app, _s, _l = seeded
         page = app.test_client().get(path).get_data(as_text=True)
         for gone in ('id="sidebar"', 'data-testid="topbar"', 'id="signin-sheet"',
-                     'id="bell', 'id="toast"', 'class="user-chip', "_nav.html", 'class="nav'):
+                     'id="bell', 'id="toast"', 'class="user-chip', 'class="nav'):
             assert gone not in page, (path, gone)
         assert not re.search(r'class="[^"]*\bgated\b', page), path
 

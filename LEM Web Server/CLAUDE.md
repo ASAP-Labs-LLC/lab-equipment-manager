@@ -40,8 +40,9 @@ web_server.pyw ─► web_app.create_app(gateway) ─► StatusProvider
   is reused unchanged. Maps `sample_id_val→lab_id`, `test.value_col→test_name`.
 - `db_config_store.py` — `DbConfigStore`. Persists the full `AppConfig` into
   `lem_*` tables via the write queue; JSON-blob-per-row for lossless round-trip.
-- `web_app.py` — Flask app factory. Reuses `evaluate_box`, `models`, and
-  `templates/dashboard.html`; keeps the V4 `/api/status` payload shape.
+- `web_app.py` — Flask app factory. Reuses `evaluate_box` and `models`, and
+  keeps the V4 `/api/status` payload shape (V4's dashboard page itself was
+  deleted in piece 14; `/dashboard` redirects to the floor wall).
 - `migrate_json_to_db.py` — one-shot import of V4's `lab_manager_config.json`.
 - `web_server.pyw` — entry point. `--dev [--seed]` runs offline against a fake.
 - Reused from V4 unchanged: `models.py`, `data_source.py`, `maintenance.py`,
@@ -302,7 +303,7 @@ Where several assigned standards state windows the **tightest** one wins — QC 
 only as fresh as the shortest-lived control, the same rule `evaluate_machine`
 uses to go YELLOW.
 
-**`templates/floor.html` has caught up (2026-08-26).** Its QC-standard dialog
+**The old floor page has caught up (2026-08-26).** Its QC-standard dialog
 built each test row by hand and sent no `qc_expire_hours`, so **saving a standard
 from the floor cleared a window somebody had set** — and the floor is the editor
 people actually open (`/stations` redirects to it). It now has an *Expires (h)*
@@ -314,9 +315,9 @@ template — `resolve_qc_window` owns that number. Blank is sent as an explicit 
 so a window can still be CLEARED; this is deliberately not worked around on the
 server, where an omitted key inheriting the stored value would make clearing
 impossible. The handoff tripwire is gone, replaced by
-`tests/test_qc_standard_window.py::TestTheLiveFloorEditorOffersTheWindow`, and
-the round trip (set · reopen · edit another field · clear) is exercised in a
-real browser.
+`tests/test_qc_standard_window.py` (since piece 14, which deleted the old
+floor, `TestTheNewStandardSheetOffersTheWindow`: /quality's New standard
+sheet sends the window and says the server's default, never a typed 24).
 
 **MAJOR, not MINOR.** No `lem_*` column moved, but a QC verdict rule changed: the
 same standard, the same reading and the same clock can now produce a different
@@ -336,7 +337,7 @@ was cut at 16 characters and the target was not there at all — and the QC
 samples library showed "52.28 … 57.96 C", a span with no centre. A standard IS
 its certified value; the span is derived from it.
 
-- **`bandHtml(low, expected, high, units)`** in `floor.html` is the one way a
+- **`bandHtml(low, expected, high, units)`** in the old floor page was the one way a
   band is drawn: low, then the target large in amber, then high, then the
   unit, at two decimals; a value the row does not carry is a dash, never NaN.
   The hover tip (every PUBLISHED band on the instrument, whole test name), the
@@ -867,8 +868,8 @@ and **deploys them itself once nobody is using LEM**.
 - **Reads are background, writes are people** (`_is_background`). This began as
   an allowlist of the floor's poll endpoints and was wrong twice — first
   missing `/api/me` and `/api/map`, then `/api/qc-samples` — each time pinning
-  idle under a second so a deploy could never fire, silently. `floor.html`
-  re-reads its entire world every 2s from every open browser, so no GET is
+  idle under a second so a deploy could never fire, silently. The old floor
+  page re-read its entire world every 2s from every open browser, so no GET is
   distinguishable from a wall display. `/api/live` is excluded despite being a
   POST: that is a bench module, not a person.
 - `/healthz` reports `last_activity` (the request that last counted) purely so
@@ -1116,8 +1117,8 @@ the same Needs-you card, in a 300px column. It used to 302 to `/floor`.
   the canvas, the View toggle, the Quality dialog and their tests
   (`test_site_view_severed.py`, `test_world_assets.py`, `tests/js/arrange.mjs`,
   `tests/js/layout.mjs`). `tests/test_floor_map_view.py` holds that nothing
-  serves or names it. `floor.html` keeps its SVG plan until piece 14 deletes
-  the page; its `WORLD` is a `const null` so its old guards keep meaning.
+  serves or names it. Piece 14 then deleted the old floor page itself
+  (see "Piece 14" below).
 - **The demo seeds at the saved pitch, three to a row** (`demo_floor.BAY_PITCH`),
   from the same RNG draws as before, so every other seeded value is unchanged.
 
@@ -1196,5 +1197,36 @@ distant woods have blue above red at *every* range — that is what aerial
 perspective does. The real target was green as the largest channel, which is
 achievable; the extra clause was invented, not observed, and it made a passing
 result unreportable. Measure the reference before writing the threshold.
+
+## Piece 14: the replaced pages are deleted, and the guard list holds the whole tree (2026-10)
+
+The six templates the redesign replaced are gone: the old floor (7,275
+lines, 18 dialogs), the V4 dashboard, stations, the home chooser, the
+fleet-wide PM page and the old nav partial, with `static/lem.css`,
+`css/signin_legacy.css`, the never-registered transfer stand-in page, and
+the interim `/floor/classic` and `/maintenance/classic` doors (never on
+`main`, so no bookmark is lost). `/stations` and `/dashboard` still 302 to
+the floor wall; `/floor?machine=<uid>` (the old floor's panel link) 302s to
+that instrument's record, uid quoted as a path segment.
+
+`tests/test_ia_guards.py` is ia-final §1 and §11 as tests, over EVERYTHING
+shipped rather than a list of pages: the route table exactly (a page route
+nobody specified fails), no contextmenu / prompt / alert / confirm /
+toFixed(2) in any template or script, walls 200 with no redirect and no
+gated control, `/api/ui/live` and `/api/ui/instruments` at 0 LabCore ops,
+`/api/machines` equal to a golden made by running `main`'s web_app (only
+transfer-final's additive `transfer` field differs), every list row an
+`/instruments/` link, and an index that fails if any §11 test that lives
+with its behaviour is deleted. `tests/test_ui_guards_browser.py` idles every
+page in Chrome with its clock sped up and fails on any request that is not a
+GET (no timer-driven POST, A.7).
+
+Two regressions the old floor's tests had been guarding, found while
+retargeting them: the record's writes sent no `X-Request-Id`, so a
+correction whose answer was lost, saved again, was made twice (W2); the
+record now sends one per change (`LEMRecord.changeIds`, the lem.js rule)
+and says "not known whether this saved" on no answer, never "nothing was
+saved". And the New standard sheet typed the 24 h default; it now says the
+server's.
 
 <!-- v1.0.2: exercises the unattended idle deploy end to end. -->

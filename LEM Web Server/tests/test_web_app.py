@@ -1,8 +1,8 @@
 """TDD for the V5 web layer (app factory) — UI + backend verification.
 
-The dashboard (templates/dashboard.html) is static HTML+JS that polls the API,
-so UI verification is: does `/` render, and do the JSON endpoints return the
-documented shapes with live status computed from LabCore data.
+UI verification here is: does `/` render, and do the JSON endpoints return
+the documented shapes with live status computed from LabCore data. (The V4
+dashboard page this once described was deleted in piece 14.)
 """
 
 import json

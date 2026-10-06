@@ -15,6 +15,8 @@ What each walk proves, and why it matters at the bench:
   opens "Sign in to tick"; after sign-in the tick is applied, by that person,
   on the server, without a second tap. Otherwise people tap twice and untick.
 * **Gated Mark done: +1 / +2 / +1, and the Mark done sheet opens by itself.**
+  On the record's Maintenance and calibration section (the fleet-wide PM
+  page this was first walked on was deleted in piece 14).
 * **Cancel drops the pending act.** Signing in later from the header does not
   fire a tick somebody walked away from.
 * **A wrong password keeps the sheet and the pending act.** Retyping is the
@@ -321,21 +323,26 @@ def test_a_wrong_password_keeps_the_sheet_and_the_act(drv, base, server, round_u
 
 # ── gated Mark done ─────────────────────────────────────────────────────────
 
+RECORD = "/instruments/gc-1#maintenance"
+DONE = '[data-act="mt-done"]'
+
+
 def test_a_signed_out_mark_done_signs_in_then_opens_its_own_sheet(drv, base):
     d = drv
-    _load(d, base + "/maintenance/classic")
-    assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, "[data-done]")) > 0)
-    btn = d.find_element(By.CSS_SELECTOR, "[data-done]")
-    uid = btn.get_attribute("data-done")
+    _load(d, base + RECORD)
+    assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, DONE)) > 0)
+    btn = d.find_element(By.CSS_SELECTOR, DONE)
+    uid = btn.get_attribute("data-uid")
     # dimmed, not dead
     assert _js(d, "return getComputedStyle(arguments[0]).pointerEvents;", btn) != "none"
-    assert float(_js(d, "return getComputedStyle(arguments[0]).opacity;", btn)) < 1
+    assert btn.get_attribute("data-gated")
 
     w = Walk(d)
     w.click_el(btn, opens_screen=True)              # Mark done (the task's own click)
     assert _wait(lambda: _sheet_open(d))
-    assert d.find_element(By.ID, "signin-title").text == "Sign in to mark done"
-    assert d.find_element(By.ID, "signin-ok").text == "Sign in and mark done"
+    title = d.find_element(By.ID, "signin-title").text
+    assert title.startswith("Sign in to mark ") and title.endswith(" done"), title
+    assert d.find_element(By.ID, "signin-ok").text.startswith("Sign in and mark ")
     w.type("#signin-user", "Cody")
     w.type("#signin-pass", PASSWORD)
     w.click("#signin-ok", opens_screen=True)        # ...and the Mark done sheet is the next screen
@@ -348,7 +355,7 @@ def test_a_signed_out_mark_done_signs_in_then_opens_its_own_sheet(drv, base):
     assert (c - 1, t, s - 2) == (1, 2, 1), f"gated Mark done overhead {(c - 1, t, s - 2)}; target +1 / +2 / +1"
     # and it completes, recorded as Cody
     d.find_element(By.ID, "done-note").send_keys("Replaced filter")
-    d.find_element(By.ID, "done-ok").click()
+    d.find_element(By.ID, "done-go").click()
     assert _wait(lambda: not _js(d, "return document.getElementById('done-sheet').open;"))
     hist = _js(d, "return fetch('/api/maintenance-history').then(r=>r.json());")["history"]
     assert any(h.get("note") == "Replaced filter" and h.get("by") == "Cody" for h in hist), hist[:3]
@@ -358,14 +365,16 @@ def test_a_signed_out_mark_done_signs_in_then_opens_its_own_sheet(drv, base):
 
 def test_mark_done_needs_a_note(drv, base):
     d = drv
-    _load(d, base + "/maintenance/classic")
+    # sign in from another page: loading the record's own URL again with
+    # its #anchor would be a same-document hop, not a reload
+    _load(d, base + "/help")
     _sign_in_api(d, "Cody")
-    _load(d, base + "/maintenance/classic")
-    assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, "[data-done]")) > 0)
-    d.find_element(By.CSS_SELECTOR, "[data-done]").click()
+    _load(d, base + RECORD)
+    assert _wait(lambda: len(d.find_elements(By.CSS_SELECTOR, DONE)) > 0)
+    d.find_element(By.CSS_SELECTOR, DONE).click()
     assert _wait(lambda: _js(d, "return document.getElementById('done-sheet').open;"))
     assert not _sheet_open(d), "signed in, Mark done goes straight to its sheet"
-    d.find_element(By.ID, "done-ok").click()
+    d.find_element(By.ID, "done-go").click()
     time.sleep(0.4)
     assert _js(d, "return document.getElementById('done-sheet').open;"), "an empty note was accepted"
 

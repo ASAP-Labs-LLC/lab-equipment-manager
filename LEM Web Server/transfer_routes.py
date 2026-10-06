@@ -639,19 +639,3 @@ def register(app, store, *, registry, machines: Callable[[], Optional[List[dict]
                                                            r.get("machine_uid")))
                                       for r in got]})
 
-    # ── the record, until the record page exists ─────────────────────────
-    def page_instrument_transfer(machine_uid):
-        try:
-            data = section_for(machine_uid)
-        except _Unread as exc:
-            return render_template("instrument_transfer.html", nav="instruments",
-                                   data=None, uid=machine_uid, error=str(exc)), 503
-        if data is None:
-            return render_template("instrument_transfer.html", nav="instruments",
-                                   data=None, uid=machine_uid, error=None), 404
-        return render_template("instrument_transfer.html", nav="instruments",
-                               data=data, uid=machine_uid, error=None)
-
-    if not any(r.rule == "/instruments/<machine_uid>" for r in app.url_map.iter_rules()):
-        app.add_url_rule("/instruments/<machine_uid>", "instrument_transfer_page",
-                         page_instrument_transfer)

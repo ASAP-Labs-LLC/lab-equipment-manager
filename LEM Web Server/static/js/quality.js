@@ -337,7 +337,7 @@
         const k = f.k.trim() || '2';
         const hrs = f.hours.trim();
         // one line: the band it will judge by, the rule, the window
-        $('new-rule').textContent = (band ? ' · expected ± ' : 'Passes inside expected ± ') + k + ' s · a pass counts for ' + (hrs ? hrs + ' h' : '24 h');
+        $('new-rule').textContent = (band ? ' · expected ± ' : 'Passes inside expected ± ') + k + ' s · a pass counts for ' + (hrs || $('new-hours').dataset.defaultHours) + ' h';
         const titles = instruments().filter(m => chosen.has(m.uid)).map(m => m.title);
         $('new-sum').textContent = Q.newSentence(f, titles);
         $('new-go').disabled = !(catalogue && catalogue.state === 'ok');

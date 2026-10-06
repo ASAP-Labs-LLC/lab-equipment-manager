@@ -5,9 +5,9 @@ GC's pages by source) and extended with what ia-final §1, §2 and §2.1 promise
 for LEM:
 
 * **A way home and a version on every page.** The mark links to ``/``, and
-  ``#app-version`` reads exactly what ``/healthz`` reports — on the new shell
-  pages AND on the pages still drawn by the old ``_nav.html``, because the
-  stamp is how Ryan tells which release the updater put on the floor, and a
+  ``#app-version`` reads exactly what ``/healthz`` reports — on every shell
+  page and every wall (the old nav partial's pages were deleted in piece
+  14), because the stamp is how Ryan tells which release the updater put on the floor, and a
   page without it is the page somebody quotes a wrong version from.
 * **Five nav items, five different icons.** One of the judges' complaints was a
   duplicated icon. The test compares the drawn paths, not the names.
@@ -38,14 +38,10 @@ CSS = ROOT / "static" / "css"
 
 SHELL_PAGES = ["/settings", "/help", "/logs", "/checklists/opening", "/", "/checklists/edit",
                "/checklists/edit/new?slot=opening", "/checklists/trends"]
-# pages still drawn by the old _nav.html (later pieces replace them)
-# "/" is Instruments on the new shell since piece 4 (tests/test_ui_shell_pages.py
-# covers it); "/maintenance" redirects to its filter, and the old PM page
-# lives at /maintenance/classic until the record and Settings › Imports take
-# over its two jobs (ia-final §3.1 #2, §3.7). /checklists is a 302 to the
-# round, and /checklists/edit is the round editor and /checklists/trends is
-# Readings: all shell pages now (tests/test_round_page.py, test_round_editor.py).
-OLD_PAGES = ["/floor/classic", "/maintenance/classic"]
+# /quality and /quality/standards are shell pages too (piece 8). The old
+# nav partial's pages (/floor/classic, /maintenance/classic) were deleted in
+# piece 14; /checklists is a 302 to the round.
+SHELL_PAGES += ["/quality", "/quality/standards", "/instruments", "/?view=map"]
 WALL_PAGES = ["/floor", "/qc", "/wall"]
 NAV = [("instruments", "Instruments", "/"), ("checklists", "Checklists", "/checklists"),
        ("qc", "QC", None), ("log", "Log", "/logs"), ("settings", "Settings", "/settings")]
@@ -154,7 +150,7 @@ class TestTheLayoutIsGCsFrame:
 # ── rendered ────────────────────────────────────────────────────────────────
 
 class TestEveryPageHasAWayHomeAndTheVersion:
-    @pytest.mark.parametrize("path", SHELL_PAGES + OLD_PAGES + WALL_PAGES)
+    @pytest.mark.parametrize("path", SHELL_PAGES + WALL_PAGES)
     def test_app_version_equals_healthz(self, signed_in, path):
         health = signed_in.get("/healthz").get_json()["version"]
         page = html(signed_in, path)
