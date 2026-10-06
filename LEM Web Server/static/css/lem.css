@@ -942,6 +942,7 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .tbl.qc .sub { display: block; margin-top: 2px; font-size: var(--fs-xs); color: var(--text-muted); }
 .tbl.qc .c-band { color: var(--text-muted); white-space: nowrap; }
 .tbl.qc .c-band b { color: var(--text); font-weight: 650; }
+.tbl.qc .band-note { white-space: normal; max-width: 30ch; }   /* a certified band the bench has not picked up */
 .tbl.qc .c-last { text-align: right; font-weight: 650; white-space: nowrap; }
 .tbl.qc th.c-last { text-align: right; }
 .tbl.qc .c-when { color: var(--text-muted); white-space: nowrap; }

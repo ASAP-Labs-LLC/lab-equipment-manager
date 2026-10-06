@@ -425,5 +425,19 @@ check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
   check('no limits: no verdict invented', R.chartRows({ points: [{ ts: `${yr}-10-02T10:00:00`, value: 3 }] }, {})[0].verdict, '');
 }
 
+// ── where a check's band came from (integration critic, T5) ───────────────
+// A check just assigned has no band from its bench yet, but LEM holds the
+// standard's certified values: "No certified values on file" was false there.
+// The row shows the certified band and says, once, that the bench has not
+// picked it up. A library LEM could not read is not an empty one either.
+check('a bench band needs no note', R.bandNote({ band_from: 'bench', low: 1, high: 3 }), '');
+check('a certified band the bench has not picked up says so',
+  R.bandNote({ band_from: 'library', low: 58, expected: 60, high: 62 }),
+  'Certified values; the bench hasn\'t picked them up yet');
+check('a library that could not be read is not "none on file"',
+  R.bandNote({ band_from: 'unread', low: null, high: null }), 'Couldn\'t read the certified values');
+check('only a library that was read and certifies nothing says none on file',
+  R.bandNote({ band_from: 'none', low: null, high: null }), 'No certified values on file');
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

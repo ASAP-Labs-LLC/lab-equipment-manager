@@ -2060,7 +2060,11 @@ def create_app(gateway, labcore_gateway=None,
         overrides = ui_live.overrides_from_tables(snapshots.tables()) or {}
         levels = {str(lv.get("uid")): str(lv.get("name") or "")
                   for lv in snap.get("levels") or []}
-        rec = ui_record.build(row, m, levels, override=overrides.get(machine_uid, ""))
+        # the library from the same snapshot (0 ops): a check the bench has
+        # not published a band for shows the certified band, as the
+        # standard's page does, instead of "no certified values"
+        rec = ui_record.build(row, m, levels, override=overrides.get(machine_uid, ""),
+                              library=_snapshot_library())
         return 200, dict(rec, **meta)
 
     @app.route("/api/ui/instruments/<machine_uid>")
