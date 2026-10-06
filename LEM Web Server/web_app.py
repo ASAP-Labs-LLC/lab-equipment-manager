@@ -8007,7 +8007,8 @@ def create_app(gateway, labcore_gateway=None,
                         r.get("test_name"), r.get("value"), _verdict(detail),
                         detail.get("raw_value", ""),
                         detail.get("correction", ""),
-                        json.dumps(detail, separators=(",", ":"))])
+                        json.dumps(detail, separators=(",", ":")),
+                        detail.get("received_at") or ""])
         title = machine_uid
         info = gateway.read_sql(
             "SELECT title FROM lem_machine_status WHERE machine_uid = ?",
@@ -8023,9 +8024,15 @@ def create_app(gateway, labcore_gateway=None,
         safe = re.sub(r'[^A-Za-z0-9 ._-]', "_", title).strip() or machine_uid
         # raw_value/correction blank when none was applied — a 0 would be a claim
         # that a correction of zero was deliberately in force.
+        #
+        # received_at: when the bench read the line. A bench that marks a
+        # result-time cell (the GCs) logs `timestamp` as the instrument's own
+        # time, so the two differ; blank means the bench dates readings when it
+        # reads them and `timestamp` already is that moment. Last, so a sheet
+        # reading these columns by position keeps working.
         return _csv_response(out, ["timestamp", "kind", "lab_id", "test",
                                    "value", "in_spec", "raw_value",
-                                   "correction", "detail"],
+                                   "correction", "detail", "received_at"],
                              f"{safe} history.csv")
 
     @app.route("/api/export/qc.csv")
@@ -8053,11 +8060,13 @@ def create_app(gateway, labcore_gateway=None,
                         detail.get("expected"), detail.get("low"),
                         detail.get("high"), _verdict(detail),
                         detail.get("raw_value", ""),
-                        detail.get("correction", "")])
+                        detail.get("correction", ""),
+                        detail.get("received_at") or ""])
+        # received_at: see the per-machine export above.
         return _csv_response(out, ["machine_uid", "machine", "timestamp",
                                    "kind", "sample_id", "test", "value",
                                    "expected", "low", "high", "in_spec",
-                                   "raw_value", "correction"],
+                                   "raw_value", "correction", "received_at"],
                              "LEM QC history.csv",
                              note="" if named else NAMES_UNREAD)
 

@@ -113,9 +113,10 @@ class TestExport:
         # raw_value/correction added 2026-08-03: a correction factor changes
         # pass/fail, so the export has to carry both what was measured and what
         # was added to it.
+        # received_at added 2026-10-05: see test_export_received_at.py.
         assert rows[0] == ["timestamp", "kind", "lab_id", "test",
                            "value", "in_spec", "raw_value", "correction",
-                           "detail"]
+                           "detail", "received_at"]
         assert len(rows) == 6                      # header + 5 events for m1
 
     def test_qc_rows_carry_the_verdict(self, gw, client):

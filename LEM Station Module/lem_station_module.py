@@ -80,8 +80,14 @@ JOURNAL_KEY = "__journal__"
 # it may repeat one already recorded (transfer v4 §4.2). It rides into the log
 # detail as `origin` so the record shows it; never a measurement.
 ORIGIN_KEY = "__origin__"
+# When a bench marks a result-time cell, the row is dated by the instrument and
+# these two say what that date rests on: the instrument's own stamp as read
+# (before any cap), and the moment this module read the line. See
+# `parse_result_time` and `PrintResult.to_row`.
+INSTRUMENT_TIME_KEY = "__instrument_time__"
+RECEIVED_KEY = "__received_at__"
 RESERVED_ROW_KEYS = (LAB_ID_KEY, RAW_KEY, CORRECTION_KEY, JOURNAL_KEY,
-                     ORIGIN_KEY) + TIMESTAMP_KEYS
+                     ORIGIN_KEY, INSTRUMENT_TIME_KEY, RECEIVED_KEY) + TIMESTAMP_KEYS
 # "manual" is the bench with no parser: an older instrument that prints to paper
 # or to nothing at all, whose readings the operator types in. It ingests nothing
 # — everything after the row is the same path a parsed print takes.
@@ -277,6 +283,10 @@ class Machine:
     byte_size: int = 8               # 5-8
     idle_gap: float = 0.3            # seconds of silence ending a report
     lab_id: Selector = field(default_factory=Selector)
+    # The cell that says WHEN the instrument measured (GC: cell 1, the
+    # injection time). None = not marked: the reading is dated when it is read,
+    # as it always was. See `parse_result_time`.
+    result_time: Optional[Selector] = None
     mappings: List[MethodMapping] = field(default_factory=list)
     template: str = ""               # held print used to configure mappings
     qc_expire_hours: float = 24.0
@@ -308,6 +318,8 @@ class Machine:
             "byte_size": self.byte_size,
             "idle_gap": self.idle_gap,
             "lab_id": self.lab_id.to_dict(),
+            "result_time": (self.result_time.to_dict()
+                            if self.result_time is not None else None),
             "mappings": [m.to_dict() for m in self.mappings],
             "template": self.template,
             "qc_expire_hours": self.qc_expire_hours,
@@ -336,6 +348,9 @@ class Machine:
             byte_size=int(data.get("byte_size", 8)),
             idle_gap=float(data.get("idle_gap", 0.3)),
             lab_id=Selector.from_dict(data.get("lab_id", {})),
+            result_time=(Selector.from_dict(data["result_time"])
+                         if isinstance(data.get("result_time"), dict)
+                         else None),
             mappings=[MethodMapping.from_dict(m)
                       for m in data.get("mappings", [])],
             template=str(data.get("template", "")),
@@ -376,15 +391,34 @@ class MachineEvaluation:
 
 @dataclass
 class PrintResult:
-    """One parsed device print: the Lab ID plus method → value."""
+    """One parsed device print: the Lab ID plus method → value, and the time
+    the instrument says it measured when the bench marks one."""
     lab_id: str = ""
     values: dict = field(default_factory=dict)
+    result_time: Optional[datetime] = None
 
     def to_row(self, now: datetime) -> dict:
+        """The row every consumer reads. `parsed_date`/`parsed_time` are the
+        reading's date: the instrument's, when there is one, and never later
+        than `now`, the moment it was read.
+
+        The cap is not tidiness. v1 of the GC app misreads about one injection
+        stamp in five on Python 3.11+ and can move it hours forward; a QC
+        reading dated in the future stays "fresh" past its window. The stamp as
+        the instrument wrote it is kept on the row regardless, beside the time
+        it was received, so the record says what the date rests on.
+
+        With no instrument time the row is exactly what it always was."""
         row = {LAB_ID_KEY: self.lab_id}
         row.update(self.values)
-        row["parsed_date"] = now.strftime("%Y-%m-%d")
-        row["parsed_time"] = now.strftime("%H:%M:%S")
+        when = now
+        if self.result_time is not None:
+            when = min(self.result_time, now)
+            row[INSTRUMENT_TIME_KEY] = self.result_time.isoformat(
+                timespec="seconds")
+            row[RECEIVED_KEY] = now.isoformat(timespec="seconds")
+        row["parsed_date"] = when.strftime("%Y-%m-%d")
+        row["parsed_time"] = when.strftime("%H:%M:%S")
         return row
 
 
@@ -2599,6 +2633,40 @@ def build_detection_pattern(sample: str,
     return flexible_label + r"\s*(-?\d+(?:\.\d+)?)"
 
 
+# Stamps a bench may print, tried in order. Explicit formats only, and on
+# purpose not `datetime.fromisoformat`: on Python 3.11+ it accepts the
+# ChemStation compact stamp "20260925002450+0000" and reads it as 02:45:00
+# instead of 00:24:50, the misread behind one GC injection time in five in v1.
+# A stamp that is not unambiguous is not a time.
+RESULT_TIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%d %H:%M",
+    "%Y-%m-%dT%H:%M",
+    "%m/%d/%Y %H:%M:%S",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y %I:%M:%S %p",
+    "%m/%d/%Y %I:%M %p",
+)
+
+
+def parse_result_time(text: str) -> Optional[datetime]:
+    """The instrument's own time for a reading, or None when the text is not
+    one of RESULT_TIME_FORMATS. None means "date it when it is read", which is
+    what every bench did before this existed, never a guess."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    for fmt in RESULT_TIME_FORMATS:
+        try:
+            return datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def parse_print(machine: Machine, text: str) -> PrintResult:
     """Parse one device print via the machine's mappings. Empty extractions
     are omitted; a group of methods all receive the same value.
@@ -2614,7 +2682,11 @@ def parse_print(machine: Machine, text: str) -> PrintResult:
             continue
         for method in mapping.methods:
             values.setdefault(method, value)
-    return PrintResult(lab_id=lab_id, values=values)
+    when = None
+    if machine.result_time is not None:
+        when = parse_result_time(
+            extract_value(machine.result_time, text, machine.delimiter))
+    return PrintResult(lab_id=lab_id, values=values, result_time=when)
 
 
 # ── Manual entry: QC on the bench with no parser ─────────────────────────────
@@ -4933,6 +5005,17 @@ def _row_time(row: dict, fallback: datetime) -> datetime:
         return fallback
 
 
+def _received_time(row: dict, fallback: datetime) -> datetime:
+    """When this module read the row. The same as `_row_time` unless the
+    instrument dated it, and the clock for anything that measures WAITING
+    (holding a reading for its sample, "just parsed" on the floor) rather
+    than the measurement itself."""
+    try:
+        return datetime.fromisoformat(str(row[RECEIVED_KEY]))
+    except (KeyError, TypeError, ValueError):
+        return _row_time(row, fallback)
+
+
 def _safe_float(value) -> Optional[float]:
     try:
         return float(str(value).strip())
@@ -5211,6 +5294,76 @@ def row_corrections(row: dict) -> dict:
     return dict(row.get(CORRECTION_KEY) or {})
 
 
+def row_timing(row: dict) -> dict:
+    """What a row's date rests on, for the log detail: the instrument's own
+    stamp and the moment the line was read. Empty for a row dated when it was
+    read, which keeps those records exactly as they were."""
+    if not row.get(RECEIVED_KEY):
+        return {}
+    return {"instrument_time": row.get(INSTRUMENT_TIME_KEY),
+            "received_at": row.get(RECEIVED_KEY)}
+
+
+def row_identity(row: dict) -> Optional[tuple]:
+    """What makes two rows the same reading, or None when nothing can.
+
+    Only a row the instrument dated has one: the Lab ID, the instrument's
+    stamp and every measurement. Without the stamp two identical readings are
+    two measurements (a rerun gives the same sulfur twice), so they are never
+    called repeats. With it, a reprocessed sample that comes back with new
+    numbers is a new result, because its values differ."""
+    stamp = row.get(INSTRUMENT_TIME_KEY)
+    if not stamp:
+        return None
+    values = tuple(sorted((str(k), str(v)) for k, v in row.items()
+                          if k not in RESERVED_ROW_KEYS))
+    return (str(row.get(LAB_ID_KEY) or "").strip().lower(), stamp, values)
+
+
+# How many readings a module remembers having read. A GC line a day apart is
+# the realistic gap; ten thousand covers weeks of the busiest bench, and the
+# memory is a few hundred kilobytes.
+SEEN_READINGS_LIMIT = 10000
+
+
+def drop_repeats(rows: List[dict], seen: OrderedDict) -> tuple:
+    """(rows not read before, how many were). `seen` is updated in place and
+    keeps the newest SEEN_READINGS_LIMIT identities.
+
+    This is what keeps a re-read from logging an injection again under a new
+    date and re-sending its cells to LabCore over an analyst's correction:
+    the AF26 that sat in the log under 09-03, 09-09 and 09-23. It holds for
+    one LabStation process. Across a restart, the saved position is what
+    stops the re-read (`_save_position`)."""
+    kept, repeats = [], 0
+    for row in rows:
+        key = row_identity(row)
+        if key is None:
+            kept.append(row)
+            continue
+        if key in seen:
+            seen.move_to_end(key)
+            repeats += 1
+            continue
+        seen[key] = True
+        while len(seen) > SEEN_READINGS_LIMIT:
+            seen.popitem(last=False)
+        kept.append(row)
+    return kept, repeats
+
+
+def build_position_save(machine_uid: str, position: int) -> tuple:
+    """SQL to record how far into its file a bench has read.
+
+    Only the position. The config row is shared with the floor's editor, and
+    writing the whole config from here would put back whatever this bench
+    loaded, over anything changed on the floor since. JSON1 is in LabCore's
+    SQLite (the census reads `json_extract` on this same column)."""
+    return ("UPDATE lem_machine_config SET config = "
+            "json_set(config, '$.last_position', ?) WHERE machine_uid = ?",
+            [int(position), machine_uid])
+
+
 def run_log_detail(row: dict) -> dict:
     """What a parsed run records.
 
@@ -5233,6 +5386,22 @@ def run_log_detail(row: dict) -> dict:
     return detail
 
 
+def run_log_time(row: dict, now: datetime) -> datetime:
+    """The `ts` of the machine-log records a row makes.
+
+    The instrument's date (capped at the moment of reading) when the bench
+    marks a result-time cell; otherwise `now`, untouched — the row's own date
+    is kept to the second and the log's never was, so a bench without the
+    mapping logs byte-for-byte as before, microseconds included.
+
+    One function, because v4 builds these records in two places — the
+    journal's `run` record (`_journal_poll`, which is what both the legacy
+    projection and a v2 sync send on) and `_queue_run_events` (the road with
+    no journal) — and a GC injection must not be dated by its injection on
+    one road and by the poll on the other."""
+    return _row_time(row, now) if row_timing(row) else now
+
+
 def run_log_events(machine: "Machine", rows: List[dict], operator,
                    calibration_id) -> List[tuple]:
     """The machine-log records a poll's rows make, in order:
@@ -5242,10 +5411,15 @@ def run_log_events(machine: "Machine", rows: List[dict], operator,
     records them with the reading (so a restart can re-deliver exactly the
     rows it would have written), and `_queue_run_events` queues them. See that
     method for the rules — a QC standard's print logs its 'qc' verdicts and not
-    a 'run', and falls back to a 'run' when no verdict is readable."""
+    a 'run', and falls back to a 'run' when no verdict is readable.
+
+    Every detail carries the row's timing (`row_timing`): when the bench
+    marks a result time, the instrument's stamp and the moment the line was
+    read, so an export can show both. Date each record with `run_log_time`."""
     out = []
     for row in rows:
         lab_id = str(row.get(LAB_ID_KEY) or "").strip()
+        timing = row_timing(row)
         # RESERVED_ROW_KEYS, not just the Lab ID and timestamps: a corrected row
         # carries its raw readings and offsets, and those are not measurements.
         raw_by_test = row_raw(row)
@@ -5253,7 +5427,8 @@ def run_log_events(machine: "Machine", rows: List[dict], operator,
         if row.get(ORIGIN_KEY) == "recovered":
             # Not QC-evaluated (§10.2): a recovered print is recorded as the
             # reading it was, never as a verdict on today's QC.
-            out.append((row, "run", lab_id, "", "", run_log_detail(row)))
+            out.append((row, "run", lab_id, "", "",
+                        {**run_log_detail(row), **timing}))
             continue
         for spec in machine.tests:
             if not spec.sample_id:
@@ -5269,14 +5444,16 @@ def run_log_events(machine: "Machine", rows: List[dict], operator,
                                   raw_by_test.get(spec.name, value))
             verdicts.append((spec, raw, value))
         if not verdicts:
-            out.append((row, "run", lab_id, "", "", run_log_detail(row)))
+            out.append((row, "run", lab_id, "", "",
+                        {**run_log_detail(row), **timing}))
             continue
         for spec, raw, value in verdicts:
             # `value` is the corrected number the verdict was made on; the
             # detail carries the raw reading and the offset when there is one.
             out.append((row, "qc", lab_id, spec.name, f"{value:g}",
-                        qc_log_detail(spec, raw, value, operator=operator,
-                                      calibration_id=calibration_id)))
+                        {**qc_log_detail(spec, raw, value, operator=operator,
+                                         calibration_id=calibration_id),
+                         **timing}))
     return out
 
 
@@ -5692,13 +5869,13 @@ def closest_by_date(candidates: List[str],
     date is the answer the lab would give.
 
     WHAT `when` ACTUALLY IS, plainly, because the comments here used to call it
-    "the print's own date" and it is not. It is `_row_time` — the reading's
-    `parsed_date`/`parsed_time`, which is this module's clock at the moment the
-    print was parsed. Nothing on this road reads a date off the print itself:
-    `parse_print` extracts the mapped values and the Lab ID, no more, and the
-    instruments here do not agree on a date format worth capturing. Making it
-    read the print's date would mean a new mapping the operator has to make and
-    a silent behaviour change on every bench that has not made it.
+    "the print's own date" and on most benches it is not. It is `_row_time` —
+    the reading's `parsed_date`/`parsed_time`. On a bench that marks a result-
+    time cell (the GCs, since 5 Oct 2026) that IS the instrument's own date,
+    capped at the moment of reading. Everywhere else it is this module's clock
+    at the moment the print was parsed: the instruments here do not agree on a
+    date format, so the mapping is opt-in and a bench without it behaves
+    exactly as it always did. See `parse_result_time`.
 
     The bench clock is a good enough proxy for exactly the reason this function
     is allowed to exist at all: it is only consulted when the data already holds
@@ -6156,7 +6333,7 @@ def identity_lookup_ids(rows: List[dict], now: datetime,
     if sweep:
         return row_lab_ids(rows), True
     return row_lab_ids([row for row in rows
-                        if now - _row_time(row, now) <= HELD_FRESH_WINDOW]), False
+                        if now - _received_time(row, now) <= HELD_FRESH_WINDOW]), False
 
 
 def split_identity_backlog(printed_ids: List[str]) -> tuple:
@@ -6279,7 +6456,7 @@ def expire_held_rows(rows: List[dict], now: datetime) -> tuple:
     """
     keep, expired = [], []
     for row in rows:
-        if now - _row_time(row, now) > HELD_ROW_MAX_AGE:
+        if now - _received_time(row, now) > HELD_ROW_MAX_AGE:
             expired.append(row)
         else:
             keep.append(row)
@@ -6832,7 +7009,7 @@ def build_live_payload(machine: Machine, evaluation: "MachineEvaluation",
     for row in rows or []:
         if not str(row.get(LAB_ID_KEY) or "").strip():
             continue
-        when = _row_time(row, now)
+        when = _received_time(row, now)
         if newest is None or when >= newest[0]:
             newest = (when, row)
     if newest is not None:
@@ -8481,6 +8658,11 @@ class LEMStationModule:
         self._source_pending = None
         self._poll_clock: Optional[datetime] = None
         self._events_dropped = 0         # records there was no room for
+        # Readings this process has already taken in (see `drop_repeats`), and
+        # the file position LabCore is known to hold (see `_save_position`).
+        # Both belong to the bound machine and are reset by `set_machine`.
+        self._seen_readings: OrderedDict = OrderedDict()
+        self._saved_position: Optional[int] = None
         # Whether the last drain got its records into LabCore. Optimistic at
         # construction: nothing has been refused, and the caps that consult it
         # only speak about readings this process has actually handled.
@@ -8850,6 +9032,11 @@ class LEMStationModule:
         # still being retried is stale, and letting it land later would swap the
         # instrument underneath whoever just chose this one.
         self._stop_bind_retry()
+        # What another instrument read is not a repeat on this one, and the
+        # position just loaded is the one LabCore already holds: saving it back
+        # unchanged would be a write that says nothing.
+        self._seen_readings = OrderedDict()
+        self._saved_position = machine.last_position
         self._close_serial()  # source config may have changed
         if machine.source_type == "serial":
             self._drain_timer.start()
@@ -9280,8 +9467,8 @@ class LEMStationModule:
         for row, kind, lab_id, test_name, value, detail in run_log_events(
                 machine, rows, operator, calibration_id):
             logs.setdefault(id(row), []).append(build_log_insert(
-                machine.uid, kind, now, lab_id=lab_id, test_name=test_name,
-                value=value, detail=detail)[1])
+                machine.uid, kind, run_log_time(row, now), lab_id=lab_id,
+                test_name=test_name, value=value, detail=detail)[1])
         # Prints that made no row are consumed FIRST in the write, so a torn
         # tail can only ever cut readings — never the note that a header line
         # was read, which would let it come back as one.
@@ -12156,6 +12343,31 @@ class LEMStationModule:
                 row[ORIGIN_KEY] = text.origin
             rows.append(row)
             sources.append(text)
+        # A line already taken in is not taken in again: logged a second time
+        # it lands under a new date, and its cells go back to LabCore over
+        # whatever an analyst changed since. Only rows the instrument dated can
+        # be told apart this way; see `row_identity`.
+        #
+        # `sources` runs parallel to `rows` (the journal pairs each reading
+        # with the print it came from), so the two are filtered together. A
+        # dropped repeat's print makes no row and is journaled as consumed,
+        # never re-offered.
+        #
+        # Remembered on a COPY, adopted only once the read is consumed
+        # (`_commit_source` below). A v4 source re-offers a read it was never
+        # told was consumed; had the identities already been remembered, that
+        # re-offer would be dropped here as a repeat of a reading that never
+        # reached the journal or the log — a loss, where v3.9 had none.
+        seen = OrderedDict(self._seen_readings)
+        kept, repeats = drop_repeats(rows, seen)
+        if repeats:
+            keep_ids = {id(r) for r in kept}
+            pairs = [(r, src) for r, src in zip(rows, sources)
+                     if id(r) in keep_ids]
+            rows = [r for r, _src in pairs]
+            sources = [src for _r, src in pairs]
+            messages.append(f"Skipped {repeats} line(s) already read (same "
+                            "Lab ID, instrument time and values).")
         # THE point at which corrections are applied — every measurement on every
         # print, before anything else sees it. Downstream (QC verdict, the result
         # written to LabCore, the history, the card, the CSV) all read the corrected
@@ -12172,6 +12384,7 @@ class LEMStationModule:
         # (b): only now is the read consumed — the cursor saved, the files
         # moved. A kill before this re-reads, and the journal's keys drop it.
         self._commit_source(machine, prints, messages, source_pending)
+        self._seen_readings = seen
         # Readings adoption found in the file and not in the record (§10.2):
         # in the record now (journaled, logged with origin 'recovered'), and
         # NOTHING else — not QC-judged (a print from before the upgrade must
@@ -14353,6 +14566,11 @@ class LEMStationModule:
             if store and self._log_road_open:
                 self._drain_events(run_sql, messages)
 
+            # Where the file has been read up to, now that what was read is on
+            # record. See `_save_position`.
+            if store:
+                self._save_position(machine, run_sql)
+
             # Read this machine's own QC verdicts back, so a LabStation restart
             # doesn't look like QC having never run.
             #
@@ -14689,6 +14907,45 @@ class LEMStationModule:
             except (JournalError, TypeError, ValueError):
                 pass
 
+    def _save_position(self, machine: Machine, run_sql) -> None:
+        """Record in LabCore how far this bench has read its file.
+
+        It used to be saved only when somebody pressed OK in Settings, so every
+        LabStation restart read the file again from that moment: GC-1 last
+        saved on 23 Sep, and each restart since re-logged two weeks of
+        injections under the restart's date. Saved here instead, once per poll
+        that moved it.
+
+        Only once the poll's records are in LabCore (`_log_road_open` and an
+        empty queue). Saved ahead of a refused log write, a restart would
+        resume past lines whose only record was still in this process's
+        memory, and they would be lost rather than repeated.
+
+        A refused or failed save is tried again on the next poll; the worst it
+        costs is the re-read this exists to prevent, which `drop_repeats` then
+        catches inside one process. Worker thread; never raises."""
+        if machine.source_type != "single_csv" or not machine.uid:
+            return
+        # v4: a v2 bench's LabCore road is the results road and nothing else
+        # (D2), and its position lives in the journal's cursor.json. On the
+        # legacy road the cursor is still the truth (`_commit_source`), and
+        # this is the mirror v4 promises a bench rolled back to v3.9: it
+        # resumes from here, not from the last Settings OK.
+        if _v2(self):
+            return
+        position = machine.last_position
+        if position == self._saved_position:
+            return
+        if not self._log_road_open or self._pending_events:
+            return
+        sql, args = build_position_save(machine.uid, position)
+        try:
+            result = run_sql(sql, args, source="LEM Station")
+        except Exception:
+            return
+        if not refusal_reason(result):
+            self._saved_position = position
+
     def _drain_events(self, run_sql, messages: Optional[List[str]] = None
                       ) -> None:
         """Write every queued record to lem_machine_log.
@@ -14832,10 +15089,13 @@ class LEMStationModule:
         """
         operator = self._current_operator()
         calibration_id = getattr(self, "_calibration_epoch", None)
-        for _row, kind, lab_id, test_name, value, detail in run_log_events(
+        for row, kind, lab_id, test_name, value, detail in run_log_events(
                 machine, rows, operator, calibration_id):
+            # Dated by the instrument when the bench marks a result time; see
+            # `run_log_time`.
             self._log_event(kind, lab_id=lab_id, test_name=test_name,
-                            value=value, detail=detail, now=now)
+                            value=value, detail=detail,
+                            now=run_log_time(row, now))
 
     def _flush_events_now(self) -> None:
         """Drain queued events outside a poll (comments, overrides, PM/Cal).
@@ -15122,7 +15382,8 @@ class LEMStationModule:
             summary = ", ".join(
                 f"{k}={v}" for k, v in row.items()
                 if k not in TIMESTAMP_KEYS
-                and k not in (RAW_KEY, CORRECTION_KEY, JOURNAL_KEY))
+                and k not in (RAW_KEY, CORRECTION_KEY, JOURNAL_KEY,
+                              INSTRUMENT_TIME_KEY, RECEIVED_KEY))
             for col, text in enumerate((when, summary)):
                 table.setItem(i, col, QtWidgets.QTableWidgetItem(text))
 
@@ -16231,6 +16492,9 @@ class _MachineDialog(QtWidgets.QDialog):
         self._mappings = [MethodMapping.from_dict(m.to_dict())
                           for m in machine.mappings]
         self._lab_id = Selector.from_dict(machine.lab_id.to_dict())
+        self._result_time: Optional[Selector] = (
+            Selector.from_dict(machine.result_time.to_dict())
+            if machine.result_time is not None else None)
         self._methods: List[str] = []
         self._methods_loaded = False
         self._recent_prints = list(recent_prints or [])
@@ -16369,9 +16633,24 @@ class _MachineDialog(QtWidgets.QDialog):
         lmenu.addAction("By label detection (robust for serial)",
                         lambda: self._set_lab_id(detect=True))
         lab_id_btn.setMenu(lmenu)
+        time_btn = QtWidgets.QToolButton()
+        time_btn.setText("Selected cell = Result time")
+        time_btn.setToolTip(
+            "The cell that says WHEN the instrument measured (the GC's "
+            "InjectionDateTime). Readings are then dated by the instrument, "
+            "not by when LabStation happened to read the line. Leave it unset "
+            "on an instrument that prints no time.")
+        time_btn.setPopupMode(
+            QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        tmenu = QtWidgets.QMenu(time_btn)
+        tmenu.addAction("Use the selected cell", self._set_result_time)
+        tmenu.addAction("Clear (date readings when they are read)",
+                        self._clear_result_time)
+        time_btn.setMenu(tmenu)
         assign_row.addWidget(map_btn)
         assign_row.addWidget(detect_btn)
         assign_row.addWidget(lab_id_btn)
+        assign_row.addWidget(time_btn)
         assign_row.addStretch()
         root.addLayout(assign_row)
 
@@ -16645,6 +16924,21 @@ class _MachineDialog(QtWidgets.QDialog):
         self._lab_id = selector
         self._refresh_map_table()
 
+    def _set_result_time(self) -> None:
+        """By position only. A time is a column in a results file; a serial
+        report that moves its stamp around has no stamp worth dating by."""
+        index = self._selected_cell_index()
+        if index is None:
+            QtWidgets.QMessageBox.information(
+                self, "Result time", "Select the cell holding the time first.")
+            return
+        self._result_time = Selector(mode="cell", index=index)
+        self._refresh_preview()
+
+    def _clear_result_time(self) -> None:
+        self._result_time = None
+        self._refresh_preview()
+
     def _map_selected(self, detect: bool) -> None:
         selector = self._build_selector(detect, capture="number")
         if selector is None:
@@ -16712,6 +17006,7 @@ class _MachineDialog(QtWidgets.QDialog):
             uid=self._machine.uid,
             delimiter=self._delimiter.text() or ",",
             lab_id=self._lab_id,
+            result_time=self._result_time,
             mappings=self._mappings,
         )
 
@@ -16720,6 +17015,13 @@ class _MachineDialog(QtWidgets.QDialog):
         result = parse_print(machine, self._test_text)
         rows = [("Lab ID", result.lab_id or "(not found)",
                  self._lab_id.describe())]
+        if self._result_time is not None:
+            stamp = extract_value(self._result_time, self._test_text,
+                                  machine.delimiter).strip()
+            shown = (stamp if result.result_time is not None
+                     else f"(not a time: “{stamp}”)" if stamp
+                     else "(not a time: the cell is empty)")
+            rows.append(("Result time", shown, self._result_time.describe()))
         for mapping in self._mappings:
             value = extract_value(mapping.selector, self._test_text,
                                   machine.delimiter).strip()
@@ -16740,7 +17042,8 @@ class _MachineDialog(QtWidgets.QDialog):
             for col, text in enumerate((target, value, source)):
                 item = QtWidgets.QTableWidgetItem(text)
                 if col == 1:
-                    if text in ("(not found)", "(nothing extracted)"):
+                    if (text in ("(not found)", "(nothing extracted)")
+                            or text.startswith("(not a time")):
                         item.setForeground(
                             QtGui.QColor(STATUS_COLORS[STATUS_RED]))
                     elif "alternate" in text:
@@ -17020,6 +17323,7 @@ class _MachineDialog(QtWidgets.QDialog):
         self._qc_hours.setText(str(m.qc_expire_hours))
         self._image_path.setText(m.image_path)
         self._lab_id = m.lab_id
+        self._result_time = m.result_time
         self._mappings = m.mappings
         self._template_text = m.template
         self._test_text = m.template
@@ -17134,6 +17438,7 @@ class _MachineDialog(QtWidgets.QDialog):
             m.qc_expire_hours = 24.0
         m.image_path = self._image_path.text().strip()
         m.lab_id = self._lab_id
+        m.result_time = self._result_time
         # Left alone in manual mode rather than cleared: manual QC ignores
         # mappings, so a machine switched over by mistake and switched back
         # still has its parse setup.
