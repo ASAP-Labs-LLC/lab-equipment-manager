@@ -136,20 +136,31 @@ class TestEffectiveSpecsReachTheFloor:
         assert by_uid["7e8304c31983"]["effective_specs"][0]["last_qc_in_spec"] is False
 
 
-class TestTheFloorPrefersThem:
-    def test_the_panel_renders_them(self, client, gw):
-        """The template has to actually read the new field, or the payload change
-        is invisible."""
-        import pathlib
-        src = (pathlib.Path(__file__).resolve().parent.parent
-               / "templates" / "floor.html").read_text(encoding="utf-8")
-        assert "effective_specs" in src
+class TestTheRecordPrefersThem:
+    """The old floor page's panel read `effective_specs` (deleted in piece
+    14). The record's QC rows are built by `ui_record.checks`, so the
+    same two promises are checked there, on what it returns rather than on
+    a grep: it draws the band the bench resolved, min and max included."""
 
-    def test_the_panel_shows_min_and_max_labels(self):
-        import pathlib
-        src = (pathlib.Path(__file__).resolve().parent.parent
-               / "templates" / "floor.html").read_text(encoding="utf-8")
-        assert "s.low" in src and "s.high" in src
+    def _machine(self):
+        return {"machine_uid": "m1", "title": "M1", "module_running": True,
+                "module_state": "running",
+                "effective_specs": [{"test_name": "ASTM D93 - Flash", "sample_id": "AF26",
+                                     "low": 60.5, "expected": 63.0, "high": 65.5,
+                                     "units": "C", "last_qc_in_spec": True,
+                                     "last_qc_value": 63.2,
+                                     "last_qc_at": "2026-10-01T09:00:00"}],
+                "qc_targets": []}
+
+    def test_the_record_renders_them(self):
+        import ui_record
+        rows = ui_record.checks(self._machine())
+        assert [r["test"] for r in rows] == ["ASTM D93 - Flash"]
+
+    def test_the_record_shows_min_and_max(self):
+        import ui_record
+        row = ui_record.checks(self._machine())[0]
+        assert (row["low"], row["expected"], row["high"]) == (60.5, 63.0, 65.5)
 
 
 # ── a verdict does not survive a change of standard ──────────────────────────

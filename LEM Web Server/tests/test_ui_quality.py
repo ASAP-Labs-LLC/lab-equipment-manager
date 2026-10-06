@@ -592,14 +592,15 @@ class TestThePageCode:
 
 
 
-def test_the_records_empty_library_door_opens_new_standard_once_quality_exists():
+def test_the_records_empty_library_door_opens_new_standard():
     """The record's "Change which standards…" sheet, over an empty library,
-    used to send people to the classic floor's library dialog. With /quality
-    built, the door is the New standard sheet (/quality/standards?new=1,
-    which quality.js opens on arrival), and the classic floor stays only as
-    the fallback for a build without /quality."""
+    used to send people to the classic floor's library dialog. The door is
+    the New standard sheet (/quality/standards?new=1, which quality.js opens
+    on arrival). Piece 14 deleted the classic floor, so there is no fallback
+    to it left either: a link there would be a 404."""
     src = (JS / "record.js").read_text()
-    assert "hasQuality ? '/quality/standards?new=1'" in src
+    assert "href: '/quality/standards?new=1', text: 'Add a standard'" in src
+    assert "/floor/classic" not in src and "qc-library" not in src
     q = (JS / "quality.js").read_text()
     assert "new=1" in q and "openNew" in q
 

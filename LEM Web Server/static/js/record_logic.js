@@ -424,7 +424,39 @@
         }).join(' · ');
     }
 
-    const api = { rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    /** One change, one request id (W2): the rule static/lem.js keeps for
+        the round pages, for the record's writes. The server answers a retry
+        carrying the SAME `X-Request-Id` from its ledger instead of applying
+        a correction twice, so an id belongs to one change (method, URL,
+        body) and is kept while its outcome is unknown: no answer at all, or
+        a 5xx that may be a commit whose answer was lost. A 2xx or 4xx is a
+        definitive answer and ends it, so pressing again is a new change.
+        Kept in sessionStorage (a reload in this tab still finishes the same
+        change), in memory when storage is refused. */
+    function changeIds(store) {
+        const mem = {};
+        const PRE = 'lemrid:';
+        const get = (k) => { try { const v = store && store.getItem(k); if (v) return v; } catch (_e) { /* memory */ } return mem[k] || null; };
+        const put = (k, v) => { mem[k] = v; try { if (store) store.setItem(k, v); } catch (_e) { /* memory only */ } };
+        const drop = (k) => { delete mem[k]; try { if (store) store.removeItem(k); } catch (_e) { /* nothing kept */ } };
+        function mint() {
+            try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID(); } catch (_e) { /* below */ }
+            let out = Date.now().toString(36) + '-';
+            for (let i = 0; i < 4; i++) out += Math.random().toString(36).slice(2, 8);
+            return out;
+        }
+        return {
+            begin(method, url, body) {
+                const key = PRE + method + ' ' + url + ' ' + (body == null ? '' : body);
+                const id = get(key) || mint();
+                put(key, id);
+                return { key, id };
+            },
+            settle(key, status) { if (status > 0 && status < 500) drop(key); },
+        };
+    }
+
+    const api = { changeIds, rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

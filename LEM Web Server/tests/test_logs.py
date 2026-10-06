@@ -233,8 +233,11 @@ class TestTheLogsPage:
     def test_it_exists(self, client):
         assert client.get("/logs").status_code == 200
 
-    def test_it_is_linked_from_the_floor(self, client):
-        assert 'href="/logs"' in client.get("/floor/classic").get_data(as_text=True)
+    def test_it_is_linked_from_every_shell_page(self, client):
+        """The sidebar's Log item (the old floor linked it from its toolbar;
+        piece 14 deleted the floor)."""
+        for page in ("/", "/quality", "/settings"):
+            assert 'href="/logs"' in client.get(page).get_data(as_text=True), page
 
     def test_it_can_get_back(self, client):
         assert 'href="/"' in client.get("/logs").get_data(as_text=True)

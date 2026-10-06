@@ -197,15 +197,11 @@ class TestNoRightClickAnywhere:
                     hits.append((p.name, line.strip()[:90]))
         assert not hits, hits
 
-    # The four templates piece 14 deletes outright (ia-final §10). They are
-    # not rendered by any shell page; their prompt()s go with them.
-    LEGACY = {"floor.html", "dashboard.html", "stations.html", "maintenance.html"}
-
-    def test_no_native_prompt_or_alert_on_any_shell_page(self):
+    # No exceptions since piece 14 deleted the four old templates that had
+    # them (floor, dashboard, stations, maintenance: ia-final §10).
+    def test_no_native_prompt_or_alert_on_any_page(self):
         hits = []
         for p in list(T.glob("*.html")) + list(JS.glob("*.js")) + [ROOT / "static" / "lem.js"]:
-            if p.name in self.LEGACY:
-                continue
             for n, line in enumerate(p.read_text().splitlines(), 1):
                 if re.search(r"(?<![\w.])(window\.)?(prompt|alert|confirm)\(", line):
                     hits.append("%s:%d %s" % (p.name, n, line.strip()[:80]))

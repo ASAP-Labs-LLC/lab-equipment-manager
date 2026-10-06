@@ -2,7 +2,7 @@
 
    One renderer for every place the floor is drawn: the Instruments page's
    map view (/?view=map) and the wall (/floor, piece 13). It replaces the
-   isometric SVG and the 3D site that floor.html carried; both drew a fixed
+   isometric SVG and the 3D site that the old floor page carried; both drew a fixed
    deck with the instruments somewhere on it, so most of the screen was
    empty floor (judge J1: "a half-width grid of empty dashed cells, and dead
    space below").

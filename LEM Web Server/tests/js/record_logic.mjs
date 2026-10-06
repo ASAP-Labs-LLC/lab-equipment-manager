@@ -356,5 +356,46 @@ check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
   check('no detail is no detail', R.rowDetail('', w24, null), '');
 }
 
+// ── one change, one request id (W2) ───────────────────────────────────────
+// The server answers a retry that carries the SAME X-Request-Id from its
+// ledger instead of applying a correction twice (§7.8.2). The old floor sent
+// it through lem.js; piece 14 deleted the floor, and the record's send() had
+// never sent one, so a Save whose answer was lost and pressed again made a
+// second change in the trail. The rule, the same as lem.js's:
+// * one id per CHANGE (method, URL, body); the same change reuses it while
+//   its outcome is unknown (no answer, or a 5xx that may be a lost commit);
+// * a definitive answer (2xx, 4xx) ends it: pressing again is a new change;
+// * a different change never shares an id;
+// * storage that throws (private mode) still keeps the id for this page.
+{
+  const mem = new Map();
+  const store = { getItem: k => (mem.has(k) ? mem.get(k) : null), setItem: (k, v) => mem.set(k, String(v)), removeItem: k => mem.delete(k) };
+  const ids = R.changeIds(store);
+  const a = ids.begin('POST', '/api/machines/gc-1/corrections', '{"correction":0.5}');
+  check('an id is minted for a change', typeof a.id === 'string' && a.id.length >= 8, true);
+  const again = ids.begin('POST', '/api/machines/gc-1/corrections', '{"correction":0.5}');
+  check('the same change, outcome unknown, reuses its id', again.id, a.id);
+  const other = ids.begin('POST', '/api/machines/gc-1/corrections', '{"correction":0.6}');
+  check('a different body is a different change', other.id !== a.id, true);
+  const del = ids.begin('DELETE', '/api/machines/gc-1/corrections', '{"correction":0.5}');
+  check('a different method is a different change', del.id !== a.id, true);
+  ids.settle(a.key, 503);
+  check('a 5xx keeps the id (it may be a lost commit)', ids.begin('POST', '/api/machines/gc-1/corrections', '{"correction":0.5}').id, a.id);
+  ids.settle(a.key, 200);
+  check('a 2xx ends it: the next press is a new change', ids.begin('POST', '/api/machines/gc-1/corrections', '{"correction":0.5}').id !== a.id, true);
+  const b = ids.begin('POST', '/x', '{}');
+  ids.settle(b.key, 409);
+  check('a 4xx ends it too', ids.begin('POST', '/x', '{}').id !== b.id, true);
+  const c = ids.begin('POST', '/y', '{}');
+  ids.settle(c.key, 0);
+  check('no answer at all keeps it', ids.begin('POST', '/y', '{}').id, c.id);
+  check('kept where a reload in this tab finds it', [...mem.values()].includes(c.id), true);
+  const broken = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };
+  const ids2 = R.changeIds(broken);
+  const d = ids2.begin('POST', '/z', '{}');
+  check('storage that throws still keeps it in memory', ids2.begin('POST', '/z', '{}').id, d.id);
+  check('no storage at all works too', typeof R.changeIds(null).begin('POST', '/z', '').id, 'string');
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

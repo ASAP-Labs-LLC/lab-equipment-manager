@@ -399,17 +399,38 @@ class TestThePageSendsTheId:
     (tests/js/request_id.mjs pins its rules); this pins that the editor
     really calls it and no bare `fetch` write to the route is left."""
 
-    def test_the_correction_editor_writes_through_lem_send(self):
+    # The old floor's editor sent it through lem.js's LEM.send. Piece 14
+    # deleted the floor; the record's Correction factors sheet is the editor
+    # now, and every write on the record goes through record.js's one send().
+
+    def _src(self, *parts):
         import os
+        return open(os.path.join(os.path.dirname(__file__), "..", *parts),
+                    encoding="utf-8").read()
+
+    def test_the_record_sends_every_json_write_with_an_id(self):
+        src = self._src("static", "js", "record.js")
+        send = src[src.index("    function send(url, opts)"):]
+        send = send[:send.index("\n    }\n")]
+        assert "'X-Request-Id'" in send
+        assert "IDS.begin(" in send and "IDS.settle(" in send
+
+    def test_the_correction_editor_writes_through_that_send(self):
+        """Save and removal both go through P.submit (record.js's send);
+        no bare fetch write to the route is left anywhere shipped."""
         import re
-        src = open(os.path.join(os.path.dirname(__file__), "..", "templates",
-                                "floor.html"), encoding="utf-8").read()
-        sends = re.findall(r"LEM\.send\(\s*`/api/machines/\$\{uid\}/"
-                           r"corrections[^`]*`", src)
-        assert len(sends) == 2, sends               # save and remove
-        bare = re.findall(r"fetch\(\s*`/api/machines/\$\{uid\}/corrections"
-                          r"[^`]*`\s*,\s*\{\s*method", src)
-        assert bare == [], bare
+        js = self._src("static", "js", "record_actions.js")
+        assert "P.submit($('corr-form')" in js
+        assert re.search(r"url: '/api/machines/' \+ enc\(uid\) \+ '/corrections/' \+ enc\(c\.test_name\), method: 'DELETE'", js)
+        assert "P.submit($('confirm-form')" in js
+        assert not re.search(r"fetch\([^)]*corrections[^)]*method", js)
+
+    def test_a_lost_answer_is_not_called_nothing_saved(self):
+        """After a lost response "nothing was saved" may be false: the change
+        may be in force. The sentence says it is not known."""
+        src = self._src("static", "js", "record.js")
+        assert "nothing was saved" not in src
+        assert "not known whether" in src
 
     def test_lem_send_sets_the_header(self):
         import os

@@ -131,7 +131,7 @@ def configure_logging(directory=None, level=logging.INFO) -> str:
     handler._lem = True
     root.addHandler(handler)
     # ONE EXCEPTION, and it is the difference between a useful log and a full
-    # one. `floor.html` re-reads its whole world every two seconds from every
+    # one. The old floor page re-read its whole world every two seconds from every
     # open browser and every bench POSTs /api/live on each poll; werkzeug logs
     # a line per request at INFO, which is thousands an hour and would rotate
     # the refusals — the only reason this file exists — out of the file within
@@ -205,9 +205,9 @@ def _is_background(path: str, method: str) -> bool:
     wrong twice in a row — first missing ``/api/me`` and ``/api/map``, then
     ``/api/qc-samples``, each time pinning idle time under a second so an
     unattended deploy could never fire. The failure is silent, and any new
-    poller added to floor.html would reintroduce it.
+    poller added to a page would reintroduce it.
 
-    So the rule is inverted. ``floor.html`` re-reads its whole world every two
+    So the rule is inverted. The old floor page re-read its whole world every two
     seconds from every open browser, which makes *any* GET indistinguishable
     from a wall display; enumerating them is a losing game. What actually
     deserves protection from a restart is someone **writing** — an edit, a
@@ -1556,15 +1556,20 @@ def create_app(gateway, labcore_gateway=None,
     # (tests/test_wall_pages.py counts).
     @app.route("/floor")
     def floor():
-        """The floor wall: can the lab run? (wall_floor.html)."""
-        return render_template("wall_floor.html", data=_wall_floor_payload(), kind="floor")
+        """The floor wall: can the lab run? (wall_floor.html).
 
-    @app.route("/floor/classic")
-    def floor_classic():
-        """The old floor (floor.html), kept reachable until piece 14 deletes
-        it: some of its dialogs have no other door yet. Old pages' Map link
-        lands here."""
-        return render_template("floor.html", active="/floor/classic")
+        One query is not the wall's: `?machine=<uid>` is how the old floor
+        (and every "Show on the floor map" link people saved from it) opened
+        one instrument's panel. That panel is the record now, so the old
+        link lands there (ia-final §1). The uid is quoted as a path segment,
+        so a uid with a `/` or `?` in it reaches its own record or its
+        honest 404, never another URL. An empty `machine=` is no machine:
+        the wall."""
+        uid = request.args.get("machine") or ""
+        if uid:
+            from urllib.parse import quote
+            return redirect("/instruments/" + quote(uid, safe=""), code=302)
+        return render_template("wall_floor.html", data=_wall_floor_payload(), kind="floor")
 
     @app.route("/maintenance")
     def maintenance_page():
@@ -1572,15 +1577,6 @@ def create_app(gateway, labcore_gateway=None,
         a schedule belongs to its instrument's record, and a nav item for a
         table with 0 rows in production was a judged defect (§12)."""
         return redirect("/instruments?filter=maintenance")
-
-    @app.route("/maintenance/classic")
-    def maintenance_classic():
-        """The old fleet-wide PM page, kept reachable (from Instruments'
-        Maintenance view) because two of its jobs have no other door yet:
-        marking a task done across the lab and importing PM history. The
-        record's Maintenance section and Settings › Imports take them over;
-        then this goes with the template (ia-final §10)."""
-        return render_template("maintenance.html", active="/maintenance")
 
     # ── the round (ia-final §3.3, piece 9) ─────────────────────────────
     # `/checklists` is the tablet's bookmark: it goes to the round that is
@@ -1866,25 +1862,12 @@ def create_app(gateway, labcore_gateway=None,
     # blank the nav for the second it takes to re-read the day
     _round_last: dict = {"day": None, "value": None}
 
-    _has_record: dict = {}
-
     def _record_href(uid: str, section: str) -> str:
-        """Where an instrument's record lives TODAY. `/instruments/<uid>` is
-        the record in the new IA (pieces 4-5); until that route exists the
-        old floor is the record, rather than a link to a 404. Looked up once:
-        routes do not change while the server runs."""
-        if "v" not in _has_record:
-            # transfer_routes' stand-in page holds only the Data transfer
-            # section: it is not the record, so it does not take the
-            # record's links away from the floor
-            _has_record["v"] = any(r.rule == "/instruments/<machine_uid>"
-                                   and r.endpoint != "instrument_transfer_page"
-                                   for r in app.url_map.iter_rules())
-        if _has_record["v"]:
-            return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
-        # /floor is the wall now (piece 13); the old floor is the record
-        # until the record page exists
-        return "/floor/classic"
+        """Where an instrument's record lives: `/instruments/<uid>`, with the
+        section as its #anchor. (Until piece 14 this could also answer the
+        old floor, for a build with no record page; the record is always
+        registered now, and the old floor is gone.)"""
+        return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
 
     def _today_round_day():
         """Today's cached `/api/checklists` answer, or the last one read
@@ -4730,8 +4713,7 @@ def create_app(gateway, labcore_gateway=None,
         # again, which moves the due date a second time and logs it twice.
         # `logged: false` plus the sentence is the honest shape, and it is the
         # one both pages that can complete a task actually render
-        # (`out.logged === false` in floor.html, `b.logged === false` in
-        # maintenance.html). Silence is what is forbidden here, not the 200.
+        # (`b.logged === false` in the record's Mark done, static/js/record.js). Silence is what is forbidden here, not the 200.
         #
         # `Exception`, not `LabCoreError`: a client that RAISES never produced
         # an answer, and the history row is equally missing either way. Letting
@@ -8650,7 +8632,10 @@ def create_app(gateway, labcore_gateway=None,
             data["latest"] = _quality_latest()
         else:
             data["standards"] = _standards_payload()
-        return render_template("quality.html", nav="qc", view=view, data=data)
+        # the bottom of the QC window chain, as resolve_qc_window has it: the
+        # New standard sheet says it rather than typing a 24 that could drift
+        return render_template("quality.html", nav="qc", view=view, data=data,
+                               qc_default_hours="%g" % qc_samples_mod.QC_WINDOW_DEFAULT_HOURS)
 
     @app.route("/quality")
     def quality_page():

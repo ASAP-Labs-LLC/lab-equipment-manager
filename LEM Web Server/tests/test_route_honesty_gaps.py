@@ -492,7 +492,7 @@ class TestTheWritesTheROUTEIssuesItself:
 class TestAPollingRouteCannotFloodTheLog:
     """The reporting channel must survive the outage it exists to report.
 
-    `/api/map` is polled by floor.html every 2 seconds from every open browser,
+    `/api/map` was polled by the old floor page every 2 seconds from every open browser,
     and its failure branch logged one line per poll. Measured at ~167 bytes a
     line, four wall displays produce over a megabyte an hour — against a 2 MB
     rotating handler with 5 backups, that rotates every refused write, every

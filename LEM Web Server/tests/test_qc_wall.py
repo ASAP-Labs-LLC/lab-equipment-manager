@@ -209,12 +209,17 @@ class TestThePageIsReachableAndIsAMonitor:
     def test_the_qc_page_is_served(self, gw, tmp_path):
         assert _client(_app(gw, tmp_path)).get("/qc").status_code == 200
 
-    def test_it_is_in_the_nav_under_logs(self, gw, tmp_path):
-        # the old pages' nav (the classic floor's); /floor is the wall now
-        body = _client(_app(gw, tmp_path)).get("/floor/classic").get_data(as_text=True)
-        assert '/qc' in body
-        assert body.index('/logs') < body.index('/qc'), (
-            "the QC tab has to sit beneath Logs, which is where it was asked for")
+    def test_qc_in_the_nav_is_the_quality_page_not_the_wall(self, gw, tmp_path):
+        """The old pages' nav had a QC tab under Logs that opened this wall.
+        In ia-final §1 the nav's QC is /quality (QA's question, at a desk),
+        and /qc is a TV bookmark (O11), linked from no shell page: a wall
+        opened from a desk is a page with no way to act. Piece 14 deleted
+        the old nav partial with the pages that drew it."""
+        body = _client(_app(gw, tmp_path)).get("/").get_data(as_text=True)
+        nav = body[body.index('id="sidebar"'):]
+        nav = nav[:nav.index("</nav>")]
+        assert 'href="/quality"' in nav
+        assert 'href="/qc"' not in nav
 
     def test_the_page_refreshes_itself(self, gw, tmp_path):
         """Nobody presses anything on a wall display. Page code lives in

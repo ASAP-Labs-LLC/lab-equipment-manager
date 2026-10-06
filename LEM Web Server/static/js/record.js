@@ -521,7 +521,7 @@
             if (!groups.length) {
                 list.replaceChildren(h('div', { className: 'assign-note' }, glyph('never'),
                     h('span', {}, 'No QC standards are defined yet. A standard is defined once in the QC library, with its certified values, then assigned here. ',
-                        h('a', { className: 'link', href: hasQuality ? '/quality/standards?new=1' : '/floor/classic?open=qc-library', text: hasQuality ? 'Add a standard' : 'Open the QC library' }))));
+                        h('a', { className: 'link', href: '/quality/standards?new=1', text: 'Add a standard' }))));
             } else {
                 list.replaceChildren(...groups.map(g => h('fieldset', { className: 'assign-grp' + (g.gone ? ' gone' : '') },
                     h('legend', {}, h('b', { text: g.name }), g.labId ? h('span', { className: 'muted', text: ' · lab ID ' + g.labId }) : null,
@@ -579,13 +579,32 @@
     // ok:false: both of LabCore's refusal shapes arrive as one of these) is
     // thrown with the server's own sentence, so the sheet that sent it stays
     // open and says it; nothing is toasted for a write that did not land.
+    //
+    // Every JSON write carries an X-Request-Id for its change (W2,
+    // R.changeIds): a correction whose answer was lost, sent again, is
+    // answered from the server's ledger instead of being made twice. No
+    // answer is retried once by itself with the same id; after that it is
+    // "not known whether this saved", never "nothing saved", which may
+    // be false: the change may be in force and only its answer lost.
+    let ss = null;
+    try { ss = window.sessionStorage; } catch (_e) { ss = null; }
+    const IDS = R.changeIds(ss);
     function send(url, opts) {
         const o = opts || {};
-        const init = { method: o.method || 'POST' };
+        const method = o.method || 'POST';
+        const init = { method, headers: {} };
+        let change = null;
         if (o.form) init.body = o.form;
-        else if (o.body !== undefined) { init.headers = { 'Content-Type': 'application/json' }; init.body = JSON.stringify(o.body); }
-        return fetch(url, init)
-            .catch(() => { throw new Error('LEM did not answer, so nothing was saved. Try again in a moment.'); })
+        else {
+            if (o.body !== undefined) { init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(o.body); }
+            change = IDS.begin(method, url, init.body);
+            init.headers['X-Request-Id'] = change.id;
+        }
+        const attempt = () => fetch(url, init);
+        return attempt()
+            .catch(() => new Promise((resolve, reject) => { setTimeout(() => attempt().then(resolve, reject), 700); }))
+            .catch(() => { throw new Error('LEM did not answer, so it is not known whether this saved. Reload the record to see before trying again.'); })
+            .then(r => { if (change) IDS.settle(change.key, r.status); return r; })
             .then(r => r.json().catch(() => ({})).then(b => {
                 if (!r.ok || b.error || b.ok === false) {
                     const e = new Error(b.error || ('LEM answered ' + r.status + ' and did not save it.'));

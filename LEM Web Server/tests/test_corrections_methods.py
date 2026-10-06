@@ -118,21 +118,25 @@ class TestTheMethodListIsOffered:
         assert got == {k: pytest.approx(v) for k, v in want.items()}
 
 
-class TestTheDialogUsesIt:
-    def src(self):
+class TestTheSheetUsesIt:
+    """The record's Correction factors sheet (record_actions.js and
+    instrument.html; the old floor page's corrDlg was deleted with it in
+    piece 14). It must offer the methods the bench reports, not only QC'd ones."""
+
+    def src(self, *parts):
         import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / "floor.html").read_text(encoding="utf-8")
+        return (pathlib.Path(__file__).resolve().parent.parent.joinpath(*parts)
+                .read_text(encoding="utf-8"))
 
-    def test_the_dialog_reads_the_method_list(self):
-        s = self.src()
-        block = s[s.index("async function renderCorrections"):]
-        block = block[:block.index("\n}")]
-        assert "methods" in block
+    def test_the_sheet_reads_the_method_list(self):
+        s = self.src("static", "js", "record_actions.js")
+        block = s[s.index("function openCorrection"):]
+        block = block[:block.index("\n    }")]
+        assert "body.methods" in block
 
-    def test_the_dialog_says_corrections_apply_to_all_results(self):
+    def test_the_sheet_says_corrections_apply_to_all_results(self):
         """An operator setting this must know it changes reported results, not just
         the QC verdict."""
-        s = self.src()
-        dlg = s[s.index('id="corrDlg"'):s.index('id="corrBody"')]
-        assert "every" in dlg.lower() or "all " in dlg.lower()
+        s = self.src("templates", "instrument.html")
+        sheet = s[s.index('id="corr-sheet"'):s.index('id="corr-test"')]
+        assert "every reading" in sheet.lower()

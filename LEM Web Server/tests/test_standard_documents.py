@@ -342,8 +342,8 @@ class TestARenameMovesNoBytes:
 class TestTheRenameThisApplicationActuallyPerforms:
     """There is no rename verb. `QcSampleStore` has `save` and `delete`.
 
-    `templates/floor.html`, `templates/stations.html` and `web_app.py` all say
-    the same thing in the same words: *a rename is save-new-then-delete-old*.
+    `web_app.py` says it, as the old floor and stations pages did (deleted in
+    piece 14), in the same words: *a rename is save-new-then-delete-old*.
     So `rename_standard` has no caller and cannot have one, and a real rename
     leaves every certificate filed against a standard that no longer exists —
     invisible to `certificates(new_name)`, with the PDF still on disk.
