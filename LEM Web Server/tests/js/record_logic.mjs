@@ -397,5 +397,33 @@ check('this year does not', R.stamp('2026-08-03T15:04:00', NOW4), '3 Aug');
   check('no storage at all works too', typeof R.changeIds(null).begin('POST', '/z', '').id, 'string');
 }
 
+// ── the chart, in words and as a table (ia-final §9.1 rule 5, piece 15) ────
+// A chart is a picture; someone who cannot see it, or cannot make out a
+// 3px dot on a phone, needs the same facts in words and in rows. The words
+// end on the newest run, its value in the band's own decimals and its day,
+// because "is the last one OK" is the question T2 asks of the chart. The
+// table is newest first (the run you came for is the first row) and says
+// "outside the limits" in words, never only with a red cell.
+{
+  const yr = new Date().getFullYear();
+  const spec = { low: 188.55, expected: 190.2, high: 191.95, units: '°C' };
+  const s = { points: [
+    { ts: `${yr}-09-28T09:10:00`, value: 190.1 },
+    { ts: `${yr}-09-29T09:12:00`, value: 192.4 },
+    { ts: `${yr}-09-30T08:46:00`, value: 191.83 }] };
+  check('the last run, in the band\'s decimals, with its unit and day',
+    R.chartLast(s, spec), 'last 191.83 °C on 30 Sep');
+  check('no units: no stray space', R.chartLast(s, { low: 188.55, high: 191.95 }), 'last 191.83 on 30 Sep');
+  check('no runs: nothing to say', R.chartLast({ points: [] }, spec), '');
+  const rows = R.chartRows(s, spec);
+  check('newest first', rows.map(r => r.value), ['191.83', '192.40', '190.10']);
+  check('outside is said in words', rows.map(r => r.verdict), ['Within the limits', 'Outside the limits', 'Within the limits']);
+  check('each row has its day and time', rows[0].when, '30 Sep 08:46');
+  const fromLC = R.chartRows({ points: [{ ts: `${yr}-10-02T10:00:00`, value: 190, from: 'status' }] }, spec);
+  check('a run that is LabCore\'s latest, not yet in the log, says so in its row',
+    fromLC[0].note, 'LabCore\'s latest result, not yet in LEM\'s QC log');
+  check('no limits: no verdict invented', R.chartRows({ points: [{ ts: `${yr}-10-02T10:00:00`, value: 3 }] }, {})[0].verdict, '');
+}
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

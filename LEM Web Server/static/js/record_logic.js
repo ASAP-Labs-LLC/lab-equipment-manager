@@ -275,6 +275,40 @@
         return { plot, points, ticks, lines: { low: lo === null ? null : y(lo), high: hi === null ? null : y(hi), mid: mid === null ? null : y(mid) } };
     }
 
+    // ── the chart in words and as a table (§9.1 rule 5) ─────────────────────
+    /** "last 191.83 °C on 30 Sep": the newest run, in the band's decimals.
+        Joined to rangeCaption() under the chart, and read out with it. */
+    function chartLast(series, spec) {
+        const pts = ((series && series.points) || []).filter(p => num(p.value) !== null);
+        if (!pts.length) return '';
+        const p = pts[pts.length - 1];
+        const u = spec && spec.units ? ' ' + spec.units : '';
+        return 'last ' + fmtQC(p.value, spec) + u + ' on ' + day(p.ts);
+    }
+    function dayTime(iso) {
+        const t = Date.parse(iso || '');
+        return isNaN(t) ? '' : day(iso) + ' ' + hm(t);
+    }
+    /** The rows "Show as a table" draws: newest first, each run's day and
+        time, its value in the band's decimals, and its verdict in words
+        (none invented when the check has no limits). */
+    function chartRows(series, spec) {
+        const s = spec || {};
+        const lo = num(s.low), hi = num(s.high);
+        const judged = lo !== null || hi !== null;
+        return ((series && series.points) || []).filter(p => num(p.value) !== null).slice().reverse().map(p => {
+            const v = num(p.value);
+            const out = (hi !== null && v > hi) || (lo !== null && v < lo);
+            return {
+                when: dayTime(p.ts),
+                value: fmtQC(v, s),
+                verdict: judged ? (out ? 'Outside the limits' : 'Within the limits') : '',
+                outside: !!out,
+                note: p.from === 'status' ? 'LabCore\'s latest result, not yet in LEM\'s QC log' : '',
+            };
+        });
+    }
+
     // ── how long a pass counts, and a refresh that failed ──────────────────
     /** §3.1's QC intro, middle sentence, with the window the verdicts were
         judged by: {hours, from} from the server (from = the standard that
@@ -456,7 +490,7 @@
         };
     }
 
-    const api = { changeIds, rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
+    const api = { chartLast, chartRows, changeIds, rowDetail, shortTest, assignGroups, assignTargets, assignSentence, assignProblem, tileParts, localDay, doneProblem, doneToast, withLatest, stamp, windowSentence, staleText, fmtQC, qcDecimals, bandText, bandPos, captionText, rangeCaption, controlCaption, uLine, chartModel, day, dayIn };
     root.LEMRecord = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

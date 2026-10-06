@@ -40,6 +40,10 @@ DESTS = ["/", "/checklists", "/quality", "/logs", "/settings"]
 LEM_CSS_TOKENS = {
     "--warn", "--warn-text", "--warn-soft", "--st-held", "--pill-held-fg",  # §9.2
     "--w-name", "--w-word", "--w-detail", "--w-pad",                        # wall type sizes
+    # piece 15: on a tinted surface --text-muted is pointed at GC's own
+    # --text-muted-sunken (4.33:1 -> 5.28:1 on --bg-sunken). An alias to a
+    # palette token, never a new colour: test_the_muted_alias_is_only_an_alias
+    "--text-muted",
 }
 
 
@@ -74,6 +78,11 @@ class TestOnePalette:
     def test_lem_css_sets_only_the_allowed_tokens(self):
         got = declared((CSS / "lem.css").read_text(encoding="utf-8"))
         assert got == LEM_CSS_TOKENS, sorted(got ^ LEM_CSS_TOKENS)
+
+    def test_the_muted_alias_is_only_an_alias(self):
+        css = (CSS / "lem.css").read_text(encoding="utf-8")
+        values = re.findall(r"(?<![-\w])--text-muted\s*:\s*([^;]+);", css)
+        assert values and set(v.strip() for v in values) == {"var(--text-muted-sunken)"}, values
 
     def test_no_other_stylesheet_declares_a_token(self):
         for p in sorted(CSS.glob("*.css")):

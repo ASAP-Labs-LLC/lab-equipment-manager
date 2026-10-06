@@ -312,3 +312,173 @@ def test_the_pages_use_tokens_only(css):
         token = re.fullmatch(r"var\((--[\w-]+)\)", value)
         assert token, (css.name, value)
         assert token.group(1) in CHECKED_FG, (css.name, token.group(1))
+
+
+# ── every token pair LEM can draw (piece 15) ────────────────────────────────
+# The rows above are the pairs someone thought of. These are the pairs the
+# CSS can actually produce, found by reading every stylesheet the shell
+# loads, so a new colour or a new tinted surface fails here until somebody
+# says where it sits and the numbers hold:
+#
+# * every token used as a text colour is checked on every surface a word can
+#   sit on (the page, a card, a menu, the sidebar, a sunken tile, a hovered
+#   row, a selected row), unless it is listed in SITS_ON with the only
+#   surfaces it is drawn on, or in MARK_ONLY as a glyph's currentColor;
+# * every status or chart mark (fill, stroke, border, a glyph's colour) and
+#   the focus ring is checked at 3:1 on the same surfaces;
+# * every rule that paints a tinted surface (sunken, hover, active) is
+#   classified: it re-points --text-muted at --text-muted-sunken (lem.css),
+#   or it holds no muted words. GC's --text-muted is 4.33:1 on --bg-sunken
+#   and 4.13:1 on a selected row in light; that is how a caption on a
+#   selected QC row came in under AA unseen.
+ALL_CSS = sorted(CSS.glob("*.css"))
+SURFACES = {
+    "page": ["--bg"], "card": ["--bg-card"], "menu": ["--bg-elevated"], "sidebar": ["--sidebar-bg"],
+    "sunken tile": ["--bg-card", "--bg-sunken"], "sunken on the page": ["--bg", "--bg-sunken"],
+    "hovered row": ["--bg-card", "--bg-hover"], "selected row": ["--bg-card", "--bg-active"],
+    "hovered sidebar item": ["--sidebar-bg", "--bg-hover"], "current sidebar item": ["--sidebar-bg", "--bg-active"],
+}
+TINTED = ["sunken tile", "sunken on the page", "hovered row", "selected row", "hovered sidebar item",
+          "current sidebar item"]
+PLAIN = [k for k in SURFACES if k not in TINTED]
+#: text tokens drawn only on some surfaces, and why
+SITS_ON = {
+    # re-pointed at --text-muted-sunken on every tinted surface (lem.css)
+    "--text-muted": PLAIN,
+    "--warn-text": PLAIN,
+    # made for one ground each
+    "--ink-fg": [["--ink"], ["--ink-hover"], ["--sidebar-bg", "--ink"]],
+    "--text-inverse": [["--st-error"], ["--bad"]],
+    "--pill-final-fg": PLAIN + TINTED + [["--bg", "--good-soft"], ["--bg-card", "--good-soft"]],
+    "--pill-held-fg": PLAIN + TINTED + [["--bg", "--warn-soft"], ["--bg-card", "--warn-soft"]],
+    "--pill-error-fg": PLAIN + TINTED + [["--bg", "--bad-soft"], ["--bg-card", "--bad-soft"]],
+    # chart labels: charts are drawn on cards only
+    "--chart-axis": ["card"],
+}
+#: tokens set as `color:` only so a glyph or icon (currentColor) takes them
+MARK_ONLY = {"--st-final", "--st-held", "--ink"}
+MARK_SELECTOR = re.compile(r"glyph|\.ico\b|-dot\b|\.tick\b")
+#: marks that carry nothing a word beside them does not also say
+DECORATIVE = {
+    "--border", "--border-light", "--border-strong",   # separators and the dashed "stopped"/"stale" edges, always with words
+    "--border-focus",            # a focused field also gets the 2px --accent ring
+    "--chart-band", "--chart-grid", "--chart-tick",    # the band's edges are the limit lines, in --text-muted
+    "--chart-ref",               # the target line is labelled "target 190.2" beside it
+    "--bg-card", "--sidebar-bg", "--bg-active",        # a halo or knock-out in the surface's own colour
+    "--ring", "--e1", "--e2", "--e3", "--good-soft", "--bad-soft", "--warn-soft", "--accent-soft",
+    "--text-muted-sunken",       # a hollow ring on a sunken track, beside its word
+}
+
+
+def _rules():
+    for f in ALL_CSS:
+        for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", _strip(f.read_text(encoding="utf-8"))):
+            yield f.name, " ".join(sel.split()), body
+
+
+def _stack(spec):
+    return SURFACES[spec] if isinstance(spec, str) else spec
+
+
+def _pair(theme, fg, stack):
+    t = _themes()[theme]
+    back = colour(t, *stack)
+    return ratio(_over(_rgba(_resolve(t, t[fg])), back), back)
+
+
+TEXT_USED = sorted({tok for _f, sel, body in _rules()
+                    for tok in re.findall(r"(?<![-\w])color\s*:\s*var\((--[\w-]+)\)", body)} |
+                   {"--chart-axis"})
+
+
+def test_every_text_colour_is_classified():
+    unknown = [t for t in TEXT_USED if t not in SITS_ON and t not in MARK_ONLY
+               and t not in ("--text", "--text-muted-sunken", "--nav-meta", "--st-error", "--bad")]
+    assert unknown == [], f"say where these sit (SITS_ON) or that they only colour glyphs: {unknown}"
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("fg", [t for t in TEXT_USED if t not in MARK_ONLY])
+def test_every_text_token_on_every_surface_it_can_sit_on(theme, fg):
+    where = SITS_ON.get(fg, list(SURFACES))
+    bad = [(w if isinstance(w, str) else "+".join(w), round(_pair(theme, fg, _stack(w)), 2))
+           for w in where if _pair(theme, fg, _stack(w)) < TEXT]
+    assert bad == [], f"{theme}: {fg} under 4.5:1 on {bad}"
+
+
+def test_mark_only_colours_colour_only_marks():
+    for name, sel, body in _rules():
+        m = re.search(r"(?<![-\w])color\s*:\s*var\((--[\w-]+)\)", body)
+        if m and m.group(1) in MARK_ONLY:
+            assert MARK_SELECTOR.search(sel), (name, sel, m.group(1))
+
+
+MARKS_USED = sorted({tok for _f, _sel, body in _rules()
+                     for tok in re.findall(r"(?<![-\w])(?:fill|stroke|background(?:-color)?|border(?:-[a-z]+)*|outline|"
+                                           r"text-decoration(?:-color)?|box-shadow)\s*:[^;]*?var\((--[\w-]+)\)", body)}
+                    | MARK_ONLY)
+NOT_MARKS = {"--bg", "--bg-sunken", "--bg-hover", "--bg-elevated", "--radius-card", "--radius-lg", "--radius-md",
+             "--radius-pill", "--radius-sm", "--ink-hover", "--bad", "--text-muted-sunken"}
+
+
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("mark", [m for m in MARKS_USED if m not in DECORATIVE and m not in NOT_MARKS])
+def test_every_glyph_and_the_focus_ring_reach_3_to_1(theme, mark):
+    bad = [(w, round(_pair(theme, mark, SURFACES[w]), 2)) for w in SURFACES if _pair(theme, mark, SURFACES[w]) < UI]
+    assert bad == [], f"{theme}: {mark} under 3:1 on {bad}"
+
+
+def test_the_decorative_marks_are_backed_by_checked_ones():
+    """The claims DECORATIVE makes are kept: the limit lines that edge the
+    band are --text-muted (3:1 above), and the target line is labelled."""
+    lem = _strip(LEM.read_text(encoding="utf-8"))
+    assert re.search(r"\.qc-limit\s*\{[^}]*stroke:\s*var\(--text-muted\)", lem)
+    rec = (ROOT / "static" / "js" / "record.js").read_text(encoding="utf-8")
+    assert "'target'" in rec, "the record chart's target line lost its label"
+
+
+TINTED_RULE = re.compile(r"background(?:-color)?\s*:[^;]*var\(--bg-(?:sunken|hover|active)\)")
+#: tinted surfaces that hold no muted words, and what they hold instead
+NO_MUTED_INSIDE = {
+    ".add-card:hover", ".add-card .plus", ".feed li .ic", ".gstep .badge", ".gstep ol.how li::before",
+    ".gstep code",                                   # GC's /setup page: not served by LEM
+    ".round .pill.part", ".rec-pill", ".pill.q-pill", ".pill",     # pills set their own text token
+    ".rrow .undo:hover", ".ed-n[draggable=\"true\"]:hover", ".wall-mark:hover", ".btn:hover",
+    ".btn-ghost:hover", ".icon-btn:hover", ".user-chip:hover", ".menu a:hover, .menu button.menu-item:hover",
+    ".nav-item:hover", ".nav-item.active, .nav-item[aria-current=\"page\"]",   # --nav-meta, checked on both
+    ".skeleton i", ".chart-skel i", ".progress", ".plan .cell:hover, .plan .cell.over, .plan .cell:focus-visible",
+    ".plan", ".bay.dim", ".seg", ".find-box kbd", ".help kbd", ".ed-tag",       # words in --text / -sunken
+    ".sb-running:hover",
+}
+
+
+#: a tinted cell or paragraph, and the re-pointing selector that covers it
+COVERED_BY = {
+    ".tbl.inst .irow:hover td": ".tbl tbody tr:hover", ".tbl.qc .qrow:hover td": ".tbl tbody tr:hover",
+    ".tbl.qc .qrow.is-sel td": ".tbl tbody tr.is-sel", ".log-row:hover td": ".tbl tbody tr:hover",
+    ".log-row:focus-within td": ".tbl tbody tr:focus-within", ".tbl.qx .qxrow:hover td": ".tbl tbody tr:hover",
+    ".tbl.qs .srow:hover td": ".tbl tbody tr:hover", ".tbl.bf tr.can:hover td": ".tbl tbody tr:hover",
+    ".tbl.bf tr.is-sel td": ".tbl tbody tr.is-sel", ".tbl.bf tr.is-sel:hover td": ".tbl tbody tr.is-sel",
+    ".rounds-tbl tr.can:hover td": ".tbl tbody tr:hover", ".rrow.next:hover": ".rrow:hover",
+    "dialog.sheet.log-sheet p.log-sheet-say": ".log-sheet-say",
+    '.find-list li[aria-selected="true"] a': '.find-list li[aria-selected="true"]',
+    '.load-state[data-state="empty"]': ".load-state",
+}
+
+
+def test_every_tinted_surface_keeps_its_muted_words_readable():
+    lem = _strip(LEM.read_text(encoding="utf-8"))
+    rule = re.search(r"([^{}]+)\{\s*--text-muted:\s*var\(--text-muted-sunken\);", lem)
+    assert rule, "lem.css no longer re-points --text-muted on tinted surfaces"
+    covered = {" ".join(s.split()) for s in rule.group(1).split(",")}
+    loose = []
+    for name, sel, body in _rules():
+        if not TINTED_RULE.search(body) or sel in NO_MUTED_INSIDE:
+            continue
+        for part in (p.strip() for p in sel.split(",")):
+            # a row's cells inherit the row's tokens; the row itself is the
+            # <tr> of a .tbl, which `.tbl tbody tr:hover` and friends cover
+            via = COVERED_BY.get(part, part.split(" ")[-1] if part.split(" ")[-1] in covered else part)
+            if via not in covered:
+                loose.append(f"{name}: {part}")
+    assert loose == [], "tinted surfaces with no answer for muted words inside: %r" % loose

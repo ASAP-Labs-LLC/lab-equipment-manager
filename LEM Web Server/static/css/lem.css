@@ -822,7 +822,7 @@ button.arc-day[aria-pressed="true"] { outline: 2px solid var(--accent); outline-
 .arc-items .arc-val { font-variant-numeric: tabular-nums; }
 
 /* ── Readings (/checklists/trends, restyled; static/js/readings.js) ──────── */
-.readings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: var(--s4); }
+.readings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: var(--s4); }
 .rd-card { padding: var(--s4) var(--s5) var(--s4); display: grid; gap: var(--s2); scroll-margin-top: calc(var(--topbar-h) + 12px); border: 1.5px solid var(--border-light); }
 .rd-card.is-target { border-color: var(--ink); }
 .rd-card:focus { outline: none; }
@@ -896,7 +896,9 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .ready-stale[hidden] { display: none; }
 .ready-stale #ready-stale-text { flex: 1; min-width: 0; }
 .ready-stale .btn { flex: none; }
-.ready-card.is-stale .bar h2, .ready-card.is-stale .ready-cap, .ready-card.is-stale .rtiles { opacity: .55; }
+/* stale: the colour goes (a verdict we cannot vouch for is not green or
+   red), the words stay readable (piece 15: half opacity took them under AA) */
+.ready-card.is-stale .bar h2, .ready-card.is-stale .rtiles { filter: grayscale(1); }
 .rtiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); }
 .rtiles[data-n="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 /* glyph beside the words, not above them: a tile is a line of fact, and a
@@ -952,7 +954,7 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 @media (min-width: 700px) { .tbl.qc .c-verdict .sub.one-line { white-space: nowrap; max-width: none; } }
 /* 96px, not the shared 104: the eight pixels the verdict's one-line reason
    needs, so the table never runs past its card at 1440 */
-.tbl.qc .c-track .track { width: 96px; }
+.tbl.qc .c-track .track { width: 84px; }   /* 96px ran a four-decimal sulfur band 10px past its card at 1440 */
 .tbl.qc .fold-band { display: none; }
 .tbl.qc .fold-last { display: none; }
 .qc-none { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s4); font-size: var(--fs-sm); color: var(--text-muted); }
@@ -980,6 +982,14 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
 .chart-title { flex: 1; min-width: 0; }
 .chart-title h3 { margin: 0; font-size: var(--fs-md); font-weight: 650; }
 .chart-title .caption { margin: 2px 0 0; }
+/* the chart in words, then the door to the same runs as rows (§9.1 rule 5) */
+.chart-sum { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: var(--s2); }
+.chart-sum .caption { margin: 2px 0 0; }
+.chart-sum .chart-as { min-height: 24px; padding: 0 2px; font-size: var(--fs-xs); }
+.chart-table { max-height: 240px; overflow: auto; }
+.chart-table .tbl th { position: sticky; top: 0; background: var(--bg-card); }
+.chart-table .tbl td.num, .chart-table .tbl th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.chart-table .tbl td .glyph { margin-right: 6px; }
 .chart-plot { min-height: 164px; }
 .chart-plot.is-empty { min-height: 0; }
 .chart-plot.is-empty .chart-note { min-height: 72px; }
@@ -1098,7 +1108,9 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
     .tbl.qc .fold-last { display: block; flex-basis: 100%; color: var(--text); font-weight: 600; }
     .tbl.qc .fold-band .track { width: 90px; }
     .tbl.qc .c-verdict { vertical-align: top; }
-    .chart-head { flex-wrap: wrap; }
+    .chart-head { flex-wrap: wrap; row-gap: var(--s2); }
+    /* the chart's sentence gets the card's width; the range sits under it */
+    .chart-head .chart-title { flex: 1 1 100%; }
     .chart-card { padding: var(--s3); }
 }
 /* ── the record's action sections (piece 6) ────────────────────────────
@@ -1272,8 +1284,12 @@ a.bay:hover { border-color: var(--border-strong); }
 .bay.stopped { border-style: dashed; border-color: var(--border-strong); box-shadow: none; }
 .bay.stop.stopped { border-color: var(--ink); }
 .bay.focus { outline: 2px solid var(--accent); outline-offset: 3px; }
-.bay.dim { opacity: 0.38; }
-.bay.dim:hover, .bay.dim:focus-visible { opacity: 1; }
+/* not in the filter: the bay sinks into the floor (sunken, flat, no colour)
+   with its words still AA on it; half opacity took them to 2:1 (piece 15) */
+.bay.dim { background: var(--bg-sunken); box-shadow: none; border-color: transparent; filter: grayscale(1); --text-muted: var(--text-muted-sunken); }
+.bay.dim .b-name, .bay.dim .b-word { color: var(--text-muted-sunken); font-weight: 500; }
+.bay.dim:hover, .bay.dim:focus-visible { background: var(--bg-card); filter: none; }
+.bay.dim:hover .b-name, .bay.dim:focus-visible .b-name { color: var(--text); }
 .bay:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* Arrange: the floor shows its bays, a ring of room to grow into, and every
@@ -1284,7 +1300,7 @@ a.bay:hover { border-color: var(--border-strong); }
 .plan.arranging .bay { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
 .bay.picked { outline: 2px solid var(--ink); outline-offset: 2px; }
 .bay.dragging { cursor: grabbing; position: relative; z-index: 5; box-shadow: var(--e3); }
-.bay.saving { opacity: 0.7; }
+.bay.saving { filter: grayscale(1); cursor: progress; }
 .arrange-bar {
     display: flex; align-items: center; gap: var(--s3); margin-bottom: var(--s4); padding: var(--s3) var(--s4);
     border: 1.5px solid var(--ink); border-radius: var(--radius-md); background: var(--bg-card);
@@ -1493,9 +1509,13 @@ a.bay:hover { border-color: var(--border-strong); }
     font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .wall-view.is-stale .wall-plan-wrap, .wall-view.is-stale .wall-attn .wa-list,
-.wall-view.is-stale .wall-counts, .wall-view.is-stale .wq-grid { opacity: 0.5; }
-/* in the hole, Needs attention is inside the plan, which is already at half */
-.wall-view.is-stale .wall-attn.in-hole .wa-list { opacity: 1; }
+.wall-view.is-stale .wall-counts, .wall-view.is-stale .wq-grid { filter: grayscale(1); }
+/* A stale wall greys out: every status colour goes, because none of them can
+   be vouched for, and the headline says "Not live · last update 13:15". The
+   words stay at full contrast (piece 15): the half opacity this used to be
+   took every word on the wall under AA, at the moment a person most needs to
+   read how old it is. A dashed edge marks each greyed block. */
+.wall-view.is-stale .wq-grid .qc-card, .wall-view.is-stale .wa-group { outline: 1.5px dashed var(--border-strong); outline-offset: -1.5px; }
 
 /* Needs attention: the worst five, grouped by state, worst group first.
    Each state word is said once, as its group's heading (round 4: "OK to
@@ -1638,7 +1658,7 @@ a.bay:hover { border-color: var(--border-strong); }
 .tr-act:hover { text-decoration: underline; text-underline-offset: 2px; }
 .tr-kv > .v .caption, .cf-kv > .v .caption { padding-left: calc(10px + var(--s2)); line-height: 1.4; }
 .cf-kv > .k .caption { display: block; margin-top: 2px; }
-.tr-kv.stale { opacity: 0.6; }
+.tr-kv.stale { filter: grayscale(1); }
 .tr-foot { margin: 0; }
 .tr-state, .tr-state[data-state="error"] { padding: 0; }
 .rec-foot { margin-top: var(--s5); padding-top: var(--s4); border-top: 1px solid var(--border-light); }
@@ -1768,7 +1788,9 @@ a.bay:hover { border-color: var(--border-strong); }
 .log-row .c-value { color: var(--text); font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .log-row .c-value, .tbl th.c-value { text-align: right; font-variant-numeric: tabular-nums; }
 .log-row .c-who { color: var(--text-muted); }
-.tbl.log-tbl.is-reading tbody, .tbl.log.is-reading tbody { opacity: .55; }
+/* a new query is being read: the rows it will replace lose their colour and
+   the pointer says so; the words stay readable (never half opacity) */
+.tbl.log-tbl.is-reading tbody, .tbl.log.is-reading tbody { filter: grayscale(1); cursor: progress; }
 /* the state line: reading, couldn't read, nothing matches. Glyph + words. */
 .log-state { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); margin: 0; padding: var(--s4) var(--s5); font-size: var(--fs-sm); color: var(--text); }
 .log-state[hidden] { display: none; }
@@ -1848,7 +1870,7 @@ dialog.sheet.log-sheet .actions .spacer { flex: 1; }
 .q-legend-note:empty { display: none; }
 .q-legend-note { margin: 0; padding-left: 18px; font-size: var(--fs-xs); color: var(--text); }
 .q-stale { display: flex; align-items: center; gap: var(--s2); margin: 0; padding: var(--s2) var(--s4); font-size: var(--fs-sm); color: var(--text); border-bottom: 1px solid var(--border-light); }
-.q-card.is-stale .tbl { opacity: .55; }
+.q-card.is-stale .tbl { filter: grayscale(1); }
 .tbl.qx td { vertical-align: top; }
 .tbl.qx .c-inst { width: 15%; min-width: 13ch; }
 .tbl.qx .c-check { width: 21%; }
@@ -1995,4 +2017,157 @@ dialog.std-sheet { width: min(680px, calc(100vw - 32px)); }
     .f-row.two, .f-row.three { grid-template-columns: minmax(0, 1fr); }
     .cert-row { grid-template-columns: 16px minmax(0, 1fr); }
     .cert-row .verdict, .cert-row .linkbtn { grid-column: 2; justify-self: start; }
+}
+
+/* ── tablet, phone and accessibility (ia-final §6, §9; piece 15) ─────────
+   Checked in a browser by tests/test_ui_a11y_browser.py: axe-core on every
+   page in both themes, no sideways scroll at 390 / 320 / 200 % zoom, 24px
+   targets everywhere and 44px on the tablet and phone layouts. */
+
+/* the sticky top bar and the words strip never hide what a Tab or a
+   "scroll into view" lands on (WCAG 2.2 2.4.11, focus not obscured) */
+html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bottom: calc(36px + var(--s3)); }
+
+/* 24px floor for every target (2.5.8): the few small ones the pages drew */
+.row-open { min-height: 24px; }
+.rtile .t-link { display: inline-flex; align-items: center; min-height: 24px; }
+.help .pages a { display: inline-flex; align-items: center; min-height: 24px; }
+.qc-pick { min-height: 24px; }
+.round-foot a, .rd-foot a, .cert-main a.link { display: inline-flex; align-items: center; min-height: 24px; }
+/* a link that is a word in a table cell or a key-value row (a name, a
+   standard, a file): its box grows to 24px without moving the text (the
+   padding is given back as margin, and an inline box's padding is not laid
+   out at all) */
+.tbl td a:not(.btn), .kv a:not(.btn), .lv-tbl a:not(.btn) { padding-block: 4px; margin-block: -4px; }
+.rail-status a { display: inline-flex; align-items: center; min-height: 24px; }
+.topbar .crumbs a { display: inline-flex; align-items: center; justify-content: center; min-height: 24px; min-width: 24px; }
+
+/* Muted words on a tinted surface. GC's --text-muted is 4.76:1 on white but
+   4.33:1 on --bg-sunken and 4.13:1 on a selected row (light); GC has
+   --text-muted-sunken for exactly that. Every tinted surface LEM draws re-
+   points --text-muted at it, so a caption inside passes AA whichever rule
+   coloured it (tests/test_ui_contrast.py has the rows). */
+.tbl tbody tr:hover, .tbl tbody tr:focus-within, .tbl tbody tr.is-sel, .tbl tbody tr[aria-selected="true"],
+.rrow:hover, .rrow.next, .find-list li[aria-selected="true"], .find-list li a:hover,
+.ta-list li[aria-selected="true"], .ta-list li:hover, .uon-row:hover, .uon-none, .wa-group, .wall-empty, .preview, .arc-month,
+.ready-stale, .rtile, .ntile, .needs-empty, .tile, .load-state, .plan-empty, .sb-running, .sb-recent li a:hover,
+.set-nav a:hover, .set-nav a.active, .linkbtn:hover, .log-sheet-say, .empty-note, .hol-list li.empty,
+.day-chips .chip[aria-pressed="true"] {
+    --text-muted: var(--text-muted-sunken);
+    /* and the amber words, 4.36:1 on a selected row in light: the pill's
+       darker amber, made for text on a tint */
+    --warn-text: var(--pill-held-fg);
+}
+
+/* the phone bar's two controls are thumb-sized */
+@media (max-width: 699px) {
+    .topbar #drawer-open { width: 44px; height: 44px; }
+    .topbar .phone-mark { min-width: 44px; min-height: 44px; justify-content: center; }
+}
+
+/* the tablet and the phone (≤1099px): every target is at least 44px, as the
+   round's always were (§6, §9.1 rule 7). Sizes only, nothing moves. */
+@media (max-width: 1099px) {
+    .btn, .btn-sm, .chip, .linkbtn, .seg-links a, .round-edit, .round-foot a, .rd-foot a { min-height: 44px; }
+    .rail-status { height: 44px; }
+    .rail-status a { min-height: 44px; }
+    .btn-sm { height: auto; }
+    .btn { height: auto; }
+    .icon-btn { width: 44px; height: 44px; }
+    .gc .seg button { min-height: 40px; padding-inline: 14px; }
+    .seg { padding: 2px; }
+    .nav-item { height: 44px; }
+    .sb-mark { min-height: 44px; min-width: 44px; justify-content: center; }
+    .user-chip { min-height: 44px; }
+    .topbar .crumbs a { display: inline-flex; align-items: center; min-height: 44px; }
+    .rtile .t-link { min-height: 44px; }
+    .row-open { min-height: 44px; }
+    .gc input[type="text"], .gc input[type="password"], .gc input[type="number"], .gc input[type="search"],
+    .gc input[type="datetime-local"], .gc input[type="date"], .gc input:not([type]), .gc select { height: 44px; }
+    .menu a, .menu button.menu-item { min-height: 44px; }
+    .sb-recent li a { min-height: 44px; align-items: center; }
+}
+
+/* ── the record on a phone (§6: tiles 1-up as compact rows) ─────────────── */
+@media (max-width: 699px) {
+    /* the meta line wraps as whole facts; a "·" never starts a line */
+    .page-head .meta .sep { display: none; }
+    .page-head .meta { column-gap: var(--s4); }
+    /* a tile is one compact row: glyph, the fact, its door at the right */
+    .rtiles .rtile, .rtiles[data-n="4"] .rtile:nth-child(4) {
+        grid-column: auto; grid-template-columns: 22px minmax(0, 1fr) auto; column-gap: var(--s3); row-gap: 0;
+        align-items: center; padding: var(--s2) var(--s2) var(--s2) var(--s3);
+    }
+    .rtiles .rtile > *, .rtiles[data-n="4"] .rtile:nth-child(4) > * { grid-column: 2; grid-row: auto; }
+    .rtiles .rtile .tglyph, .rtiles[data-n="4"] .rtile:nth-child(4) .tglyph { grid-column: 1; grid-row: 1 / span 3; align-self: center; margin: 0; }
+    .rtiles .rtile .t-link, .rtiles[data-n="4"] .rtile:nth-child(4) .t-link {
+        grid-column: 3; grid-row: 1 / span 3; align-self: center; justify-self: end; margin: 0; padding: 0 var(--s2);
+        max-width: 8.5em; text-align: right; line-height: 1.25;
+    }
+    /* a key and its value stack: the value gets the whole width */
+    .kv, .tr-kv, .cf-kv { grid-template-columns: minmax(0, 1fr); }
+    .kv > .k, .tr-kv > .k, .cf-kv > .k { padding-bottom: 0; border-bottom: 0; font-size: var(--fs-xs); }
+    .kv > .v, .tr-kv > .v, .cf-kv > .v { padding-top: 2px; }
+}
+
+/* ── the walls on a phone (piece 15) ────────────────────────────────────
+   A wall is a TV's page, but a link to it opened on a phone must still be
+   read without scrolling sideways. The head stacks (way home, the sentence,
+   the counts two by two); /floor drops the plan, which would shrink to bays
+   too small to read or tap, for its words and a link to the map view; /qc
+   keeps its cards, one column (wall_logic.qcGrid measures the room). */
+.wall-maplink { display: none; }
+@media (max-width: 699px) {
+    .wall { --w-pad: 16px; }
+    .wall-head { grid-template-columns: minmax(0, 1fr); row-gap: 8px; }
+    .wall-mark { justify-self: start; margin-left: -8px; }
+    .wh-title { font-size: 26px; gap: 10px; }
+    .wh-title > span:last-child { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+    .wall .wh-glyph { scale: 1.6; margin: 0 6px 0 4px; }
+    .wh-sub { font-size: 16px; }
+    .wall-counts, .wall-counts.cols-1, .wall-counts.cols-2, .wall-counts.cols-3 {
+        justify-content: start; grid-template-columns: repeat(2, minmax(0, max-content)); gap: 6px 20px;
+    }
+    .wc { font-size: 15px; }
+    .wc .wc-n { font-size: 24px; }
+    .wall-main, .wall-main.tight-plan, .wall-main[data-layout="hole"] { grid-template-columns: minmax(0, 1fr); margin-top: 14px; }
+    .wall-floor .wall-plan-card { display: none; }
+    .wall-maplink {
+        display: inline-flex; align-items: center; min-height: 44px; margin-top: 4px;
+        color: var(--text); font-weight: 600; text-decoration: underline; text-underline-offset: 3px;
+    }
+    .wq-pages { margin-top: 0; }
+    .wall-foot { gap: 2px 12px; font-size: 14px; height: auto; min-height: 44px; flex-wrap: wrap; padding-block: 8px; white-space: normal; }
+    .wall-foot .wf-spacer, .wall-foot .wf-fleet { display: none; }
+    /* /floor without its plan is a list: it scrolls like one, nothing cut */
+    .wall-body:has(.wall-floor:not([hidden])) { height: auto; overflow: auto; }
+    .wall:has(.wall-floor:not([hidden])) { height: auto; min-height: 100vh; }
+    .wall-floor .wall-main { flex: none; }
+    .wall-floor .wall-attn { overflow: visible; }
+}
+
+/* ── the phone's top bar, and the tables that still had columns ─────────
+   §6: the phone bar is the menu, the mark and the page's actions; the
+   crumbs already give way to the page's own h1 below 700px (piece 9: one
+   heading, J3). The actions keep their words with tighter sides. At 320 CSS
+   px (WCAG reflow) the mark goes too: the menu holds the same way home. */
+@media (max-width: 699px) {
+    .topbar .btn { padding-inline: var(--s3); flex: none; }
+    /* the schedule: the task and its due word, then its two buttons */
+    .tbl.mt thead { display: none; }
+    .tbl.mt, .tbl.mt tbody, .tbl.mt tr, .tbl.mt td { display: block; }
+    .tbl.mt tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); padding: var(--s3); border-bottom: 1px solid var(--border-light); }
+    .tbl.mt tbody tr:last-child { border-bottom: 0; }
+    .tbl.mt td { padding: 0; border: 0; }
+    .tbl.mt td.m-act { grid-column: 1 / -1; text-align: left; margin-top: var(--s2); white-space: normal; }
+    /* the levels: name and count, then Make default / Rename under them */
+    .lv-tbl thead { display: none; }
+    .lv-tbl, .lv-tbl tbody, .lv-tbl tr, .lv-tbl td { display: block; }
+    .lv-tbl tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--border-light); }
+    .lv-tbl td { height: auto; padding: 4px 0; border: 0; }
+    .lv-tbl td.lv-act { grid-column: 1 / -1; text-align: left; white-space: normal; }
+    .wc .wc-w { white-space: normal; }
+}
+@media (max-width: 359px) {
+    .topbar .phone-mark { display: none; }
 }

@@ -17,7 +17,8 @@ placed: baseline/prod, 1 Oct):
 * **The counts add up to the fleet**, on the page as drawn.
 * **The stale rule, for real.** With /api/ui/live blocked and the clock
   moved 95 s on, the headline reads "Not live · last update hh:mm", the plan
-  is at half opacity and the footer says "Stale". A wall that froze at green
+  loses its colour (grayscale; piece 15: half opacity took its words under
+  AA) and the footer says "Stale". A wall that froze at green
   must not look like a wall that is green.
 * **Rotation pauses on pointer**, and says so.
 
@@ -231,15 +232,16 @@ def test_the_stale_rule(server, drv, path):
     foot = drv.execute_script("return document.getElementById(arguments[0]).textContent", view + "-live")
     assert re.fullmatch(r"Not live · last update \d\d:\d\d:\d\d \S+ · stale", foot), foot
     dimmed = ".wall-plan-wrap" if path == "/floor" else ".wq-grid"
-    assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).opacity",
-                              dimmed) == "0.5"
+    assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).filter",
+                              dimmed) == "grayscale(1)"
     if path == "/floor":
-        # Needs attention dims to half too, once: in the hole it sits inside
-        # the plan, and dimming it again would leave it at a quarter
+        # Needs attention greys too, and no word anywhere on the wall is
+        # dimmed: the stale wall must still be read (opacity stays 1)
         eff = drv.execute_script("""
           let o = 1; for (let e = document.querySelector('#wf-attn'); e; e = e.parentElement)
             o *= parseFloat(getComputedStyle(e).opacity); return o;""")
-        assert abs(eff - 0.5) < 1e-6, eff
+        assert eff == 1, eff
+        assert drv.execute_script("return getComputedStyle(document.querySelector('#wf-attn')).filter") == "grayscale(1)"
     # LEM answers again: live again, at full strength
     drv.execute_cdp_cmd("Network.setBlockedURLs", {"urls": []})
     drv.execute_script("window.__skew = 0")
@@ -645,8 +647,8 @@ def test_a_data_request_that_never_answers_goes_stale(server, drv, path):
             assert re.fullmatch(r"Not live · last update \d\d:\d\d", head), head
             time.sleep(1)
         dimmed = ".wall-plan-wrap" if path == "/floor" else ".wq-grid"
-        assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).opacity",
-                                  dimmed) == "0.5"
+        assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).filter",
+                              dimmed) == "grayscale(1)"
     finally:
         drv.execute_script("window.fetch = window.__realFetch; window.__skew = 0")
 
@@ -672,7 +674,7 @@ def test_a_frozen_data_feed_goes_stale_too(server, drv, path):
     head = drv.execute_script("return document.getElementById(arguments[0]).textContent", view + "-headline-text")
     assert re.fullmatch(r"Not live · last update \d\d:\d\d", head), head
     dimmed = ".wall-plan-wrap" if path == "/floor" else ".wq-grid"
-    assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).opacity",
-                              dimmed) == "0.5"
+    assert drv.execute_script("return getComputedStyle(document.querySelector(arguments[0])).filter",
+                              dimmed) == "grayscale(1)"
     drv.execute_cdp_cmd("Network.setBlockedURLs", {"urls": []})
     drv.execute_script("window.__skew = 0")
