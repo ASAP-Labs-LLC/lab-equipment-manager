@@ -146,9 +146,17 @@ def test_say_it_once(drv, server):
     assert cap == "Worst first · updates by itself", cap
     tiles = drv.find_elements("css selector", "a.ntile")
     assert 0 < len(tiles) <= 6
+    # 2026-10-07: a tile says how many have its cause (Ryan: you had to
+    # click to learn whether it was one instrument or six). The count is
+    # its one number, and it is the cause's members, nobody else's.
+    by_key = {t["key"]: t for t in inst["needs_you"]["tiles"]}
     for t in tiles:
         said = t.text
-        assert not re.search(r"\d", said), ("a tile counts nothing", said)
+        key = t.get_attribute("data-key")
+        n = t.find_element("css selector", ".t-n").text
+        want = by_key[key].get("more") if key == "more" else len(by_key[key]["members"])
+        assert n == str(want), (key, n, want)
+        assert not re.search(r"\d", said.replace(n, "", 1)), ("a tile's only number is its count", said)
         for title in titles:
             assert title not in said, ("a tile names nobody", title, said)
     chips = [c.text for c in drv.find_elements("css selector", "#inst-chips .chip")]

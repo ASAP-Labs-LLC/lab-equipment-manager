@@ -210,21 +210,25 @@ check('Ctrl Shift K is the browser\'s', L.isFindKey({ key: 'K', ctrlKey: true, s
               href: '/?cause=ok_but-cal',
               members: [{ uid: 'dma', title: 'Anton Paar DMA 4500' }, { uid: 'gc2', title: 'GC-2' }] };
   const w = L.tileWords(t, { cause: '' });
-  check('a tile draws its cause, next step and link', w,
-        { head: 'Calibration overdue', next: 'Next: calibrate, then mark the calibration done',
+  // 2026-10-07, Ryan on the Needs-you tiles: you had to click "Show them" to
+  // learn whether a cause was one instrument or six. Round 2's critic had
+  // ruled the count a third telling (pill, rows, tile); Ryan's call is that
+  // the size of a cause is the first thing you need from its tile. It still
+  // names nobody: the rows do that.
+  check('a tile draws its cause, how many have it, next step and link', w,
+        { head: 'Calibration overdue', n: 2, next: 'Next: calibrate, then mark the calibration done',
           link: 'Show them', active: false });
-  const said = Object.values(w).join(' ');
+  const said = [w.head, w.next, w.link].join(' ');
   check('a tile names no member', t.members.some(m => said.includes(m.title)), false);
-  check('a tile draws no digit', /\d/.test(said), false);
   check('the tile whose cause is the view is the pressed one',
         L.tileWords(t, { cause: 'ok_but-cal' }).active, true);
   check('when its cause is the view, the link offers the way back',
         L.tileWords(t, { cause: 'ok_but-cal' }).link, 'Show all');
   const more = { key: 'more', cause: 'More causes', next: { text: 'PM overdue and Bench stopped' },
                  link: 'Show all that need you', members: [], more: 3 };
-  check('the overflow tile lists the causes it holds, without a count',
+  check('the overflow tile lists the causes it holds, and counts the instruments behind them',
         L.tileWords(more, { cause: '' }),
-        { head: 'More causes', next: 'PM overdue and Bench stopped', link: 'Show all that need you', active: false });
+        { head: 'More causes', n: 3, next: 'PM overdue and Bench stopped', link: 'Show all that need you', active: false });
 }
 // Round 3: with "All" the view, the first tile drew GC's ink "current"
 // border and read as selected. A tile is current only while its cause IS

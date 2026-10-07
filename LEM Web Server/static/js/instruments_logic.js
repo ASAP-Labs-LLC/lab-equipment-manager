@@ -7,7 +7,7 @@
 //   filterRows(rows, view)                which instruments a view shows, in its order
 //   thirdColumn(view) / nextDue(row)      Last QC, or Next due in the Maintenance view
 //   chips(data, view, causeWords)         the view chips: places and views, never counts
-//   tileWords(tile, view)                 what a Needs-you tile draws: cause, next step, link
+//   tileWords(tile, view)                 what a Needs-you tile draws: cause, how many, next step, link
 //   needsCaption(needsYou, failedAt)      the card's caption: never a count
 //   when(iso, nowMs)                      "09:05", "Wed 15:04", "3 Aug"
 //   searchNote / searchEmpty / searchFailed   what the find box searched, in words
@@ -185,9 +185,9 @@
     function tileWords(t, view) {
         const active = !!(view && view.cause && t && t.key === view.cause);
         if (t && t.key === 'more') {
-            return { head: t.cause, next: (t.next && t.next.text) || '', link: t.link, active: false };
+            return { head: t.cause, n: Number(t.more) || 0, next: (t.next && t.next.text) || '', link: t.link, active: false };
         }
-        return { head: (t && t.cause) || '',
+        return { head: (t && t.cause) || '', n: ((t && t.members) || []).length,
                  next: t && t.next && t.next.text ? 'Next: ' + lowerFirst(t.next.text) : '',
                  link: active ? 'Show all' : ((t && t.link) || 'Show them'), active };
     }

@@ -173,7 +173,7 @@
     // ── sizes ─────────────────────────────────────────────────────────────
     // 96: a two-line name, the word and the detail in 10px of padding.
     // 240, and never taller than wide: past that a bay is a poster.
-    const CELL_MIN = 96, CELL_MAX = 240, CELL_DEFAULT = 112;
+    const CELL_MIN = 96, CELL_MAX = 240, CELL_DEFAULT = 112, CELL_NARROW = 128;
     /** One uniform cell height that fills the height the plan has, within
         a readable bay and short of a poster (`width`, when known, is the
         cell's width: a bay is never taller than it is wide). */
@@ -189,10 +189,12 @@
         rather than cutting every word. Arrange is always compact and its
         bays may be shorter: they show a name and a glyph, which is all a
         move needs. */
-    function density(planWidth, cols, arranging) {
+    function density(planWidth, cols, arranging, narrow) {
         const at12 = cols > 0 && planWidth > 0 ? (planWidth - 24 - 12 * (cols - 1)) / cols : Infinity;
         const compact = !!arranging || at12 < 128;
-        return { compact, gap: compact ? 8 : 12, minH: arranging ? 72 : CELL_MIN };
+        // `narrow` (a phone): the bay keeps room for a two-line name, verdict
+        // and detail, taller than wide if it must, so nothing is cut
+        return { compact, gap: compact ? 8 : 12, minH: arranging ? 72 : narrow ? CELL_NARROW : CELL_MIN };
     }
 
     // ── a bay's words ─────────────────────────────────────────────────────
@@ -245,8 +247,55 @@
         return !((r && r.problems) || []).some(p => p && p.key === cause);
     }
 
+    // ── levels as pages (2026-10-07) ──────────────────────────────────────
+    // The wall's rank and swipe (wall_logic.js), held equal to it by
+    // tests/js/plan.mjs: the map and the wall must never disagree about which
+    // state is worse. "Can't tell" (never checked in) outranks "Off line",
+    // which somebody chose; anything unrecognised is "Can't tell", never OK.
+    const STATE_RANK = { ok: 0, off_line: 1, cant_tell: 2, ok_but: 3, not_ok: 4 };
+    const STATE_GLYPH = { not_ok: 'error', ok_but: 'half', cant_tell: 'dashed', off_line: 'off', ok: 'final' };
+    function worstState(states) {
+        let worst = null;
+        for (const raw of states || []) {
+            const st = Object.prototype.hasOwnProperty.call(STATE_RANK, raw) ? raw : 'cant_tell';
+            if (worst === null || STATE_RANK[st] > STATE_RANK[worst]) worst = st;
+        }
+        return worst;
+    }
+    function stateGlyph(state) { return STATE_GLYPH[state] || ''; }
+    /** A finished drag as a page turn: -1, 0 or +1 (finger leftwards = next). */
+    function swipeStep(dx, dy) {
+        if (Math.abs(dx) < 60 || Math.abs(dx) < 1.5 * Math.abs(dy)) return 0;
+        return dx < 0 ? 1 : -1;
+    }
+    /** Each level's tab: its worst state, and how many on it need you. */
+    function levelMarks(data) {
+        const rows = (data && data.instruments) || [];
+        return ((data && data.levels) || []).map(l => {
+            const here = onLevel(rows, l.uid, data);
+            const state = worstState(here.map(r => r && r.readiness && r.readiness.state));
+            return { uid: l.uid, name: l.name, state, glyph: stateGlyph(state),
+                     need: here.filter(r => r && r.needs_you).length, total: here.length };
+        });
+    }
+    /** The level `step` away from `current` (the default when none), wrapping. */
+    function stepLevel(data, current, step) {
+        const lv = (data && data.levels) || [];
+        if (!lv.length) return current || '';
+        let i = lv.findIndex(l => l.uid === (current || currentLevel(data, {})));
+        if (i < 0) i = 0;
+        return lv[((i + step) % lv.length + lv.length) % lv.length].uid;
+    }
+    /** A detail shortened by meaning: the date tail, then all after " · ". */
+    function shortDetail(text) {
+        let s = String(text || '').split(' · ')[0];
+        s = s.replace(/\s+since\s+.*$/, '');
+        return s.trim();
+    }
+
     const api = { PITCH, bayIndex, coord, parseMapView, mapQuery, currentLevel, onLevel, layout,
                   toSaved, occupant, isFree, canDrag, cellHeight, density, bayWords, dimmed, shortWord, cutAt, glue,
+                  worstState, stateGlyph, swipeStep, levelMarks, stepLevel, shortDetail,
                   CELL_MIN, CELL_MAX, draw: null };
 
     // ── the DOM half ──────────────────────────────────────────────────────
@@ -332,6 +381,9 @@
             }
             host.replaceChildren(...kids);
             host.classList.toggle('fullwords', !!opts.fullWords);
+            // the map (2026-10-07): a verdict is the whole word and a detail
+            // wraps to two lines; neither is ever cut to "…"
+            host.classList.toggle('wraplines', !!opts.wrapLines && !opts.fullWords);
             // the wall never shortens a word (one vocabulary, §4.1): a floor
             // too narrow for them is drawn 'tight' (less padding), and as a
             // last resort 'wrap' lets a word that still does not fit take a
@@ -380,6 +432,7 @@
             // lines, the detail steps aside last of all (the title keeps it).
             const full = host.classList.contains('fullwords');
             const wrap = host.classList.contains('wrapwords');
+            if (host.classList.contains('wraplines')) { fitLines(host); return; }
             for (const bay of host.querySelectorAll('.bay')) {
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
@@ -395,6 +448,36 @@
                 if (det) det.hidden = false;
                 if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);
                 if (full && det && bay.scrollHeight > bay.clientHeight + 1) det.hidden = true;
+            }
+        }
+        /* The map's bays (wraplines): the name may take two lines as
+           before; the verdict is the app's whole word, on up to two lines,
+           its short form only if even that does not fit; the detail is
+           whole on up to two lines, else shortened by meaning (shortDetail),
+           else it steps aside (the bay's title keeps the whole story).
+           Nothing ends in a cut "…". */
+        function lines(el) {
+            const lh = parseFloat(getComputedStyle(el).lineHeight) || 16;
+            return Math.round(el.scrollHeight / lh);
+        }
+        function fitLines(host) {
+            for (const bay of host.querySelectorAll('.bay')) {
+                const name = bay.querySelector('.b-name');
+                const word = bay.querySelector('.b-wtext');
+                const det = bay.querySelector('.b-detail');
+                const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
+                if (name) fitText(name, name.textContent, '', true);
+                if (word && (lines(word) > 2 || over(word, false))) {
+                    const s = shortWord(state);
+                    if (s) word.textContent = s;
+                }
+                if (!det) continue;
+                det.hidden = false;
+                const full = det.textContent;
+                if (!full) continue;
+                const tooBig = () => lines(det) > 2 || over(det, false) || bay.scrollHeight > bay.clientHeight + 1;
+                if (tooBig()) det.textContent = shortDetail(full);
+                if (tooBig()) { det.textContent = full; det.hidden = true; }
             }
         }
         api.fit = fit;
