@@ -64,7 +64,9 @@
         // and never taller than it is wide; a wide floor packs tighter
         const plan = $('plan');
         plan.hidden = false;
-        const d = P.density(plan.clientWidth, cols, arranging);
+        // a phone's bays may be taller than wide: a verdict and its detail
+        // wrap there rather than being cut (2026-10-07)
+        const d = P.density(plan.clientWidth, cols, arranging, window.innerWidth < 700);
         const top = plan.getBoundingClientRect().top + window.scrollY;
         const foot = $('plan-unplaced').hidden ? 0 : 52;
         const below = 24 /* card padding */ + 32 /* page padding */ + foot + 2 * d.gap;
@@ -91,11 +93,22 @@
         // instruments a tile is about are never on a floor nobody looks at
         const withCause = new Set(view.cause ? ((data && data.instruments) || [])
             .filter(r => !P.dimmed(r, view.cause)).map(r => r.level_uid) : []);
-        seg.replaceChildren(...levels.map(lv => h('a', {
-            href: '/' + P.mapQuery({ level: lv.uid, cause: view.cause, arrange: view.arrange }),
-            className: withCause.has(lv.uid) ? 'has-cause' : null,
-            title: withCause.has(lv.uid) ? 'Has an instrument with this problem' : null,
-            'aria-current': lv.uid === level ? 'page' : null, 'data-level': lv.uid }, lv.name)));
+        // each tab carries its level's worst state and how many there need
+        // you (2026-10-07, as the wall's tabs do): a problem upstairs is seen
+        // from the ground floor's tab
+        const marks = new Map(P.levelMarks(data).map(m => [m.uid, m]));
+        seg.replaceChildren(...levels.map(lv => {
+            const m = marks.get(lv.uid) || {};
+            return h('a', {
+                href: '/' + P.mapQuery({ level: lv.uid, cause: view.cause, arrange: view.arrange }),
+                className: [withCause.has(lv.uid) ? 'has-cause' : '', m.state ? 's-' + m.state : ''].join(' ').trim() || null,
+                title: withCause.has(lv.uid) ? 'Has an instrument with this problem' : null,
+                'data-state': m.state || null,
+                'aria-current': lv.uid === level ? 'page' : null, 'data-level': lv.uid },
+                m.state ? h('span', { className: 'glyph ' + m.glyph, 'aria-hidden': 'true' }) : null,
+                h('span', { className: 'lv-name' }, lv.name),
+                m.need ? h('span', { className: 'lv-n', title: m.need + ' need you' }, String(m.need)) : null);
+        }));
     }
 
     function drawUnplaced(unplaced) {
@@ -153,8 +166,8 @@
         const plan = $('plan');
         plan.hidden = !lay.w;
         if (lay.w) {
-            P.draw(plan, lay, Object.assign({ arranging, focus: view.focus, cause: view.cause, picked, saving },
-                                            sizes(lay.w, lay.h)));
+            P.draw(plan, lay, Object.assign({ arranging, focus: view.focus, cause: view.cause, picked, saving,
+                                              wrapLines: true }, sizes(lay.w, lay.h)));
         } else plan.replaceChildren();
         $('plan-caption').textContent = caption();
         drawArrange();
@@ -378,6 +391,44 @@
     });
     // the browser's own drag of a link or an image is never a move
     plan.addEventListener('dragstart', (ev) => ev.preventDefault());
+
+    // ── levels as pages: a swipe or an arrow key turns the level ─────────
+    // Like the wall (2026-10-07). Never in Arrange, where a sideways drag is
+    // a move, and never under the bay a swipe ends on.
+    function turn(step) {
+        const levels = (data && data.levels) || [];
+        if (arranging || gate || levels.length < 2 || !step) return;
+        const next = P.stepLevel(data, P.currentLevel(data, view), step);
+        window.LEMFloorMap.go({ level: next, cause: view.cause, focus: '' });
+    }
+    let swipe = null, swallow = false;
+    plan.addEventListener('pointerdown', (ev) => {
+        // a plan that scrolls sideways (a wide floor on a phone) is scrolled, not swiped
+        const scrolls = plan.scrollWidth > plan.clientWidth + 1;
+        swipe = arranging || scrolls ? null : { x: ev.clientX, y: ev.clientY, id: ev.pointerId };
+    });
+    plan.addEventListener('pointerup', (ev) => {
+        if (!swipe || swipe.id !== ev.pointerId || arranging) { swipe = null; return; }
+        const step = P.swipeStep(ev.clientX - swipe.x, ev.clientY - swipe.y);
+        swipe = null;
+        if (!step) return;
+        swallow = true;
+        setTimeout(() => { swallow = false; }, 400);
+        turn(step);
+    });
+    plan.addEventListener('pointercancel', () => { swipe = null; });
+    plan.addEventListener('click', (ev) => {
+        if (swallow) { ev.preventDefault(); ev.stopPropagation(); swallow = false; }
+    }, true);
+    document.addEventListener('keydown', (ev) => {
+        if (ev.altKey || ev.ctrlKey || ev.metaKey || ev.shiftKey) return;
+        if (ev.key !== 'ArrowRight' && ev.key !== 'ArrowLeft') return;
+        const t = ev.target;
+        if (t && (t.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('dialog[open]'))) return;
+        if (arranging || gate || !(data && data.levels && data.levels.length > 1)) return;
+        ev.preventDefault();
+        turn(ev.key === 'ArrowRight' ? 1 : -1);
+    });
 
     $('arrange').addEventListener('click', () => { if (!arranging) start(); });
     $('arrange-done').addEventListener('click', done);

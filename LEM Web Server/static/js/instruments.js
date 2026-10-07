@@ -119,14 +119,16 @@
     }
 
     // ── Needs you ─────────────────────────────────────────────────────────
-    // A tile is a cause and its remedy; it names nobody and counts nothing.
-    // Its link filters the table below to its rows, where each instrument is
-    // named once, with its verdict. The tile whose cause is the view is the
-    // current one (GC's ink border); with no cause chosen, none is.
+    // A tile is a cause, how many instruments have it, and its remedy; it
+    // names nobody (2026-10-07: Ryan wanted the size of a cause without a
+    // click). Its link filters the table below to its rows, where each
+    // instrument is named once, with its verdict. The tile whose cause is the
+    // view is the current one (GC's ink border); with no cause chosen, none is.
     function tile(t, current) {
         const w = L.tileWords(t, tileView());
         const kids = [circle(t.more ? 'more' : t.glyph),
-                      h('span', { className: 't-word s-' + (t.more ? 'more' : t.state) }, w.head)];
+                      h('span', { className: 't-word s-' + (t.more ? 'more' : t.state) },
+                        w.n ? h('span', { className: 't-n' }, String(w.n)) : null, w.head)];
         if (w.next) kids.push(h('span', { className: 't-next' }, w.next));
         kids.push(h('span', { className: 't-link' }, w.link));
         const href = M() ? M().tileHref(t.key, w.active)

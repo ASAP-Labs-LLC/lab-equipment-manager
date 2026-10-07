@@ -611,6 +611,13 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
 .ntile .tglyph { width: 22px; height: 22px; grid-row: 1 / span 3; }
 .ntile .t-word, .ntile .t-word[class*="s-"] { font-size: var(--fs-md); font-weight: 600; line-height: 22px; color: var(--text); }
 .ntile .t-word.s-more { color: var(--text); }
+/* how many have this cause (2026-10-07): the tile's one number, ahead of
+   the cause so a narrow column never strands it on a line of its own */
+.ntile .t-word .t-n {
+    display: inline-grid; place-items: center; min-width: 22px; height: 22px; margin-right: 8px; padding: 0 7px; vertical-align: top;
+    border-radius: var(--radius-pill); background: var(--bg-card); box-shadow: inset 0 0 0 1px var(--border);
+    font-size: var(--fs-xs); font-weight: 650; font-variant-numeric: tabular-nums; color: var(--text);
+}
 .ntile .t-next { font-size: var(--fs-xs); color: var(--text-muted-sunken); line-height: 1.4; }
 .ntile.current .t-next { color: var(--text-muted); }
 .ntile .t-link { align-self: end; padding-top: var(--s1); font-size: var(--fs-xs); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
@@ -1482,6 +1489,25 @@ a.bay:hover { border-color: var(--border-strong); }
 .inst-map .needs-col .ntile .t-link { grid-column: 3; grid-row: 1; align-self: center; padding-top: 0; white-space: nowrap; }
 .inst-map .needs-col .ntile .t-next { grid-column: 2 / span 2; grid-row: 2; }
 .level-seg a.has-cause::after { content: ""; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; background: var(--ink); }
+/* a level tab: the worst state on it, its name, how many there need you
+   (2026-10-07, as the wall's tabs). The glyph is the status; the number is
+   ink on the card, readable on the seg's sunken ground */
+.level-seg a { gap: 7px; white-space: nowrap; }
+.level-seg a .glyph { flex: none; }
+.level-seg a .lv-n {
+    display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-pill);
+    background: var(--bg-card); color: var(--text); font-size: var(--fs-xs); font-weight: 600; font-variant-numeric: tabular-nums;
+    box-shadow: inset 0 0 0 1px var(--border);
+}
+.level-seg a.s-not_ok .lv-n { box-shadow: inset 0 0 0 1.5px var(--st-error); }
+.arrange-btn .arrange-ico { display: none; }
+
+/* the map's bays (plan.js wraplines): a verdict is the whole word and a
+   detail wraps to two lines; plan.js shortens a detail by meaning, or lets
+   it step aside, before anything could be cut (2026-10-07) */
+.plan.wraplines .bay .b-wtext, .plan.wraplines .bay .b-detail { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }
+.plan.wraplines .bay .b-word { align-items: flex-start; }
+.plan.wraplines .bay .b-word .glyph { margin-top: 4px; }
 
 /* below 1100 (the iPad's 820): the column goes under the plan, tiles 2-up */
 @media (max-width: 1099px) {
@@ -1493,8 +1519,23 @@ a.bay:hover { border-color: var(--border-strong); }
 /* the phone: the floor map is a desk tool (its seg is not offered), but a
    link to it still works: the bar wraps, the level seg scrolls, tiles 1-up */
 @media (max-width: 699px) {
-    .plan-bar { flex-wrap: wrap; row-gap: var(--s2); }
-    .level-seg { max-width: 100%; overflow-x: auto; }
+    /* the tabs and Arrange share one row: the tabs scroll, Arrange is its
+       pin (its words stay its accessible name) */
+    .plan-bar { flex-wrap: nowrap; align-items: flex-start; row-gap: var(--s2); }
+    .plan-bar .plan-caption { display: none; }
+    /* every tab on screen: they wrap inside their pill (as the wall's do),
+       never scrolled out of sight under Arrange */
+    .level-seg { flex: 1 1 auto; min-width: 0; max-width: none; flex-wrap: wrap; border-radius: var(--radius-lg); }
+    .level-seg a { padding: 0 12px; }
+    .arrange-btn { min-width: 44px; padding: 0 10px; justify-content: center; }
+    .arrange-btn .arrange-ico { display: inline-block; }
+    .arrange-btn .arrange-word { display: none; }
+    /* a floor wider than a phone (production's seven columns) keeps bays a
+       readable width and scrolls inside its own box; the page never does */
+    .plan.wraplines { grid-template-columns: repeat(var(--plan-cols, 1), minmax(96px, 1fr)); overflow-x: auto; overscroll-behavior-x: contain; }
+    .arrange-btn .arrange-word {
+        position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+    }
     .inst-map .needs-col .ntiles { grid-template-columns: minmax(0, 1fr); }
     .arrange-bar { flex-wrap: wrap; }
 }

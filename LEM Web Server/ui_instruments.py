@@ -21,10 +21,11 @@ times"):
 * the table row owns the instance: which instrument, its verdict, and what
   exactly is wrong with it;
 * the Needs-you tile owns the cause and its remedy, one tile per CAUSE. It
-  names no instrument and carries no count; its link filters the table to
-  the rows it is about. (Round 2's critic: a tile naming "OptiMPP 1 and
-  Pensky-Martens 1 · QC out of spec" above those two rows was a second
-  telling, and its count beside the pill a third.)
+  names no instrument; its link filters the table to the rows it is about.
+  (Round 2's critic: a tile naming "OptiMPP 1 and Pensky-Martens 1 · QC out
+  of spec" above those two rows was a second telling.) Since 2026-10-07 the
+  browser draws how many have the cause (len(members)): Ryan wanted the size
+  of a cause without a click, and the rows still own the names.
 * the page-head carries ONE fleet pill, a verdict on the fleet;
 * the level chips are places, not counts.
 """

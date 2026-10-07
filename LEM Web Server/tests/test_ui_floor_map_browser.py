@@ -175,6 +175,7 @@ for (const b of plan.querySelectorAll('.bay')) {
   const br = b.getBoundingClientRect();
   const lines = [];
   for (const el of b.querySelectorAll('.b-name, .b-wtext, .b-detail')) {
+    if (el.hidden) continue;     // a detail that stepped aside (the title keeps it) cannot overflow
     const r = el.getBoundingClientRect();
     lines.push({cls: el.className, text: el.textContent, sw: el.scrollWidth, cw: el.clientWidth,
                 sh: el.scrollHeight, ch: el.clientHeight,
@@ -257,7 +258,7 @@ def test_the_level_seg_shows_only_with_more_than_one_level(drv, server):
     shape(server, "demo")
     _open(drv, server.base)
     assert _js(drv, "return document.getElementById('level-seg').hidden") is False
-    assert _js(drv, "return [...document.querySelectorAll('#level-seg a')].map(a=>a.textContent)") == \
+    assert _js(drv, "return [...document.querySelectorAll('#level-seg a .lv-name')].map(a=>a.textContent)") == \
         ["Ground Floor", "Mezzanine", "Upper Lab"]
 
 
@@ -393,7 +394,7 @@ def test_focus_marks_the_bay_and_opens_its_level(drv, server):
     shape(server, "demo")
     m = next(m for m in _machines(server) if m["title"] == "GC-2")         # on Upper Lab
     _open(drv, server.base, "/?view=map&focus=" + m["machine_uid"])
-    assert _js(drv, "return document.querySelector('#level-seg a[aria-current=page]').textContent") == "Upper Lab"
+    assert _js(drv, "return document.querySelector('#level-seg a[aria-current=page] .lv-name').textContent") == "Upper Lab"
     assert _js(drv, "return document.querySelector('#plan .bay.focus').dataset.uid") == m["machine_uid"]
 
 
@@ -424,3 +425,131 @@ def test_no_console_errors(drv, server):
     errs = [e for e in drv.get_log("browser") if e.get("level") == "SEVERE"
             and "favicon" not in e.get("message", "")]
     assert not errs, errs
+
+
+# ── the map's levels are pages too (2026-10-07) ────────────────────────────
+#
+# v4.1.0 made the wall's levels swipeable pages with tabs marked by the worst
+# state on each level. Ryan: "the map didn't get updated either". The map's
+# level tabs now say the same (its worst state's glyph and how many there
+# need you), a swipe or an arrow key turns the level, and nothing on a bay
+# is cut to "…": a verdict is the app's whole word, a detail wraps to two
+# lines and, if it still does not fit, is shortened by meaning ("Calibration
+# overdue", not "Calibration…") or steps aside for the bay's title.
+
+STATE_RANK = {"ok": 0, "off_line": 1, "cant_tell": 2, "ok_but": 3, "not_ok": 4}
+
+TABS = """
+return [...document.querySelectorAll('#level-seg a')].map(a => ({
+  uid: a.dataset.level, state: a.dataset.state || null,
+  need: (a.querySelector('.lv-n') || {}).textContent || '',
+  name: (a.querySelector('.lv-name') || a).textContent,
+  current: a.getAttribute('aria-current') === 'page'}));
+"""
+
+
+def _marks(srv):
+    import json
+    import urllib.request
+    d = json.load(urllib.request.urlopen(srv.base + "/api/ui/instruments"))
+    known = {lv["uid"] for lv in d["levels"]}
+    fallback = d["default_level"] if d["default_level"] in known else d["levels"][0]["uid"]
+    out = {}
+    for r in d["instruments"]:
+        lv = r.get("level_uid") if r.get("level_uid") in known else fallback
+        st = r["readiness"]["state"]
+        m = out.setdefault(lv, {"state": st, "need": 0})
+        if STATE_RANK[st] > STATE_RANK[m["state"]]:
+            m["state"] = st
+        m["need"] += 1 if r.get("needs_you") else 0
+    return d["levels"], out
+
+
+def test_level_tabs_carry_the_worst_state_and_how_many_need_you(drv, server):
+    shape(server, "demo")
+    levels, marks = _marks(server)
+    _open(drv, server.base)
+    tabs = _js(drv, TABS)
+    assert [t["name"] for t in tabs] == [lv["name"] for lv in levels]
+    assert [t["state"] for t in tabs] == [marks[lv["uid"]]["state"] for lv in levels]
+    assert [t["need"] for t in tabs] == [str(marks[lv["uid"]]["need"]) if marks[lv["uid"]]["need"] else ""
+                                         for lv in levels]
+
+
+SWIPE = r"""
+const el = document.getElementById('plan');
+const b = el.querySelector('.bay').getBoundingClientRect();
+const y = b.top + b.height / 2, x0 = b.left + b.width / 2, x1 = x0 + arguments[0];
+const at = (type, x) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+  clientX: x, clientY: y, pointerId: 9, pointerType: 'touch', isPrimary: true, button: 0 }));
+at('pointerdown', x0); at('pointermove', (x0 + x1) / 2); at('pointerup', x1);
+const under = document.elementFromPoint(x1, y);
+if (under) under.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x1, clientY: y }));
+"""
+
+
+def _current(d):
+    return _js(d, "const a = document.querySelector('#level-seg a[aria-current=\"page\"]'); return a && a.dataset.level")
+
+
+def test_a_swipe_or_an_arrow_key_turns_the_level_and_opens_nothing(drv, server):
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.common.keys import Keys
+    shape(server, "demo")
+    levels, _ = _marks(server)
+    uids = [lv["uid"] for lv in levels]
+    _open(drv, server.base)
+    assert _current(drv) == uids[0]
+    ActionChains(drv).send_keys(Keys.ARROW_RIGHT).perform()
+    assert _wait(lambda: _current(drv) == uids[1])
+    assert "level=" + uids[1] in drv.current_url
+    ActionChains(drv).send_keys(Keys.ARROW_LEFT).perform()
+    assert _wait(lambda: _current(drv) == uids[0])
+    _js(drv, SWIPE, -200)                       # finger right-to-left: the next level
+    assert _wait(lambda: _current(drv) == uids[1])
+    _js(drv, SWIPE, 200)
+    assert _wait(lambda: _current(drv) == uids[0])
+    time.sleep(0.3)
+    assert "/instruments/" not in drv.current_url, "the swipe's end opened the bay under the finger"
+
+
+def test_arrange_never_swipes(drv, server):
+    """Dragging a bay sideways in Arrange is a move, never a level turn."""
+    shape(server, "demo")
+    levels, _ = _marks(server)
+    _open(drv, server.base, signed_in=True)
+    drv.find_element("id", "arrange").click()
+    assert _wait(lambda: _js(drv, "return document.getElementById('floor-map').classList.contains('is-arranging')"))
+    _js(drv, COUNT_POSTS)
+    _js(drv, SWIPE, -200)
+    time.sleep(0.4)
+    assert _current(drv) == levels[0]["uid"]
+    drv.find_element("id", "arrange-done").click()
+
+
+CUT = """
+return [...document.querySelectorAll('#plan .bay')].flatMap(b => [...b.querySelectorAll('.b-wtext, .b-detail')]
+  .filter(e => !e.hidden && e.textContent.endsWith('…') && !/but…$/.test(e.textContent))
+  .map(e => b.dataset.uid + ': ' + e.textContent));
+"""
+
+
+@pytest.mark.parametrize("kind", ["demo", "prod"])
+@pytest.mark.parametrize("size", [(1440, 1000), (820, 1180), (390, 844)])
+def test_no_word_on_the_map_is_cut(drv, server, kind, size):
+    shape(server, kind)
+    levels = [""] if kind == "prod" else [lv.uid for lv in LevelStore(server.gw).levels()]
+    for lv in levels:
+        _open(drv, server.base, "/?view=map" + ("&level=" + lv if lv else ""), size, "dark")
+        assert _js(drv, CUT) == [], (size, lv)
+        m = _js(drv, MEASURE)
+        assert not _overflows(m), _overflows(m)
+        assert m["pageScrollX"] <= 0
+
+
+def test_on_a_phone_arrange_sits_on_the_tab_row(drv, server):
+    shape(server, "demo")
+    _open(drv, server.base, size=(390, 844), signed_in=True)
+    seg, arr = _js(drv, "return [document.getElementById('level-seg').getBoundingClientRect().top,"
+                        " document.getElementById('arrange').getBoundingClientRect().top]")
+    assert abs(seg - arr) < 12, (seg, arr)

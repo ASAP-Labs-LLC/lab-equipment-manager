@@ -179,5 +179,55 @@ check('dimmed: no cause, nothing dimmed', P.dimmed(bad, ''), false);
 check('dimmed: a cause it does not have', P.dimmed(row('x', [0, 0], { problems: [{ key: 'ok_but-qc' }] }), 'not_ok-qc'), true);
 check('dimmed: a cause it has', P.dimmed(row('x', [0, 0], { problems: [{ key: 'not_ok-qc' }] }), 'not_ok-qc'), false);
 
+
+// ── the map's levels are pages too (2026-10-07) ────────────────────────────
+// Ryan, after v4.1.0 turned the wall's levels into swipeable pages: "the map
+// didn't get updated either". The map's level tabs now carry the worst state
+// on each level and how many there need you, so a problem upstairs is seen
+// from the ground-floor tab; a swipe or an arrow key turns the level. The
+// rank and the swipe are the wall's (wall_logic.js), and the two pages must
+// never disagree about which state is worse, so the wall's copy is loaded
+// here too and held to the same answers.
+{
+  const lv = { levels: [{ uid: 'L1', name: 'Ground' }, { uid: 'L2', name: 'Upstairs' }, { uid: 'L3', name: 'Empty' }],
+               default_level: 'L1', instruments: [
+    row('a', [0, 0], { level_uid: 'L1', needs_you: false }),
+    row('b', [0, 2.05], { level_uid: 'L1', needs_you: true, readiness: { state: 'ok_but', word: 'OK to run, but…', glyph: 'half' } }),
+    row('c', [0, 0], { level_uid: 'L2', needs_you: true, readiness: { state: 'not_ok', word: 'Not OK to run', glyph: 'error' } }),
+    row('d', [2.05, 0], { level_uid: 'L2', needs_you: true, readiness: { state: 'off_line', word: 'Off line', glyph: 'off' } }),
+    row('e', [4.1, 0], { level_uid: 'nowhere', needs_you: false }),   // an unknown level counts on the default
+  ] };
+  check('each level tab: its worst state and how many there need you', P.levelMarks(lv),
+        [{ uid: 'L1', name: 'Ground', state: 'ok_but', glyph: 'half', need: 1, total: 3 },
+         { uid: 'L2', name: 'Upstairs', state: 'not_ok', glyph: 'error', need: 2, total: 2 },
+         { uid: 'L3', name: 'Empty', state: null, glyph: '', need: 0, total: 0 }]);
+  check('no levels, no tabs', P.levelMarks({ levels: [], instruments: [row('a', [0, 0])] }), []);
+  check('a level turned by hand wraps around, both ways',
+        [P.stepLevel(lv, 'L1', 1), P.stepLevel(lv, 'L3', 1), P.stepLevel(lv, 'L1', -1), P.stepLevel(lv, '', 1)],
+        ['L2', 'L1', 'L3', 'L2']);
+
+  const wsrc = fs.readFileSync(new URL('../../static/js/wall_logic.js', import.meta.url), 'utf8');
+  const wroot = {};
+  new Function('window', 'module', wsrc)(wroot, undefined);
+  const W = wroot.LEMWallLogic;
+  const sets = [['ok', 'not_ok'], ['off_line', 'cant_tell'], ['ok_but', 'cant_tell'], ['ok'], [], ['ok', 'martian']];
+  check('the map and the wall rank states alike', sets.map(P.worstState), sets.map(W.worstState));
+  const drags = [[-90, 10], [90, -5], [-30, 0], [-80, 140], [61, 0]];
+  check('the map and the wall read a swipe alike', drags.map(([x, y]) => P.swipeStep(x, y)), drags.map(([x, y]) => W.swipeStep(x, y)));
+  check('glyphs alike', ['not_ok', 'ok_but', 'cant_tell', 'off_line', 'ok', null].map(P.stateGlyph),
+        ['not_ok', 'ok_but', 'cant_tell', 'off_line', 'ok', null].map(W.stateGlyph));
+}
+
+// ── a bay's detail is shortened by meaning, never cut mid-word ────────────
+// The map cut "Calibration overdue since 30 Jul" to "Calibration…" on a
+// phone and "Cloud Point and Pour Point out of spec" to "Cloud Point and
+// Pour Point…" on a desktop: the cut kept the half that says least. The
+// short form drops the date tail and anything after the first " · ", which
+// is what the record (one tap away) spells out.
+check('the date tail goes first', P.shortDetail('Calibration overdue since 30 Jul'), 'Calibration overdue');
+check('then everything after the first ·', P.shortDetail('Flash Point out of spec · calibration overdue since 26 Jun too'), 'Flash Point out of spec');
+check('a short detail is left alone', P.shortDetail('2 checks in spec'), '2 checks in spec');
+check('nothing in, nothing out', P.shortDetail(''), '');
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall plan checks passed');
