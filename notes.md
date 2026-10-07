@@ -606,3 +606,10 @@ V5 has central PM/CAL (better placed than V4) but a thinner task model.
 - [ ] Don't port: V4's filesystem browser (`/api/fs/list`) — modules own their
       paths now. Raw-rows charting endpoint is already superseded by
       `/api/machines/<uid>/qc-trend`.
+- [ ] **"LEM V5" vs release v4.x** (Ryan, 2026-10-07: "why does everything say
+      LEM v5 if we are working on v4.0.1?"). "V5" is the old generation name
+      for the LabCore-backed rewrite; the real version is the git tag (VERSION,
+      shown bottom-right). The console banner and argparse text in
+      `web_server.pyw`, `run.bat`/`run.sh`, and the headings of `CLAUDE.md` and
+      `HANDOFF.md` still say V5. Retire the generation name everywhere a person
+      sees it, and print VERSION in the banner instead.

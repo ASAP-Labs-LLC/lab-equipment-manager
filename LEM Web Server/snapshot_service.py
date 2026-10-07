@@ -948,8 +948,12 @@ class SnapshotService:
         """
         return self._table_errors.get(name, "")
 
-    def refresh(self) -> None:
-        """Rebuild the snapshot. Keeps the previous one on failure."""
+    def refresh(self) -> bool:
+        """Rebuild the snapshot. Keeps the previous one on failure.
+
+        Returns whether a new snapshot was kept, for the one caller that must
+        not go on without one: the import gate, which opens LEM only onto a
+        snapshot built from the imported record (test_import_on_boot.py)."""
         # Asked separately: a reachable LabCore with genuinely no machines and an
         # unreachable one both produce an empty snapshot, and the floor must be
         # able to tell them apart.
@@ -976,7 +980,7 @@ class SnapshotService:
             # errors are the ones that describe them.
             self._probe_reachable()
             self.refreshes += 1
-            return
+            return False
         with self._lock:
             self._snapshot = built
             self._tables = tables
@@ -985,6 +989,7 @@ class SnapshotService:
             self._last_error = ""
             self._online = True        # we just read from it; it is up
         self.refreshes += 1
+        return True
 
 
 # ── assembling the floor from raw rows ──────────────────────────────────────

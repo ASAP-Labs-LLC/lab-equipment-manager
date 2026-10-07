@@ -254,6 +254,48 @@ def test_the_gate_lifts_by_itself_when_the_import_verifies(
         store.close()
 
 
+def test_the_gate_does_not_open_onto_the_snapshot_of_the_empty_store(
+        tmp_path, mirror, no_import_thread):
+    """Found 2026-10-07 by booting the v4.0.1 release on top of the store
+    v4.0.0 left behind, against real LabCore: the import verified 33 of 33
+    tables, the gate lifted, and the next answer was `/api/machines` 200 with
+    0 machines and `"stale": false`. The snapshot poller had built its last
+    snapshot while the store was still empty, and nothing rebuilt it when the
+    import finished, so for up to one 12 s cycle LEM served the empty store
+    as the record again. Bench configs are built from the same snapshot, so a
+    bench asking in that window would have been told its correction factors
+    were none: v4.0.0's harm, shorter.
+
+    The test above hid this by calling `refresh()` itself before looking. This
+    one does not: whatever the poller holds when the import verifies, the
+    first answer after the gate must be the imported record."""
+    store = LocalStoreGateway(str(tmp_path / "lem.db"))
+    lab = kit.labcore_from_mirror(mirror)
+    app = bk.make_app(store, labcore=lab)
+    try:
+        web_server.start_transfer(app, store, dev=False,
+                                  mirror_candidates=[mirror])
+        app.config["SNAPSHOTS"].refresh()      # the poller, mid-move: empty
+        c = app.test_client()
+        assert c.get("/api/machines").status_code == 503
+
+        out = legacy_import.Importer(store, lab, mirror_path=mirror,
+                                     sleep=lambda s: None).run()
+        assert out["state"] == "verified", out
+
+        r = c.get("/api/bench/pac-flash-1/config",
+                  headers={"X-LEM-Token": bk.SHARED_TOKEN})
+        assert r.status_code == 200, r.get_json()
+        assert r.get_json()["corrections"], r.get_json()
+
+        body = c.get("/api/machines").get_json()
+        machines = body["machines"] if isinstance(body, dict) else body
+        assert {"pac-flash-1", "gc-2"} <= {m["machine_uid"] for m in machines}
+    finally:
+        _stop(app)
+        store.close()
+
+
 def test_an_already_verified_store_is_never_gated(tmp_path, mirror):
     """Every boot after the first: the record is here, LEM opens at once."""
     store = LocalStoreGateway(str(tmp_path / "lem.db"))

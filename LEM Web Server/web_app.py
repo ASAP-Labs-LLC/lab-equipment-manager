@@ -2885,6 +2885,8 @@ def create_app(gateway, labcore_gateway=None,
             _last_activity = time.time()
             _last_activity_path = f"{request.method} {request.path}"
 
+    _gate_lock = threading.Lock()
+
     @app.before_request
     def _moving_gate():
         """A record still being moved out of LabCore is not an empty record.
@@ -2906,8 +2908,25 @@ def create_app(gateway, labcore_gateway=None,
         import legacy_import
         st = legacy_import.cached_status(gateway)
         if st.get("state") == "verified":
-            app.config["IMPORT_GATE"] = False
-            return None
+            # Not yet: the snapshot the floor and every bench config are
+            # built from was last built while the store was still empty, and
+            # opening onto it serves that emptiness as the record for up to a
+            # cycle (found on the v4.0.1 release, 2026-10-07). Rebuild it from
+            # the imported record first; one request does it while the rest
+            # keep hearing "moving", and a rebuild that fails keeps the gate.
+            snaps = app.config.get("SNAPSHOTS")
+            if _gate_lock.acquire(blocking=False):
+                try:
+                    if not app.config.get("IMPORT_GATE"):
+                        return None
+                    if snaps is None or snaps.refresh():
+                        app.config["IMPORT_GATE"] = False
+                        return None
+                finally:
+                    _gate_lock.release()
+            elif not app.config.get("IMPORT_GATE"):
+                return None
+            st = dict(st, state="verified; reading the record back")
         done, total = st.get("tables_verified"), st.get("tables_total")
         progress = ("%s of %s tables verified" % (done, total)
                     if total else "starting")
