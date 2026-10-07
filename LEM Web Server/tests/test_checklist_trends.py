@@ -212,8 +212,10 @@ class TestThePageExists:
             "/checklists/trends").status_code == 200
 
     def test_the_checklists_page_links_to_it(self, gw, tmp_path):
-        page = _client(gw, tmp_path).get("/checklists").get_data(as_text=True)
-        assert "/checklists/trends" in page
+        # a saved reading on the round links to its own trend
+        c = _client(gw, tmp_path)
+        assert "/checklists/trends?item=" in c.get("/static/js/round.js").get_data(as_text=True)
+        assert "/checklists/trends" in c.get("/checklists/edit").get_data(as_text=True)
 
     def test_the_routes_are_registered(self, gw, tmp_path):
         app = create_app(gw, secret="t", documents_root=str(tmp_path))

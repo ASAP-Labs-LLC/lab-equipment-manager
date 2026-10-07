@@ -580,83 +580,57 @@ class TestTheStandardsEditorCanSetIt:
         assert new.tests[0].qc_expire_hours == 8.0
 
 
-class TestTheEditorUiOffersTheField:
-    """`templates/stations.html`, RENDERED through the app's own Jinja
-    environment rather than read off disk.
+class TestTheNewStandardSheetOffersTheWindow:
+    """The editors that carried this field were the retired stations page and
+    the QC-standards dialog inside the old floor page; piece 14 deleted both, and
+    `/quality`'s New standard sheet is the one place a standard is made now.
 
-    Note what this page is: `/stations` is a retired route that redirects to
-    `/floor`, so this template is no longer served. It is still the QC-standards
-    editor of record in this tree and is kept in step; the LIVE editor is the
-    same dialog inside `templates/floor.html`, and it has the field too — see
-    `TestTheLiveFloorEditorOffersTheWindow`.
-    """
+    What the old floor tests guarded, restated for the sheet:
 
-    @pytest.fixture
-    def page(self, app):
-        return app.jinja_env.get_template("stations.html").render(
-            active="/stations")
-
-    def test_the_tests_grid_has_a_window_column(self, page):
-        assert "c-win" in page
-
-    def test_the_saved_payload_includes_the_window(self, page):
-        assert "qc_expire_hours" in page
-
-    def test_the_column_is_labelled_with_the_fall_through_default(self, page):
-        """Blank means "use the default", and the header says what that is
-        rather than leaving an unexplained empty box."""
-        assert "Expires (h)" in page
-        assert "default_qc_expire_hours" in page
-
-    def test_the_page_is_still_the_retired_one_it_was(self, client):
-        """Guards the sentence above. If `/stations` is ever served again this
-        goes red and the class docstring stops being true."""
-        assert client.get("/stations").status_code in (301, 302)
-
-
-class TestTheLiveFloorEditorOffersTheWindow:
-    """`templates/floor.html` holds the QC-standards dialog people actually
-    use — `/stations` is a retired route that redirects to `/floor`.
-
-    It used to build each test row by hand:
-
-        {name: a, value_col: a, expected: …, std_dev: …, k: …, units: …}
-
-    with no `qc_expire_hours`. `QcSampleTest.from_dict` reads that absence as
-    0.0 — correctly, as fall-through — so **editing any standard from the floor
-    for any reason cleared a window somebody had set**, silently. A handoff
-    tripwire stood here until the floor caught up; these are the assertions it
-    was pointed at.
-
-    It is deliberately NOT worked around on the server: making a save that
-    omits the key inherit the stored value would mean no client could ever
-    clear a window, and would hide the next gap instead of reporting it.
+    * **The save carries the window.** The floor once rebuilt each test row
+      by hand with no `qc_expire_hours`, and `from_dict` reads an absent key
+      as 0 (fall through), so every save from the floor cleared a window
+      somebody had set, silently.
+    * **No shipped page re-saves a whole standard without it.** The new
+      pages change a standard through narrow routes (assign, changeover,
+      rename, delete), never by POSTing the whole object back to
+      `/api/qc-samples`. If one ever does, it has to carry the window.
+    * **The default is the server's, not typed in.** `resolve_qc_window`
+      owns the bottom of the chain. A "24" typed into a template is a second
+      copy that drifts the first time anybody changes it.
     """
 
     @pytest.fixture
     def page(self, client):
-        r = client.get("/floor")
+        r = client.get("/quality/standards")
         assert r.status_code == 200
         return r.get_data(as_text=True)
 
-    def test_the_tests_grid_has_a_window_column(self, page):
-        assert "c-win" in page
-        assert "Expires (h)" in page
+    def test_the_sheet_has_a_window_field(self, page):
+        assert 'id="new-hours"' in page
 
-    def test_the_save_carries_the_window(self, page):
-        """The bug in its own terms: the payload the dialog POSTs."""
-        head, _, tail = page.partition("#sampleTests .trow")
-        assert head, "the floor's QC-standard save moved — re-aim this test"
-        assert "qc_expire_hours" in tail.split("/api/qc-samples")[0]
+    def test_the_save_carries_the_window(self):
+        from pathlib import Path
+        js = (Path(__file__).parent.parent / "static" / "js" / "quality.js").read_text()
+        save = js[js.index("'/api/qc-samples/new'") - 600:js.index("'/api/qc-samples/new'")]
+        assert "qc_expire_hours" in save
 
-    def test_the_default_is_read_from_the_server_rather_than_typed_in(self, page):
-        """`resolve_qc_window` owns that number. A second copy in a template
-        drifts from it the first time anybody changes it."""
-        assert "default_qc_expire_hours" in page
-        assert "DEFAULT_QC_HOURS" in page
+    def test_no_page_posts_a_whole_standard_without_it(self):
+        import re
+        from pathlib import Path
+        root = Path(__file__).parent.parent
+        for p in sorted((root / "static").rglob("*.js")) + sorted((root / "templates").glob("*.html")):
+            src = p.read_text()
+            if re.search(r"""['"]/api/qc-samples['"]\s*,\s*\{[^}]*method:\s*['"]POST""", src):
+                assert "qc_expire_hours" in src, p.name
 
-    def test_the_page_is_the_one_that_is_actually_served(self, client):
-        """Guards the sentence above: this is the LIVE editor, and /stations
-        is not."""
-        assert client.get("/stations").status_code in (301, 302)
-        assert client.get("/floor").status_code == 200
+    def test_the_default_is_read_from_the_server_rather_than_typed_in(self, client, monkeypatch):
+        """Change the server's default and the sheet says the new number; a
+        typed-in 24 would not move."""
+        import qc_samples
+        monkeypatch.setattr(qc_samples, "QC_WINDOW_DEFAULT_HOURS", 36.0)
+        page = client.get("/quality/standards").get_data(as_text=True)
+        sheet = page[page.index('id="new-defaults"'):page.index('id="new-on"')]
+        assert "36 h" in sheet and "36 (the lab default)" in sheet
+        assert "24" not in sheet
+        assert 'data-default-hours="36"' in sheet

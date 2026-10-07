@@ -27,11 +27,11 @@ class TestWatchedFiles:
 
     def test_it_watches_templates_and_css(self, tmp_path):
         (tmp_path / "templates").mkdir()
-        (tmp_path / "templates" / "floor.html").write_text("<p>")
+        (tmp_path / "templates" / "page.html").write_text("<p>")
         (tmp_path / "static").mkdir()
         (tmp_path / "static" / "lem.css").write_text("p{}")
         names = [os.path.basename(p) for p in tray.iter_watched_files(tmp_path)]
-        assert "floor.html" in names and "lem.css" in names
+        assert "page.html" in names and "lem.css" in names
 
     def test_it_ignores_the_virtualenv(self, tmp_path):
         """Watching .venv means thousands of files and a restart on every pip."""

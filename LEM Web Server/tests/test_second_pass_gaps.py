@@ -76,7 +76,7 @@ def lab():
            "reason TEXT, updated_at TEXT)")
     gw.sql("INSERT INTO lem_machine_status VALUES "
            "('m1','OptiMPP 1','GREEN','ok','2026-08-03T09:00:00')")
-    gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+    gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
            ["m1", "2026-07-02T09:00:00", "qc", "CP", "Cloud Point", "-7.2",
             json.dumps({"in_spec": True})])
     return gw
@@ -189,15 +189,21 @@ class TestTestNamesDoesNotDegradeToAnEmptyPicker:
         assert client.get("/api/test-names").get_json()["tests"] == \
             ["Cloud Point"]
 
-    def test_the_floor_keeps_the_list_it_had(self):
-        """The page half: `loadTests` blanked TESTS on any failure, so one
-        refused poll emptied the picker that was already on screen."""
+    def test_the_picker_says_a_failed_read_rather_than_offering_nothing(self):
+        """The page half. The old floor's `loadTests` blanked its list on any
+        failure, so one refused poll emptied the picker on screen (the old
+        floor page, deleted in piece 14). The picker now is the New standard sheet's
+        (quality.js): a failed read is its own state with its own sentence
+        and a Try again, never an empty list, and "LabCore answered with no
+        tests" is a different sentence."""
         import os
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        floor = open(os.path.join(here, "templates", "floor.html"),
-                     encoding="utf-8").read()
-        block = floor.split("async function loadTests()", 1)[1][:400]
-        assert "TESTS = (b && b.tests) || []" not in block
+        js = open(os.path.join(here, "static", "js", "quality.js"), encoding="utf-8").read()
+        load = js[js.index("function loadCatalogue()"):js.index("function loadReporting()")]
+        assert ".catch(e => { catalogue = { state: 'err', error: why(e) }; })" in load
+        assert "tests: []" not in load
+        assert "Couldn\\'t read LabCore\\'s list of tests" in js
+        assert "LabCore answered with no tests" in js
 
 
 # ── the audit trail ─────────────────────────────────────────────────────────

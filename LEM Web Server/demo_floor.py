@@ -44,6 +44,7 @@ anything a test compares.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import random
 from datetime import datetime, timedelta
@@ -211,8 +212,8 @@ def seed(gateway, documents_root: Optional[str] = None,
 
     _seed_schedule(write)
     ladder = _seed_levels(gateway)
-    placed = _seed_fleet(write, rng, now, ladder)
-    _backdate_setup(write, now)
+    with _setup_dated(now):
+        placed = _seed_fleet(write, rng, now, ladder)
     _seed_standards(gateway)
     _seed_certificates(gateway, documents_root)
     _seed_documents(gateway, documents_root)
@@ -249,7 +250,8 @@ def _seed_fleet(write, rng, now, ladder) -> int:
     """Every instrument: status, pills, band, bay, heartbeat and history."""
     from levels import LevelStore
 
-    bays = {i: _bay_grid(rng) for i in range(len(ladder))}
+    bays = {i: _bay_grid(rng, sum(1 for b in FLEET if b.level == i))
+            for i in range(len(ladder))}
     placed = 0
 
     for bench in FLEET:
@@ -352,18 +354,68 @@ def _seed_fleet(write, rng, now, ladder) -> int:
     return placed
 
 
-def _bay_grid(rng) -> List[tuple]:
-    """Distinct bays, shuffled.
+def keep_alive(gateway, now: Optional[datetime] = None) -> int:
+    """Stamp every seeded bench that checks in with a heartbeat of `now`.
+
+    The seeder writes one heartbeat per bench at boot, and nothing in a demo
+    writes another: no station module is running. Fifteen minutes later
+    (``MachineStateReader.HEARTBEAT_GRACE``) every bench read "Bench stopped"
+    and the demo floor showed a lab where everything had died, which is a
+    state the demo invented. `--dev --seed` runs this on the snapshot poller
+    (web_server.attach_demo_keepers). The "offline" story bench is left
+    silent, exactly as seeded. Dev only: nothing in production calls it.
+    Returns how many benches it stamped; a write that fails raises."""
+    now = now or datetime.now()
+    write = _Writer(gateway)
+    n = 0
+    for bench in FLEET:
+        if bench.story == "offline":
+            continue
+        write("UPDATE lem_machine_heartbeat SET last_poll = ? WHERE machine_uid = ?",
+              [now.isoformat(), bench.uid])
+        n += 1
+    return n
+
+
+def attach_keeper(snapshots, gateway, clock=None) -> None:
+    """Ride `keep_alive` on the snapshot poller, keeping whatever else rides
+    it (live_presence.attach_to_poller). Called only by `--dev --seed`'s boot
+    (web_server.attach_demo_keepers)."""
+    from live_presence import attach_to_poller
+
+    now = clock or datetime.now
+    attach_to_poller(snapshots, lambda: keep_alive(gateway, now()))
+
+
+BAY_PITCH = 2.05      # static/js/plan.js PITCH: the one production saves at
+
+
+def _bay_grid(rng, count: int = 24) -> List[tuple]:
+    """Distinct bays for `count` instruments, shuffled, three to a row.
+
+    Benches stand together, as production's do (16 instruments in a 7 by 5
+    box): the old 6 by 4 deck with four or five instruments scattered over it
+    demoed a plan that was mostly empty floor, which is not the lab.
 
     Popped from, never sampled: two instruments saved on the SAME bay is a real
-    production bug (OptiMPP 2 and PAC Flash 2, both 4.1,0) whose spill fix lives
-    in the severed world module, so a collision here would demo the bug rather
-    than the floor.
+    production bug (OptiMPP 2 and PAC Flash 2, both 4.1,0). The map spills the
+    second to the nearest free bay (static/js/plan.js), so a collision here
+    would demo the spill rather than the floor.
     """
-    grid = [(float(col), float(row))
-            for row in range(4) for col in range(6)]
-    rng.shuffle(grid)
-    return grid
+    # At the pitch production saves at (4.1, 6.15, …) and the map reads a
+    # bay by (round(v / 2.05)): the demo used 0, 1, 2, … which put two
+    # neighbours on the SAME bay of the map, so one was moved somewhere
+    # nobody put it.
+    # The SAME draws as ever (one shuffle of the old 6 by 4 deck), kept so
+    # every later value the seed makes (statuses, readings, schedules) is
+    # unchanged; the compact bays are the deck's first 3 columns and as
+    # many rows as the count needs, in the shuffled order.
+    cols = 3
+    rows = max(1, -(-count // cols))
+    deck = [(col, row) for row in range(4) for col in range(6)]
+    rng.shuffle(deck)
+    return [(round(col * BAY_PITCH, 2), round(row * BAY_PITCH, 2))
+            for col, row in deck if col < cols and row < rows]
 
 
 def _reason(status, specs, bench) -> str:
@@ -603,8 +655,9 @@ STANDARDS = (
 
 
 
-def _backdate_setup(write, now) -> None:
-    """Move the seeder's own setup rows into the past, where they belong.
+@contextlib.contextmanager
+def _setup_dated(now):
+    """Date the seeder's own setup rows in the past, where they belong.
 
     Placing thirteen instruments on levels writes thirteen `config /
     level_move` audit rows — correctly: moving equipment between floors is an
@@ -615,17 +668,25 @@ def _backdate_setup(write, now) -> None:
 
     The rows are not deleted or suppressed — an audit trail with a hole in it
     to make a demo look tidy is the opposite of what this app is for. They are
-    simply dated to when the floor plan would actually have been arranged: days
-    ago, before any of the work sitting on top of it.
+    dated, AS THEY ARE WRITTEN, to when the floor plan would actually have been
+    arranged: days ago, before any of the work sitting on top of it.
 
-    Only rows this seeder just wrote are touched, matched on the action, and
-    only on the in-memory fake behind `--dev`.
+    This used to be an `UPDATE lem_machine_log SET ts = ?` afterwards. The
+    LEM store refuses that — `lem_machine_log` is append-only by trigger — and
+    it is right to: a seeder that rewrites history is the habit the trigger
+    exists to make impossible. So the clock `levels` stamps with is the thing
+    that moves, for the length of the placement and no longer.
     """
+    import levels
+
     when = (now - timedelta(days=6)).replace(hour=8, minute=30, second=0,
                                              microsecond=0)
-    write("UPDATE lem_machine_log SET ts = ? "
-          "WHERE kind = 'config' AND test_name = 'level_move'",
-          [when.isoformat()])
+    real = levels._now_stamp
+    levels._now_stamp = lambda: when.isoformat(timespec="seconds")
+    try:
+        yield
+    finally:
+        levels._now_stamp = real
 
 
 def _seed_standards(gateway) -> None:

@@ -40,8 +40,9 @@ web_server.pyw ─► web_app.create_app(gateway) ─► StatusProvider
   is reused unchanged. Maps `sample_id_val→lab_id`, `test.value_col→test_name`.
 - `db_config_store.py` — `DbConfigStore`. Persists the full `AppConfig` into
   `lem_*` tables via the write queue; JSON-blob-per-row for lossless round-trip.
-- `web_app.py` — Flask app factory. Reuses `evaluate_box`, `models`, and
-  `templates/dashboard.html`; keeps the V4 `/api/status` payload shape.
+- `web_app.py` — Flask app factory. Reuses `evaluate_box` and `models`, and
+  keeps the V4 `/api/status` payload shape (V4's dashboard page itself was
+  deleted in piece 14; `/dashboard` redirects to the floor wall).
 - `migrate_json_to_db.py` — one-shot import of V4's `lab_manager_config.json`.
 - `web_server.pyw` — entry point. `--dev [--seed]` runs offline against a fake.
 - Reused from V4 unchanged: `models.py`, `data_source.py`, `maintenance.py`,
@@ -136,6 +137,97 @@ Two related items from the same report, deliberately NOT done:
   Full root-cause chain and the fixes proposed to the LabCore team:
   `docs/labcore-lem-tables-and-the-write-queue.md`.
 
+## LEM's record lives in LEM's store, not in LabCore (2026-10-01)
+
+Transfer spec v4 §5 (piece P6). Every `lem_*` table used to live inside
+LabCore, behind a queue that serialises the lab at ~1.5 ops/sec and kills any
+read past 8 s — and the 17025 machine log could be rewritten or deleted by any
+statement reaching it ("purge history" did). Sections below that say "LabCore
+is the record" for `lem_*` tables describe the world before this.
+
+- **`lem_store.LocalStoreGateway`** — a SQLite file on this server's disk
+  (`LEM_STORE_PATH`, production `C:\ASAPApps\lem\store\lem.db`). WAL,
+  `synchronous=FULL`, one writer connection under one lock, readers from a
+  pool. Same surface and answer shapes as the LabCore gateways, so every store
+  module and snapshot arm runs unchanged; a local `sqlite3.Error` is
+  `{"error": ...}`, never empty rows. `transaction()` exists.
+- **`create_app(store, labcore=...)`.** LabCore is asked only for what is
+  LabCore's: sign-in, `LabCoreDataSource` (`samples`/`sample_tests`), the
+  test-method list. With one argument the gateway serves both (the test
+  suite's shape). `HttpLabCoreGateway` as the store is refused.
+- **Append-only, in the file.** Triggers refuse UPDATE/DELETE on
+  `lem_machine_log` and `log_annotation`. Do not write code (or tests, or
+  demo seeders) that rewrites a log row: hide it with an annotation.
+- **Readers read `lem_machine_log_effective`** — the record minus rows whose
+  newest annotation hides them, minus history older than the machine's
+  `lem_machine_config.retired_at`. It is a VIEW: use `id`, never `rowid`.
+  `tests/test_gateway_split.py` parses every string in the server and fails on
+  a raw `FROM lem_machine_log` without a `# raw-log: why` within two lines.
+- **Purge is hide.** `purge_history` writes a `retired_at` tombstone on the
+  config row; nothing is deleted. Re-saving the config clears it.
+- **W2:** correction save/removal is one transaction (factor, receipt, log
+  line, `request_ledger` row). A retry with the same `X-Request-Id` gets the
+  stored answer and `X-Request-Replayed: true`.
+- **`LogMirror` → `StoreLogMirror`** on a store: same API, reads the view,
+  no copy. The old class remains for a LabCore-held log.
+- **Boots:** live = read-write; `--no-publish` = the same store READ-ONLY
+  (never created); `--dev` = `InMemoryLabCore` + a scratch store.
+- **The suite runs on the store:** `tests/conftest.py` swaps
+  `FakeLabCoreGateway` for a `LocalStoreGateway` on a throwaway file that also
+  holds LabCore's three core tables. To claim "costs LabCore nothing", count on
+  a separate LabCore: `tests/labcore_counter.CountingLabCore`.
+- **Since landed:** the bench sync API (P7, `bench_api.py`), backups (P11,
+  `custody.py`), and the import plus the mixed-fleet bridge (P9, below).
+
+## Moving the record out of LabCore, and the mixed fleet (2026-10-02)
+
+Transfer spec §10.1 and §10.4 (piece T-P9). `legacy_import.py` and
+`bridge.py`. **Running either against production LabCore is Ryan's step**:
+the import is started only by `web_server.pyw --import-from-mirror PATH` or
+`python legacy_import.py --yes-this-is-production`, and the bridge does
+nothing until the import is verified.
+
+- **The import** seeds `lem_machine_log` from a COPY of the v3.9 log mirror
+  (0 LabCore reads for 258k rows), proves it with ONE read of counts per
+  (rowid range, machine, kind) over `idx_lem_log_uid_kind_ts` and ONE read
+  of 1,000 sampled rows, re-reads only ranges that disagree (5,000 rows a
+  read), then copies the other 32 tables (one `SELECT *` each, count and
+  SHA-256 read back). Measured on a production-sized LabCore (257,996 rows,
+  mirror 2,000 rows behind and one corrupt range): **37 reads**, plus 1 for
+  the bridge's first pull. `/healthz.store.import.reads` counts them.
+- **A failed read is never "done".** `import_run.verified` stays NULL for a
+  chunk or table that was refused; the next run resumes from `import_run`
+  and the persisted cursors. Until every table verifies, `store_meta.
+  sync_hold` makes v2 sync, `/adoption` and `/checkpoint` answer 503 +
+  Retry-After (a half-imported record would read as "never recorded").
+- **Identity is content:** `legacy_key = 'lc:' + H(7 columns) + ':' + k`
+  (the k-th copy of that exact row). LabCore's rowid is only a cursor;
+  `legacy_index` maps rowids to copies per numbering "generation", so a
+  VACUUM that renumbered LabCore is noticed at the cursor row and re-walked
+  adding 0 rows, and v3.9's N3 double write stays two rows.
+- **`jk` linking** (§7, M6): a projected row's `detail.jk` makes it the bench
+  record's custody row; a later v2 sync of that record adds only the rows
+  not yet pulled, and a pull of a record already held as `bench_record`
+  adds nothing.
+- **Store rows are not overwritten by the import**: a row the server wrote
+  before the import finished (same key, different content, or a key LabCore
+  lacks) is kept, counted in `import_run.verified`, and projected.
+- **The bridge**: the log pull (1 read / 60 s), the state arms (1 read /
+  12 s, legacy-mode uids only; none when every bench is v2), **no per-arm
+  fallback** (one watchdog kill: +0 reads, where v3.9's snapshot paid +426),
+  visible `replay_candidate` on a v3.9 replay burst (≥ 20 twinned rows in a
+  poll; never hidden), projection of the tables a v3.9 module reads plus
+  `lem_machine_config` through `projection_outbox` (store first, upserts
+  before prunes, backoff, never marked landed unless LabCore took it, the
+  bench's cursor keys in its config never overwritten), and the 15-minute
+  single-key `json_set` cursor mirror that bounds a v4 → v3.9 rollback to
+  ≤ 15 min of replayed prints (DG1, measured 14.4).
+- **No replica tables, no LabCore DDL** (Ryan declined D2). Off, or before
+  the import is verified, the bridge makes no LabCore call at all.
+- Tests: `tests/test_legacy_import.py`, `tests/test_bridge.py` (M2 and DG1
+  run the real v3.9.0 module from `git show`); the gate's W1, W4, M2, M6
+  and DG1 are `gauntlet-harness/gharness/mixed_fleet.py`.
+
 ## QC expiry is a rolling window (2026-08-03)
 
 Changed from V4's calendar-day rule at Ryan's request ("as long as it tracks real
@@ -211,7 +303,7 @@ Where several assigned standards state windows the **tightest** one wins — QC 
 only as fresh as the shortest-lived control, the same rule `evaluate_machine`
 uses to go YELLOW.
 
-**`templates/floor.html` has caught up (2026-08-26).** Its QC-standard dialog
+**The old floor page has caught up (2026-08-26).** Its QC-standard dialog
 built each test row by hand and sent no `qc_expire_hours`, so **saving a standard
 from the floor cleared a window somebody had set** — and the floor is the editor
 people actually open (`/stations` redirects to it). It now has an *Expires (h)*
@@ -223,9 +315,9 @@ template — `resolve_qc_window` owns that number. Blank is sent as an explicit 
 so a window can still be CLEARED; this is deliberately not worked around on the
 server, where an omitted key inheriting the stored value would make clearing
 impossible. The handoff tripwire is gone, replaced by
-`tests/test_qc_standard_window.py::TestTheLiveFloorEditorOffersTheWindow`, and
-the round trip (set · reopen · edit another field · clear) is exercised in a
-real browser.
+`tests/test_qc_standard_window.py` (since piece 14, which deleted the old
+floor, `TestTheNewStandardSheetOffersTheWindow`: /quality's New standard
+sheet sends the window and says the server's default, never a typed 24).
 
 **MAJOR, not MINOR.** No `lem_*` column moved, but a QC verdict rule changed: the
 same standard, the same reading and the same clock can now produce a different
@@ -245,7 +337,7 @@ was cut at 16 characters and the target was not there at all — and the QC
 samples library showed "52.28 … 57.96 C", a span with no centre. A standard IS
 its certified value; the span is derived from it.
 
-- **`bandHtml(low, expected, high, units)`** in `floor.html` is the one way a
+- **`bandHtml(low, expected, high, units)`** in the old floor page was the one way a
   band is drawn: low, then the target large in amber, then high, then the
   unit, at two decimals; a value the row does not carry is a dash, never NaN.
   The hover tip (every PUBLISHED band on the instrument, whole test name), the
@@ -267,6 +359,30 @@ its certified value; the span is derived from it.
 
 MINOR: no `lem_*` column, no `/api/live` change, no verdict rule; the bench
 does not move.
+
+## Sign in where you are (2026-10-01, ia-final §8 T0)
+
+One sheet, `templates/_signin.html`, on every page with a Sign in (the shell
+via `_layout.html`; Home, Checklists, PM & CAL and Logs include it too). Never
+send anyone to /floor to sign in again, and never print "Sign in to …" and
+stop: `tests/test_signin_in_place.py` greps for both.
+
+- **Pages ask `LEMSignIn` (static/js/signin.js).** `LEMSignIn.need('tick',
+  () => toggle(row, true))` runs the act now if signed in, else opens "Sign in
+  to tick" and runs it after; Cancel drops it. Or mark the control
+  `data-gated="mark done"` and signin.js catches the click (capture phase)
+  before the page's handler and clicks it again after sign-in. Pass what the
+  person MEANT (`checked`), not what the row says by then.
+- **Nothing reloads.** Sign-in fires `lem:auth` on `document` (detail
+  `{user}`) BEFORE the pending act runs; pages repaint from it. `<body>` has
+  `anon` and `data-user` from the server, so the first paint is right.
+- **Switch person** keeps the last person signed in until the next one is in;
+  `/api/login` then ends the last person's LabCore token.
+- **/signin?next=** is the no-JS road; `next` must be a path on this server
+  (same rule in `_safe_next` and `LEMSignInLogic.safeNext`).
+- Walked in a browser by `tests/test_ui_signin.py` (gc-hub's venv has
+  selenium): T0 2 clicks / 2 typed / +1 screen with the same URL, document and
+  scroll; a gated tick or Mark done costs +1 / +2 / +1 and then happens.
 
 ## The live road: benches push, LabCore records (2026-08-05)
 
@@ -752,8 +868,8 @@ and **deploys them itself once nobody is using LEM**.
 - **Reads are background, writes are people** (`_is_background`). This began as
   an allowlist of the floor's poll endpoints and was wrong twice — first
   missing `/api/me` and `/api/map`, then `/api/qc-samples` — each time pinning
-  idle under a second so a deploy could never fire, silently. `floor.html`
-  re-reads its entire world every 2s from every open browser, so no GET is
+  idle under a second so a deploy could never fire, silently. The old floor
+  page re-read its entire world every 2s from every open browser, so no GET is
   distinguishable from a wall display. `/api/live` is excluded despite being a
   POST: that is a bench module, not a person.
 - `/healthz` reports `last_activity` (the request that last counted) purely so
@@ -960,57 +1076,57 @@ extreme 2400x700, holds it IDENTICAL at all four so no viewport can bend it, and
 asserts exactly one line sets the tilt and takes the constant. Restoring 68 fails
 it at 1.08:1.
 
-## The 3D site is SEVERED — the SVG plan is the floor (2026-08-24)
+## The floor map lives in the shell; the 3D site is DELETED (2026-10-02)
 
-Ryan: "just dont have it render trains in 3d okay? We are going to focus on the
-SVG rendering."
+ia-final §3.2, piece 12. `/?view=map` is the Instruments page drawn as the
+floor plan: the same `/api/ui/instruments` answer (rows now carry
+`where.pos`, the saved bay or null, and the answer carries `default_level`),
+the same Needs-you card, in a 300px column. It used to 302 to `/floor`.
 
-**Do not "fix" the blank canvas. It is switched off on purpose.** One constant
-near the top of `floor.html`:
-
-```js
-const SITE_VIEW = false;   // ← true restores the 3D site, nothing else to do
-```
-
-Nothing under `static/world/` moved, was deleted, or was edited. It is still in
-the import map and `test_world_assets.py` still holds it to the same rules — the
-world is disconnected, not gone, and flipping the word back brings it up exactly
-as it was.
-
-- **The import is DYNAMIC** (`await import('world/index.js')`) inside the guard.
-  A static `import` is fetched and evaluated whether or not anything below it
-  runs, so guarding only `new LEMWorld(...)` would still pull three.js, the
-  terrain, the vegetation and the trains onto a bench PC to build a renderer
-  nothing starts. Severed has to mean the browser never asks. Keep it dynamic.
-- **Something has to show the plan.** The remembered view is applied inside
-  `__floorBridge.attach(world)`, and with the world severed nothing ever calls
-  attach. A boot block does it instead — and it lives down with `load()`, NOT
-  beside `setView`, because `setView` paints the toolbar, which reads
-  `ARRANGING`, a `let` declared further down. Any earlier and it is a top-level
-  TDZ ReferenceError that kills every listener after it on a page that still
-  looks perfectly normal. `tests/js/floorboot.mjs` caught exactly that.
-- **View, Quality and Arrange are hidden** while severed. All three reach for
-  `WORLD`: two views when there is one, a renderer that is not running, and
-  whole-floor buttons that return early on `!WORLD` with no dragging in the
-  plan. A button that silently does nothing is worse than a missing one.
-- **Known and accepted:** `planStations()` asks `WORLD.plan.byUid` first and
-  falls back to its own index grid, so with no world an instrument nobody has
-  dragged can sit in a different bay than the 3D floor put it. The other half of
-  this — two machines saved on the SAME bay overlapping — **is fixed**:
-  `claimPlanBays()` in `floor.html` is `claimBays()`' spill rule, same canonical
-  order, run over the level in view. If Arrange comes back, `arrangement()` is
-  still in `world/index.js` and would want the same treatment; it is already
-  pure and exported, and `tests/js/arrange.mjs` pulls it out by text.
-
-Tests: `tests/test_site_view_severed.py` (5) — the served page must not
-statically import the world, must still be able to reach it, and the switch must
-stay one named constant. Behaviour is in `tests/js/floorboot.mjs`, whose stub DOM
-now caches elements by selector and records attributes, so it can be asked what
-the page actually settled on rather than only whether it ran.
+- **`static/js/plan.js` (`LEMPlan`) is the one plan renderer**, for this view
+  and for the wall (piece 13). Pure first, node-tested in `tests/js/plan.mjs`:
+  a bay is `round(v / 2.05)` (production's pitch; a move writes `coord(i)`
+  back, 4.1, 6.15, -2.05); the grid is the **bounding box of the placed
+  bays** (judge J1: the old map was a half-width grid of empty dashed cells);
+  two saved on one bay spill the second (title, then uid) to the NEAREST free
+  bay, preferring inside the box; uniform cells fill the window's height
+  within 96-240px and never taller than wide; a floor whose bays would be
+  under 128px at a 12px gutter packs at 8px (`density`). Every line of a bay
+  is measured and cut in JS (`fit`): the name may take two lines, the verdict
+  falls back to its short word (`Not OK`, `OK, but…`) before it is ever cut,
+  the detail is cut at a word; the bay's `title` has the whole story. So no
+  line's scrollWidth exceeds its box (`tests/test_ui_floor_map_browser.py`
+  measures it at 1440x900 and 820x1180, both themes, demo and production's
+  7 by 5 shape).
+- **`static/js/floor_map.js` runs the view.** `?level=` (seg only when more
+  than one level holds instruments), `?cause=` (a Needs-you tile steps the
+  other bays back and dots the levels that have it), `?focus=<uid>` (ringed,
+  scrolled to, opens its level), `?arrange=1` (the record's "Move on the
+  map"). "Not on the map: X · Place it".
+- **Nothing moves until Arrange is entered (P15).** Arrange… is
+  `data-gated` (sign-in sheet titled "Sign in to arrange the floor"), shows
+  a ring of empty bays to grow into, and is left with Done. Outside it bays
+  are `<a draggable="false">` links to their record and `LEMPlan.canDrag` is
+  false; the browser test makes a real pointer drag onto a free bay, signed
+  in, and requires zero POSTs. The lab-wide freeze (`/api/map`) still
+  holds: a frozen floor says so and offers "Unfreeze and arrange"; a lock
+  that could not be read is said, never taken as unlocked. A refused move
+  is put back with the server's words.
+- **The 3D site is gone** (Ryan, decisions.md: "3D Site view: DELETE"):
+  `static/world/`, `static/vendor/three*.js`, the `worldmap()` import map,
+  the canvas, the View toggle, the Quality dialog and their tests
+  (`test_site_view_severed.py`, `test_world_assets.py`, `tests/js/arrange.mjs`,
+  `tests/js/layout.mjs`). `tests/test_floor_map_view.py` holds that nothing
+  serves or names it. Piece 14 then deleted the old floor page itself
+  (see "Piece 14" below).
+- **The demo seeds at the saved pitch, three to a row** (`demo_floor.BAY_PITCH`),
+  from the same RNG draws as before, so every other seeded value is unchanged.
 
 ## The 3D floor (2026-08-06/07) — what cost days, so it doesn't again
 
-The floor map is a rendered 3D world now (`static/world/`, ~13 subsystem
+*History: this code was deleted on 2026-10-02 (see above); the lessons stand.*
+
+The floor map was a rendered 3D world (`static/world/`, ~13 subsystem
 modules). It was built against a real bar — PlayCanvas "After the Flood" for
 lighting, Transport Fever 2 and Train Sim World 4 for rail — judged by critics
 who compared our render against the reference blind, labels stripped, and were
@@ -1081,5 +1197,36 @@ distant woods have blue above red at *every* range — that is what aerial
 perspective does. The real target was green as the largest channel, which is
 achievable; the extra clause was invented, not observed, and it made a passing
 result unreportable. Measure the reference before writing the threshold.
+
+## Piece 14: the replaced pages are deleted, and the guard list holds the whole tree (2026-10)
+
+The six templates the redesign replaced are gone: the old floor (7,275
+lines, 18 dialogs), the V4 dashboard, stations, the home chooser, the
+fleet-wide PM page and the old nav partial, with `static/lem.css`,
+`css/signin_legacy.css`, the never-registered transfer stand-in page, and
+the interim `/floor/classic` and `/maintenance/classic` doors (never on
+`main`, so no bookmark is lost). `/stations` and `/dashboard` still 302 to
+the floor wall; `/floor?machine=<uid>` (the old floor's panel link) 302s to
+that instrument's record, uid quoted as a path segment.
+
+`tests/test_ia_guards.py` is ia-final §1 and §11 as tests, over EVERYTHING
+shipped rather than a list of pages: the route table exactly (a page route
+nobody specified fails), no contextmenu / prompt / alert / confirm /
+toFixed(2) in any template or script, walls 200 with no redirect and no
+gated control, `/api/ui/live` and `/api/ui/instruments` at 0 LabCore ops,
+`/api/machines` equal to a golden made by running `main`'s web_app (only
+transfer-final's additive `transfer` field differs), every list row an
+`/instruments/` link, and an index that fails if any §11 test that lives
+with its behaviour is deleted. `tests/test_ui_guards_browser.py` idles every
+page in Chrome with its clock sped up and fails on any request that is not a
+GET (no timer-driven POST, A.7).
+
+Two regressions the old floor's tests had been guarding, found while
+retargeting them: the record's writes sent no `X-Request-Id`, so a
+correction whose answer was lost, saved again, was made twice (W2); the
+record now sends one per change (`LEMRecord.changeIds`, the lem.js rule)
+and says "not known whether this saved" on no answer, never "nothing was
+saved". And the New standard sheet typed the 24 h default; it now says the
+server's.
 
 <!-- v1.0.2: exercises the unattended idle deploy end to end. -->

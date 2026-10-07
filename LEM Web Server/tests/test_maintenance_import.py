@@ -358,6 +358,12 @@ class TestEndpoints:
         assert any("import" in e["action"] for e in entries)
 
     def test_the_page_offers_it(self, client):
-        body = client.get("/maintenance").get_data(as_text=True)
-        assert "maintenance-import" in body
-        assert 'id="impFile"' in body
+        """Settings › Imports is its door since piece 11 (the old PM page,
+        deleted in piece 14, was before)."""
+        body = client.get("/settings").get_data(as_text=True)
+        assert "/api/maintenance-import/template.csv" in body
+        assert 'id="pm-file"' in body
+        import pathlib
+        js = (pathlib.Path(__file__).resolve().parent.parent / "static" / "js"
+              / "settings.js").read_text(encoding="utf-8")
+        assert "url: '/api/maintenance-import'" in js

@@ -48,10 +48,17 @@ def client(gw):
 
 
 def log(gw, ts, detail):
-    gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
-           ["bf8e64b59f12", ts, "qc", "AF26",
-            "ASTM D2887/D86 - Distillation in Petroleum Products, 50% Recovery",
-            "251.08", json.dumps(detail)])
+    # Columns named: on the integration branch the suite's gateway is LEM's
+    # store, whose lem_machine_log carries more than these seven columns, so
+    # a bare positional INSERT is refused (returned as an error, not raised)
+    # and the export would be tested against an empty log.
+    res = gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                 "test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
+                 ["bf8e64b59f12", ts, "qc", "AF26",
+                  "ASTM D2887/D86 - Distillation in Petroleum Products, "
+                  "50% Recovery",
+                  "251.08", json.dumps(detail)])
+    assert not (isinstance(res, dict) and res.get("error")), res
 
 
 def rows(resp):

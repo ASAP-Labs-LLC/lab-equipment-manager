@@ -1,0 +1,9 @@
+{% extends "_wall.html" %}
+{#- /floor (ia-final §3.8): the floor wall. -#}
+{% block title %}Lab floor{% endblock %}
+{% block content %}{% include "_wall_floor_view.html" %}{% endblock %}
+{% block scripts %}
+  <script src="/static/js/plan.js?v={{ v('js/plan.js') }}"></script>
+  <script src="/static/js/wall_floor.js?v={{ v('js/wall_floor.js') }}"></script>
+  <script src="/static/js/wall.js?v={{ v('js/wall.js') }}"></script>
+{% endblock %}

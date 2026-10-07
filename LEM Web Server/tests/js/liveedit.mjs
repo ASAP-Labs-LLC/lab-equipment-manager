@@ -147,5 +147,31 @@ if (LEM && LEM.liveEdit) {
   claim('releasing with nothing held does nothing', ran === 0);
 }
 
+// ── P1: the guard is ONE field, never the round ────────────────────────
+//
+// On the old round `liveEdit` guarded `#lists`, the whole round. A tapped row
+// kept focus, so `busy(#lists)` said yes and every repaint after a tick was
+// held: the server had 3 of 3 and the screen showed 0 of 3. A typed reading
+// held it too, because a dirty field anywhere in the container counts. The
+// round page now asks about the one input somebody is in: `holds(field)` is
+// true while THAT field has the caret or unsaved text, and false for every
+// other row, so a tick two rows down still shows.
+if (LEM && LEM.liveEdit) {
+  const live = LEM.liveEdit;
+  claim('LEM.liveEdit.holds exists (the per-field guard)', typeof live.holds === 'function');
+  if (typeof live.holds === 'function') {
+    const {a, b} = makeDom();
+    claim('a clean field with no caret is not held', live.holds(a, {activeElement: null}) === false);
+    claim('the field with the caret is held', live.holds(a, {activeElement: a}) === true);
+    claim('...but only that one: its neighbour is not', live.holds(b, {activeElement: a}) === false);
+    b.value = '29';
+    claim('a field holding unsaved text is held with the caret gone',
+      live.holds(b, {activeElement: null}) === true,
+      'the reading somebody typed and walked away from would be repainted away');
+    b.value = '';
+    claim('a missing field holds nothing', live.holds(null, {activeElement: null}) === false);
+  }
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

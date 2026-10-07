@@ -279,7 +279,7 @@ class TestALiveParseBlipsAtOnce:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["pac-flash-2", "2026-08-05T14:02:10", "run", "L-1234",
                 "", "", "{}"])
         push(client, last_parse_at="2026-08-05T14:02:10", lab_id="L-1234")
@@ -294,7 +294,7 @@ class TestALiveParseBlipsAtOnce:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log ("
                "machine_uid TEXT, ts TEXT, kind TEXT, lab_id TEXT, "
                "test_name TEXT, value TEXT, detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["pac-flash-2", "2026-08-05T13:00:00", "run", "L-0001",
                 "", "", "{}"])
         client.get("/api/machines?fresh=1")

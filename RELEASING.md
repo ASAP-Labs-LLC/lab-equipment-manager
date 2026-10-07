@@ -48,6 +48,17 @@ address into LabCore's `lem_meta`, and every bench reads from there. A release
 under test on a scratch port would point the whole floor at a port that closes
 seconds later.
 
+**And `--no-publish` opens the LEM store read-only** (transfer spec §5.1). The
+store — `C:\ASAPApps\lem\store\lem.db`, or `LEM_STORE_PATH` — is LEM's own
+record: every `lem_*` table and the append-only machine log. It lives outside
+the release folder (a deploy swaps that wholesale) and outside `data/` (which
+stays regenerable cache: the log file, documents). The candidate on 15557 opens
+the live store `mode=ro`, so it can be health-checked against real data and
+cannot migrate, declare or write a single row into it; if the store is not
+there it says so on every read and creates nothing. `/healthz` reports
+`store.path` and `store.read_only`. **Never delete or replace `lem.db` as part
+of a release** — unlike `data/`, it is not regenerable.
+
 ## 2. Choosing the number
 
 `MAJOR.MINOR.PATCH`, tag prefixed with `v`.
@@ -81,6 +92,49 @@ cd ..
 git tag -a v1.2.3 -m "One line saying what changed and why"
 git push origin v1.2.3
 ```
+
+**Transfer v4 (server or module 4.x): the gate first.** CI runs no tests, so
+nothing else stands between a transfer regression and the floor. Before a
+4.x tag (transfer spec §15), every one of these must exit 0. Judge by the exit
+status, never a piped `| tail`. Nothing needs setting: the phase-1 baseline
+the gate reproduces (its harness, `faults.json`, `web.json`, `economy.json`
+and an excerpt of LabCore's op tables) is committed in
+`gauntlet-harness/baseline/`. `LEM_GATE_BASELINE=/path` points the gate at a
+different baseline instead; leave it unset for a release.
+
+```bash
+set -o pipefail
+PY="$PWD/LEM Web Server/.venv/bin/python"     # the gate needs Flask
+cd gauntlet-harness
+"$PY" gate.py --target v4;          echo "gate exit=$?"    # every §9 row exact
+"$PY" gate.py --target v4 --mutations --strict; echo "self-test exit=$?"
+"$PY" soak.py;                      echo "soak exit=$?"    # 17 benches, 24 h
+```
+
+Then also run all three existing suites green: web pytest, module pytest
+(`QT_QPA_PLATFORM=offscreen`, the module's own venv), and every
+`tests/js/*.mjs`. Exit 2 from the gate or the soak means the harness itself
+is not trustworthy (drift, a write outside its temp folder, a fault that did
+not fire). It is not a pass and not a verdict. Tagging is still Ryan's call.
+
+**The first v4 module on a bench.** Benches move to v4 one at a time, and
+nothing forces the pace (Ryan, 2026-10-06): a v3.x module keeps working
+unchanged until its bench is updated, and a v4 module next to a v3.9/v3.10
+server runs in legacy projection mode. In that mode the module still writes its
+`last_position` back to `lem_machine_config` whenever it moves, so a bench
+rolled back to v3.x resumes from the right place. That is one small LabCore
+write per moving poll, accepted for compatibility. It stops once the bench is
+on the v2 road.
+
+v4 reads `last_position` exactly once, at its first start, as the cut-off for
+what v3.x already logged. So **before updating GC-1 and GC-2**, press OK in each
+one's Settings on the running old module (that saves today's position), then
+mark cell 1 as the result time on both. Skip it and v4 adopts from a stale
+offset.
+
+A line the reader could not place (`ambiguous`) whose dated injection it has
+already seen is dropped as a repeat, with a status-line message, not filed
+twice. That follows main's "a line is read once" rule (Ryan, 2026-10-06).
 
 Do **not** create a `VERSION` file by hand — CI writes it and it is gitignored.
 

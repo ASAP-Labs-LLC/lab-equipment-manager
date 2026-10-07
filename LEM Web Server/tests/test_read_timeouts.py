@@ -91,7 +91,7 @@ class TestAFailedReadIsNotAnEmptyLog:
         g.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
               "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
               "detail TEXT)")
-        g.sql("INSERT INTO lem_machine_log VALUES "
+        g.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
               "('m1','2026-08-03T09:00:00','run','1','CP','-7.4','{}')")
         app = create_app(g, authenticator=Auth(), secret="s")
         app.config["TESTING"] = True

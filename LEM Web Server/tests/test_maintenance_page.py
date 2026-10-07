@@ -1,8 +1,15 @@
-"""One page that answers "what maintenance is overdue anywhere?".
+"""One view that answers "what maintenance is overdue anywhere?".
 
 Per-machine dialogs can't answer it — you'd have to open every instrument in
-the lab. This is the page a manager opens on Monday: everything due, worst
-first, completable in place, with what was recently done underneath.
+the lab. A manager opens it on Monday: everything due, worst first.
+
+It used to be a page of its own (the old PM page). Since ia-final §1 it is the
+Instruments list filtered to maintenance (`/instruments?filter=maintenance`,
+which `/maintenance` redirects to), and its two jobs moved to where they
+belong: a task is marked done in its instrument's record (Maintenance and
+calibration), and PM history is imported in Settings › Imports. Piece 14
+deleted the old page and its interim `/maintenance/classic` door. The fleet
+endpoints below are unchanged and still tested here.
 """
 import json
 
@@ -31,11 +38,6 @@ def client(gw):
     app = create_app(gw, authenticator=StubAuth(), secret="s")
     app.config["TESTING"] = True
     return app.test_client()
-
-
-@pytest.fixture
-def page(client):
-    return client.get("/maintenance").get_data(as_text=True)
 
 
 def seed(gw):
@@ -108,31 +110,39 @@ class TestFleetHistory:
 
 # ── the page ────────────────────────────────────────────────────────────────
 
-class TestThePage:
+class TestTheMaintenanceView:
+    VIEW = "/instruments?filter=maintenance"
+
     def test_it_exists(self, client):
-        assert client.get("/maintenance").status_code == 200
+        body = client.get(self.VIEW).get_data(as_text=True)
+        assert 'data-testid="instruments-page"' in body
 
-    def test_it_is_reachable_from_the_mode_selector(self, client):
-        assert 'href="/maintenance"' in client.get("/").get_data(as_text=True)
+    def test_the_old_address_is_the_instruments_filter(self, client):
+        """ia-final §1: PM and calibration are a view of Instruments. The old
+        URL is kept as a redirect so a bookmark lands somewhere true."""
+        r = client.get("/maintenance")
+        assert r.status_code == 302
+        assert r.headers["Location"].endswith("/instruments?filter=maintenance")
 
-    def test_it_is_reachable_from_the_floor(self, client):
-        assert 'href="/maintenance"' in client.get("/floor").get_data(as_text=True)
+    def test_the_interim_page_is_gone(self, client):
+        assert client.get("/maintenance/classic").status_code == 404
 
-    def test_it_can_get_back(self, page):
-        assert 'href="/"' in page
+    def test_it_says_where_its_two_jobs_are_done(self, client):
+        """No dead end: the view's note names the record's section for
+        marking a task done and links Settings › Imports for PM history,
+        instead of the deleted page."""
+        body = client.get(self.VIEW).get_data(as_text=True)
+        note = body[body.index('id="maint-note"'):]
+        note = note[:note.index("</p>")]
+        assert "Maintenance and calibration" in note
+        assert 'href="/settings#imports"' in note
+        assert "/maintenance/classic" not in body
 
-    def test_it_reads_the_fleet_endpoints(self, page):
-        assert "/api/maintenance" in page
-        assert "/api/maintenance-history" in page
-
-    def test_it_can_filter_by_kind(self, page):
-        assert 'id="fKind"' in page
-
-    def test_tasks_are_completable_in_place(self, page):
-        assert "data-done" in page
-
-    def test_it_shows_what_was_recently_completed(self, page):
-        assert 'id="doneList"' in page
+    def test_the_record_completes_a_task_in_place(self):
+        import pathlib
+        js = (pathlib.Path(__file__).resolve().parent.parent / "static" / "js"
+              / "record_actions.js").read_text(encoding="utf-8")
+        assert "'Mark done…'" in js
 
     def test_it_survives_labcore_being_down(self):
         from web_app import create_app
@@ -160,4 +170,4 @@ class TestThePage:
 
         app = create_app(Dead(), authenticator=StubAuth(), secret="s")
         app.config["TESTING"] = True
-        assert app.test_client().get("/maintenance").status_code == 200
+        assert app.test_client().get(self.VIEW).status_code == 200

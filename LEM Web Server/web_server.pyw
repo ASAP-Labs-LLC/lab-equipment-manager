@@ -22,6 +22,9 @@ Env:
     LABCORE_URL                   — LabCore base URL (default https://labvision.asaplabs.net)
     LABMGR_ADMIN_PASSWORD         — admin password (default Admin1)
     LABMGR_SECRET                 — Flask session secret
+    LEM_DEDUPE_APPROVERS          — sign-in names allowed to approve and apply
+                                    dedupe hiding (D7: Ryan's); none set =
+                                    nobody can (transfer spec §10.5)
 """
 
 from __future__ import annotations
@@ -32,22 +35,49 @@ import sys
 import threading
 
 
-def _build_gateway(dev: bool, seed: bool):
-    if dev:
-        from labcore_gateway import FakeLabCoreGateway
+def build_gateways(dev: bool, seed: bool, no_publish: bool,
+                   store_path=None):
+    """(store, labcore, where) — LEM's store and LabCore, for this boot.
 
-        gw = FakeLabCoreGateway()
+    Transfer spec §5. The STORE holds every `lem_*` table and the machine log;
+    LABCORE is asked only for what is LabCore's (sign-in, the dashboard's QC
+    rows, the test-method catalogue).
+
+    * live: the store at `LEM_STORE_PATH` (production default
+      `C:\\ASAPApps\\lem\\store\\lem.db`), read-write, created on first start;
+      LabCore over HTTP.
+    * `--no-publish` (the updater's candidate boot on a scratch port): the
+      SAME store, READ-ONLY. A release under test must not migrate, declare or
+      write anything into the record the live server is using.
+    * `--dev`: an in-memory LabCore and a scratch store (a fresh temp file
+      unless `LEM_STORE_PATH` / `store_path` names one), read-write even with
+      `--no-publish` — there is no live record for it to protect.
+    """
+    from lem_store import LocalStoreGateway, default_store_path
+
+    if dev:
+        import tempfile
+
+        from labcore_gateway import InMemoryLabCore
+
+        labcore = InMemoryLabCore()
+        path = (store_path or os.environ.get("LEM_STORE_PATH", "").strip()
+                or os.path.join(tempfile.mkdtemp(prefix="lem-dev-store-"),
+                                "lem.db"))
+        store = LocalStoreGateway(path)
         if seed:
-            _seed_demo(gw)
-        return gw, "fake (dev)"
+            _seed_demo(store, labcore)
+        return store, labcore, "fake (dev)"
 
     from labcore_gateway import HttpLabCoreGateway
 
-    gw = HttpLabCoreGateway()  # resolves LABCORE_URL → https://labvision.asaplabs.net
-    return gw, gw.base_url
+    labcore = HttpLabCoreGateway()  # LABCORE_URL → https://labvision.asaplabs.net
+    store = LocalStoreGateway(store_path or default_store_path(),
+                              read_only=no_publish)
+    return store, labcore, labcore.base_url
 
 
-def _seed_demo(gw) -> None:
+def _seed_demo(store, labcore=None) -> None:
     """Populate a fake gateway with one machine and QC data for a live demo.
 
     Every answer is read, like every other write in this app. These three were
@@ -60,12 +90,22 @@ def _seed_demo(gw) -> None:
     from datetime import datetime
 
     from db_config_store import DbConfigStore
+
+    lab = labcore if labcore is not None else store
+    # A dev store named on purpose (LEM_STORE_PATH) survives restarts; seeding
+    # it again would put a second demo lab on top of the first.
+    res = store.read_sql("SELECT COUNT(*) AS n FROM lem_machine_status")
+    if not res.get("error") and int((res.get("rows") or [{}])[0].get("n") or 0):
+        print("Demo store already seeded; --seed skipped.")
+        return
     from labcore_result import LabCoreError, confirm_write
     from models import AppConfig, BoxConfig, SampleSpec, SampleTestSpec, WatchedTarget
 
     def seed(operation, params):
         try:
-            confirm_write(gw.write(operation, params))
+            # `samples`/`sample_tests` are LabCore's tables, so the QC rows
+            # the dashboard judges go to LabCore; everything below is LEM's.
+            confirm_write(lab.write(operation, params))
         except LabCoreError as exc:
             raise RuntimeError(
                 "--seed could not write the demo data ({0}: {1}). The "
@@ -85,13 +125,13 @@ def _seed_demo(gw) -> None:
                     watched_targets=[WatchedTarget(sample="Diesel QC", test="Flash")])
     cfg = AppConfig(version=5, poll_minutes=5, map_locked=False,
                     sample_id_column="Lab ID", samples=[sample], boxes=[box])
-    ok, why = DbConfigStore(gw).save(cfg)
+    ok, why = DbConfigStore(store).save(cfg)
     if not ok:
         raise RuntimeError(
             "--seed could not save the demo configuration ({0}). The "
             "dashboard would come up with no instruments on it.".format(why))
 
-    _seed_floor(gw)
+    _seed_floor(store)
 
 
 def _seed_floor(gw) -> None:
@@ -141,7 +181,76 @@ def build_parser() -> argparse.ArgumentParser:
                              "scratch port that closes moments later — "
                              "advertising it would point every bench at a dead "
                              "port until the next real boot.")
+    parser.add_argument("--import-from-mirror", default=None, metavar="PATH",
+                        help="move LEM's record out of LabCore on this boot, "
+                             "seeding the log from a COPY of this v3.9 log "
+                             "mirror (data/log-mirror.sqlite3). Reads "
+                             "production LabCore 40-70 times, once: Ryan's "
+                             "step (transfer §10.1).")
     return parser
+
+
+def start_transfer(app, store, *, dev: bool, import_mirror=None,
+                   retry_s: float = 60.0) -> dict:
+    """The import hold, the import itself when asked, and the bridge
+    (transfer §10.1, §10.4). Boot, never `create_app`: the factory stays free
+    of side effects.
+
+    * A live store whose import is not verified holds v2 syncs (503 +
+      Retry-After) — a bench must not add to a record still being moved.
+    * `import_mirror` runs the import on a thread, resuming until verified.
+    * The bridge thread starts on every writable store with a separate
+      LabCore; it does nothing until the import is verified and the switch
+      is on.
+    A read-only store (the updater's candidate boot) does none of it.
+
+    Under `--dev` the bridge is dropped, not started. It can never be on there
+    (the import it waits for is never verified on a scratch store), and the
+    foot counts a v3.9 bench as reporting only when its road works, which with
+    a bridge means the bridge being on: a fresh `--dev --seed` said "Data · 0
+    of 13 reporting". The seeded benches were never behind a bridge; their
+    records are written straight into the store, the no-bridge case."""
+    out = {"held": False, "importing": False, "bridge": False}
+    if getattr(store, "read_only", False):
+        return out
+    import legacy_import
+    if dev:
+        app.config.pop("BRIDGE", None)
+    if not dev:
+        out["held"] = legacy_import.hold_until_verified(store)
+        if out["held"] and import_mirror:
+            service = legacy_import.ImportService(
+                legacy_import.Importer(store, app.config["LABCORE_GATEWAY"],
+                                       mirror_path=import_mirror),
+                retry_s=retry_s)
+            app.config["IMPORT_SERVICE"] = service
+            service.start()
+            out["importing"] = True
+    bridge = app.config.get("BRIDGE")
+    if bridge is not None:
+        bridge.start()
+        out["bridge"] = True
+    return out
+
+
+def attach_demo_keepers(app, store, *, dev: bool, seed: bool, clock=None) -> bool:
+    """`--dev --seed` only: keep the seeded benches' heartbeats current on
+    every snapshot cycle (demo_floor.keep_alive), so the demo does not age into
+    "Bench stopped" fifteen minutes after boot. Anything else (production, an
+    unseeded dev store) is left exactly as it was. Returns whether attached."""
+    if not (dev and seed):
+        return False
+    import demo_floor
+
+    demo_floor.attach_keeper(app.config["SNAPSHOTS"], store, clock=clock)
+    return True
+
+
+def app_options(args) -> dict:
+    """What the command line hands create_app. Settings › Developer (the
+    Simulate tools) exists only under --dev; create_app also refuses it on any
+    gateway but the in-memory fake (web_app.dev_tools_allowed)."""
+    return {"dev_tools": bool(args.dev)}
 
 
 def _start_live_channel(app, gateway, host, port) -> str:
@@ -165,17 +274,47 @@ def main(argv) -> int:
 
     from web_app import create_app
 
-    gateway, where = _build_gateway(args.dev, args.seed)
+    store, gateway, where = build_gateways(args.dev, args.seed,
+                                           args.no_publish)
+    print("LEM store: {0}{1}".format(
+        store.path, " (READ-ONLY: candidate boot)" if store.read_only else ""))
     if not args.dev and not gateway.is_running():
         print(f"WARNING: LabCore not reachable at {where}. "
-              f"Writes will fail until it is running.", file=sys.stderr)
+              f"Sign-in and the dashboard's QC rows will fail until it is "
+              f"running.", file=sys.stderr)
 
-    app = create_app(gateway)
+    # `gateway` stays LabCore below: the live channel is published into
+    # LabCore's `lem_meta` because that is where v3.9 benches read it (the
+    # mixed-fleet exception, transfer §6.2; it ends at bridge-off).
+    app = create_app(store, labcore=gateway, **app_options(args))
     # The server — not the app factory — owns the background refresher, so
     # requests are served from memory and LabCore sees one reader, not one per
     # screen. Started before serving so the first page has something to show.
     snapshots = app.config["SNAPSHOTS"]
+    attach_demo_keepers(app, store, dev=args.dev, seed=args.seed)
     snapshots.start()
+    # Backup and custody (transfer §11): the hourly checked backup, the
+    # nightly off-host copy and the monthly restore drill. A read-only store
+    # (the updater's candidate boot) runs none of it — `start` refuses. The
+    # drill boots a second server on a scratch port, so a --dev run, whose
+    # store is a throwaway, does not schedule it.
+    custody_service = app.config.get("CUSTODY")
+    if custody_service is not None and not store.read_only:
+        custody_service.schedule_drill = not args.dev
+        custody_service.start()
+        print("Backups: hourly into {0}; off-host: {1}".format(
+            custody_service.backup_dir,
+            custody_service.offsite_dir or "NO TARGET NAMED (LEM_BACKUP_OFFSITE)"))
+    # Moving the record out of LabCore, and the mixed-fleet bridge (§10).
+    transfer = start_transfer(app, store, dev=args.dev,
+                              import_mirror=args.import_from_mirror)
+    if transfer["held"]:
+        print("LEM's record has not been imported from LabCore and verified: "
+              "v2 benches are held (503, nothing lost). %s" % (
+                  "Importing now from a copy of %s." % args.import_from_mirror
+                  if transfer["importing"] else
+                  "Run the import with --import-from-mirror PATH "
+                  "(Ryan's step)."))
     # The local copy of lem_machine_log, refreshed every five minutes. Same
     # rule as the snapshot: the factory builds it, the server owns its thread.
     # The first pull is the whole table (1.00s / 18.9 MB measured on the live

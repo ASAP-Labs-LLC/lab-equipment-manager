@@ -1,0 +1,21 @@
+[
+  {"why": "nothing read yet: no words, never 0",
+   "payload": {"needs_you": null, "round": null, "qc_out": null},
+   "nav": {}},
+  {"why": "a lab with nothing wrong says nothing",
+   "payload": {"needs_you": 0, "round": {"slot": null, "done": 0, "total": 0}, "qc_out": 0},
+   "nav": {}},
+  {"why": "the spec's own example",
+   "payload": {"needs_you": 6, "round": {"slot": "opening", "done": 3, "total": 5, "complete": false}, "qc_out": 1},
+   "nav": {"instruments": {"text": "6 need you", "badge": "6"},
+           "checklists": {"text": "Opening 3/5", "badge": "3/5"},
+           "qc": {"text": "1 check out of spec", "badge": "1"}}},
+  {"why": "one is singular",
+   "payload": {"needs_you": 1, "round": {"slot": "closing", "done": 0, "total": 4, "complete": false}, "qc_out": 2},
+   "nav": {"instruments": {"text": "1 needs you", "badge": "1"},
+           "checklists": {"text": "Closing 0/4", "badge": "0/4"},
+           "qc": {"text": "2 checks out of spec", "badge": "2"}}},
+  {"why": "a finished day says Done",
+   "payload": {"needs_you": 0, "round": {"slot": "closing", "done": 4, "total": 4, "complete": true}, "qc_out": 0},
+   "nav": {"checklists": {"text": "Done", "badge": "✓"}}}
+]

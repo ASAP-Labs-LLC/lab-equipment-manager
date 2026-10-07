@@ -16,6 +16,7 @@ checklists in the same file have zero items and must not come across.
 """
 import json
 import re
+from pathlib import Path
 from datetime import date
 
 import pytest
@@ -356,29 +357,29 @@ class TestValueEndpoint:
 
 
 # ── the page ────────────────────────────────────────────────────────────────
+#
+# The old checklists page (one dialog for everything) is gone; defining a
+# round is /checklists/edit/<uid> (piece 10, tests/test_round_editor.py).
+# What these tests promised is kept, said against the new editor: both field
+# types, headings and subtasks with a parent, weekday scoping, reordering,
+# and editing ANY round rather than the first in a slot.
 
 class TestThePage:
-    def test_it_can_import_v4(self, client):
-        assert "import-v4" in client.get("/checklists").get_data(as_text=True)
-
-    def test_it_renders_entry_fields(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
-        assert "data-entry" in body
-
-    def test_it_has_an_editor(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
-        assert 'id="editDlg"' in body
+    def test_the_import_lives_in_settings(self, client):
+        """ia-final §3.7: Settings › Imports. The rounds list points there."""
+        assert "import-v4" in client.get("/settings").get_data(as_text=True)
 
     def test_the_editor_offers_both_field_types(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
-        assert 'value="number"' in body and 'value="text"' in body
+        body = client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
+        assert 'data-kind="number"' in body and 'data-kind="text"' in body
 
     def test_the_editor_offers_headers_and_subtasks(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
-        assert 'value="header"' in body and 'value="subtask"' in body
+        body = client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
+        assert 'data-type="header"' in body and 'data-type="subtask"' in body
 
     def test_weekdays_are_editable(self, client):
-        assert 'id="edDays"' in client.get("/checklists").get_data(as_text=True)
+        body = client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
+        assert 'id="opt-days"' in body
 
 
 # ── the editor, finished ────────────────────────────────────────────────────
@@ -388,39 +389,39 @@ class TestThePage:
 # subtask no parent, which left parent→child ticking unreachable from the UI.
 
 class TestEditorIsComplete:
-    @pytest.fixture
-    def page(self, client):
-        return client.get("/checklists").get_data(as_text=True)
+    def test_every_round_has_its_own_editor(self, gw, client):
+        """Not "the first checklist in the slot": two opening lists are two
+        rows on the list, each linking to its own editor."""
+        st = ChecklistStore(gw)
+        st.save(Checklist(uid="a1", name="Opening A", slot="opening",
+                          items=[ChecklistItem(uid="x", text="X")]))
+        st.save(Checklist(uid="a2", name="Opening B", slot="opening",
+                          items=[ChecklistItem(uid="y", text="Y")]))
+        page = client.get("/checklists/edit").get_data(as_text=True)
+        assert 'href="/checklists/edit/a1"' in page and 'href="/checklists/edit/a2"' in page
+        assert "Opening B" in client.get("/checklists/edit/a2").get_data(as_text=True)
 
-    def test_you_can_choose_which_checklist_to_edit(self, page):
-        assert 'id="edPick"' in page
-
-    def test_items_can_be_reordered(self, page):
+    def test_items_can_be_reordered(self, client):
         """V4's rounds are ordered on purpose — power down the bath before the
         lights."""
-        assert "data-move" in page
+        page = client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
+        assert "ed-up" in page and "ed-down" in page and 'draggable="true"' in page
 
-    def test_a_subtask_can_be_given_a_parent(self, page):
+    def test_a_subtask_can_be_given_a_parent(self, client):
         """Without this, ticking a parent can never tick its children, because
         nothing can create the relationship."""
-        assert 'data-f="parent_uid"' in page
+        page = client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
+        assert 'id="opt-parent"' in page
 
-    def test_a_heading_can_be_turned_back_into_an_item(self, page):
-        """A heading used to render as a text box alone — a one-way door. Every
-        row now comes from one template that always carries the type select."""
-        m = re.search(r"function edItemRow\(.*?\n\}", page, re.S)
-        assert m, "row builder not found"
-        row = m.group(0)
-        assert 'data-f="item_type"' in row
-        # and no early return that skips it for headers
-        assert not re.search(r"if\s*\(item\.item_type\s*===\s*'header'\)\s*\{"
-                             r"\s*return", row)
-
-    def test_the_selected_row_is_visible(self, page):
-        assert "edrow.sel" in page or 'class="edrow sel' in page
-
-    def test_the_day_chips_name_the_item_they_apply_to(self, page):
-        assert "edDays" in page
+    def test_a_heading_can_be_turned_back_into_an_item(self, gw, client):
+        """A heading used to be a one-way door. Every row carries the kind seg
+        (hidden on a heading) and the options sheet offers "An item"."""
+        ChecklistStore(gw).save(Checklist(uid="h1", name="Closing", slot="closing",
+                                          items=[ChecklistItem(uid="h", text="Gas", item_type="header")]))
+        page = client.get("/checklists/edit/h1").get_data(as_text=True)
+        row = re.search(r'<li class="ed-item" data-uid="h".*?</li>', page, re.S).group(0)
+        assert 'class="seg ed-kinds"' in row
+        assert 'data-type="item"' in page
 
 
 class TestParentChildStillWorks:
@@ -445,23 +446,19 @@ class TestParentChildStillWorks:
 class TestArchive:
     @pytest.fixture
     def page(self, client):
-        return client.get("/checklists").get_data(as_text=True)
+        return client.get("/checklists/edit").get_data(as_text=True)
 
-    def test_there_is_an_archived_button(self, page):
-        assert 'id="btnArchive"' in page
+    def test_there_is_an_archived_chip(self, gw, client):
+        ChecklistStore(gw).save(gas_list())
+        page = client.get("/checklists/edit").get_data(as_text=True)
+        assert 'id="archive-chip"' in page and 'id="archive-sheet"' in page
 
-    def test_it_draws_a_square_per_day(self, page):
-        assert 'id="arcGrid"' in page and "data-day=" in page
-
-    def test_a_day_can_be_opened(self, page):
-        assert 'id="arcDay"' in page
-
-    def test_it_reads_the_history_and_the_day(self, page):
-        assert "/api/checklists/history" in page
-        assert "day=${encodeURIComponent(day)}" in page
-
-    def test_the_importer_takes_the_history_file(self, page):
-        assert 'id="impState"' in page
+    def test_it_draws_a_square_per_day_and_a_day_can_be_opened(self):
+        js = (Path(__file__).resolve().parent.parent / "static" / "js"
+              / "round_archive.js").read_text(encoding="utf-8")
+        assert "dataset.day = iso" in js
+        assert "/api/checklists/history" in js
+        assert "/api/checklists?day=' + encodeURIComponent(iso)" in js
 
     def test_history_lands_through_the_endpoint(self, gw, signed_in):
         state = json.dumps({"2026-01-08": {

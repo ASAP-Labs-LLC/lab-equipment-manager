@@ -13,6 +13,7 @@ path to us degrades to exactly today's behaviour rather than a blank floor.
 
 See docs/superpowers/specs/2026-08-05-live-push-channel-design.md.
 """
+import json
 import logging
 import secrets
 import threading
@@ -30,6 +31,51 @@ DEFAULT_TTL = 90.0
 TTL_MULTIPLIER = 2.5
 MAX_TTL = 1200.0        # a bogus interval must not pin a dead bench as live
 MAX_MACHINES = 256
+
+#: The most each echoed field may cost in `/api/machines`, measured the way
+#: that payload is sent: ASCII JSON, so "é" is 6 bytes and an emoji 12. A push
+#: is otherwise echoed as the bench sent it, and `/api/machines` is read by GC
+#: hub under a 1 MB cap that fails the whole floor when crossed. Production's
+#: longest reason today is 148 characters (two QC series); 512 bytes is room
+#: for six, and the record still holds the whole reason.
+LIVE_FIELD_BYTES = {"status": 32, "reason": 512, "at": 40,
+                    "last_parse_at": 40, "lab_id": 64}
+ELLIPSIS = "\u2026"
+
+#: The same rule for what `/api/machines` echoes out of the RECORD rather
+#: than the live road: a `state` record's sub-statuses are status words like
+#: `status`; a spec's test name and sample are keys QC matches on (a SimDist
+#: cut name is ~70 characters in production; 256 B is room for three of them),
+#: its units a short label; `watching` is a source path (production's longest
+#: is ~90 characters). One table, read by the bench API where a record enters
+#: and by the floor builder where the payload leaves, so the two cannot drift.
+FLOOR_FIELD_BYTES = {"status": LIVE_FIELD_BYTES["status"],
+                     "reason": LIVE_FIELD_BYTES["reason"],
+                     "sub": LIVE_FIELD_BYTES["status"],
+                     "ts": LIVE_FIELD_BYTES["at"],
+                     "lab_id": LIVE_FIELD_BYTES["lab_id"],
+                     "watching": 512,
+                     "test_name": 256, "sample_id": 64, "units": 32}
+
+
+def clip_text(value, max_bytes: int, mark: str = "") -> str:
+    """`value` as text whose ASCII-JSON encoding (quotes excluded) is at most
+    `max_bytes`, cut on a character boundary, with `mark` appended when cut.
+    Never splits a surrogate pair or an escape: it counts whole characters."""
+    text = str(value if value is not None else "")
+    if len(text) <= max_bytes and text.isascii() and \
+            len(json.dumps(text)) - 2 <= max_bytes:
+        return text
+    budget = max_bytes - (len(json.dumps(mark)) - 2 if mark else 0)
+    out, used = [], 0
+    for ch in text:
+        cost = len(json.dumps(ch)) - 2
+        if used + cost > budget:
+            break
+        out.append(ch)
+        used += cost
+    clipped = "".join(out)
+    return clipped + mark if clipped != text else clipped
 
 LIVE_URL_KEY = "live_url"
 LIVE_TOKEN_KEY = "live_token"
@@ -495,11 +541,15 @@ class LivePresence:
             return False
         payload = payload or {}
         entry = {
-            "status": str(payload.get("status") or ""),
-            "reason": str(payload.get("reason") or ""),
-            "at": str(payload.get("at") or ""),
-            "last_parse_at": str(payload.get("last_parse_at") or ""),
-            "lab_id": str(payload.get("lab_id") or ""),
+            "status": clip_text(payload.get("status") or "",
+                                LIVE_FIELD_BYTES["status"]),
+            "reason": clip_text(payload.get("reason") or "",
+                                LIVE_FIELD_BYTES["reason"], ELLIPSIS),
+            "at": clip_text(payload.get("at") or "", LIVE_FIELD_BYTES["at"]),
+            "last_parse_at": clip_text(payload.get("last_parse_at") or "",
+                                       LIVE_FIELD_BYTES["last_parse_at"]),
+            "lab_id": clip_text(payload.get("lab_id") or "",
+                                LIVE_FIELD_BYTES["lab_id"]),
             "seen": self._clock(),
             "ttl": ttl_for(payload.get("interval_seconds")),
         }
@@ -526,6 +576,14 @@ class LivePresence:
             if self._clock() - entry["seen"] > entry["ttl"]:
                 return None
             return dict(entry)
+
+    def forget(self, machine_uid: str) -> bool:
+        """Drop what this bench last said, so the record speaks again.
+
+        Only Settings › Developer calls it (under --dev), to clear a simulated
+        status; a real bench simply ages out. True if there was an entry."""
+        with self._lock:
+            return self._entries.pop(str(machine_uid or "").strip(), None) is not None
 
     def all(self) -> dict:
         """Every machine still within its TTL."""

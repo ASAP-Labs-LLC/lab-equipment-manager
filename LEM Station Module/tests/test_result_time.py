@@ -287,6 +287,29 @@ class TestTheLogIsDatedByTheInstrument:
         assert "received_at" not in qc[0][5]
         module.shutdown()
 
+    def test_the_journal_record_is_dated_by_the_injection_too(
+            self, bench, tmp_path):
+        # Added at the v4 merge. On v4 the log rows above are not built at
+        # projection time: they are written into the journal's `run` record
+        # (`_journal_poll`) and every road sends them as written — the legacy
+        # projection, a restart's re-projection, and a v2 bench's sync to LEM,
+        # whose server takes each row's own `ts`. So the record is where the
+        # injection time has to be, or a v2 bench would date AF26 by the poll.
+        machine = gc_machine(tmp_path)
+        write_lines(machine.csv_path, gc_line("AF26", "2026-10-05 15:20:11"))
+        module, _gw = bench(machine)
+        module.process_now(now=NOW)
+
+        runs = [r for r in module._journal._scan()
+                if r["kind"] == "run" and r.get("lab_id") == "AF26"]
+        assert len(runs) == 1
+        (log,) = runs[0]["log"]
+        assert (log[1], log[2]) == ("2026-10-05T15:20:11", "qc")
+        detail = json.loads(log[6])
+        assert detail["instrument_time"] == "2026-10-05T15:20:11"
+        assert detail["received_at"] == "2026-10-05T16:00:00"
+        module.shutdown()
+
     def test_an_old_standard_read_today_is_not_fresh_qc(self, tmp_path):
         # The replay that made 09-03's AF26 look like 09-23's QC. Read today, an
         # injection from twelve days ago is twelve days old, and a 24-hour
@@ -325,9 +348,16 @@ class TestALineIsReadOnce:
         before = len(readings())
         assert before == 2
 
-        # The file is read from the top again: what a shrunken or rewritten
-        # file, or a position pulled back by a config save, looks like.
-        module.machine().last_position = 0
+        # The same injections arrive again. Under v3.9 that was the file read
+        # from the top (a position pulled back by a config save). Under v4 the
+        # cursor no longer takes its position from `last_position` and the
+        # journal's store check drops a re-read of the same bytes at the same
+        # offset; what still reaches the parser is the same injection at a NEW
+        # offset — the GC hub appending it again, or a rewrite the resolver
+        # can only call ambiguous. That is what `drop_repeats` is for now.
+        write_lines(machine.csv_path,
+                    gc_line("AF26", "2026-10-05 15:20:11"),
+                    gc_line("40329", "2026-10-05 15:40:00"), mode="a")
         module.process_now(now=NOW + timedelta(minutes=1))
 
         assert len(readings()) == before
@@ -339,9 +369,10 @@ class TestALineIsReadOnce:
         module, gw = bench(machine)
         module.process_now(now=NOW)
 
-        module.machine().last_position = 0
-        write_lines(machine.csv_path, gc_line("AF26", "2026-10-05 15:50:00"),
-                    mode="a")
+        # The old injection again (see `test_a_re_read_logs_nothing_new` for
+        # why v4 sees it as an append) and a new one behind it.
+        write_lines(machine.csv_path, gc_line("AF26", "2026-10-05 15:20:11"),
+                    gc_line("AF26", "2026-10-05 15:50:00"), mode="a")
         module.process_now(now=NOW + timedelta(minutes=1))
 
         qc_times = [r[0] for r in gw.log_rows() if r[1] == "qc"]
@@ -374,7 +405,10 @@ class TestALineIsReadOnce:
         write_lines(machine.csv_path, gc_line("40329", "2026-10-05 15:20:11"))
         module, gw = bench(machine)
         module.process_now(now=NOW)
-        module.machine().last_position = 0
+        # The identical line printed again (v4 reads by cursor, not by
+        # `last_position`, so "again" is an append).
+        write_lines(machine.csv_path, gc_line("40329", "2026-10-05 15:20:11"),
+                    mode="a")
         module.process_now(now=NOW + timedelta(minutes=1))
 
         assert len([r for r in gw.log_rows() if r[1] == "run"]) == 2
@@ -422,6 +456,21 @@ class TestThePositionIsSavedAsItAdvances:
         write_lines(machine.csv_path, gc_line("AF26", "2026-10-05 15:20:11"))
         module, gw = bench(machine, refuse_log=True)
         module.process_now(now=NOW)
+        assert gw.position_saves() == []
+        module.shutdown()
+
+    def test_a_v2_bench_writes_no_position_to_labcore(self, bench, tmp_path,
+                                                      monkeypatch):
+        # Added at the v4 merge. A v2 bench's LabCore road is the results road
+        # and nothing else (D2), and its position lives in the journal's
+        # cursor.json; the mirror into lem_machine_config is for a bench on
+        # the legacy road, which a rollback to v3.9 would resume from.
+        machine = gc_machine(tmp_path)
+        write_lines(machine.csv_path, gc_line("AF26", "2026-10-05 15:20:11"))
+        module, gw = bench(machine)
+        module.machine().last_position = 4096
+        monkeypatch.setattr(mod, "_v2", lambda _self: True)
+        module._save_position(module.machine(), gw.sql)
         assert gw.position_saves() == []
         module.shutdown()
 

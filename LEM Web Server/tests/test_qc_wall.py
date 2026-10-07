@@ -182,20 +182,20 @@ class TestItDoesNotCostLabCoreAnything:
     poller on the queue the benches write through."""
 
     def test_a_refresh_reads_the_mirror_not_labcore(self, gw, tmp_path):
+        """Counted on a LabCore of its own (transfer §5): the wall reads the
+        LEM store, which is local, and LabCore sees nothing — not the log,
+        not the titles, not anything."""
+        from labcore_counter import CountingLabCore
         _series(gw, FLASH, "Flash Point", [63.5, 63.6, 63.7])
-        app = _app(gw, tmp_path)
-        hits = {"n": 0}
-        real = gw.read_sql
-
-        def counted(sql, args=None, **kw):
-            if "lem_machine_log" in sql:
-                hits["n"] += 1
-            return real(sql, args, **kw)
-
-        gw.read_sql = counted
-        body = _client(app).get("/api/qc-wall").get_json()
+        lab = CountingLabCore()
+        app = create_app(gw, labcore=lab, secret="t",
+                         documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
+        app.config["LOG_MIRROR"].refresh()
+        for _ in range(3):
+            body = _client(app).get("/api/qc-wall").get_json()
         assert body["series"], "nothing drawn"
-        assert hits["n"] == 0, "the wall read LabCore; the mirror is why it need not"
+        assert lab.calls == [], "the wall read LabCore; the store is why it need not"
 
     def test_an_unfilled_mirror_falls_back_rather_than_showing_nothing(
             self, gw, tmp_path):
@@ -209,17 +209,80 @@ class TestThePageIsReachableAndIsAMonitor:
     def test_the_qc_page_is_served(self, gw, tmp_path):
         assert _client(_app(gw, tmp_path)).get("/qc").status_code == 200
 
-    def test_it_is_in_the_nav_under_logs(self, gw, tmp_path):
-        body = _client(_app(gw, tmp_path)).get("/floor").get_data(as_text=True)
-        assert '/qc' in body
-        assert body.index('/logs') < body.index('/qc'), (
-            "the QC tab has to sit beneath Logs, which is where it was asked for")
+    def test_qc_in_the_nav_is_the_quality_page_not_the_wall(self, gw, tmp_path):
+        """The old pages' nav had a QC tab under Logs that opened this wall.
+        In ia-final §1 the nav's QC is /quality (QA's question, at a desk),
+        and /qc is a TV bookmark (O11), linked from no shell page: a wall
+        opened from a desk is a page with no way to act. Piece 14 deleted
+        the old nav partial with the pages that drew it."""
+        body = _client(_app(gw, tmp_path)).get("/").get_data(as_text=True)
+        nav = body[body.index('id="sidebar"'):]
+        nav = nav[:nav.index("</nav>")]
+        assert 'href="/quality"' in nav
+        assert 'href="/qc"' not in nav
 
     def test_the_page_refreshes_itself(self, gw, tmp_path):
-        """Nobody presses anything on a wall display."""
+        """Nobody presses anything on a wall display. Page code lives in
+        static/js since piece 13 (no inline script): the page loads the
+        wall's scripts, and they run a clock and refetch on their own."""
+        from pathlib import Path
         page = _client(_app(gw, tmp_path)).get("/qc").get_data(as_text=True)
-        assert "setInterval" in page
+        assert "/static/js/wall_qc.js" in page and "/static/js/wall.js" in page
+        js = Path(__file__).resolve().parent.parent / "static" / "js"
+        assert "setInterval" in (js / "wall.js").read_text(encoding="utf-8")
+        assert "/api/ui/wall/qc" in (js / "wall_qc.js").read_text(encoding="utf-8")
 
     def test_the_routes_are_registered(self, gw, tmp_path):
         rules = {str(r) for r in _app(gw, tmp_path).url_map.iter_rules()}
         assert "/qc" in rules and "/api/qc-wall" in rules
+
+
+class TestAnEmptyLogCopyIsNotAFailedRead:
+    """Round-2 critic: in a harness whose log copy had never filled, every
+    /qc card said "History not read: the local record did not answer". The
+    record had not failed; the copy was just not filled yet. A failed read
+    is never an empty result, and the reverse holds too: an empty or
+    unfilled copy is not a failure, and a wall that cries "did not answer"
+    when nothing failed teaches the room to ignore it.
+
+    The copy is LogMirror's: a gateway that is not the local store (LabCore
+    itself, InMemoryLabCore here; under this suite FakeLabCoreGateway IS the
+    store, whose StoreLogMirror never needs filling)."""
+
+    def _wall_qc(self, tmp_path, fill):
+        import demo_floor
+        import labcore_gateway
+        gw = labcore_gateway.InMemoryLabCore()
+        app = create_app(gw, secret="t", documents_root=str(tmp_path))
+        app.config.update(TESTING=True)
+        app.config["SNAPSHOTS"].ensure_schema()
+        demo_floor.seed(gw, documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].refresh()
+        if fill:
+            app.config["LOG_MIRROR"].refresh()
+        return app.test_client().get("/api/ui/wall/qc").get_json()
+
+    def test_a_copy_that_has_not_filled_says_so(self, tmp_path):
+        q = self._wall_qc(tmp_path, fill=False)
+        assert q["cards"], q
+        assert {c["history"] for c in q["cards"]} == {"filling"}, {c["history"] for c in q["cards"]}
+
+    def test_a_filled_copy_draws_history(self, tmp_path):
+        q = self._wall_qc(tmp_path, fill=True)
+        assert "unread" not in {c["history"] for c in q["cards"]}
+        assert "filling" not in {c["history"] for c in q["cards"]}
+
+    def test_a_mirror_that_raises_is_still_unread(self, tmp_path, monkeypatch):
+        import demo_floor
+        gw = FakeLabCoreGateway()
+        app = create_app(gw, secret="t", documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].ensure_schema()
+        demo_floor.seed(gw, documents_root=str(tmp_path))
+        app.config["SNAPSHOTS"].refresh()
+        app.config["LOG_MIRROR"].refresh()
+
+        def boom(*a, **k):
+            raise RuntimeError("disk gone")
+        monkeypatch.setattr(app.config["LOG_MIRROR"], "query", boom)
+        q = app.test_client().get("/api/ui/wall/qc").get_json()
+        assert {c["history"] for c in q["cards"]} == {"unread"}

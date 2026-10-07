@@ -111,9 +111,11 @@ class LogMirror:
     connections are not shareable across threads without it.
     """
 
-    def __init__(self, gateway, path: str) -> None:
+    def __init__(self, gateway, path: str, jobs=None) -> None:
         self.gateway = gateway
         self.path = path
+        # `jobs.Registry` (optional): the first fill shows in "Running now".
+        self.jobs = jobs
         self._lock = threading.Lock()
         folder = os.path.dirname(os.path.abspath(path))
         if folder:
@@ -126,6 +128,33 @@ class LogMirror:
         with self._lock:
             self._db.executescript(_SCHEMA)
             self._db.commit()
+        # What every open page is told about this copy, IN MEMORY. The live
+        # feed asks on every poll from every tab; `state()` counts the table
+        # under the same lock a fill holds for a whole chunk, so it would make
+        # the poll wait on the pull. Read once here, then kept by the pull.
+        self._status_lock = threading.Lock()
+        filled = self._get_meta("filled_at") or None
+        rows = self.count()
+        self._status = {"state": ("filled" if filled else "empty" if not rows else "partial"),
+                        "rows": rows, "complete_to": filled, "held_to": None,
+                        "pct": None, "reason": self._get_meta("stale_reason") or ""}
+
+    def live_status(self) -> dict:
+        """The copy's state for `/api/ui/live`, from memory (never SQLite).
+
+        state: `empty` (nothing pulled yet), `filling` (the first pull is
+        running), `partial` (a pull stopped part-way and no pull has run to the
+        end yet), `filled` (complete to `complete_to`), or `behind` (filled
+        once, the last refresh failed: `reason`). `pct` stays None: the pull
+        walks by rowid and does not know the table's size, and a guessed
+        percentage is a number nobody can check.
+        """
+        with self._status_lock:
+            return dict(self._status)
+
+    def _note(self, **kw) -> None:
+        with self._status_lock:
+            self._status.update(kw)
 
     # ── the pull ─────────────────────────────────────────────────────────
 
@@ -136,23 +165,43 @@ class LogMirror:
         means; what this guarantees is that a failure leaves the mirror exactly
         as it was, with a reason recorded, rather than half-written or empty.
         """
+        first = not self._status.get("complete_to")
+        job = None
+        if first and self.jobs is not None:
+            try:
+                job = self.jobs.start("log-copy", "Filling the log copy",
+                                      open_url="/logs")
+            except Exception:                          # noqa: BLE001
+                job = None
+        if first:
+            self._note(state="filling")
         try:
-            got = self._pull()
-        except LabCoreError as exc:
-            self._set_meta("stale_reason", str(exc) or exc.__class__.__name__)
-            raise
+            got = self._pull(job)
         except Exception as exc:                       # noqa: BLE001
-            self._set_meta("stale_reason", "%s: %s" % (type(exc).__name__, exc))
+            reason = (str(exc) or exc.__class__.__name__) if isinstance(exc, LabCoreError) \
+                else "%s: %s" % (type(exc).__name__, exc)
+            self._set_meta("stale_reason", reason)
+            self._note(state=("behind" if not first else
+                               "partial" if self._status.get("rows") else "empty"),
+                       reason=reason)
+            if job is not None:
+                job.fail("The log copy stopped filling: " + reason[:120])
             raise
         self._set_meta("stale_reason", "")
-        self._set_meta("filled_at", _now())
+        stamp = _now()
+        self._set_meta("filled_at", stamp)
+        self._note(state="filled", complete_to=stamp, reason="")
+        if job is not None:
+            n = self._status.get("rows") or 0
+            job.finish("Log copy filled · {:,} rows".format(n))
         return got
 
-    def _pull(self) -> int:
+    def _pull(self, job=None) -> int:
         self._reset_if_source_changed()
         total = 0
         while True:
             since = self.max_rowid()
+            # raw-log: the legacy copy of a LabCore-held log (no view there)
             res = self.gateway.read_sql(
                 "SELECT rowid AS rowid_src, machine_uid, ts, kind, lab_id, "
                 "test_name, value, detail FROM lem_machine_log "
@@ -173,6 +222,10 @@ class LogMirror:
                      for r in rows])
                 self._db.commit()
             total += len(rows)
+            held = self._status.get("rows") or 0
+            self._note(rows=held + len(rows), held_to=str(rows[-1].get("ts") or "") or None)
+            if job is not None:
+                job.progress(text="{:,} rows so far".format(held + len(rows)))
             if len(rows) < PULL_CHUNK:
                 return total
 
@@ -200,7 +253,7 @@ class LogMirror:
         held = self.max_rowid()
         if not held:
             return
-        res = self.gateway.read_sql(
+        res = self.gateway.read_sql(  # raw-log: legacy LabCore copy's cursor check
             "SELECT COUNT(*) n FROM lem_machine_log WHERE rowid = ?", [held])
         rows = self._rows(res)
         if rows and int(list(rows[0].values())[0] or 0):
@@ -208,6 +261,7 @@ class LogMirror:
         with self._lock:
             self._db.execute("DELETE FROM log")
             self._db.commit()
+        self._note(rows=0, held_to=None)
 
     @staticmethod
     def _rows(res) -> List[dict]:
@@ -388,6 +442,16 @@ class LogMirror:
         with self._lock:
             return [dict(r) for r in self._db.execute(sql, args).fetchall()]
 
+    def reported_tests(self) -> List[tuple]:
+        """Every (machine_uid, test_name) the log holds a result or a QC run
+        for: which instruments report a test, for the New standard sheet's
+        "Check it on" (instruments that already report it are offered
+        first). Local; raises if the copy cannot be read."""
+        with self._lock:
+            return [(str(r[0]), str(r[1])) for r in self._db.execute(
+                "SELECT DISTINCT machine_uid, test_name FROM log "
+                "WHERE kind IN ('run', 'qc') AND test_name != ''").fetchall()]
+
     def count(self, machine_uid: Optional[str] = None) -> int:
         sql = "SELECT COUNT(*) n FROM log"
         args: list = []
@@ -519,3 +583,227 @@ class LogMirrorService:
                 # mirror stops being obvious.
                 pass
             self._stop.wait(self.seconds)
+
+
+# ── the store needs no copy ──────────────────────────────────────────────────
+
+class StoreLogMirror(LogMirror):
+    """`LogMirror`'s API, answered straight from LEM's store (transfer §5.3).
+
+    The mirror existed because the record lived in LabCore, behind a queue
+    that serialises the whole lab: a deep read of 26,106 rows on every History
+    open spent write slots the benches needed, so the app paid it once every
+    five minutes into a local file and read that. Now the record IS a local
+    file — `lem_store.LocalStoreGateway`, WAL, one indexed read away — and a
+    second copy of it would only be a second thing to be behind.
+
+    Same signatures, same row shapes (`rowid_src` is the store's `id`, which is
+    the same number the old cursor carried), same ordering and same tie-break,
+    so every caller in `web_app` and every test of the old mirror's semantics
+    reads this unchanged. Two differences, both deliberate:
+
+    * It reads `lem_machine_log_effective`, so a hidden replay or a retired
+      machine's purged history is out of the History, Logs, QC wall and
+      search exactly as it is out of every other default view.
+    * It never holds a stale copy, so `refresh()` pulls nothing and
+      `filled_at` is "now": there is no fill to be part-way through.
+
+    A READ THAT FAILS RAISES — `LabCoreUnavailable`, the type every caller of
+    the old mirror's gateway path already handles — and `state()` reports the
+    failure as `rows: 0` with a `stale_reason`, which sends every caller down
+    its fallback path, where the same failure is reported to the person
+    rather than shown as an empty record.
+    """
+
+    VIEW = "lem_machine_log_effective"
+    _COLS = ("id AS rowid_src, machine_uid, ts, kind, lab_id, test_name, "
+             "value, detail")
+
+    def __init__(self, gateway, path: Optional[str] = None,
+                 jobs=None) -> None:
+        # Deliberately NOT LogMirror.__init__: no file, no connection, no
+        # schema. `path` and `jobs` are accepted so the factory's call shape
+        # is the same; there is never a first fill to report as a job.
+        self.gateway = gateway
+        self.path = path
+        self.jobs = jobs
+        self._lock = threading.Lock()
+        self._remembered: Optional[dict] = None
+
+    # ── nothing to pull ──────────────────────────────────────────────────
+    def refresh(self) -> int:
+        """Nothing to copy. The server's five-minute thread still calls it,
+        so it re-counts the record for `remembered_state` — one local read,
+        never LabCore — and a failure is remembered as a failure."""
+        self.state()
+        return 0
+
+    def remembered_state(self) -> Optional[dict]:
+        """What the last `state()` found, from memory, or None if the log has
+        not been counted since this process started. For Settings ›
+        Diagnostics, which must cost nothing when it is opened."""
+        return self._remembered
+
+    # ── the reads, against the store ─────────────────────────────────────
+    def _read(self, sql: str, args=None) -> List[dict]:
+        res = self.gateway.read_sql(sql, list(args or []))
+        if not isinstance(res, dict):
+            raise LabCoreUnavailable(
+                "the LEM store gave no answer reading the machine log")
+        if res.get("error"):
+            raise LabCoreUnavailable(str(res["error"]))
+        rows = res.get("rows")
+        if rows is None:
+            raise LabCoreUnavailable(
+                "the LEM store answered with no rows key while reading the "
+                "machine log; that is not an empty log.")
+        return [dict(r) for r in rows]
+
+    def events(self, machine_uid: Optional[str] = None,
+               limit: Optional[int] = None,
+               before: Optional[str] = None) -> List[dict]:
+        where, args = [], []
+        if machine_uid:
+            where.append("machine_uid = ?")
+            args.append(machine_uid)
+        if before:
+            ts, _, rid = str(before).partition("|")
+            if rid.isdigit():
+                where.append("(ts < ? OR (ts = ? AND id < ?))")
+                args.extend([ts, ts, int(rid)])
+            else:
+                where.append("ts < ?")
+                args.append(ts)
+        sql = "SELECT %s FROM %s" % (self._COLS, self.VIEW)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC, id DESC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        return self._read(sql, args)
+
+    def by_lab_id(self, lab_id: str, limit: int = 50) -> List[dict]:
+        return self._read(
+            "SELECT %s FROM %s WHERE lab_id = ? ORDER BY ts DESC, id DESC "
+            "LIMIT ?" % (self._COLS, self.VIEW), [str(lab_id), int(limit)])
+
+    def search(self, term: str, limit: int = 200) -> List[dict]:
+        term = (term or "").strip()
+        if not term:
+            return []
+        esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        like = "%" + esc + "%"
+        return self._read(
+            "SELECT %s FROM %s WHERE "
+            "  lab_id    LIKE ? ESCAPE '\\' "
+            "  OR test_name LIKE ? ESCAPE '\\' "
+            "  OR value     LIKE ? ESCAPE '\\' "
+            "  OR machine_uid LIKE ? ESCAPE '\\' "
+            "ORDER BY ts DESC, id DESC LIMIT ?" % (self._COLS, self.VIEW),
+            [like, like, like, like, int(limit)])
+
+    def query(self, term: str = "", machine_uid: str = "", kind: str = "",
+              since: str = "", until: str = "",
+              limit: int = 500) -> List[dict]:
+        where, args = [], []
+        if machine_uid:
+            where.append("machine_uid = ?")
+            args.append(machine_uid)
+        if kind:
+            where.append("kind = ?")
+            args.append(kind)
+        if since:
+            where.append("ts >= ?")
+            args.append(since)
+        if until:
+            where.append("ts < ?")
+            args.append(until if len(until) > 10 else until + "T99")
+        term = (term or "").strip()
+        if term:
+            esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like = "%" + esc + "%"
+            where.append("(lab_id LIKE ? ESCAPE '\\' "
+                         "OR test_name LIKE ? ESCAPE '\\' "
+                         "OR value LIKE ? ESCAPE '\\' "
+                         "OR kind LIKE ? ESCAPE '\\' "
+                         "OR detail LIKE ? ESCAPE '\\')")
+            args += [like] * 5
+        sql = "SELECT %s FROM %s" % (self._COLS, self.VIEW)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"
+        args.append(int(limit))
+        return self._read(sql, args)
+
+    def reported_tests(self) -> List[tuple]:
+        """`LogMirror.reported_tests`, from the store. A failed read raises."""
+        return [(str(r.get("machine_uid") or ""), str(r.get("test_name") or ""))
+                for r in self._read(
+                    "SELECT DISTINCT machine_uid, test_name FROM %s "
+                    "WHERE kind IN ('run', 'qc') AND test_name != ''" % self.VIEW)]
+
+    def count(self, machine_uid: Optional[str] = None) -> int:
+        sql = "SELECT COUNT(*) AS n FROM %s" % self.VIEW
+        args: list = []
+        if machine_uid:
+            sql += " WHERE machine_uid = ?"
+            args.append(machine_uid)
+        got = self._read(sql, args)
+        return int(got[0]["n"]) if got else 0
+
+    def max_rowid(self) -> int:
+        got = self._read("SELECT COALESCE(MAX(id), 0) AS m FROM %s" % self.VIEW)
+        return int(got[0]["m"]) if got else 0
+
+    def latest_qc(self) -> Dict[tuple, dict]:
+        rows = self._read(
+            "SELECT machine_uid, test_name, ts, lab_id, value, detail, "
+            "id AS rowid_src FROM %s WHERE kind = 'qc' AND test_name != '' "
+            "ORDER BY ts, id" % self.VIEW)
+        out: Dict[tuple, dict] = {}
+        for r in rows:
+            key = (str(r.get("machine_uid") or ""),
+                   str(r.get("test_name") or ""), str(r.get("lab_id") or ""))
+            ts = str(r.get("ts") or "")
+            row = {"ts": ts, "lab_id": str(r.get("lab_id") or ""),
+                   "value": r.get("value"), "detail": r.get("detail")}
+            was = out.get(key)
+            if was is None or ts > was["ts"]:
+                out[key] = row
+                continue
+            # The tie rule of `LogMirror.latest_qc`: a batch is one instant,
+            # and a recorded failure in it is the verdict.
+            if ts == was["ts"] and _failed(r.get("detail")) \
+                    and not _failed(was["detail"]):
+                out[key] = row
+        return out
+
+    def live_status(self) -> dict:
+        """For `/api/ui/live`, from memory and never the file: the record is
+        read in place, so it is always complete to this instant and there is
+        no fill to be part-way through or behind on."""
+        return {"state": "filled", "rows": None, "complete_to": _now(),
+                "held_to": None, "pct": None, "reason": "", "source": "store"}
+
+    def state(self) -> dict:
+        try:
+            got = self._read("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS m "
+                             "FROM %s" % self.VIEW)
+        except LabCoreError as exc:
+            out = {"rows": 0, "max_rowid": 0, "filled_at": None,
+                   "stale_reason": str(exc) or exc.__class__.__name__,
+                   "source": "store"}
+            self._remembered = out
+            return out
+        row = got[0] if got else {"n": 0, "m": 0}
+        out = {"rows": int(row["n"] or 0), "max_rowid": int(row["m"] or 0),
+               "filled_at": _now(), "stale_reason": "", "source": "store"}
+        self._remembered = out
+        return out
+
+    def _set_meta(self, key: str, value: str) -> None:
+        return None
+
+    def _get_meta(self, key: str) -> str:
+        return ""

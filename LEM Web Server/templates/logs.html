@@ -1,324 +1,105 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>LEM — Logs</title>
-<link rel="stylesheet" href="/static/lem.css?v={{ v('lem.css') }}">
-<script src="/static/lem.js?v={{ v('lem.js') }}"></script>
-<style>
+{% extends "_layout.html" %}
+{#- The machine log (ia-final §3.6, piece 7): GC hub's /results table page,
+    for LEM's record of everything the benches and people did.
 
-  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;
-           padding:14px;border-bottom:1px solid var(--edge);
-           background:#0c0e13;flex:none}
-  .f{display:flex;flex-direction:column;gap:4px}
-  .f label{font-size:9.5px;letter-spacing:.2em;text-transform:uppercase;
-           color:var(--ink3);font-weight:700}
-  #fQuery{min-width:200px}
-  .grow{flex:1}
+    One heading in the topbar and one export menu beside it (three files:
+    this view, every QC result, the corrective actions). Under it the filter
+    row, whose every value lives in the address bar (§1: the address bar is
+    the link; a reload or a pasted URL shows the same view). Then one table
+    card: the count header with its source line ("385 events · Kept by LEM ·
+    complete to 13:20"), the rows, and "Show older". A row opens the Log entry
+    sheet, and the sheet's one button opens that instrument's record at #log,
+    so no row is a dead end.
 
-  main{flex:1;overflow:auto;padding:0 14px 24px}
-  table{width:100%;border-collapse:collapse;font-size:12.5px}
-  th{position:sticky;top:0;background:#0c0e13;text-align:left;
-     font-size:9.5px;letter-spacing:.18em;text-transform:uppercase;
-     color:var(--ink3);padding:10px 8px;border-bottom:1px solid var(--edge);
-     white-space:nowrap;z-index:1}
-  td{padding:8px;border-bottom:1px solid #1a1f28;vertical-align:top}
-  tr:hover td{background:#10141b}
-  .k{display:inline-block;padding:1px 6px;border-radius:5px;font-size:9.5px;
-     font-weight:800;letter-spacing:.1em;text-transform:uppercase;
-     background:#1d2436;color:#8fb2ff;white-space:nowrap}
-  .k-qc{background:#12291e;color:#5fd39b}
-  .k-run{background:#1b2130;color:#93a3bd}
-  .k-status_change{background:#302512;color:#e0b25f}
-  .k-override{background:#33202a;color:#f08fa6}
-  .k-comment{background:#1f2630;color:#a8b6c8}
-  .k-pm{background:#1d2436;color:#8fb2ff}
-  .k-calibration{background:#2a2136;color:#c79bff}
-  .k-config{background:#2b2412;color:var(--brass)}
-  .det{color:var(--ink3);font-family:var(--mono);font-size:11px;
-       overflow-wrap:anywhere;max-width:460px;line-height:1.5}
-  .count{color:var(--ink3);font-size:11.5px;white-space:nowrap}
-  .labwide{display:inline-flex;align-items:center;padding:1px 7px;
-     border-radius:20px;font-size:9px;font-weight:800;letter-spacing:.14em;
-     text-transform:uppercase;color:var(--ink3);border:1px solid var(--edge);
-     background:#12161d;white-space:nowrap}
-  .det{font-family:var(--ui);font-size:11.5px}
-  /* One small turning mark; the sentence does the real work. */
-  .busy{display:flex;align-items:center;gap:9px}
-  .busy .spin{width:13px;height:13px;border-radius:50%;flex:none;
-              border:2px solid var(--edge);border-top-color:var(--amber);
-              animation:lspin .7s linear infinite}
-  @keyframes lspin{to{transform:rotate(360deg)}}
-  @media (prefers-reduced-motion:reduce){.busy .spin{animation:none;opacity:.7}}
-</style>
-</head>
-<body>
-<div class="frame">
-{% include '_nav.html' %}
-<div class="pane">
-  <header class="bar">
-    <h1 class="sign">LEM <b>·</b> Logs</h1>
+    The frame and every "couldn't" sentence are the server's; static/js/
+    logs.js draws the rows with textContent. No inline script. -#}
+{% block title %}Log{% endblock %}
+{% block topbar %}
+  <h1 class="bar-title">Log</h1>
+  <span class="spacer"></span>
+  <div class="menu-wrap export-wrap">
+    <button type="button" class="btn btn-sm" id="export-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="export-menu" data-testid="export-btn"><span class="ico ico-download" aria-hidden="true"></span>Export<span class="ico ico-chev" aria-hidden="true"></span></button>
+    <div class="menu export-menu" id="export-menu" role="menu" aria-label="Export" data-testid="export-menu" hidden>
+      <a role="menuitem" id="export-view" href="/api/logs.csv?limit=all" download data-testid="export-view"><span class="ico ico-download" aria-hidden="true"></span><span><b>This view</b><span class="caption" id="export-view-note">Every entry these filters match, as CSV</span></span></a>
+      <a role="menuitem" href="/api/export/qc.csv" download data-testid="export-qc"><span class="ico ico-download" aria-hidden="true"></span><span><b>QC results</b><span class="caption">Every instrument, every check, as CSV</span></span></a>
+      <a role="menuitem" href="/api/export/corrective-actions.csv" download data-testid="export-actions"><span class="ico ico-download" aria-hidden="true"></span><span><b>Corrective actions</b><span class="caption">The register, every step with who and when</span></span></a>
+    </div>
+  </div>
+{% endblock %}
+{% block content %}
+<main class="content content-wide logs-page" id="main" tabindex="-1" data-testid="logs-page">
+  <form class="filters" id="filters" role="search" aria-label="Filter the log" data-testid="logs-filters">
+    <label class="search">
+      <span class="visually-hidden">Search the log</span>
+      <span class="ico ico-search" aria-hidden="true"></span>
+      <input type="text" id="f-q" enterkeyhint="search" placeholder="Lab ID, test, comment…" autocomplete="off" spellcheck="false" maxlength="80" data-testid="filter-q">
+    </label>
+    <label class="select" id="f-equipment-wrap"><span class="visually-hidden">Instrument</span>
+      <select id="f-equipment" data-testid="filter-equipment"><option value="">All instruments</option></select></label>
+    <div class="chips" id="f-kind" role="group" aria-label="Kind" data-testid="filter-kind">
+      {%- for g in log_groups %}
+      <button type="button" class="chip" data-group="{{ g.key }}" aria-pressed="{{ 'true' if g.key == 'all' else 'false' }}">{{ g.label }}</button>
+      {%- endfor %}
+    </div>
+    <label class="select"><span class="visually-hidden">When</span>
+      <select id="f-range" data-testid="filter-range">
+        <option value="any">Any time</option>
+        <option value="today">Today</option>
+        <option value="7d">Last 7 days</option>
+        <option value="30d">Last 30 days</option>
+        <option value="custom">Custom dates…</option>
+      </select></label>
+    <span class="dates" id="f-dates" data-testid="filter-dates" hidden>
+      <label><span class="visually-hidden">From</span><input type="date" id="f-since" data-testid="filter-since"></label>
+      <span class="dash" aria-hidden="true">–</span>
+      <label><span class="visually-hidden">To</span><input type="date" id="f-until" data-testid="filter-until"></label>
+    </span>
     <span class="spacer"></span>
-    <span class="count" id="count"></span>
-    <a class="tool" id="csv" href="/api/logs.csv">Export CSV</a>
-    <button class="tool" id="more" hidden>Load more</button>
-    <span class="who" id="who" hidden></span>
-    <button id="btnAuth" class="tool">Sign in</button>
-  </header>
+    <button type="button" class="btn btn-ghost btn-sm" id="f-clear" data-testid="filter-clear" hidden>Clear filters</button>
+  </form>
 
-  <div class="filters">
-    <div class="f"><label for="fMachine">Equipment</label>
-      <select id="fMachine"><option value="">All</option></select></div>
-    <div class="f"><label for="fKindSel">Kind</label>
-      <select id="fKindSel"><option value="">All</option></select></div>
-    <div class="f"><label for="fSince">From</label>
-      <input id="fSince" type="date"></div>
-    <div class="f"><label for="fUntil">To</label>
-      <input id="fUntil" type="date"></div>
-    <div class="f grow"><label for="fQuery">Search</label>
-      <input id="fQuery" placeholder="Lab ID, test, comment, anything…"></div>
-    <button class="tool" id="clear">Clear</button>
+  {#- what the read said beyond the rows (a partial answer), once -#}
+  <div class="unread card" id="logs-partial" role="status" data-testid="logs-partial" hidden>
+    <span class="glyph error" aria-hidden="true"></span>
+    <div><b>This list may be incomplete.</b><p class="caption" id="logs-partial-text"></p></div>
   </div>
 
-  <main>
-    <table>
-      <thead><tr>
-        <th>When</th><th>Equipment</th><th>Kind</th><th>Lab ID</th>
-        <th>Test</th><th>Value</th><th>Who</th><th>Detail</th>
-      </tr></thead>
-      <tbody id="rows"></tbody>
-    </table>
-    <div id="note"></div>
-  </main>
-
-<script>
-const $ = s => document.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"]/g,
-  c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-/* A `config` entry's interesting part is its detail, and a run's is its values.
- *
- * THIS USED TO PRINT THE BLOB. On a level move that was
- *
- *   {"from":"","from_name":"","to":"1fbb5f3672d4","to_name":"Ground Floor"}
- *
- * — a bare uid on the screen of a page whose whole job is to be read, with the
- * readable name two keys away inside the same object. The server now sends the
- * sentence alongside the blob (`describe_detail` in web_app.py, the one place
- * that knows what these actions mean); this falls back to the pairs only for
- * an entry written before that, or by something else. */
-function detailText(e) {
-  if (e.detail_text) return e.detail_text;
-  const d = {...(e.detail || {})};
-  delete d.by; delete d.action;
-  const bits = Object.entries(d)
-    .map(([k, v]) => [k.replace(/_/g, ' '),
-                      v && typeof v === 'object' ? Object.values(v).join(', ')
-                                                 : String(v ?? '')])
-    .filter(([, v]) => v !== '')
-    .map(([k, v]) => `${k}: ${v}`);
-  return bits.join(' · ');
-}
-
-function query() {
-  const p = new URLSearchParams();
-  const m = $('#fMachine').value, k = $('#fKindSel').value;
-  const a = $('#fSince').value, b = $('#fUntil').value, q = $('#fQuery').value;
-  if (m) p.set('machine', m);
-  if (k) p.set('kind', k);
-  if (a) p.set('since', a);
-  if (b) p.set('until', b);
-  if (q.trim()) p.set('q', q.trim());
-  return p;
-}
-
-let machinesLoaded = false;
-
-/* HOW DEEP THIS PAGE READS.
- *
- * Ryan: "in the logs tab make it actually show the entire database." It used
- * to be capped at 500 with a hard ceiling of 5000, so a lab with a longer log
- * could not reach the rest of it from here at all — and the database was never
- * the reason. Measured against live LabCore: the whole table is 41,903 rows
- * and reads in 1.00 s.
- *
- * What cannot take the whole table is this page: 19 MB of JSON and 42,000
- * table rows is not something a browser scrolls. So it opens on a page and
- * deepens on request — `PAGE` doubles each press until `limit=all`, which the
- * server now serves. Doubling rather than a fixed step because the answer to
- * "how much is there" is different in every lab, and two presses should get a
- * small one to its end.
- */
-const FIRST_PAGE = 500;
-let PAGE = FIRST_PAGE;
-
-/* SAY IT IS WORKING. Ryan: "the loading bar ... still sucks."
- *
- * This page kept the previous table on screen while a new answer was in
- * flight, so a slow search looked exactly like a search that had given up —
- * and a search now goes through the whole record, so it takes a moment on
- * purpose. Shown after a beat, so a fast answer never flashes; cancelled when
- * the answer lands; never drawn by a request that has been superseded. */
-let LOAD_SEQ = 0;
-
-function showBusy(what) {
-  const n = document.getElementById('note');
-  if (!n) return;
-  n.innerHTML = '<p class="empty busy"><i class="spin"></i>'
-    + (what ? `Searching every record for <b>${esc(what)}</b>…`
-            : 'Reading the log…')
-    + '</p>';
-}
-
-async function load() {
-  const seq = ++LOAD_SEQ;
-  const q0 = $('#fQuery').value.trim();
-  const spin = setTimeout(() => { if (seq === LOAD_SEQ) showBusy(q0); }, 180);
-  const p = query();
-  if (PAGE) p.set('limit', PAGE === 'all' ? 'all' : String(PAGE));
-  $('#csv').href = '/api/logs.csv' + (p.toString() ? '?' + p : '');
-  const b = await fetch('/api/logs' + (p.toString() ? '?' + p : ''))
-    .then(r => r.json()).catch(() => null);
-  clearTimeout(spin);
-  // A slower answer to an older query must never overwrite a newer one.
-  if (seq !== LOAD_SEQ) return;
-  if (!b) {
-    $('#rows').innerHTML = '';
-    $('#note').innerHTML = '<p class="empty">Can\'t reach LabCore. '
-      + 'This page fills back in when it returns.</p>';
-    return;
-  }
-
-  // A read that timed out behind LabCore's write queue comes back as an EMPTY
-  // list, which reads as "this lab has no history". Say which it was.
-  if (b.error) {
-    $('#note').innerHTML = '<p class="empty" style="color:var(--amber)">'
-      + esc(b.error) + '</p>';
-  }
-
-  // Populate the kind filter from what's actually in the log, so it can never
-  // offer a kind that doesn't exist or miss one that does.
-  const sel = $('#fKindSel');
-  if (sel.options.length <= 1 && (b.kinds || []).length) {
-    b.kinds.forEach(k => {
-      const o = document.createElement('option');
-      o.value = k; o.textContent = k.replace(/_/g, ' ');
-      sel.appendChild(o);
-    });
-  }
-  if (!machinesLoaded) {
-    const ms = await fetch('/api/machines').then(r => r.json())
-      .catch(() => null);
-    if (ms && ms.machines) {
-      machinesLoaded = true;
-      ms.machines.forEach(m => {
-        const o = document.createElement('option');
-        o.value = m.machine_uid; o.textContent = m.title;
-        $('#fMachine').appendChild(o);
-      });
-    }
-  }
-
-  const evs = b.events || [];
-  $('#count').textContent = evs.length
-    ? `${evs.length} event${evs.length === 1 ? '' : 's'}` : '';
-  $('#rows').innerHTML = evs.map(e => `
-    <tr>
-      <td class="num" style="white-space:nowrap">${esc(e.ts.replace('T', ' ').slice(0, 19))}</td>
-      <!-- A lab-wide event has no equipment, and an empty cell in an
-           EQUIPMENT column reads as a row whose equipment nobody recorded.
-           "level created" happens to the lab, not to one bench. -->
-      <td>${e.machine_uid ? esc(e.machine_title)
-             : '<span class="labwide">Lab-wide</span>'}</td>
-      <td><span class="k k-${esc(e.kind)}">${esc(e.kind.replace(/_/g, ' '))}</span></td>
-      <td class="num">${esc(e.lab_id)}</td>
-      <td>${esc(e.kind === 'config'
-                 /* `action_label` is `action` in the word this page prints —
-                    see display_action() in web_app.py for why the stored value
-                    is left exactly as it was written. */
-                 ? (e.action_label || e.action) : e.test_name)}</td>
-      <td class="num">${esc(e.value)}</td>
-      <td>${esc(e.by)}</td>
-      <td class="det">${esc(detailText(e))}</td>
-    </tr>`).join('');
-  /* WHETHER THIS IS THE WHOLE LOG, said rather than implied.
-   *
-   * A count on its own reads as the whole record — which is the complaint this
-   * work started from. The page knows it asked for at most `PAGE` rows, so a
-   * full page means there is probably more; a short one means the log ended.
-   * `limit=all` is the only case that can promise anything. */
-  const asked = PAGE === 'all' ? Infinity : PAGE;
-  // A SEARCH IS NOT A PAGE. When the whole record was searched, "showing the
-  // newest N" is the wrong sentence — there is nothing older to load, because
-  // everything was already looked at.
-  const searchedAll = !!b.searched_all_time;
-  const maybeMore = !searchedAll && evs.length >= asked;
-  $('#note').innerHTML = evs.length
-    ? (maybeMore
-        ? `<p class="empty">Showing the newest ${evs.length}. There are older
-           entries than this.</p>`
-        : (searchedAll
-            ? `<p class="empty">${evs.length} match${evs.length === 1 ? '' : 'es'}
-               across the whole record — every entry LEM holds, not just the
-               recent ones.</p>`
-            : '<p class="empty">That is every entry matching these filters.</p>'))
-    : (searchedAll
-        ? '<p class="empty">Nothing anywhere in the record matches that. This '
-          + 'searched every entry, not just the recent ones.</p>'
-        : '<p class="empty">Nothing matches those filters.</p>');
-  const more = $('#more');
-  if (more) {
-    more.hidden = !maybeMore;
-    more.textContent = 'Load more';
-  }
-}
-
-/* Deepen and re-read. Deliberately a fresh read rather than an append: the
- * filters can change between presses, and stitching a filtered page onto an
- * unfiltered one shows rows that do not match what the boxes say. */
-async function deepen() {
-  const more = $('#more');
-  if (more) { more.disabled = true; more.textContent = 'Reading…'; }
-  PAGE = PAGE === 'all' ? 'all'
-       : (PAGE >= 20000 ? 'all' : PAGE * 4);
-  await load();
-  if (more) more.disabled = false;
-}
-
-let t = null;
-const debounced = () => { clearTimeout(t); t = setTimeout(reload, 220); };
-const reload = () => { PAGE = FIRST_PAGE; return load(); };
-['#fMachine', '#fKindSel', '#fSince', '#fUntil'].forEach(
-  s => $(s).addEventListener('change', reload));
-$('#more').addEventListener('click', deepen);
-$('#fQuery').addEventListener('input', debounced);
-$('#clear').addEventListener('click', () => {
-  ['#fMachine', '#fKindSel', '#fSince', '#fUntil', '#fQuery']
-    .forEach(s => { $(s).value = ''; });
-  load();
-});
-
-let AUTHED = false, WHO = '';
-
-async function loadWho() {
-  const me = await fetch('/api/me').then(r => r.json()).catch(() => null);
-  if (me) { AUTHED = !!me.authenticated; WHO = me.user || ''; }
-  const who = $('#who');
-  who.hidden = !AUTHED;
-  who.innerHTML = AUTHED ? `signed in <b>${esc(WHO || 'unknown')}</b>` : '';
-  $('#btnAuth').textContent = AUTHED ? 'Sign out' : 'Sign in';
-}
-
-$('#btnAuth').addEventListener('click', async () => {
-  if (AUTHED) { await fetch('/api/logout', {method: 'POST'}); return loadWho(); }
-  location.href = '/floor';        // the sign-in dialog lives there
-});
-
-loadWho();
-load();
-</script>
-</div>
-</div>
-</body>
-</html>
+  <section class="card table-card log-card" aria-labelledby="logs-count">
+    <div class="table-head">
+      <h2 id="logs-count" data-testid="logs-count">Reading the log…</h2>
+      <span class="caption" id="logs-source" data-testid="logs-source"></span>
+      <span class="spacer"></span>
+      <span class="caption" id="logs-hint">Select a row for the whole entry.</span>
+    </div>
+    <div class="tablewrap">
+      <table class="tbl log-tbl" id="logs-table" data-testid="logs-table" aria-describedby="logs-count">
+        <thead><tr>
+          <th scope="col" class="c-when" id="th-when">When</th>
+          <th scope="col" class="c-inst">Instrument</th>
+          <th scope="col" class="c-kind">Kind</th>
+          <th scope="col" class="c-lab">Lab ID</th>
+          <th scope="col" class="c-test">Test</th>
+          <th scope="col" class="c-value">Value</th>
+          <th scope="col" class="c-who">Who</th>
+        </tr></thead>
+        <tbody id="logs-rows"></tbody>
+      </table>
+    </div>
+    <p class="log-state" id="logs-state" role="status" data-testid="logs-state">
+      <span class="glyph working" aria-hidden="true"></span><span id="logs-state-text">Reading the log…</span>
+      <button type="button" class="btn btn-sm" id="logs-retry" hidden>Try again</button>
+      <button type="button" class="btn btn-ghost btn-sm" id="logs-state-clear" hidden>Clear filters</button>
+    </p>
+    <div class="more-row" id="logs-more-row" hidden>
+      <span class="caption" id="logs-shown"></span>
+      <button type="button" class="btn btn-sm" id="logs-more" data-testid="logs-more">Show older</button>
+    </div>
+  </section>
+</main>
+{% include "_log_sheet.html" %}
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/log_logic.js?v={{ v('js/log_logic.js') }}"></script>
+<script src="/static/js/log_view.js?v={{ v('js/log_view.js') }}"></script>
+<script src="/static/js/logs.js?v={{ v('js/logs.js') }}"></script>
+{% endblock %}

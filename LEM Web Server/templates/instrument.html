@@ -1,0 +1,428 @@
+{% extends "_layout.html" %}
+{#- The instrument record (ia-final §3.1, piece 5): GC hub's /instruments/<id>
+    anatomy. Crumbs and at most two actions in the topbar; one h1 and its meta
+    line; ONE card, the answer the page exists for ("can it run?"), with the
+    page's one primary button; then sections, each a title and one sentence
+    on the left and the body on the right.
+
+    The answer rides in a JSON island (data, never code) so the verdict is on
+    screen as the page arrives; static/js/record.js draws it with textContent
+    and keeps it live. The server draws the frame and every sentence that
+    must survive a script that failed. -#}
+{% block title %}{{ data.title }}{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Instruments</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page" id="crumb-name">{{ data.title }}</span></nav>
+  <span class="spacer"></span>
+  <a class="btn btn-ghost btn-sm" id="show-map" href="{{ data.topbar.map }}" data-testid="show-map">Show on the floor map</a>
+  <button type="button" class="btn btn-sm gate-lock" id="topbar-online" data-act="offline" data-gated="take it off line" data-testid="topbar-online"{% if not data.topbar.online %} hidden{% endif %}>Take off line…</button>
+{% endblock %}
+{% block content %}
+<main class="content record" id="main" tabindex="-1" data-testid="record-page" data-uid="{{ data.uid }}"
+      data-has-quality="{{ 'true' if has_quality else 'false' }}">
+  <header class="page-head">
+    <h1 id="rec-title">{{ data.title }}</h1>
+    <div class="meta" id="rec-meta" data-testid="record-meta"></div>
+  </header>
+
+  {#- the answer: "can it run?" (§3.1). The h2 is the verdict; the caption is
+      one sentence ending in the next step; the button is that step. -#}
+  <section class="card checklist ready-card" id="readiness" aria-labelledby="ready-title" data-testid="readiness">
+    <div class="bar">
+      <h2 id="ready-title"><span class="rglyph" id="ready-glyph" aria-hidden="true"></span><span id="ready-word">{{ data.readiness.word }}</span></h2>
+      <p class="ready-cap" id="ready-cap" data-testid="ready-caption"></p>
+      <button type="button" class="btn btn-primary" id="ready-primary" data-testid="ready-primary" hidden></button>
+    </div>
+    {#- a refresh that failed is said here, never swallowed: the card keeps
+        what it last read, dimmed, and this line says it is not current -#}
+    <p class="ready-stale" id="ready-stale" role="status" data-testid="ready-stale" hidden>
+      <span class="glyph never" aria-hidden="true"></span><span id="ready-stale-text"></span>
+      <button type="button" class="btn btn-ghost btn-sm" id="ready-stale-retry">Try again</button>
+    </p>
+    <div class="rtiles" id="ready-tiles" data-testid="ready-tiles"></div>
+  </section>
+
+  <section class="sec" id="qc" data-testid="section-qc" aria-labelledby="qc-h">
+    <div class="about"><h2 id="qc-h"><span class="ico ico-target" aria-hidden="true"></span>QC</h2>
+      <p id="qc-intro">{% if data.qc.standards %}Checked against {{ data.qc.standards|join(', ') }} by assignment. {% endif %}A passing check counts for {{ '%g'|format(data.qc.window.hours) }} h{% if data.qc.window.from %}, as {{ data.qc.window.from }} sets{% endif %}. The bench reads these off the instrument; nobody types QC here.</p></div>
+    <div class="body" id="qc-body">
+      <div class="card table-card qc-card" id="qc-card">
+        <table class="tbl qc" id="qc-tbl" aria-describedby="qc-intro">
+          <thead><tr>
+            <th scope="col" class="c-check">Check</th>
+            <th scope="col" class="c-band">min – <b>target</b> – max</th>
+            <th scope="col" class="c-track"><span class="visually-hidden">Where the last result sits</span></th>
+            <th scope="col" class="c-last">Last</th>
+            <th scope="col" class="c-verdict">Verdict</th>
+            <th scope="col" class="c-when">When</th>
+          </tr></thead>
+          <tbody id="qc-rows"></tbody>
+        </table>
+        <p class="qc-none" id="qc-none" hidden></p>
+      </div>
+      <div class="card chart-card" id="qc-chart" data-testid="qc-chart" aria-labelledby="chart-h" hidden>
+        <div class="chart-head">
+          <div class="chart-title"><h3 id="chart-h"></h3>
+            {#- the chart in words, and the same runs as rows (§9.1 rule 5) -#}
+            <div class="chart-sum"><p class="caption" id="chart-cap" role="status"></p><button type="button" class="linkbtn chart-as" id="chart-as" aria-controls="chart-plot" aria-pressed="false" data-testid="chart-as" hidden>Show as a table</button></div></div>
+          <div class="seg" role="radiogroup" aria-label="How much history" id="chart-range" data-testid="chart-range">
+            <button type="button" role="radio" data-range="24" aria-checked="true">24 runs</button>
+            <button type="button" role="radio" data-range="90d" aria-checked="false">90 days</button>
+            <button type="button" role="radio" data-range="all" aria-checked="false">All</button>
+          </div>
+        </div>
+        <div class="chart-plot" id="chart-plot"></div>
+        <div class="chart-foot">
+          <p class="chart-line" id="chart-control" hidden></p>
+          <p class="chart-line" id="chart-u"></p>
+        </div>
+      </div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="qc-change" data-act="assign" data-gated="change which standards it is checked on" data-testid="qc-change">Change which standards…</button>
+        <a class="btn btn-sm" id="export-qc" href="/api/machines/{{ data.uid|urlencode }}/export.csv?kind=qc" download data-testid="export-qc"><span class="ico ico-download" aria-hidden="true"></span>Export QC (CSV)</a>
+      </div>
+    </div>
+  </section>
+
+  {#- the action sections (§3.1 table, piece 6). Each is a title and ONE
+      sentence on the left, its body and its buttons on the right. Every
+      action is a visible button (nothing is reachable by right-click), gated
+      by sign-in, and opens a sheet; a refused write keeps the sheet open
+      with the server's sentence, and a saved one repaints this section in
+      place with a toast. The bodies say "reading", "couldn't read" and
+      "none yet" in three different sentences. -#}
+  <section class="sec" id="maintenance" data-testid="section-maintenance" aria-labelledby="mt-h">
+    <div class="about"><h2 id="mt-h"><span class="ico ico-key" aria-hidden="true"></span>Maintenance and calibration</h2>
+      <p>Scheduled PM and calibration. A task is due on its date and overdue the day after.</p></div>
+    <div class="body">
+      <div id="mt-body" aria-live="polite"></div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="mt-schedule" data-act="schedule" data-gated="schedule PM or calibration" data-testid="mt-schedule">Schedule…</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="corrections" data-testid="section-corrections" aria-labelledby="corr-h">
+    <div class="about"><h2 id="corr-h"><span class="ico ico-thermo" aria-hidden="true"></span>Correction factors</h2>
+      <p>Added to every reading of that test before QC, the LabCore write and display (17025 §7.8.2).</p></div>
+    <div class="body">
+      <div id="corr-body" aria-live="polite"><p class="empty-note" role="status"><span class="glyph never" aria-hidden="true"></span><span>Reading its correction factors…</span></p></div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="corr-add" data-act="corr-add" data-gated="add a correction factor" data-testid="corr-add">Add a correction…</button>
+        <a class="btn btn-ghost btn-sm" id="corr-history" href="/logs?equipment={{ data.uid|urlencode }}&amp;kind=config" data-testid="corr-history">Change history</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="actions" data-testid="section-actions" aria-labelledby="ca-h">
+    <div class="about"><h2 id="ca-h"><span class="ico ico-check" aria-hidden="true"></span>Corrective actions</h2>
+      <p>Open &rarr; record &rarr; verify &rarr; close. Every step keeps who and when.</p></div>
+    <div class="body">
+      <div id="ca-body" aria-live="polite"><p class="empty-note" role="status"><span class="glyph never" aria-hidden="true"></span><span>Reading its corrective actions…</span></p></div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="ca-open" data-act="action-new" data-gated="open a corrective action" data-testid="ca-open">Open a corrective action…</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="documents" data-testid="section-documents" aria-labelledby="doc-h">
+    <div class="about"><h2 id="doc-h"><span class="ico ico-file" aria-hidden="true"></span>Documents</h2>
+      <p>Manuals, service reports and certificates for this instrument.</p></div>
+    <div class="body">
+      <div id="doc-body" aria-live="polite"><p class="empty-note" role="status"><span class="glyph never" aria-hidden="true"></span><span>Reading its documents…</span></p></div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="doc-upload" data-act="doc-upload" data-gated="upload a document" data-testid="doc-upload">Upload…</button>
+      </div>
+    </div>
+  </section>
+
+  {#- Log (§3.1 #6, piece 7): the last 20 entries, chips that are view
+      filters, a row opens the Log entry sheet. Drawn by record_log.js from
+      /api/logs (the same question "Open in the full log" asks), so the
+      section and the page it opens cannot disagree. -#}
+  {%- set enc_uid = data.uid|urlencode %}
+  <section class="sec" id="log" data-testid="section-log" aria-labelledby="log-h">
+    <div class="about"><h2 id="log-h"><span class="ico ico-log" aria-hidden="true"></span>Log</h2>
+      <p id="log-intro">Everything this bench recorded, newest first.</p></div>
+    <div class="body" id="log-body">
+      <div class="chips log-chips" id="log-chips" role="group" aria-label="Show" data-testid="log-chips">
+        {%- for g in log_groups %}
+        <button type="button" class="chip" data-group="{{ g.key }}" aria-pressed="{{ 'true' if g.key == 'all' else 'false' }}">{{ g.label }}</button>
+        {%- endfor %}
+      </div>
+      <div class="card table-card log-card" id="log-card">
+        <table class="tbl log" id="log-tbl" aria-describedby="log-intro" data-testid="log-table">
+          <thead><tr>
+            <th scope="col" class="c-when" id="log-th-when">When</th>
+            <th scope="col" class="c-kind">Kind</th>
+            <th scope="col" class="c-lab">Lab ID</th>
+            <th scope="col" class="c-test">Test</th>
+            <th scope="col" class="c-value">Value</th>
+          </tr></thead>
+          <tbody id="log-rows"></tbody>
+        </table>
+        <p class="log-state" id="log-state" role="status" data-testid="log-state" data-state="loading">
+          <span class="glyph working" aria-hidden="true"></span><span id="log-state-text">Reading this bench's log…</span>
+          <button type="button" class="btn btn-sm" id="log-retry" hidden>Try again</button>
+        </p>
+      </div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm" id="log-older" data-testid="log-older" hidden>Load older</button>
+        <a class="btn btn-sm" id="log-full" href="/logs?equipment={{ enc_uid }}" data-testid="log-full">Open in the full log</a>
+        <a class="btn btn-sm" id="log-export" href="/api/logs.csv?equipment={{ enc_uid }}&amp;limit=all" download data-testid="log-export"><span class="ico ico-download" aria-hidden="true"></span>Export history (CSV)</a>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="bench" data-testid="section-bench" aria-labelledby="bench-h">
+    <div class="about"><h2 id="bench-h"><span class="ico ico-signal" aria-hidden="true"></span>Bench and results</h2>
+      <p>Each reading is filed once, through LabStation. A replay is never sent again, so a value an analyst corrected in LabCore stands.</p></div>
+    <div class="body" id="bench-body"></div>
+  </section>
+
+  {#- Data transfer (transfer §14, piece T-P12): how this bench's readings
+      reach LEM and LabCore. Drawn by the server, kept live by
+      transfer_section.js; read-only, so it adds no button to the page. -#}
+  {%- if transfer_first_paint is defined %}
+  {%- set t = transfer_first_paint(data.uid) or {"uid": data.uid, "rows": [], "pending": true} %}
+  {% include "_transfer_section.html" %}
+  {%- endif %}
+
+  <section class="sec" id="placement" data-testid="section-placement" aria-labelledby="pl-h">
+    <div class="about"><h2 id="pl-h"><span class="ico ico-pin" aria-hidden="true"></span>Placement</h2>
+      <p>Where this instrument sits on the floor map.</p></div>
+    <div class="body">
+      <div id="pl-body"></div>
+      <div class="row sec-actions">
+        <button type="button" class="btn btn-sm gate-lock" id="pl-level" data-act="level" data-gated="move it to another level" data-testid="pl-level">Move to another level…</button>
+        <a class="btn btn-sm" id="pl-map" href="{{ data.placement.map }}" data-testid="pl-map">Move on the map</a>
+        <button type="button" class="btn btn-sm gate-lock" id="pl-reset" data-act="reset" data-gated="reset its position" data-testid="pl-reset"{% if not data.placement.placed %} hidden{% endif %}>Reset position</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" id="remove" data-testid="section-remove" aria-labelledby="rm-h">
+    <div class="about"><h2 id="rm-h"><span class="ico ico-lock" aria-hidden="true"></span>Remove</h2>
+      <p>Removes the instrument from LEM. Its log stays in the record, and the removal is audited.</p></div>
+    <div class="body">
+      <p class="caption rm-what">Removing clears its QC assignments, schedule, placement, documents and the LabStation configuration it runs on. Keep a copy of its history first if you need one outside LEM.</p>
+      <div class="row sec-actions">
+        <a class="btn btn-sm" id="export-history" href="/api/machines/{{ data.uid|urlencode }}/export.csv" download data-testid="export-history"><span class="ico ico-download" aria-hidden="true"></span>Export history (CSV)</a>
+        <button type="button" class="btn btn-sm btn-danger gate-lock" id="rm-open" data-act="remove" data-gated="remove it from LEM" data-testid="rm-open">Remove from LEM…</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+{#- the sheets the card and the topbar open (piece 6 adds the rest). A
+    refused write keeps the sheet open with the server's sentence. -#}
+<dialog class="sheet rec-sheet" id="online-sheet" aria-labelledby="online-title" data-testid="online-sheet">
+  <form class="form" id="online-form" method="dialog" novalidate>
+    <h2 id="online-title">Take off line</h2>
+    <p id="online-why"></p>
+    <fieldset class="choice" id="online-kind">
+      <legend class="visually-hidden">Why it is off line</legend>
+      <label class="check"><input type="radio" name="override" value="SERVICE" checked> Out for service</label>
+      <label class="check"><input type="radio" name="override" value="DEAD-LINE"> Dead line: no results expected</label>
+    </fieldset>
+    <label class="field"><span>Comment (required)</span>
+      <textarea id="online-comment" rows="3" required></textarea></label>
+    <p class="errline" id="online-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="online-go">Take off line</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="action-sheet" aria-labelledby="action-title" data-testid="action-sheet">
+  <form class="form" id="action-form" method="dialog" novalidate>
+    <h2 id="action-title">Open a corrective action</h2>
+    <p>Open → record → verify → close. Your name and the time are kept with each step.</p>
+    <label class="field" id="action-test-field"><span>Check</span>
+      <select id="action-test"></select></label>
+    <label class="field"><span>What happened (required)</span>
+      <textarea id="action-what" rows="4" required></textarea></label>
+    <p class="errline" id="action-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="action-go">Open it</button>
+    </div>
+  </form>
+</dialog>
+{#- a warning's next step (round 6): marking an overdue calibration or PM
+    done. The work happened at the instrument; this records it, with a note,
+    and moves the schedule. Same rules as the other sheets: a refusal keeps
+    it open with the server's sentence. -#}
+<dialog class="sheet rec-sheet" id="done-sheet" aria-labelledby="done-title" data-testid="done-sheet">
+  <form class="form" id="done-form" method="dialog" novalidate>
+    <h2 id="done-title">Mark the calibration done</h2>
+    <p id="done-why"></p>
+    <label class="field" id="done-task-field"><span>Task</span>
+      <select id="done-task"></select></label>
+    <label class="field"><span>Done on</span>
+      <input type="date" id="done-when" required></label>
+    <label class="field"><span>Note (required)</span>
+      <textarea id="done-note" rows="3" required placeholder="What was done, and by whom if not you"></textarea></label>
+    <p class="errline" id="done-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="done-go">Mark it done</button>
+    </div>
+  </form>
+</dialog>
+{#- which standards it is checked on (§3.1 "Change which standards…", and
+    the card's "Assign a QC standard…" when nothing is). The library is read
+    when the sheet opens, the one read a person pays for by asking; a read
+    that failed says so and offers Try again, never an empty list. Save
+    replaces the whole set, so the sheet starts from what is assigned. -#}
+<dialog class="sheet rec-sheet assign-sheet" id="assign-sheet" aria-labelledby="assign-title" data-testid="assign-sheet">
+  <form class="form" id="assign-form" method="dialog" novalidate>
+    <h2 id="assign-title">Change which standards it is checked on</h2>
+    <p id="assign-why">Tick each check this instrument runs on a standard. The bench judges every ticked check against that standard's certified values; a new one reads No verdict yet until it first runs.</p>
+    <div class="assign-list" id="assign-list" data-testid="assign-list" aria-live="polite"></div>
+    <p class="assign-sum" id="assign-sum" role="status" data-testid="assign-sum"></p>
+    <p class="errline" id="assign-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="assign-go">Save</button>
+    </div>
+  </form>
+</dialog>
+{% include "_log_sheet.html" %}
+{#- piece 6's sheets. Each is its own screen with one ink go button (a
+    sheet's .sheet-go, never a second page primary), Cancel, Escape, and an error line
+    that carries the server's own sentence when a write is refused. -#}
+<dialog class="sheet rec-sheet" id="sched-sheet" aria-labelledby="sched-title" data-testid="sched-sheet">
+  <form class="form" id="sched-form" method="dialog" novalidate>
+    <h2 id="sched-title">Schedule PM or calibration</h2>
+    <p>Intervals are in days. A task is due its interval after it was last done.</p>
+    <div class="chips sched-presets" id="sched-presets" role="group" aria-label="Presets" data-testid="sched-presets"></div>
+    <label class="field"><span>Name</span>
+      <input type="text" id="sched-name" autocomplete="off" required></label>
+    <div class="sched-row">
+      <div class="field"><span id="sched-kind-l">Kind</span>
+        <div class="seg seg-lg" id="sched-kind" role="radiogroup" aria-labelledby="sched-kind-l">
+          <button type="button" role="radio" data-kind="pm" aria-checked="true">PM</button>
+          <button type="button" role="radio" data-kind="calibration" aria-checked="false">Calibration</button>
+        </div></div>
+      <label class="field sched-days"><span>Every</span>
+        <span class="with-unit"><input type="text" id="sched-days" inputmode="numeric" autocomplete="off" required><span class="unit">days</span></span></label>
+    </div>
+    <label class="field"><span>Last done <span class="muted">(leave empty if it has not been done yet)</span></span>
+      <input type="date" id="sched-last"></label>
+    <p class="sched-dup" id="sched-dup" role="status" hidden></p>
+    <p class="errline" id="sched-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn btn-ghost btn-danger sched-del" id="sched-del" data-testid="sched-del" hidden>Delete this task…</button>
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="sched-go">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="corr-sheet" aria-labelledby="corr-title" data-testid="corr-sheet">
+  <form class="form" id="corr-form" method="dialog" novalidate>
+    <h2 id="corr-title">Add a correction</h2>
+    <p>The offset is added to every reading of the test, from the bench's next result on. Your name, the time and your reason are kept with the change.</p>
+    <label class="field" id="corr-test-field"><span>Test</span>
+      <select id="corr-test"></select></label>
+    <label class="field" id="corr-other-field" hidden><span>Test name, as the bench reports it</span>
+      <input type="text" id="corr-other" autocomplete="off"></label>
+    <div class="sched-row">
+      <label class="field"><span>Offset</span>
+        <input type="text" id="corr-value" inputmode="decimal" autocomplete="off" placeholder="-1.5" required></label>
+      <label class="field"><span>Units</span>
+        <input type="text" id="corr-units" autocomplete="off" placeholder="°C"></label>
+    </div>
+    <label class="field"><span>Reason (required)</span>
+      <textarea id="corr-reason" rows="2" required placeholder="Bias study, calibration certificate, …"></textarea></label>
+    <p class="errline" id="corr-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="corr-go">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="step-sheet" aria-labelledby="step-title" data-testid="step-sheet">
+  <form class="form" id="step-form" method="dialog" novalidate>
+    <h2 id="step-title">Corrective action</h2>
+    <p id="step-what" class="step-what"></p>
+    <div class="seg seg-lg" id="step-seg" role="radiogroup" aria-label="Which step" data-testid="step-seg"></div>
+    <div id="step-fields" class="form"></div>
+    <p class="errline" id="step-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="step-go">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="upload-sheet" aria-labelledby="upload-title" data-testid="upload-sheet">
+  <form class="form" id="upload-form" method="dialog" novalidate>
+    <h2 id="upload-title">Upload a document</h2>
+    <p>A PDF, PNG or JPEG up to 25 MB: a manual, a service report or a certificate. Your name and the time are kept with it.</p>
+    <label class="field"><span>File</span>
+      <input type="file" id="upload-file" accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg" required></label>
+    <p class="errline" id="upload-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="upload-go">Upload</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="level-sheet" aria-labelledby="level-title" data-testid="level-sheet">
+  <form class="form" id="level-form" method="dialog" novalidate>
+    <h2 id="level-title">Move to another level</h2>
+    <p id="level-why">It keeps its spot on the plan, now on the level you pick. If something else stands there, move it on the map.</p>
+    <label class="field"><span>Level</span>
+      <select id="level-pick"></select></label>
+    <p class="errline" id="level-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="level-go">Move</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="confirm-sheet" aria-labelledby="confirm-title" data-testid="confirm-sheet">
+  <form class="form" id="confirm-form" method="dialog" novalidate>
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-why"></p>
+    <label class="field" id="confirm-reason-field" hidden><span>Reason (required)</span>
+      <textarea id="confirm-reason" rows="2"></textarea></label>
+    <p class="errline" id="confirm-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="confirm-go"></button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="remove-sheet" aria-labelledby="remove-title" data-testid="remove-sheet">
+  <form class="form" id="remove-form" method="dialog" novalidate>
+    <h2 id="remove-title">Remove from LEM</h2>
+    <p id="remove-why"></p>
+    <p class="remove-live" id="remove-live" hidden><span class="glyph error" aria-hidden="true"></span><span></span></p>
+    <label class="field"><span id="remove-name-l">Type its name to confirm</span>
+      <input type="text" id="remove-name" autocomplete="off" spellcheck="false" required></label>
+    <label class="field" id="remove-pw-field"><span>Your password, to unlock removing</span>
+      <input type="password" id="remove-pw" autocomplete="current-password"></label>
+    <p class="caption" id="remove-unlocked" hidden></p>
+    <p class="errline" id="remove-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="remove-go">Remove from LEM</button>
+    </div>
+  </form>
+</dialog>
+<script type="application/json" id="record-data">{{ data|json_island }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+<script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
+<script src="/static/js/record_actions_logic.js?v={{ v('js/record_actions_logic.js') }}"></script>
+<script src="/static/js/record.js?v={{ v('js/record.js') }}"></script>
+<script src="/static/js/log_logic.js?v={{ v('js/log_logic.js') }}"></script>
+<script src="/static/js/log_view.js?v={{ v('js/log_view.js') }}"></script>
+<script src="/static/js/record_log.js?v={{ v('js/record_log.js') }}"></script>
+<script src="/static/js/record_actions.js?v={{ v('js/record_actions.js') }}"></script>
+{%- if transfer_first_paint is defined %}
+<script src="/static/js/transfer_logic.js?v={{ v('js/transfer_logic.js') }}"></script>
+<script src="/static/js/transfer_section.js?v={{ v('js/transfer_section.js') }}"></script>
+{%- endif %}
+{% endblock %}

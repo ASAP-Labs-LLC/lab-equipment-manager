@@ -368,6 +368,13 @@ class FakeLabCoreGateway:
         return [r["test_name"] for r in (res.get("rows") or [])]
 
 
+#: LabCore's in-memory stand-in under a name of its own, for the places that
+#: need LabCore and LEM's store to be two different things (`--dev` boots one
+#: of each). `FakeLabCoreGateway` is the name tests and tools have always
+#: used; this one says which half of the split it is.
+InMemoryLabCore = FakeLabCoreGateway
+
+
 def resolve_labcore_url(base_url: Optional[str] = None) -> str:
     """Resolve the LabCore base URL the same way the rest of the suite does.
 

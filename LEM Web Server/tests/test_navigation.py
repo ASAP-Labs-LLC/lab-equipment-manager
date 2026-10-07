@@ -1,4 +1,4 @@
-"""Login → mode selector → Map or Checklists.
+"""Login → Instruments (it was a mode selector) → the floor or Checklists.
 
 The floor used to be the whole app, which is wrong on a phone: an operator
 walking the lab wants "checklists" or "the map", not a 3D floor plan they have
@@ -34,29 +34,28 @@ def home(client):
     return client.get("/").get_data(as_text=True)
 
 
-class TestTheModeSelector:
-    def test_root_is_the_mode_selector_not_the_floor(self, client):
+class TestTheHomeIsInstruments:
+    """The root was a chooser between two big buttons (Map, Checklists). It
+    was a click tax with no way to QC, and the question nearly everyone
+    brings — "can this instrument run?" — needed five clicks (ia-final §8,
+    T1 baseline 5/0/6). Since 2026-10-01 the root IS Instruments: the answer
+    is in the table on arrival, and the shell's nav carries Checklists, QC,
+    Log and Settings one click away, as the chooser's two targets were."""
+
+    def test_root_is_instruments_not_the_floor(self, client):
         body = client.get("/").get_data(as_text=True)
         assert "LAB FLOOR" not in body.upper()
+        assert 'data-testid="instruments-page"' in body
 
-    def test_it_offers_exactly_two_ways_in(self, home):
-        assert 'href="/floor"' in home
-        assert 'href="/checklists"' in home
-
-    def test_both_targets_are_named_plainly(self, home):
-        assert re.search(r"Map|Floor", home)
-        assert "Checklist" in home
-
-    def test_the_targets_are_big_enough_for_a_gloved_thumb(self, home):
-        """Two big buttons was the requirement, so the choice must not be a
-        pair of text links."""
-        assert 'class="mode"' in home
+    def test_the_two_old_ways_in_are_still_one_click(self, home):
+        assert 'href="/?view=map"' in home      # the List · Floor map seg (piece 12)
+        assert 'href="/checklists"' in home     # the nav
 
     def test_it_says_who_is_signed_in_here_too(self, home):
-        assert 'id="who"' in home
+        assert 'data-testid="user-chip"' in home
 
     def test_it_carries_a_sign_in_route(self, home):
-        assert "/api/login" in home or 'id="btnAuth"' in home
+        assert "/signin" in home
 
 
 class TestTheFloorMoved:
@@ -77,21 +76,25 @@ class TestTheFloorMoved:
 
 
 class TestChecklistsMode:
-    def test_the_page_exists(self, client):
-        assert client.get("/checklists").status_code == 200
+    def test_the_bookmark_lands_on_a_round(self, client):
+        r = client.get("/checklists")
+        assert r.status_code == 302
+        assert client.get(r.headers["Location"]).status_code == 200
 
     def test_it_offers_opening_and_closing(self, client):
         """Ryan: Checklists → Open or close."""
-        body = client.get("/checklists").get_data(as_text=True).lower()
-        assert "open" in body and "clos" in body
+        body = client.get("/checklists", follow_redirects=True).get_data(as_text=True)
+        assert 'href="/checklists/opening"' in body and 'href="/checklists/closing"' in body
 
     def test_it_can_get_back_to_the_selector(self, client):
-        assert 'href="/"' in client.get("/checklists").get_data(as_text=True)
+        assert 'href="/"' in client.get("/checklists", follow_redirects=True).get_data(as_text=True)
 
     def test_it_is_honest_that_nothing_is_configured_yet(self, client):
-        """Checklists aren't built yet — the page must not imply they are."""
-        body = client.get("/checklists").get_data(as_text=True).lower()
-        assert "not" in body and "yet" in body
+        """No round set up must say so, and say where to set one up."""
+        client.get("/api/checklists")             # so the page knows, rather than reading
+        body = client.get("/checklists/opening").get_data(as_text=True)
+        assert "No opening round is set up." in body
+        assert "/checklists/edit/new?slot=opening" in body
 
 
 class TestEveryPageWorksOffline:
@@ -126,6 +129,6 @@ class TestEveryPageWorksOffline:
         app.config["TESTING"] = True
         return app.test_client()
 
-    @pytest.mark.parametrize("path", ["/", "/floor", "/checklists"])
+    @pytest.mark.parametrize("path", ["/", "/floor", "/checklists/opening", "/checklists/edit"])
     def test_it_still_renders(self, dead_client, path):
         assert dead_client.get(path).status_code == 200, path

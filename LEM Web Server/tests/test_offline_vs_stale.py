@@ -153,21 +153,34 @@ class TestAFailedReadIsNotOffline:
 
 # ── the floor shows the difference ──────────────────────────────────────────
 
-class TestTheFloorDistinguishesThem:
-    def src(self):
-        import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / "floor.html").read_text(encoding="utf-8")
+class TestThePagesDistinguishThem:
+    """The old floor page's banner did this (deleted in piece 14).
+    Every shell page now says it through `ui_shell.shell_status` and
+    `record_words` (and the live feed's same fields after first paint), so
+    the two promises are checked on what those return."""
 
-    def test_the_offline_banner_keys_off_reachability(self):
-        s = self.src()
-        assert "labcore_online" in s
+    def test_the_offline_words_key_off_reachability(self):
+        import ui_shell
+        snap = {"ready": True, "built_at": "2026-10-01T13:02:00", "labcore_online": False}
+        st = ui_shell.shell_status(snap)
+        assert st["labcore"] == "unreachable"
+        assert ui_shell.record_words(st) == ("error", "LabCore not answering · record from 13:02")
+        snap["labcore_online"] = True
+        st = ui_shell.shell_status(snap)
+        assert ui_shell.record_words(st) == ("fresh", "Updated 13:02")
 
     def test_staleness_is_shown_separately_from_offline(self):
-        """A lab reading "OFFLINE" while the floor is plainly still updating
-        teaches everyone to ignore the banner."""
-        s = self.src()
-        assert "age_seconds" in s or "stale" in s
+        """A lab reading "OFFLINE" while the pages are plainly still updating
+        teaches everyone to ignore the banner. Not answering, with nothing
+        read, is its own sentence; reachable with nothing read is not
+        "offline" at all."""
+        import ui_shell
+        down = ui_shell.shell_status({"ready": False, "labcore_online": False})
+        up = ui_shell.shell_status({"ready": False, "labcore_online": True})
+        unknown = ui_shell.shell_status({})
+        assert ui_shell.record_words(down)[0] == "error"
+        assert ui_shell.record_words(up) == ("never", "Not read from LabCore yet")
+        assert unknown["labcore"] == "unknown"
 
 
 class TestThePollerKeepsItsCadence:

@@ -321,6 +321,102 @@ restores the parse setup.
 
 Tests: `LEM Station Module/tests/test_manual_mode.py` (59).
 
+## The bench journal — custody of every reading (2026-10-01, transfer v4 P1)
+
+Every reading is appended to `%APPDATA%\LabLink\apps\LabStation\lem_journal\<uid>\`
+and fsync'd **before** anything downstream acts on it; a restart re-delivers
+whatever the journal says was never delivered. Plain files (LabStation
+intercepts `import sqlite3`), stdlib only. Spec: transfer-final.md §3.
+
+- Layout: `journal.meta` (epoch, acked, durable, created, module,
+  last_v2_handshake; atomic replace, 3 × 50 ms retry on a Windows sharing
+  violation), `seg-NNNNNN.jsonl` (canonical JSON + CRC32 of the exact body
+  bytes as the last field; roll at 4 MB), `known.idx` (replay keys of pruned
+  segments), `bench.key` (write-once, 0600), `torn-*.bin` (cut-off tails).
+- Records numbered per bench under an epoch minted ONLY when journal.meta is
+  missing; an unreadable meta is rebuilt from the records, never re-minted.
+  One fsync per append. On open the last segment is cut at the first bad
+  line (torn tail); a bad line elsewhere is skipped and reported.
+- A reading is `run` (with the log rows it makes and the parsed row), then
+  `projected` once its rows land in lem_machine_log and `settled` once the
+  results road is done with it (filed, given up, no Lab ID, QC check). Held,
+  backlogged, parked or cap-dropped rows are NOT settled.
+- Serial frames are journaled by the reader (`_FrameSink._complete`) on its
+  own thread as the idle gap completes them — before any poll can take them.
+- Store check: file lines are keyed (file path + identity, byte offset, line
+  hash); a print whose key the journal holds is dropped before parsing. The
+  key only suppresses what the offset logic already read; it never causes a
+  read. `_journal_suppressed` counts it.
+- No journal (unwritable folder) → the bench works as before v4, loudly. Disk
+  policy (§3.4): warn at 200 MB unacked / 80 % of 500 MB; at 1 GB unacked or
+  < 1 GB free prune durable segments early, then pause FILE ingest only.
+- One journal object per folder per process (`acquire_journal`), released at
+  `shutdown()`.
+- Running digest is a chain: d0 = 64 zeros, d_n = sha256(d_{n-1} || body_n).
+
+Tests: `test_bench_journal.py` (29), `test_journal_custody.py` (19). Gate:
+K8, K9, K1b 0/0; K8r exactly 1 lost; T5 0/0 with the tail repaired.
+
+## Transfer v2 at the bench — one thread talks to LEM (2026-10-02, v4 P8)
+
+A v2 bench keeps its bookkeeping in LEM, not LabCore: status, heartbeat,
+specs, the machine log and its configuration travel in the journal's records
+over `POST /api/v2/bench/<uid>/sync`; LabCore is left with the results road.
+Spec: transfer-final.md §6; Ryan's D2 overrides §6.6 (no LabCore replica).
+
+- **The uploader** (`BenchUploader`) is a daemon thread that makes EVERY LEM
+  request. The poll appends to the journal and wakes it — never waits. `_lem`
+  answers only on that thread; anywhere else it returns None and counts
+  `_transfer.wrong_thread`. Wake-driven, no timer of its own: each wake carries
+  the poll's time, so backoff and the 60 s rule run on the poll clock
+  (`bench_now()` is the seam for wakes that are not polls).
+- **Roads** (`BenchRoads`): LAN `http://192.168.1.5:5557` 1.5 s, public
+  `https://lem.asaplabs.net` 10 s; every request `User-Agent: LEM-Station/<ver>
+  (<uid>)` (Cloudflare answers urllib's default with 1010). A failed road is
+  re-tried once per 10 min; the last road that worked is always tried; both
+  dark → 30, 60, 120, 300 s. Only HTTP 404 means an old server (→ legacy road,
+  v2 asked again in 15 min); timeouts and 5xx never.
+- **Enrolment**: ping, then the shared token (canvas, else ONE lem_meta read
+  on the uploader thread), then `/enroll` with a persisted enroll_key;
+  `bench.key` holds the per-bench token. A wiped bench is "already enrolled"
+  and waits for a person (Settings › Transfer).
+- **Blind mode**: a journal this process minted, plus evidence LEM may hold
+  records (the canvas's `lem_v2`, or "already enrolled"), keeps FILE sources
+  from reading until `/checkpoint` installs LEM's mirrored cursor. Serial and
+  manual readings are journaled regardless.
+- **config.json** caches LEM's config and the bench's own binding; a v2
+  restart binds from it with no LabCore read.
+- **60 s rule (D2)**: a result is filed only if the sync confirmed its
+  config_rev within 60 s. Otherwise it waits in `_factor_wait` (unsettled in
+  the journal, never capped) and is re-corrected with the confirmed factor
+  before filing. A factor saved at the bench waits for LEM to echo it.
+- **Retirement** only on an explicit `machine: "retired"` from LEM.
+- **Unknown is not legacy** (round 2): `_v2_active` is true for every bench
+  with an uploader EXCEPT one LEM answered with a 404. A bench that bound
+  while the roads were down or 503, holds no token yet, or waits for a person
+  to approve its re-enrolment journals and holds — it never runs the legacy
+  road (heartbeat, DDL, status, log rows) on a guess. The first 404 projects
+  what it journaled (`_v2_fell_back` + `_v2_project_bookkeeping`: runs, notes,
+  overrides, saved factors and setup, then status/specs re-published; exactly
+  once, via `legacy_projected_seq`). Module tests that pin the legacy road
+  start "after a 404" via `tests/old_server.py` unless they install FakeLem.
+- **Every unfiled reading is re-corrected** when LEM confirms the factors —
+  the backlog, held and parked queues too, not just `_factor_wait` — and a
+  v2 restart puts the journal's unsettled readings back in `_factor_wait`
+  (uncapped), not the capped identity backlog (CF2r; a long outage loses
+  none to IDENTITY_BACKLOG_LIMIT).
+- **Bind after a wiped journal** comes from the canvas (`lem_v2.machine`),
+  never a LabCore config read (§6.3).
+- **Not moved**: a bench on the legacy (404) road keeps v3.9's live push and
+  floor-config GET on the poll worker — that is legacy projection's (P5).
+  Both now send the `LEM-Station/<ver> (<uid>)` User-Agent too.
+
+Tests: `tests/test_bench_uploader.py` (fake server at the wire,
+`tests/fake_lem_v2.py`); server side `LEM Web Server/tests/
+test_bench_v2_bench_edits.py`. Gate: E0 0 ops / 110 polls, E2 0/0, T1, T2,
+T4, T4b (every LabCore op vs the twin, not only the results road), D1, CF1,
+CF2, CF2r, N404, N503, all with 0 LEM requests on the poll thread.
+
 ## Threading model (approved & implemented 2026-07-28)
 
 Polls run ingest → parse → evaluate → ALL LabCore HTTP in the worker

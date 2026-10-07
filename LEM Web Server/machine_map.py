@@ -397,7 +397,7 @@ class QcTargetStore:
                               str(r.get("test_name") or ""))
                 for r in found]
 
-    def all(self) -> Dict[str, List[WatchedTarget]]:
+    def all(self, *, missing_ok: bool = False) -> Dict[str, List[WatchedTarget]]:
         # No `ensure_schema()` — see MapSettingsStore.locked(). The one caller
         # that DECIDES A WRITE from this (`qc_samples.changeover`) declares the
         # schema itself before it starts, so the missing-table case cannot
@@ -412,12 +412,16 @@ class QcTargetStore:
         # loud here too: on a LabCore with no lem_machine_targets at all, a
         # changeover reporting "0 moved" would be technically true and read as
         # "everything is fine", which is the answer this store must never give.
+        #
+        # `missing_ok=True` is for a READER that decides nothing (the QC
+        # pages' "Used on"): there, a table nobody has created yet truly
+        # means nothing has been assigned. Every other failure still raises.
         found = _read(
             self.gateway.read_sql(
                 "SELECT machine_uid, sample_name, test_name FROM "
                 "lem_machine_targets ORDER BY machine_uid, sample_name, "
                 "test_name"),
-            "reading every QC assignment", missing_ok=False)
+            "reading every QC assignment", missing_ok=missing_ok)
         out: Dict[str, List[WatchedTarget]] = {}
         for row in found:
             out.setdefault(str(row.get("machine_uid")), []).append(

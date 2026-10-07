@@ -1,0 +1,30 @@
+{% extends "_layout.html" %}
+{#- /signin?next= : the no-JS road (ia-final §8 T0). With a script, every
+    Sign in opens the sheet in place and nobody lands here. Same fields, same
+    words as the sheet (_signin.html), and it sends you back to `next`. -#}
+{% block title %}Sign in{% endblock %}
+{% block topbar %}
+  <h1>Sign in</h1>
+{% endblock %}
+{% block content %}
+<main class="content narrow signin-page" id="main" tabindex="-1">
+  <section class="card signin-card" aria-labelledby="signin-page-title">
+    <form method="post" action="/signin" class="form" id="signin-page-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <h2 id="signin-page-title">Sign in to LEM</h2>
+      <p class="caption">Your LabCore account, the same one LabStation uses. {{ 'Then you go back to the page you were on.' if next != '/' else 'Then you go to Instruments.' }}</p>
+      <label class="field"><span>LabCore user name</span>
+        <input type="text" name="username" value="{{ username }}" autocomplete="username" spellcheck="false" autocapitalize="off" autofocus></label>
+      <label class="field"><span>Password</span>
+        <input type="password" name="password" autocomplete="current-password"></label>
+      {%- if error %}
+      <p class="errline" role="alert">{{ error }}</p>
+      {%- endif %}
+      <div class="actions">
+        <a class="btn btn-ghost" href="{{ next }}">Cancel</a>
+        <button type="submit" class="btn btn-primary">Sign in</button>
+      </div>
+    </form>
+  </section>
+</main>
+{% endblock %}

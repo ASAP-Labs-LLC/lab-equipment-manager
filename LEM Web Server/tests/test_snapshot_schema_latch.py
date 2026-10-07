@@ -117,10 +117,15 @@ class TestARefusedCreateIsNotForgotten:
         same as retrying on every call, and this test is about the first.
         """
         real = FakeLabCoreGateway()
+        # What the gateway held before the snapshot asked for anything: the
+        # LEM store declares the record itself (`lem_machine_log`,
+        # `lem_machine_config`) when its file is made, so "nothing yet" is
+        # "nothing beyond that".
+        born_with = _tables(real)
         gw = QueueFullThenClears(real)
         svc, clock = _throttled(gw)
         svc.ensure_schema()
-        assert _tables(real) == set(), "nothing should have been created yet"
+        assert _tables(real) == born_with, "nothing should have been created yet"
 
         gw.clear()
         clock.advance(SnapshotService.SCHEMA_RETRY_MAX + 1)

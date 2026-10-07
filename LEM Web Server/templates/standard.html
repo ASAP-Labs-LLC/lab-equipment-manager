@@ -1,0 +1,177 @@
+{% extends "_layout.html" %}
+{#- One QC standard (ia-final §3.5, piece 8): GC hub's record anatomy. One
+    h1 and its meta line; ONE card, the answer this page exists for (which
+    instruments are checked on it, and what each check said last), carrying
+    the page's one primary button, "Add to instruments…"; then sections,
+    each a title and one sentence on the left and the body on the right:
+    Certified values · Certificate · Changeover · Rename · Delete.
+
+    The Used on card reads the ASSIGNMENTS from LEM's store, where a Save
+    puts them, so the page a New standard lands on already says "Agilent GC
+    2 · Flash Point · No verdict yet" (T5). Verdicts are the record's.
+
+    Three answers, three pages: the standard (200), "no such standard"
+    (404, a statement about the library) and "could not ask" (503, a
+    statement about LEM). static/js/standard.js draws the island. -#}
+{% block title %}{{ data.name if data.state == 'ready' else ('Unknown standard' if data.state == 'missing' else 'QC standard') }}{% endblock %}
+{% block topbar %}
+  <nav class="crumbs" aria-label="Breadcrumb"><a href="/quality">QC</a><span class="sep" aria-hidden="true">›</span><a href="/quality/standards">Standards</a><span class="sep" aria-hidden="true">›</span><span class="here" aria-current="page" id="crumb-name">{{ data.name }}</span></nav>
+  <span class="spacer"></span>
+{% endblock %}
+{% block content %}
+{%- if data.state != 'ready' %}
+<main class="content record-missing" id="main" tabindex="-1" data-testid="standard-missing-page" data-state="{{ data.state }}">
+  {%- if data.state == 'missing' %}
+  <h1>No QC standard “{{ data.name }}”</h1>
+  <p class="muted">LEM read the QC library and no standard has this name or Lab ID. It may have been renamed or removed, or the link may be old. <a class="link" href="/quality/standards">See every standard</a>.</p>
+  {%- else %}
+  <h1>Couldn't show this standard</h1>
+  <p class="muted">LEM could not read its QC library, so it cannot say whether “{{ data.name }}” exists. This is not a missing standard. Reload in a moment to try again.</p>
+  {%- if data.error %}<p class="caption" data-testid="missing-error">{{ data.error }}.</p>{% endif %}
+  <p><a class="link" href="/quality/standards">Back to Standards</a></p>
+  {%- endif %}
+</main>
+{%- else %}
+<main class="content record standard" id="main" tabindex="-1" data-testid="standard-page" data-name="{{ data.name }}">
+  <header class="page-head">
+    <h1 id="std-title">{{ data.name }}</h1>
+    <div class="meta" id="std-meta" data-testid="std-meta">
+      <span class="pill q-pill" data-testid="std-pill"><span class="glyph {{ data.head.pill.glyph }}" aria-hidden="true"></span><span class="{{ {'error': 's-not_ok', 'held': 's-ok_but'}.get(data.head.pill.level, '') }}">{{ data.head.pill.text }}</span></span>
+      <span class="sep" aria-hidden="true">·</span><span>Lab ID <span class="mono">{{ data.head.lab_id }}</span></span>
+      <span class="sep" aria-hidden="true">·</span><span>{{ data.head.n_checks }} {{ 'check' if data.head.n_checks == 1 else 'checks' }}</span>
+    </div>
+  </header>
+
+  {#- the answer: where it is used and what each check said last -#}
+  <section class="card checklist uon-card" id="used-on" aria-labelledby="uon-title" data-testid="used-on">
+    <div class="bar">
+      <h2 id="uon-title">Used on</h2>
+      <p class="caption" id="uon-cap" data-testid="uon-caption">{{ data.used_on.caption }}</p>
+      <button type="button" class="btn btn-primary" id="uon-add" data-act="assign" data-gated="add it to instruments" data-testid="uon-add">Add to instruments…</button>
+    </div>
+    <ul class="uon" id="uon-list" data-testid="uon-list">
+      {%- for r in data.used_on.rows or [] %}
+      <li><a class="uon-row" href="{{ r.href }}"><span class="glyph {{ r.verdict.glyph }}" aria-hidden="true"></span><span class="uon-line">{{ r.line }}</span></a></li>
+      {%- endfor %}
+    </ul>
+    <p class="uon-none" id="uon-none"{% if data.used_on.rows %} hidden{% endif %}>
+      {%- if data.used_on.rows is none %}<span class="glyph error" aria-hidden="true"></span><span>Couldn't read which instruments are checked on it. This is not "none": reload to try again.</span>
+      {%- else %}<span class="glyph never" aria-hidden="true"></span><span>Not checked on any instrument yet. Add it to the instruments that run it; each reads No verdict yet until its first run.</span>{% endif %}</p>
+  </section>
+
+  <section class="sec" id="values" data-testid="section-values" aria-labelledby="val-h">
+    <div class="about"><h2 id="val-h"><span class="ico ico-target" aria-hidden="true"></span>Certified values</h2>
+      <p>What the certificate says each test should read. A run passes inside expected ± k·s.</p></div>
+    <div class="body" id="val-body"></div>
+  </section>
+
+  <section class="sec" id="certificate" data-testid="section-certificate" aria-labelledby="cert-h">
+    <div class="about"><h2 id="cert-h"><span class="ico ico-doc" aria-hidden="true"></span>Certificate</h2>
+      <p>The file for this lot. Its numbers are not read from it: the values above are what the bench judges by.</p></div>
+    <div class="body" id="cert-body"></div>
+  </section>
+
+  <section class="sec" id="changeover" data-testid="section-changeover" aria-labelledby="chg-h">
+    <div class="about"><h2 id="chg-h"><span class="ico ico-flask" aria-hidden="true"></span>Changeover</h2>
+      <p>A new lot: the same values, every instrument moved to it. Its certificate never comes across.</p></div>
+    <div class="body"><div class="row sec-actions"><button type="button" class="btn btn-sm gate-lock" data-act="changeover" data-gated="replace it with a new lot" data-testid="chg-open">Replace with a new lot…</button></div></div>
+  </section>
+
+  <section class="sec" id="rename" data-testid="section-rename" aria-labelledby="ren-h">
+    <div class="about"><h2 id="ren-h"><span class="ico ico-file" aria-hidden="true"></span>Rename</h2>
+      <p>Same lot, new name. Its instruments and certificate move with it.</p></div>
+    <div class="body"><div class="row sec-actions"><button type="button" class="btn btn-sm gate-lock" data-act="rename" data-gated="rename it" data-testid="ren-open">Rename…</button></div></div>
+  </section>
+
+  <section class="sec" id="delete" data-testid="section-delete" aria-labelledby="del-h">
+    <div class="about"><h2 id="del-h"><span class="ico ico-lock" aria-hidden="true"></span>Delete</h2>
+      <p>Removes it from the QC library. Refused while it holds a certificate or is in use.</p></div>
+    <div class="body" id="del-body"></div>
+  </section>
+</main>
+
+{#- the sheets. A refused write keeps its sheet open with the server's sentence. -#}
+<dialog class="sheet rec-sheet std-sheet" id="assign-sheet" aria-labelledby="as-title" data-testid="std-assign-sheet">
+  <form class="form" id="as-form" method="dialog" novalidate>
+    <h2 id="as-title">Check it on instruments</h2>
+    <p id="as-why">Pick each instrument that runs this check on this standard. A new one reads No verdict yet until its first run; one you take off stops being judged against it.</p>
+    <label class="field" id="as-test-field"><span>Check</span><select id="as-test" data-testid="as-test"></select></label>
+    <fieldset class="check-on" id="as-on">
+      <legend>Check it on</legend>
+      <div class="chips" id="as-chips" role="group" aria-label="Instruments"></div>
+      <p class="caption chip-note" id="as-chip-note"></p>
+    </fieldset>
+    <p class="std-sum" id="as-sum" role="status"></p>
+    <p class="errline" id="as-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="as-go" data-testid="as-go">Save</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="up-sheet" aria-labelledby="up-title" data-testid="up-sheet">
+  <form class="form" id="up-form" method="dialog" novalidate>
+    <h2 id="up-title">Upload the certificate</h2>
+    <p>A PDF or image of this lot's certificate of analysis. The dates are what the expiry report reads.</p>
+    <label class="field"><span>File</span><input type="file" id="up-file" accept=".pdf,image/*" data-testid="up-file"></label>
+    <div class="f-row two">
+      <label class="field"><span>Issued (optional)</span><input type="date" id="up-issued"></label>
+      <label class="field"><span>Valid to (optional)</span><input type="date" id="up-expires"></label>
+    </div>
+    <p class="errline" id="up-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="up-go">Upload</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="chg-sheet" aria-labelledby="chg-title" data-testid="chg-sheet">
+  <form class="form" id="chg-form" method="dialog" novalidate autocomplete="off">
+    <h2 id="chg-title">Replace with a new lot</h2>
+    <p id="chg-why"></p>
+    <div class="f-row two">
+      <label class="field"><span>New lot's name</span><input type="text" id="chg-name" spellcheck="false" data-testid="chg-name"></label>
+      <label class="field"><span>Its Lab ID</span><input type="text" id="chg-lab" spellcheck="false" data-testid="chg-lab"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="chg-retire"> Remove this lot from the library once its instruments have moved</label>
+    <p class="errline" id="chg-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="chg-go">Replace</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="ren-sheet" aria-labelledby="ren-title" data-testid="ren-sheet">
+  <form class="form" id="ren-form" method="dialog" novalidate autocomplete="off">
+    <h2 id="ren-title">Rename</h2>
+    <p>Same lot, same Lab ID and values. Every instrument checked on it, and its certificate, move to the new name.</p>
+    <label class="field"><span>New name</span><input type="text" id="ren-name" spellcheck="false" data-testid="ren-name"></label>
+    <p class="errline" id="ren-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn sheet-go" id="ren-go">Rename</button>
+    </div>
+  </form>
+</dialog>
+<dialog class="sheet rec-sheet" id="del-sheet" aria-labelledby="del-title" data-testid="del-sheet">
+  <form class="form" id="del-form" method="dialog" novalidate>
+    <h2 id="del-title">Delete this standard</h2>
+    <p id="del-why">It leaves the QC library. Its QC history stays in the log.</p>
+    <p class="errline" id="del-err" role="alert" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn" data-close>Cancel</button>
+      <button type="submit" class="btn btn-danger" id="del-go">Delete it</button>
+    </div>
+  </form>
+</dialog>
+<script type="application/json" id="standard-data">{{ data|json_island }}</script>
+{%- endif %}
+{% endblock %}
+{% block scripts %}
+{%- if data.state == 'ready' %}
+<script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+<script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
+<script src="/static/js/quality_logic.js?v={{ v('js/quality_logic.js') }}"></script>
+<script src="/static/js/standard.js?v={{ v('js/standard.js') }}"></script>
+{%- endif %}
+{% endblock %}

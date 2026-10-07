@@ -156,26 +156,84 @@ window.LEM = (function () {
     return text;
   }
 
-  /* fetch + parse + format, for a write. Resolves to {ok, status, body, error}
-   * — never rejects, because a save handler that throws leaves the dialog open
-   * with a spinner and no explanation, which is the failure this exists to
-   * remove. A network error reads as a failure with a sentence, like any
-   * other. */
+  /* ── ONE CHANGE, ONE REQUEST ID (W2) ───────────────────────────────────
+   *
+   * The server answers a retry carrying the SAME `X-Request-Id` from its
+   * ledger instead of doing the change twice; that only helps if the retry
+   * really carries the same id. So an id belongs to one CHANGE (method, URL,
+   * body), is kept while its outcome is unknown, and is dropped the moment
+   * the server gives a definitive answer:
+   *
+   *   network failure → unknown: retried once by itself, then kept for the
+   *                     person's next press of the same change;
+   *   5xx             → maybe a commit whose answer was lost: kept (a
+   *                     rolled-back refusal left nothing in the ledger, so
+   *                     reusing the id costs nothing);
+   *   2xx / 4xx       → known: dropped, and pressing again is a new change.
+   *
+   * Kept in sessionStorage so a reload in the same tab still finishes the
+   * same change; in memory when storage is refused. */
+  const PENDING = 'lemrid:';            // not 'lem:', which bust() clears
+  const pendingMem = {};
+  function changeKey(method, url, body) {
+    return PENDING + method + ' ' + url + ' ' + (body === undefined ? '' : body);
+  }
+  function newId() {
+    try {
+      if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    } catch (e) { /* fall through */ }
+    let out = Date.now().toString(36) + '-';
+    for (let i = 0; i < 4; i++) out += Math.random().toString(36).slice(2, 8);
+    return out;
+  }
+  function pendingId(key) {
+    try { const v = sessionStorage.getItem(key); if (v) return v; } catch (e) { /* memory */ }
+    return pendingMem[key] || null;
+  }
+  function keepId(key, id) {
+    pendingMem[key] = id;
+    try { sessionStorage.setItem(key, id); } catch (e) { /* memory only */ }
+  }
+  function dropId(key) {
+    delete pendingMem[key];
+    try { sessionStorage.removeItem(key); } catch (e) { /* nothing to drop */ }
+  }
+
+  /* fetch + parse + format, for a write. Resolves to
+   * {ok, status, body, error, replayed} — never rejects, because a save
+   * handler that throws leaves the dialog open with a spinner and no
+   * explanation, which is the failure this exists to remove. Every call
+   * carries an `X-Request-Id` (above). An unreachable server is NOT
+   * "nothing was saved": the request may have landed and only its answer
+   * been lost, and that sentence would send somebody to re-enter a change
+   * that is already in force. */
   function send(url, options) {
     options = options || {};
-    const init = {method: options.method || 'POST',
-                  headers: {'Content-Type': 'application/json'}};
-    if (options.body !== undefined) init.body = JSON.stringify(options.body);
-    return fetch(url, init).then(r =>
-      r.json().catch(() => ({})).then(body => ({
-        ok: r.ok, status: r.status, body: body,
-        error: r.ok ? '' : failure(r, body, options.fallback)
-      }))
-    ).catch(() => ({
-      ok: false, status: 0, body: {},
-      error: options.fallback
-        ? options.fallback + ' The server could not be reached.'
-        : 'The server could not be reached, so nothing was saved.'
+    const method = options.method || 'POST';
+    const body = options.body !== undefined ? JSON.stringify(options.body) : undefined;
+    const key = changeKey(method, url, body);
+    const id = pendingId(key) || newId();
+    keepId(key, id);
+    const init = {method: method,
+                  headers: {'Content-Type': 'application/json', 'X-Request-Id': id}};
+    if (body !== undefined) init.body = body;
+    const attempt = () => fetch(url, init);
+    const once = () => attempt().catch(() => new Promise((resolve, reject) => {
+      setTimeout(() => { attempt().then(resolve, reject); }, 700);
+    }));
+    return once().then(r => {
+      if (r.status < 500) dropId(key);
+      const replayed = !!(r.headers && r.headers.get &&
+                          r.headers.get('X-Request-Replayed') === 'true');
+      return r.json().catch(() => ({})).then(parsed => ({
+        ok: r.ok, status: r.status, body: parsed, replayed: replayed,
+        error: r.ok ? '' : failure(r, parsed, options.fallback)
+      }));
+    }).catch(() => ({
+      ok: false, status: 0, body: {}, replayed: false,
+      error: (options.fallback ? options.fallback + ' ' : '')
+        + 'The server could not be reached, so it is not known whether this '
+        + 'saved. Press again to finish it: it will not be saved twice.'
     }));
   }
 
@@ -291,8 +349,20 @@ window.LEM = (function () {
       });
     }
 
+    /* ONE field: does a repaint have to leave it alone? True while it has
+     * the caret or holds text that was not saved. The round (static/js/
+     * round.js) asks this per reading input and repaints everything else,
+     * because guarding the whole round with `busy` is what kept a tick from
+     * ever showing (P1: a tapped row kept focus, so the round was "busy"). */
+    function holds(el, doc) {
+      if (!el) return false;
+      doc = doc || (typeof document !== 'undefined' ? document : null);
+      if (doc && doc.activeElement === el) return true;
+      return dirty(el);
+    }
+
     return {busy: busy, defer: defer, release: release, watch: watch,
-            dirty: dirty};
+            dirty: dirty, holds: holds};
   })();
 
   return {live: live, get: get, fresh: fresh, bust: bust, prefetch: prefetch,

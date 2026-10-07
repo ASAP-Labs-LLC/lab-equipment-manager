@@ -76,7 +76,7 @@ def seed_every_table(gw):
     gw.sql("INSERT INTO lem_lab_holidays VALUES ('2026-12-25','Christmas')")
     gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, ts TEXT, "
            "kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, detail TEXT)")
-    gw.sql("INSERT INTO lem_machine_log VALUES ('m0','2026-08-03T09:30:00','run','1','','','{}')")
+    gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES ('m0','2026-08-03T09:30:00','run','1','','','{}')")
 
 
 def seed(gw, n=3):
@@ -249,7 +249,7 @@ class TestBatchedRead:
         # failed on a statement LabCore accepts perfectly well.
         from snapshot_service import _ARMS, SnapshotService
         SnapshotService(gw).ensure_schema()
-        gw.sql("INSERT INTO lem_machine_log VALUES "
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
                "('m1','2026-08-03T09:00:00','run','1','CP','-7.4','{}')")
         gw.sql("INSERT INTO lem_machine_status VALUES "
                "('m1','OptiMPP 1','GREEN','ok','2026-08-03T09:00:00')")

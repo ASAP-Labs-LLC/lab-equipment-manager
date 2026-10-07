@@ -162,14 +162,27 @@ class TestSavingACorrectionRecordsTheChange:
         assert CorrectionAuditStore(gateway).history("m1") == []
 
 
+class OneStatementAtATime(RefusingAudit):
+    """A store that cannot offer a transaction — LabCore's queue, which is
+    what LEM wrote to before transfer §5. On the LEM store a refused receipt
+    rolls the factor back and the save says NOT saved
+    (`test_correction_transaction.py`, W2); without a transaction the factor
+    has already landed by the time the receipt is refused, and that is the
+    path these tests hold to its rules."""
+
+    transaction = None
+
+
 class TestARefusedAuditRowIsNotLost:
     """A busy queue is an ordinary Tuesday, and the operator's change has
     already landed by the time the audit row is refused. Failing the change
     would be a lie in one direction; dropping the record is a lie in the
-    other."""
+    other.
+
+    One-statement-at-a-time stores only: see `OneStatementAtATime`."""
 
     def _app(self):
-        gateway = RefusingAudit()
+        gateway = OneStatementAtATime()
         SnapshotService(gateway).ensure_schema()
         _seed_machine(gateway)
         app = create_app(gateway, secret="t")
@@ -269,6 +282,8 @@ class TestARefusedAuditRowIsNotLost:
         key and `_already_recorded` reads that as done.
         """
         class WroteItThenSaidNo(FakeLabCoreGateway):
+            transaction = None          # see OneStatementAtATime
+
             def __init__(self):
                 super().__init__()
                 self.swallow = False

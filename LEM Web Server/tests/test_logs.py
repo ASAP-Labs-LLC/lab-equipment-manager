@@ -60,7 +60,7 @@ def seed_log(gw):
         ("m2", "2026-07-05T12:00:00", "run", "37050", "", "", {}),
     ]
     for uid, ts, kind, lab, test, val, detail in rows:
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [uid, ts, kind, lab, test, val, json.dumps(detail)])
 
 
@@ -233,15 +233,19 @@ class TestTheLogsPage:
     def test_it_exists(self, client):
         assert client.get("/logs").status_code == 200
 
-    def test_it_is_linked_from_the_floor(self, client):
-        assert 'href="/logs"' in client.get("/floor").get_data(as_text=True)
+    def test_it_is_linked_from_every_shell_page(self, client):
+        """The sidebar's Log item (the old floor linked it from its toolbar;
+        piece 14 deleted the floor)."""
+        for page in ("/", "/quality", "/settings"):
+            assert 'href="/logs"' in client.get(page).get_data(as_text=True), page
 
     def test_it_can_get_back(self, client):
         assert 'href="/"' in client.get("/logs").get_data(as_text=True)
 
     def test_it_has_the_filters(self, client):
         body = client.get("/logs").get_data(as_text=True)
-        for ident in ("fMachine", "fKindSel", "fSince", "fUntil", "fQuery"):
+        # piece 7: the shell's filter row; every value lives in the URL
+        for ident in ("f-equipment", "f-kind", "f-since", "f-until", "f-q"):
             assert f'id="{ident}"' in body, ident
 
     def test_it_offers_the_csv_export(self, client):

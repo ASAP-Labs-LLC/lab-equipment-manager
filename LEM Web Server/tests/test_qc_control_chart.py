@@ -141,7 +141,7 @@ LOG_DDL = ("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
 
 def log(gw, uid, ts, kind, lab_id, test_name, value, detail):
     gw.sql(LOG_DDL)
-    gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+    gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
            [uid, ts, kind, lab_id, test_name, str(value),
             json.dumps(detail)])
 
@@ -443,7 +443,7 @@ class TestTheEndpointUsesQcSeries:
         """`in_spec` is tri-state. `False` for a row whose detail could not be
         read invents a failure that never happened."""
         seed_attributed(gw)
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["m1", "2026-08-03T09:00:00", "qc", "L-9001", "Flash Point",
                 "11.0", "{not json at all"])
         s = series_of(client, "m1")
@@ -477,8 +477,9 @@ class TestTheEndpointUsesQcSeries:
 
 class TestTheExistingContractSurvives:
     def test_points_band_and_counts_are_still_where_they_were(self, gw, client):
-        """floor.html is being rewritten against this payload right now. The
-        new fields are additions; the old names still mean what they meant."""
+        """The record's chart reads this payload (the old floor page did
+        too). The new fields are additions; the old names still mean what
+        they meant."""
         seed_attributed(gw)
         s = series_of(client, "m1")
         assert [p["value"] for p in s["points"]] == VALUES

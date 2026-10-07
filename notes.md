@@ -530,6 +530,13 @@ Full analysis with code references:
 `docs/superpowers/specs/2026-08-03-v4-to-v5-feature-gap.md`.
 Priorities are a suggestion — reorder as you like.
 
+### Module versions across the fleet · **small** (Ryan, 2026-10-06)
+Each instrument's Data transfer section already shows the module version its
+bench last reported. Wanted: one place (Settings → Transfer, or an Instruments
+column) that lists every bench's module version, so a mixed v3.x/v4 floor shows
+at a glance which benches are still waiting to be updated. "Not reported by
+this bench's module version" for v3.x benches, never blank.
+
 ### Checklists — nothing exists yet · **big**
 V4's daily-rounds workflow, absent from V5 entirely.
 

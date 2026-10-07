@@ -431,10 +431,14 @@ class TestARefusedDeleteReportsWhatActuallyLanded:
         assert stale_of(push(client)) == set()
 
     def test_a_refused_purge_is_reported_even_though_the_rest_landed(self):
-        """Erasing history is the most destructive half of this endpoint.
-        "Deleted" while the log is untouched is the worst possible lie about
-        it — in both directions."""
-        gw, client = busy_bench(refuse=refuse_only("lem_machine_log"))
+        """Hiding history is the most consequential half of this endpoint.
+        "Done" while the history is still on every screen is the worst
+        possible lie about it — in both directions.
+
+        The statement refused is the one that hides (transfer §5.2: purge is
+        a `retired_at` on the config row now; the record itself refuses a
+        DELETE)."""
+        gw, client = busy_bench(refuse=refuse_only("retired_at"))
         response = client.delete("/api/machines/pac-flash-2",
                                  json={"confirm": True, "purge_history": True})
         assert response.status_code >= 400, response.get_json()
@@ -726,8 +730,13 @@ class TestTheFloorDoesNotSwallowARefusal:
     with no transaction across them, and the reply thrown away entirely.
     """
 
-    PAGES = ("templates/floor.html", "templates/checklists.html",
-             "templates/maintenance.html")
+    # Every script and template that ships, not a list of pages: the old
+    # floor and PM page that this list once named were deleted in piece 14,
+    # and a list of names is one a new page is forgotten from.
+    PAGES = tuple(sorted(
+        str(p.relative_to(__import__("pathlib").Path(__file__).resolve().parent.parent))
+        for d, pat in (("static/js", "*.js"), ("templates", "*.html"))
+        for p in (__import__("pathlib").Path(__file__).resolve().parent.parent / d).glob(pat)))
 
     # Calls whose answer there is genuinely nothing to do with. Named one by
     # one, because "it's probably fine" is how the other seven got here.
@@ -750,7 +759,11 @@ class TestTheFloorDoesNotSwallowARefusal:
                 continue
             if any(a in line for a in self.ALLOWED):
                 continue
-            assigned = bool(re.search(r"=\s*(await\s+)?fetch\(", line))
+            # kept: assigned to a name, or chained straight into a .then
+            # that reads the status (quality.js's New standard save)
+            assigned = bool(re.search(r"=\s*(await\s+)?fetch\(", line)) or (
+                re.search(r"^\s*\.then\(\s*\(?r\)?\s*=>", lines[i + 1] if i + 1 < len(lines) else "")
+                is not None and "!r.ok" in window)
             yield f"{path}:{i + 1}: {line.strip()[:90]}", assigned
 
     @pytest.mark.parametrize("page", PAGES)
@@ -777,18 +790,37 @@ class TestTheFloorDoesNotSwallowARefusal:
         source = open("static/lem.js", encoding="utf-8").read()
         assert "not_landed" in source and "NOT saved" in source
 
-    @pytest.mark.parametrize("page", ("templates/floor.html",
-                                      "templates/checklists.html"))
-    def test_the_pages_use_it(self, page):
-        assert "LEM.failure(" in open(page, encoding="utf-8").read()
+    def test_the_scan_sees_the_pages_that_write(self):
+        assert len(self.PAGES) > 40
+        assert "static/js/record.js" in self.PAGES and "static/js/settings.js" in self.PAGES
+
+    def test_the_record_says_the_servers_own_refusal(self):
+        """The record's one send() (every write on the record goes through
+        it) throws the server's own sentence, so the sheet that sent it says
+        it; there is no canned "could not save" in its place."""
+        js = open("static/js/record.js", encoding="utf-8").read()
+        send = js[js.index("    function send(url, opts)"):]
+        send = send[:send.index("\n    }\n")]
+        assert "new Error(b.error ||" in send
+
+    def test_the_round_editor_writes_through_lem_send(self):
+        """LEM.send formats a refusal with the same `failure()`, and keeps a
+        request id so a Save pressed again is not saved twice."""
+        js = open("static/js/round_edit.js", encoding="utf-8").read()
+        assert "LEMjs.send('/api/checklists'" in js
+        assert "LEM.send('/api/checklists/' + encodeURIComponent(main.dataset.uid)" in js
+        assert "fetch('/api/checklists'" not in js
 
     def test_the_override_shows_labcores_reason_not_a_canned_one(self):
         """The write the benches act on. "Could not apply the override."
         cannot tell somebody whether to retry in five seconds or go and find
-        help."""
-        source = open("templates/floor.html", encoding="utf-8").read()
-        assert "alert('Could not apply the override.');" not in source
-        assert "'Could not apply the override.'" in source  # kept as fallback
+        help. On the record (the old floor page's dialog went with it in
+        piece 14) Take off line / Put back on line is a sheet that submits
+        through send(), so a refusal keeps the sheet open with the server's
+        sentence."""
+        source = open("static/js/record.js", encoding="utf-8").read()
+        assert "submit($('online-form'), $('online-err')" in source
+        assert "Could not apply the override" not in source
 
 
 class TestAHalfFinishedChangeoverSaysSo:

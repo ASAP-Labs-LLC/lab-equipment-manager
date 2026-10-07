@@ -33,6 +33,7 @@ round, which tells the lab there is nothing to do today.
 from __future__ import annotations
 
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -101,6 +102,35 @@ def _hhmm(raw: str) -> str:
     return f"{int(hh):02d}:{int(mm):02d}"
 
 
+def parse_limit(raw) -> Optional[float]:
+    """A limit as typed: blank is None (no limit), a number is that number,
+    anything else raises ValueError. Commas, NaN and infinities are refused,
+    not guessed at: "1,000" is a thousand to one person and one to another."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        raise ValueError("not a number")
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    else:
+        text = str(raw).strip()
+        if not text:
+            return None
+        if not re.fullmatch(r"[-+]?(\d+\.?\d*|\.\d+)", text):
+            raise ValueError("not a number")
+        value = float(text)
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ValueError("not a number")
+    return value
+
+
+def _limit_or_none(raw) -> Optional[float]:
+    try:
+        return parse_limit(raw)
+    except ValueError:
+        return None
+
+
 @dataclass
 class ChecklistItem:
     """One line of a round."""
@@ -126,13 +156,21 @@ class ChecklistItem:
     # forced into an object, and clearing this puts the item back exactly as it
     # was, because no reading is ever moved (see TrackedStore).
     track_uid: str = ""
+    # LIMITS ON A NUMBER THIS ITEM OWNS (ia-final §3.4). Optional, and None is
+    # "no limit" — never 0.0, which would be a minimum nobody set and, on a
+    # pressure, a limit every reading passes. An item that TRACKS a thing has
+    # none of its own: the thing's limits are the limits, said once, because
+    # two copies of a limit is how they come to disagree.
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
 
     def to_dict(self) -> dict:
         return {"uid": self.uid, "text": self.text,
                 "days_active": [int(d) for d in self.days_active],
                 "item_type": self.item_type, "parent_uid": self.parent_uid,
                 "entry_type": self.entry_type, "units": self.units,
-                "track_uid": self.track_uid}
+                "track_uid": self.track_uid,
+                "min": self.min_value, "max": self.max_value}
 
     @classmethod
     def from_dict(cls, data: dict) -> "ChecklistItem":
@@ -155,7 +193,11 @@ class ChecklistItem:
                    units=str(data.get("units") or ""),
                    # Absent on every item written before this existed, which
                    # reads correctly as "owns its own series".
-                   track_uid=str(data.get("track_uid") or ""))
+                   track_uid=str(data.get("track_uid") or ""),
+                   # Stored junk is no limit, never a wrong one; the save
+                   # route refuses junk before it is ever stored.
+                   min_value=_limit_or_none(data.get("min")),
+                   max_value=_limit_or_none(data.get("max")))
 
     def counts_towards_completion(self) -> bool:
         """A heading isn't work — counting it makes a finished round read 80%."""
@@ -786,21 +828,48 @@ class ChecklistStore:
                 # still reported as busy. Without it six refusals from a deep
                 # queue come back 502 and the operator is told never to retry
                 # an import that would land a minute later.
-                raise ChecklistWriteError(
+                refused = ChecklistWriteError(
                     f"LabCore refused a batch of {len(chunk)} historical ticks "
                     f"after {attempts} attempts; {done} rows landed before it. "
                     f"Last answer: {refusal}.{spent} Run the import again — "
                     f"what already landed is skipped.", res)
+                # The count rides on the refusal as a number too, so the
+                # route can report `history_landed` without parsing prose.
+                refused.done = done
+                raise refused
             if time.monotonic() >= deadline:
-                raise ChecklistWriteError(
+                late = ChecklistWriteError(
                     f"The import ran out of its {budget:.0f}s budget with "
                     f"{done} rows landed, because LabCore's queue was taking "
                     f"them slower than that. Run it again — what already "
                     f"landed is skipped.")
+                late.done = done
+                raise late
             time.sleep(pause)
         return done
 
-    def history(self, limit: int = 60) -> List[dict]:
+    def archive_summary(self, checklist_uid: Optional[str] = None) -> dict:
+        """How much the archive holds: {days, first, last}. One read.
+
+        For the list page's "Archived (n)" and an editor's Archive section
+        (one round's days when `checklist_uid` is given). Raises rather than
+        answering 0 days, for the reason `history` gives: an archive that
+        reads empty during an outage says the rounds were never run.
+        """
+        sql = ("SELECT COUNT(DISTINCT day) AS days, MIN(day) AS first, "
+               "MAX(day) AS last FROM lem_checklist_state")
+        args: list = []
+        if checklist_uid:
+            sql += " WHERE checklist_uid = ?"
+            args.append(checklist_uid)
+        rows = self._read(sql, args)
+        row = rows[0] if rows else {}
+        return {"days": int(row.get("days") or 0),
+                "first": str(row.get("first") or ""),
+                "last": str(row.get("last") or "")}
+
+    def history(self, limit: int = 60,
+                checklist_uid: Optional[str] = None) -> List[dict]:
         """Per-day tick counts, newest first — the "did we do the rounds?" view.
 
         Raises rather than answering "no days": this is the archive an auditor
@@ -809,11 +878,15 @@ class ChecklistStore:
         Declares nothing — see `ensure_schema`.
         """
         out = []
+        where, args = "", []
+        if checklist_uid:
+            # one round's days, for its editor's Archive section
+            where, args = "WHERE checklist_uid = ? ", [checklist_uid]
         for row in self._read(
                 "SELECT day, COUNT(*) AS total, "
                 "SUM(CASE WHEN checked THEN 1 ELSE 0 END) AS checked "
-                "FROM lem_checklist_state GROUP BY day "
-                "ORDER BY day DESC LIMIT ?", [int(limit)]):
+                "FROM lem_checklist_state " + where + "GROUP BY day "
+                "ORDER BY day DESC LIMIT ?", args + [int(limit)]):
             total = int(row.get("total") or 0)
             checked = int(row.get("checked") or 0)
             out.append({"day": str(row.get("day") or ""), "total": total,

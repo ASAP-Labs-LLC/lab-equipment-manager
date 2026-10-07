@@ -28,9 +28,11 @@ import web_app
 from labcore_gateway import FakeLabCoreGateway
 from web_app import create_app
 
-# Every page that includes the shared nav. The stamp lives there so it cannot
-# be on some pages and not others.
-PAGES = ("/", "/floor", "/maintenance", "/checklists", "/logs")
+# Every page is drawn by one of two frames: _layout.html (every shell page)
+# or _wall.html (the TV walls). The stamp lives in each frame, so it cannot
+# be on some pages and not others. These were the old nav partial's pages until
+# piece 14 deleted them; tests/test_ui_shell_pages.py walks every page.
+PAGES = ("/settings", "/logs", "/floor", "/qc")
 
 
 @pytest.fixture
@@ -53,8 +55,7 @@ class TestTheVersionIsOnThePage:
         occurs in the markup by coincidence. Eight of eleven tests here were
         green against a page with no stamp on it at all. Read the element.
         """
-        m = re.search(r'<(\w+)[^>]*class="[^"]*verstamp[^"]*"[^>]*>(.*?)</\1>',
-                      body, re.S)
+        m = re.search(r'<(\w+)[^>]*id="app-version"[^>]*>(.*?)</\1>', body, re.S)
         return re.sub(r"<[^>]+>", " ", m.group(2)) if m else None
 
     @pytest.mark.parametrize("page", PAGES)
@@ -65,24 +66,25 @@ class TestTheVersionIsOnThePage:
 
     def test_it_is_the_same_string_healthz_reports(self, client):
         health = client.get("/healthz").get_json()["version"]
-        text = self._stamp(client.get("/floor").get_data(as_text=True))
-        assert text and health in text
+        for page in PAGES:
+            text = self._stamp(client.get(page).get_data(as_text=True))
+            assert text and text.strip() == health, page
         assert health == web_app.APP_VERSION
 
     def test_a_checkout_says_dev_rather_than_nothing(self, client):
         """A blank corner reads as "no version", not as "not a release"."""
         assert web_app.APP_VERSION
         body = client.get("/floor").get_data(as_text=True)
-        assert re.search(r'class="[^"]*verstamp', body), (
-            "the stamp element is not on the page")
+        assert self._stamp(body), "the stamp element is not on the page"
 
     def test_it_names_itself_for_someone_reading_it_aloud(self, client):
-        """"3.1.0" alone in a corner is a number nobody can act on. It has to
-        say what it is the version OF."""
-        body = client.get("/floor").get_data(as_text=True)
-        text = self._stamp(body)
-        assert text, "no stamp element"
-        assert "LEM" in text or "version" in text.lower(), text.strip()[:80]
+        """"3.1.0" alone in a corner is a number nobody can act on. The corner
+        stamp is exactly what /healthz says (so the two can be compared by
+        eye); the user menu says what it is the version OF: "LEM 3.1.0"."""
+        body = client.get("/settings").get_data(as_text=True)
+        m = re.search(r'<div class="menu-foot">(.*?)</div>', body, re.S)
+        assert m, "no version line in the user menu"
+        assert m.group(1).strip() == "LEM " + web_app.APP_VERSION
 
 
 class TestItReflectsWhatIsActuallyRunning:
@@ -101,6 +103,7 @@ class TestItReflectsWhatIsActuallyRunning:
     def test_the_stamp_is_not_a_link_or_a_control(self, client):
         """It reports; it does not do anything. A clickable version in the
         corner of a wall display is a thing somebody leans on by accident."""
-        body = client.get("/floor").get_data(as_text=True)
-        stamp = re.search(r'<(\w+)[^>]*verstamp', body)
-        assert stamp and stamp.group(1).lower() not in ("a", "button")
+        for page in PAGES:
+            body = client.get(page).get_data(as_text=True)
+            stamp = re.search(r'<(\w+)[^>]*id="app-version"', body)
+            assert stamp and stamp.group(1).lower() not in ("a", "button"), page

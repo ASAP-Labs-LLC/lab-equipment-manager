@@ -54,7 +54,7 @@ def seed_log(gw):
          {"in_spec": True, "expected": -7.4, "low": -10.2, "high": -4.6}),
     ]
     for uid, ts, kind, lab, test, val, detail in rows:
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                [uid, ts, kind, lab, test, val, json.dumps(detail)])
 
 

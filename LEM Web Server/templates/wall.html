@@ -1,0 +1,12 @@
+{% extends "_wall.html" %}
+{#- /wall?show=floor,qc&every=60 (ia-final §3.8): one TV, both walls, one
+    after the other (wall.js). Both first paints are here, so a switch
+    draws at once; the same stale rule holds on each. -#}
+{% block title %}Wall{% endblock %}
+{% block content %}{% include "_wall_floor_view.html" %}{% include "_wall_qc_view.html" %}{% endblock %}
+{% block scripts %}
+  <script src="/static/js/plan.js?v={{ v('js/plan.js') }}"></script>
+  <script src="/static/js/wall_floor.js?v={{ v('js/wall_floor.js') }}"></script>
+  <script src="/static/js/wall_qc.js?v={{ v('js/wall_qc.js') }}"></script>
+  <script src="/static/js/wall.js?v={{ v('js/wall.js') }}"></script>
+{% endblock %}

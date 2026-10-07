@@ -1,0 +1,368 @@
+"""Adoption's decision, on lists of lines and multisets of recorded rows.
+
+Transfer spec §10.2. The first time a v4 module starts on a file bench, the
+file already holds everything v3.9 read — and v3.9 kept no record of WHICH
+lines it read except an offset saved whenever somebody last pressed OK in
+Settings (09-23 and 09-24 on the floor today). Read from the top, the file is
+a K6-sized replay: A's prototype logged all 30 lines of a fully-logged file
+again and sent all 30 cells again. Skip to the end, and a print made while
+LabStation was down for the upgrade is lost without a trace.
+
+So the bench asks the record. Every line after the stored offset (the
+"boundary") is matched against the uid's recorded rows on (lab_id, RAW
+values), by multiset. This file pins the decision itself, with no module, no
+file and no LabCore:
+
+  * the key is the RAW reading, so a correction factor changed since the row
+    was logged cannot unmatch it (U3);
+  * the k-th identical line matches the k-th identical row, so a QC standard
+    printed every morning is counted, not collapsed;
+  * an unmatched line AFTER a match is a print that never reached the record:
+    `recovered` (U2) — and the boundary is itself such a match, because v3.9
+    logged everything it read before saving it;
+  * an unmatched line BEFORE the first match on a file read from the top is
+    pre-LEM history: counted once, never an alarm (U4);
+  * when nothing matches at all, the file's age decides: older than LEM's
+    first ingest is history, anything else is recovered — listed for a
+    person, never silently dropped and never auto-filed.
+"""
+import hashlib
+import json
+from collections import Counter
+
+import pytest
+
+import lem_station_module as mod
+
+
+def key(lab, values):
+    return mod.adoption_key(lab, values)
+
+
+def run_line(i, lab, value, offset=None):
+    """A reading line as adoption sees it: where it is, and its keys."""
+    return mod.AdoptionLine(offset=i * 20 if offset is None else offset,
+                            part=0, pk="pk%d" % i, lab_id=lab,
+                            run_key=key(lab, {"Density": value}),
+                            values=(("Density", value),))
+
+
+def header(i):
+    return mod.AdoptionLine(offset=i * 20, part=0, pk="pk%d" % i, lab_id="",
+                            run_key=None)
+
+
+def recorded(*pairs):
+    return Counter(key(lab, {"Density": v}) for lab, v in pairs)
+
+
+# ── the key ──────────────────────────────────────────────────────────────────
+
+def test_the_key_is_lab_id_and_raw_values_with_numbers_compared_as_numbers():
+    """The file says "0.8000"; a corrected row's `detail.raw` holds the float
+    0.8 that `apply_row_corrections` stored. They are the same reading, and a
+    key that compared their spellings would call every corrected line
+    unrecorded. Numbers are therefore written in one canonical form."""
+    assert key("L-1", {"Density": "0.8000"}) == key("L-1", {"Density": 0.8})
+    assert key("L-1", {"Flash": "41"}) == key("L-1", {"Flash": 41.0})
+    assert key("L-1", {"Density": "0.8000"}) != key("L-1", {"Density": "0.8001"})
+    assert key("L-1", {"Density": "0.8"}) != key("L-2", {"Density": "0.8"})
+    assert key("L-1", {"Note": " ok "}) == key("L-1", {"Note": "ok"})
+
+
+def test_the_recipe_is_the_one_the_server_publishes():
+    """The server hashes its recorded rows and the bench hashes its lines;
+    the two must be the same function or nothing ever matches. Spelled out
+    here byte for byte so a change to either side has to change this."""
+    want = hashlib.sha256(json.dumps(
+        ["L-1", {"Density": "0.8", "Flash": "41"}], sort_keys=True,
+        separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    ).hexdigest()[:32]
+    assert key("L-1", {"Density": "0.8000", "Flash": 41.0}) == want
+
+
+def test_a_corrected_run_row_is_keyed_on_its_raw_reading():
+    """U3's mechanism. v3.9 logged `values` corrected and `raw` beside them.
+    The factor has changed since; the line in the file is the raw reading.
+    Keyed on raw, the row still matches the line."""
+    row = {"kind": "run", "lab_id": "L-1", "test_name": "", "value": "",
+           "detail": json.dumps({"values": {"Density": "0.8100",
+                                            "Sulfur": "12"},
+                                 "raw": {"Density": 0.8},
+                                 "corrections": {"Density": 0.01}})}
+    assert mod.legacy_row_adoption_key(row) == key(
+        "L-1", {"Density": "0.8000", "Sulfur": "12"})
+
+
+def test_a_qc_row_is_keyed_on_its_test_and_raw_value():
+    """A QC standard's print logs one `qc` row per verdict, not a `run`. A
+    verdict whose spec corrected it carries `raw_value`: keyed on the test
+    and that raw reading, exactly."""
+    corrected = {"kind": "qc", "lab_id": "QC-1", "test_name": "Density",
+                 "value": "0.81", "detail": {"raw_value": 0.8,
+                                             "correction": 0.01}}
+    assert mod.legacy_row_adoption_key(corrected) == key("QC-1",
+                                                         {"Density": "0.8"})
+
+
+def test_a_qc_row_that_kept_no_raw_is_keyed_on_its_standard_and_test_only():
+    """v3.9 kept `raw_value` only for a SPEC correction. Under a machine-level
+    factor (lem_correction_factors) the verdict holds the corrected number
+    alone, and `value` is written with %g — six significant digits. So a
+    verdict without a raw cannot say which reading it was: it is keyed on
+    (standard, test) with no value, and a line matches it by count. Keyed
+    on `value`, a QC print logged at one factor looked unrecorded once the
+    factor changed (round-1 critic: 1 false recovered)."""
+    plain = {"kind": "qc", "lab_id": "QC-1", "test_name": "Density",
+             "value": "0.86", "detail": json.dumps({"in_spec": True})}
+    want = key("QC-1", {"Density": mod.ADOPTION_NO_RAW})
+    assert mod.legacy_row_adoption_key(plain) == want
+    other_value = dict(plain, value="0.87")
+    assert mod.legacy_row_adoption_key(other_value) == want
+    assert mod.legacy_row_adoption_key(dict(plain, lab_id="QC-2")) != want
+
+
+def test_a_row_that_cannot_be_read_is_not_a_key():
+    """A detail that is not JSON is not evidence that any line was recorded."""
+    assert mod.legacy_row_adoption_key(
+        {"kind": "run", "lab_id": "L-1", "detail": "{not json"}) is None
+
+
+# ── the plan ─────────────────────────────────────────────────────────────────
+
+def test_a_fully_logged_file_is_adopted_on_its_last_twenty_lines():
+    """U1's shape and the fast path: every line is in the record, so the
+    newest twenty match and the bench adopts at the end of the file without
+    classifying the rest. Nothing is recovered, nothing is history."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(30)]
+    plan = mod.plan_adoption(lines, 0, recorded(*[("L-%d" % i, "0.8")
+                                                  for i in range(30)]))
+    assert plan.kind == "fast"
+    assert plan.recovered == [] and plan.pre_history == 0
+    assert plan.matched == 20 and plan.presumed == 10
+
+
+def test_a_print_made_during_the_upgrade_is_the_one_recovered():
+    """U2: the newest line is not in the record. The fast path fails on it,
+    the full match places it after the first matched line — a print that
+    never reached the record — and it alone is recovered."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(31)]
+    plan = mod.plan_adoption(lines, 0, recorded(*[("L-%d" % i, "0.8")
+                                                  for i in range(30)]))
+    assert plan.kind == "full"
+    assert [l.pk for l in plan.recovered] == ["pk30"]
+    assert plan.matched == 30 and plan.pre_history == 0
+
+
+def test_a_gap_in_the_middle_is_recovered_too():
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(10)]
+    rec = recorded(*[("L-%d" % i, "0.8") for i in range(10) if i != 4])
+    plan = mod.plan_adoption(lines, 0, rec)
+    assert [l.pk for l in plan.recovered] == ["pk4"]
+
+
+def test_identical_lines_match_identical_rows_one_for_one():
+    """A QC standard printed three times and recorded twice: the k-th line
+    matches the k-th row, and the third — the newest — is the one the record
+    never got."""
+    lines = [run_line(i, "QC-1", "0.8") for i in range(3)]
+    plan = mod.plan_adoption(lines, 0, recorded(("QC-1", "0.8"),
+                                                ("QC-1", "0.8")))
+    assert [l.pk for l in plan.recovered] == ["pk2"]
+
+
+def test_replayed_rows_do_not_make_a_line_unrecorded():
+    """The floor's record holds each Agilent line many times over (the daily
+    replays, G1). More rows than lines is still every line recorded."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(25)]
+    rec = recorded(*[("L-%d" % i, "0.8") for i in range(25)] * 4)
+    plan = mod.plan_adoption(lines, 0, rec)
+    assert plan.recovered == [] and plan.matched == 20
+
+
+def test_lines_older_than_the_first_match_are_history_not_alarms():
+    """U4: a file whose first lines predate LEM on this bench. They match
+    nothing, and they come before the first line LEM recorded, so they are
+    history — one count in the adoption record, never a recovered reading."""
+    old = [run_line(i, "OLD-%d" % i, "0.7") for i in range(12)]
+    new = [run_line(12 + i, "L-%d" % i, "0.8") for i in range(15)]
+    plan = mod.plan_adoption(old + new, 0,
+                             recorded(*[("L-%d" % i, "0.8") for i in range(15)]))
+    assert plan.kind == "full"
+    assert plan.pre_history == 12 and plan.recovered == []
+    assert plan.matched == 15
+
+
+def test_the_fast_path_classifies_nothing_older_than_its_twenty_lines():
+    """When the newest twenty lines are all in the record the bench adopts
+    at the end of the file (one lookup, §10.2 step 2). What lies before them
+    is presumed recorded — not counted as history and not recovered: the
+    fast path does not look, and says so in `presumed`."""
+    old = [run_line(i, "OLD-%d" % i, "0.7") for i in range(12)]
+    new = [run_line(12 + i, "L-%d" % i, "0.8") for i in range(25)]
+    plan = mod.plan_adoption(old + new, 0,
+                             recorded(*[("L-%d" % i, "0.8") for i in range(25)]))
+    assert plan.kind == "fast"
+    assert plan.matched == 20 and plan.presumed == 17
+    assert plan.pre_history == 0 and plan.recovered == []
+
+
+def test_history_and_a_late_print_are_told_apart_in_one_file():
+    old = [run_line(i, "OLD-%d" % i, "0.7") for i in range(5)]
+    mid = [run_line(5 + i, "L-%d" % i, "0.8") for i in range(5)]
+    late = [run_line(10, "NEW-1", "0.9")]
+    plan = mod.plan_adoption(old + mid + late, 0,
+                             recorded(*[("L-%d" % i, "0.8") for i in range(5)]))
+    assert plan.pre_history == 5
+    assert [l.pk for l in plan.recovered] == ["pk10"]
+
+
+def test_lines_before_the_boundary_are_presumed_and_never_asked_about():
+    """v3.9 logged every line before the offset it saved. Those lines are not
+    matched at all — and the boundary itself counts as the record reaching
+    that point, so an unmatched line just after it is a missed print, not
+    history (otherwise a single print made during the upgrade, on a bench
+    whose offset is fresh, would be filed away as history and lost)."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(10)]
+    boundary = lines[9].offset            # everything but the last line
+    plan = mod.plan_adoption(lines, boundary, Counter())
+    assert plan.presumed == 9
+    assert [l.pk for l in plan.recovered] == ["pk9"]
+    assert plan.pre_history == 0
+
+
+def test_with_nothing_matching_an_old_file_is_history():
+    lines = [run_line(i, "OLD-%d" % i, "0.7") for i in range(4)]
+    plan = mod.plan_adoption(lines, 0, recorded(("L-1", "0.8")),
+                             file_predates_history=True)
+    assert plan.pre_history == 4 and plan.recovered == []
+
+
+def test_with_nothing_matching_a_newer_file_is_recovered_never_dropped():
+    """A rotated file holding only prints made during the upgrade matches
+    nothing either. Calling it history would lose real readings; recovered
+    keeps them for a person to file."""
+    lines = [run_line(i, "NEW-%d" % i, "0.9") for i in range(3)]
+    plan = mod.plan_adoption(lines, 0, recorded(("L-1", "0.8")),
+                             file_predates_history=False)
+    assert plan.pre_history == 0
+    assert [l.pk for l in plan.recovered] == ["pk0", "pk1", "pk2"]
+
+
+def test_a_line_that_is_not_a_reading_is_neither_matched_nor_recovered():
+    """A header row has no Lab ID and no values. It is consumed (its key is
+    remembered so it never comes back as a reading) and nothing else."""
+    lines = [header(0)] + [run_line(i, "L-%d" % i, "0.8") for i in range(1, 4)]
+    plan = mod.plan_adoption(lines, 0, recorded(*[("L-%d" % i, "0.8")
+                                                  for i in range(1, 4)]))
+    assert plan.recovered == [] and plan.other == 1
+
+
+def test_a_line_whose_lab_id_was_not_asked_about_is_unchecked_not_recovered():
+    """Under a v3.9 server the record is asked about at most 15 times
+    (§10.2). Lines whose Lab ID did not fit are NOT treated as unrecorded —
+    that would turn a read budget into a flood of false recoveries. They are
+    counted as unchecked and said in the adoption record."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(6)]
+    rec = recorded(*[("L-%d" % i, "0.8") for i in range(3, 6)])
+    plan = mod.plan_adoption(lines, 0, rec,
+                             asked={"L-3", "L-4", "L-5"})
+    assert plan.unchecked == 3 and plan.recovered == []
+
+
+def qc_row(lab, test, value, detail=None):
+    return {"kind": "qc", "lab_id": lab, "test_name": test, "value": value,
+            "detail": json.dumps(detail or {"in_spec": True})}
+
+
+def test_a_qc_line_matches_its_qc_rows():
+    """A QC standard's print is logged as verdicts, not a run. A verdict
+    whose spec corrected it kept `raw_value`: matched on it exactly."""
+    qc = mod.AdoptionLine(offset=0, part=0, pk="q", lab_id="QC-1",
+                          run_key=key("QC-1", {"Density": "0.8"}),
+                          values=(("Density", "0.8"),))
+    rec = mod.legacy_adoption_counts([qc_row("QC-1", "Density", "0.81", {
+        "raw_value": 0.8, "correction": 0.01})])
+    plan = mod.plan_adoption([qc], 0, rec.counts, qc=rec.qc)
+    assert plan.matched == 1 and plan.recovered == []
+
+
+def test_a_qc_line_matches_a_verdict_that_kept_no_raw_on_its_value():
+    """Two prints of the standard, one verdict recorded, no raw kept (no
+    factor): it is matched on its value, and the print whose value the record
+    lacks is the one recovered — on the fast path too."""
+    def qc(i, value):
+        return mod.AdoptionLine(
+            offset=i * 20, part=0, pk="q%d" % i, lab_id="QC-1",
+            run_key=key("QC-1", {"Density": value}),
+            values=(("Density", value),))
+    lines = [qc(0, "0.85"), run_line(1, "L-1", "0.8"), qc(2, "0.84")]
+    rows = [qc_row("QC-1", "Density", "0.85"),
+            {"kind": "run", "lab_id": "L-1",
+             "detail": json.dumps({"values": {"Density": "0.8"}})}]
+    rec = mod.legacy_adoption_counts(rows)
+    for fast in (0, 2):
+        plan = mod.plan_adoption(lines, 0, rec.counts, fast_lines=fast,
+                                 qc=rec.qc)
+        assert plan.matched == 2
+        assert [l.pk for l in plan.recovered] == ["q2"]
+
+
+def test_a_line_whose_record_cannot_be_read_is_unreadable_not_recovered():
+    """`unreadable`: Lab IDs the record holds rows for that cannot be read.
+    An unmatched line of such a Lab ID is not a print the record lacks — the
+    record holds something for it that nobody can read — so it is counted
+    (and said) as unreadable, never recovered and never history."""
+    lines = [run_line(i, "L-%d" % i, "0.8") for i in range(5)]
+    rec = recorded(*[("L-%d" % i, "0.8") for i in (0, 1, 3)])
+    plan = mod.plan_adoption(lines, 0, rec, unreadable={"L-2", "L-4"},
+                             fast_lines=0)
+    assert (plan.matched, plan.unreadable, plan.recovered) == (3, 2, [])
+    # Without the statement both would have been recovered.
+    plan = mod.plan_adoption(lines, 0, rec, fast_lines=0)
+    assert [l.lab_id for l in plan.recovered] == ["L-2", "L-4"]
+
+
+def test_a_qc_print_matches_its_verdicts_whatever_today_s_qc_assignment_is():
+    """Which standards a bench is checked against is today's configuration;
+    the verdict rows are what v3.9 did THEN. A standard since unassigned (or
+    a QC library that has not loaded yet) leaves the line with no QC spec of
+    its own, and keyed as a `run` it matched nothing: a false recovery. The
+    record's verdicts are matched whatever today's specs are, on the reading
+    of the column named by the test when no spec names one."""
+    line = mod.AdoptionLine(offset=40, part=0, pk="q", lab_id="QC-D",
+                            run_key=key("QC-D", {"Density": "0.85"}),
+                            values=(("Density", "0.8500"),))
+    tail = run_line(1, "L-1", "0.8")
+    run = {"kind": "run", "lab_id": "L-1",
+           "detail": json.dumps({"values": {"Density": "0.8"}})}
+    rec = mod.legacy_adoption_counts([qc_row("QC-D", "Density", "0.85"), run])
+    plan = mod.plan_adoption([tail, line], 0, rec.counts, fast_lines=0,
+                             qc=rec.qc)
+    assert (plan.matched, plan.recovered) == (2, [])
+    # A test named apart from its column, named by today's spec.
+    named = mod.AdoptionLine(offset=40, part=0, pk="q", lab_id="QC-D",
+                             run_key=key("QC-D", {"Density": "0.85"}),
+                             values=(("Density", "0.8500"),),
+                             cols=(("Density (QC)", "Density"),))
+    rec = mod.legacy_adoption_counts([qc_row("QC-D", "Density (QC)", "0.85"),
+                                      run])
+    plan = mod.plan_adoption([tail, named], 0, rec.counts, fast_lines=0,
+                             qc=rec.qc)
+    assert (plan.matched, plan.recovered) == (2, [])
+    # Without the record's verdicts the print looked unrecorded.
+    plan = mod.plan_adoption([tail, line], 0, rec.counts, fast_lines=0)
+    assert [l.pk for l in plan.recovered] == ["q"]
+
+
+def test_legacy_rows_say_which_qc_verdicts_and_which_lab_ids_they_hold():
+    rows = [qc_row("QC-D", "Density (QC)", "0.8600"),
+            {"kind": "run", "lab_id": "L-1", "test_name": "", "value": "",
+             "detail": json.dumps({"values": {"Density": "0.8"}})},
+            {"kind": "run", "lab_id": "L-2", "test_name": "", "value": "",
+             "detail": "{not json"}]
+    got = mod.legacy_adoption_counts(rows)
+    assert got.unreadable == {"L-2"}
+    # The value as v3.9 spelled it (%g), however the row wrote it.
+    assert got.qc == {"QC-D": {"Density (QC)": {"raw": {}, "value": {"0.86": 1}}}}
+    assert sum(got.counts.values()) == 2

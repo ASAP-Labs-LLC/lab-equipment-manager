@@ -133,22 +133,11 @@ class TestTheFloorRefreshesFromTheServerNotItsOwnCache:
     instant.
     """
 
-    def src(self):
-        import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / "floor.html").read_text(encoding="utf-8")
-
-    def test_the_periodic_refresh_goes_to_the_network(self):
-        s = self.src()
-        fn = s[s.index("async function load()"):]
-        fn = fn[:fn.index("LEM.prefetch")] if "LEM.prefetch" in fn else fn[:4000]
-        assert "LEM.fresh" in fn
-
-    def test_the_first_paint_still_uses_the_cache(self):
-        s = self.src()
-        assert "FIRST_LOAD" in s
-        fn = s[s.index("async function load()"):s.index("async function load()") + 1400]
-        assert "LEM.get" in fn
+    # The two tests that read the old floor page's load() went with it (piece 14).
+    # The new pages paint first from the answer the server renders into the
+    # page and then refetch from the network on the live feed, so there is
+    # no client cache between them and the server to run a cycle behind.
+    # lem.js keeps fresh() for the round pages that still load it.
 
     def test_lem_js_exposes_fresh(self):
         import pathlib
@@ -164,33 +153,3 @@ class TestTheFloorRefreshesFromTheServerNotItsOwnCache:
         js = (pathlib.Path(__file__).resolve().parent.parent
               / "static" / "lem.js").read_text(encoding="utf-8")
         assert "opts.signature" in js
-
-
-class TestFirstPaintFlagIsDeclaredBeforeUse:
-    """`let` is hoisted but sits in the temporal dead zone, so reading FIRST_PAINT
-    above its declaration is a ReferenceError that blanks the whole page. It happened
-    to work because load() is called from the bottom of the file — a fact no reader
-    should have to verify to be sure the page loads."""
-
-    PAGES = ("floor.html", "checklists.html", "maintenance.html")
-
-    def read(self, name):
-        import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / name).read_text(encoding="utf-8")
-
-    @pytest.mark.parametrize("page", PAGES)
-    def test_the_flag_is_declared_before_it_is_read(self, page):
-        s = self.read(page)
-        flags = [f for f in ("FIRST_PAINT", "FIRST_LOAD") if f in s]
-        for flag in flags:
-            decl = s.index(f"let {flag}")
-            first = min(i for i in (s.find(f"{flag} ?"), s.find(f"{flag} =")) if i > 0)
-            assert decl <= first, f"{page}: {flag} read at {first} before {decl}"
-
-    @pytest.mark.parametrize("page", PAGES)
-    def test_it_is_declared_exactly_once(self, page):
-        s = self.read(page)
-        for flag in ("FIRST_PAINT", "FIRST_LOAD"):
-            if flag in s:
-                assert s.count(f"let {flag}") == 1, page

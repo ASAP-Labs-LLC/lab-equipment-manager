@@ -193,7 +193,7 @@ class TestExport:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES (?,?,?,?,?,?,?)",
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES (?,?,?,?,?,?,?)",
                ["m1", "2026-08-03T16:24:51", "qc", "AO25", "Flash",
                 str(corrected), json.dumps(detail)])
 
@@ -215,7 +215,7 @@ class TestExport:
         gw.sql("CREATE TABLE IF NOT EXISTS lem_machine_log (machine_uid TEXT, "
                "ts TEXT, kind TEXT, lab_id TEXT, test_name TEXT, value TEXT, "
                "detail TEXT)")
-        gw.sql("INSERT INTO lem_machine_log VALUES "
+        gw.sql("INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, test_name, value, detail) VALUES "
                "('m1','2026-08-03T16:00:00','qc','AO25','Flash','65.0',"
                "'{\"in_spec\": true, \"expected\": 63.72}')")
         head, *body = self.rows(client.get("/api/export/qc.csv"))
@@ -232,21 +232,24 @@ class TestExport:
 
 # ── it reaches the floor UI ─────────────────────────────────────────────────
 
-class TestTheFloorOffersIt:
-    def src(self):
+class TestTheRecordOffersIt:
+    """The record's Correction factors section (piece 6). The old floor's
+    right-click entry and corrDlg went with the old floor page in piece 14."""
+
+    def src(self, *parts):
         import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / "floor.html").read_text(encoding="utf-8")
+        return (pathlib.Path(__file__).resolve().parent.parent.joinpath(*parts)
+                .read_text(encoding="utf-8"))
 
-    def test_the_right_click_menu_has_an_entry(self):
-        assert 'data-act="corr"' in self.src()
+    def test_the_section_has_a_visible_way_in(self):
+        assert "'Add a correction…'" in self.src("static", "js", "record_actions.js") or \
+            "Add a correction…" in self.src("templates", "instrument.html")
 
-    def test_there_is_a_dialog_to_edit_them(self):
-        src = self.src()
-        assert "corrDlg" in src
+    def test_there_is_a_sheet_to_edit_them(self):
+        assert 'id="corr-sheet"' in self.src("templates", "instrument.html")
 
-    def test_the_panel_shows_an_applied_correction(self):
-        assert "s.correction" in self.src()
+    def test_the_section_shows_an_applied_correction(self):
+        assert "c.correction" in self.src("static", "js", "record_actions.js")
 
 
 # ── reachable as soon as QC is assigned ─────────────────────────────────────
@@ -264,23 +267,18 @@ class TestReachableRightAfterAssigning:
     assignment is made.
     """
 
-    def src(self):
+    def test_the_sheet_takes_a_test_the_bench_has_not_published_yet(self):
+        """The record's sheet lists the methods the bench maps, and always
+        ends with a free entry ("Another test…" / "A test this bench
+        reports…"), so a test assigned a minute ago is never missing from
+        it. The old floor got there by reading `qc_targets`; the free entry
+        covers that and any method not yet mapped."""
         import pathlib
-        return (pathlib.Path(__file__).resolve().parent.parent
-                / "templates" / "floor.html").read_text(encoding="utf-8")
-
-    def test_the_dialog_reads_assigned_targets_as_well(self):
-        s = self.src()
-        block = s[s.index("async function renderCorrections"):]
-        block = block[:block.index("\n}")]
-        assert "qc_targets" in block, \
-            "only published specs were listed, so a fresh assignment showed none"
-
-    def test_it_still_prefers_the_published_spec(self):
-        """When both exist, the published spec carries the band to show."""
-        s = self.src()
-        block = s[s.index("async function renderCorrections"):]
-        assert "effective_specs" in block[:block.index("\n}")]
+        js = (pathlib.Path(__file__).resolve().parent.parent / "static" / "js"
+              / "record_actions.js").read_text(encoding="utf-8")
+        block = js[js.index("function openCorrection"):]
+        block = block[:block.index("\n    }")]
+        assert "'__other'" in block and "A test this bench reports…" in block
 
     def test_a_correction_can_be_saved_for_an_assigned_but_unpublished_test(
             self, gw, client):

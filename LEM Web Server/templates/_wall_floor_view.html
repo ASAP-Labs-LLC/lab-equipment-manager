@@ -1,0 +1,62 @@
+{#- The floor wall's view (§3.8): can the lab run? Server-rendered first
+    paint from ui_wall.floor, so a TV says something true before its
+    scripts run; wall_floor.js keeps it live and draws the plan (plan.js).
+    `data` is _wall_floor_payload(); `w` its wall words. -#}
+{%- set w = data.wall %}
+<section class="wall-view wall-floor" id="view-floor" data-view="floor" aria-labelledby="wf-headline">
+  <header class="wall-head">
+    {% include "_wall_mark.html" %}
+    <div class="wall-headline">
+      <h1 class="wh-title" id="wf-headline"><span class="wh-glyph glyph {{ {'stop': 'error', 'ok': 'final', 'warn': 'half'}.get(w.tone, 'dashed') }}" id="wf-tone" aria-hidden="true"></span><span id="wf-headline-text">{{ w.headline }}</span></h1>
+      <p class="wh-sub" id="wf-sub">{{ w.sub }}</p>
+    </div>
+    {%- set nc = (w.counts or [])|length %}
+    <ul class="wall-counts cols-{{ nc if nc <= 3 else (2 if nc == 4 else 3) }}" id="wf-counts" aria-label="Instruments by state"{% if not w.counts %} hidden{% endif %}>
+      {%- for c in w.counts or [] %}
+      <li class="wc s-{{ c.state }}"><span class="glyph {{ c.glyph }}" aria-hidden="true"></span><b class="wc-n">{{ c.n }}</b><span class="wc-w">{{ c.word }}</span></li>
+      {%- endfor %}
+    </ul>
+  </header>
+  <div class="wall-main">
+    <section class="wall-plan-card" aria-labelledby="wf-level">
+      <div class="wp-bar">
+        <h2 class="wp-title" id="wf-level">The floor</h2>
+        <span class="wp-dots" id="wf-dots" aria-hidden="true"></span>
+        <span class="wp-step" id="wf-step" hidden>
+          <button type="button" class="btn btn-sm" id="wf-prev" aria-label="Previous level">‹</button>
+          <button type="button" class="btn btn-sm" id="wf-next" aria-label="Next level">›</button>
+        </span>
+      </div>
+      <div class="wall-plan-wrap" id="wf-plan-wrap">
+        <div class="plan wallplan" id="wf-plan" data-testid="wall-plan"></div>
+        <p class="wall-empty" id="wf-empty"{% if w.counts %} hidden{% endif %}>{% if not w.counts %}{{ w.sub }}{% endif %}</p>
+      </div>
+      <p class="wall-unplaced" id="wf-unplaced" hidden></p>
+    </section>
+    <aside class="wall-attn" aria-labelledby="wf-attn-h">
+      <h2 class="wa-h" id="wf-attn-h">Needs attention <span class="wa-h-note">· worst first</span></h2>
+      {#- one group per run of one state, worst first; the state word is the
+          group's heading, said once; each row is a name and its whole reason
+          (round 4: the word said on every card, and the worst two cut) -#}
+      <ol class="wa-list" id="wf-attn">
+        {%- for g in (w.attention or [])|groupby_runs('state') %}
+        <li class="wa-group s-{{ g[0].state }}"><span class="wa-word"><span class="glyph {{ g[0].glyph }}" aria-hidden="true"></span><span class="wa-wtext">{{ g[0].word }}</span></span><ul class="wa-rows">
+          {%- for a in g %}<li class="wa-item s-{{ a.state }}{% if a.state == 'not_ok' %} stop{% endif %}{% if a.stopped %} stopped{% endif %}"><a href="{{ a.href }}" draggable="false"><span class="wa-names">{{ a.label }}</span><span class="wa-detail">{{ a.detail }}</span></a></li>{% endfor -%}
+        </ul></li>
+        {%- endfor %}
+      </ol>
+      <p class="wa-more" id="wf-attn-more"{% if not w.attention_more %} hidden{% endif %}>{% if w.attention_more %}and {{ w.attention_more }} more on Instruments{% endif %}</p>
+      <p class="wa-none" id="wf-attn-none"{% if w.attention is none or w.attention %} hidden{% endif %}>Nothing needs attention.</p>
+      {#- a phone has no room for a TV's floor plan (piece 15): the plan it
+          would shrink to unreadable bays is one tap away, at a phone's size -#}
+      <a class="wall-maplink" href="/?view=map" data-testid="wall-maplink">See the floor plan ›</a>
+    </aside>
+  </div>
+  <footer class="wall-foot">
+    <span class="wf-live" role="status"><span class="live-dot" id="wf-dot" data-state="fresh" aria-hidden="true"></span><span id="wf-live">Live</span></span>
+    <span class="wf-fleet" id="wf-fleet">{% if w.benches %}{{ w.benches.checking_in }} of {{ w.benches.total }} benches checking in{% endif %}</span>
+    <span class="wf-spacer"></span>
+    <span class="wf-rot" id="wf-rot"></span>
+  </footer>
+  <script type="application/json" id="wall-data">{{ data|json_island }}</script>
+</section>

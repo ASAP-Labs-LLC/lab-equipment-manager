@@ -324,25 +324,28 @@ class TestEndpoints:
 # ── the page ────────────────────────────────────────────────────────────────
 
 class TestThePage:
+    # The round is /checklists/<slot> (tests/test_round_page.py); defining
+    # rounds is /checklists/edit (piece 10, tests/test_round_editor.py).
     def test_it_no_longer_claims_to_be_unbuilt(self, client):
-        body = client.get("/checklists").get_data(as_text=True).lower()
+        body = client.get("/checklists/edit").get_data(as_text=True).lower()
         assert "not been implemented" not in body
 
-    def test_it_has_an_opening_and_a_closing_slot(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
+    def test_a_new_round_can_be_opening_or_closing(self, client):
+        body = client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
         assert 'data-slot="opening"' in body
         assert 'data-slot="closing"' in body
 
-    def test_it_reads_the_endpoint(self, client):
-        assert "/api/checklists" in client.get("/checklists").get_data(
-            as_text=True)
+    def test_the_editor_saves_through_the_endpoint(self, client):
+        js = client.get("/static/js/round_edit.js").get_data(as_text=True)
+        assert "/api/checklists" in js
 
     def test_it_can_get_back(self, client):
-        assert 'href="/"' in client.get("/checklists").get_data(as_text=True)
+        assert 'href="/"' in client.get("/checklists/edit").get_data(as_text=True)
 
-    def test_it_can_add_items(self, client):
-        body = client.get("/checklists").get_data(as_text=True)
-        assert 'id="newItem"' in body
+    def test_items_are_added_in_the_editor_not_on_the_round(self, client):
+        """P2: the live round's add box posted a new checklist per item."""
+        assert 'id="ed-add"' in client.get("/checklists/edit/new?slot=opening").get_data(as_text=True)
+        assert 'id="newItem"' not in client.get("/checklists/opening").get_data(as_text=True)
 
     def test_it_survives_labcore_being_down(self):
         from web_app import create_app
@@ -370,7 +373,14 @@ class TestThePage:
 
         app = create_app(Dead(), authenticator=StubAuth(), secret="s")
         app.config["TESTING"] = True
-        assert app.test_client().get("/checklists").status_code == 200
+        c = app.test_client()
+        assert c.get("/checklists/opening").status_code == 200
+        # The rounds list reads the store to draw; a store that cannot answer
+        # is a sentence, never a page claiming no rounds exist.
+        r = c.get("/checklists/edit")
+        assert r.status_code == 200
+        assert "could not be read" in r.get_data(as_text=True)
+        assert "No rounds are set up" not in r.get_data(as_text=True)
 
 
 # ── the write queue says no, and the store must not say yes ─────────────────

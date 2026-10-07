@@ -1,0 +1,27 @@
+{#- The QC wall's view (§3.8): one card per (instrument, check), worst
+    first, rotating every 15 s. Verdict words are the snapshot's, the same
+    the record says; the history is the local record's. `qc` is
+    _wall_qc_payload(). -#}
+<section class="wall-view wall-qc" id="view-qc" data-view="qc" aria-labelledby="wq-headline">
+  <header class="wall-head">
+    {% include "_wall_mark.html" %}
+    <div class="wall-headline">
+      <h1 class="wh-title" id="wq-headline"><span class="wh-glyph glyph {{ {'stop': 'error', 'ok': 'final', 'warn': 'half'}.get(qc.tone, 'dashed') }}" id="wq-tone" aria-hidden="true"></span><span id="wq-headline-text">{{ qc.headline }}</span></h1>
+      <p class="wh-sub" id="wq-sub">{{ qc.sub }}</p>
+    </div>
+    <div class="wq-pages" id="wq-pages" aria-hidden="true"></div>
+  </header>
+  <div class="wq-grid" id="wq-grid" data-testid="qc-grid"></div>
+  <p class="wall-empty" id="wq-empty"{% if qc.cards %} hidden{% endif %}>{% if not qc.cards %}{{ qc.sub }}{% endif %}</p>
+  <footer class="wall-foot">
+    <span class="wf-live" role="status"><span class="live-dot" id="wq-dot" data-state="fresh" aria-hidden="true"></span><span id="wq-live">Live</span></span>
+    <span class="wf-fleet" id="wq-count">{% if qc.cards %}{{ qc.cards|length }} checks{% endif %}</span>
+    <span class="wf-spacer"></span>
+    <span class="wq-step" id="wq-step" hidden>
+      <button type="button" class="btn btn-sm" id="wq-prev" aria-label="Previous page">‹</button>
+      <button type="button" class="btn btn-sm" id="wq-next" aria-label="Next page">›</button>
+    </span>
+    <span class="wf-rot" id="wq-rot"></span>
+  </footer>
+  <script type="application/json" id="wall-qc-data">{{ qc|json_island }}</script>
+</section>

@@ -1,0 +1,127 @@
+{
+ "W1_snapshot": {
+  "boot_ops": 10,
+  "ops_per_refresh_healthy": 1.0,
+  "arms": 18,
+  "BATCHED_RETRY_AFTER_refreshes": 25,
+  "after_one_watchdog": {
+   "ops_next_30_refreshes": 456,
+   "per_refresh": [
+    19,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    18,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "extra_ops_vs_healthy": 426.0,
+   "minutes_at_12s": 6.0,
+   "stale_after": false,
+   "error_after": ""
+  },
+  "after_one_busy": {
+   "ops_next_30_refreshes": 48,
+   "per_refresh": [
+    19,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1,
+    1
+   ],
+   "extra_ops_vs_healthy": 18.0,
+   "minutes_at_12s": 6.0,
+   "stale_after": false,
+   "error_after": ""
+  }
+ },
+ "W2_correction_lost_response": {
+  "first_http": 503,
+  "first_body": {
+   "detail": "LabCore could not be written to (TimeoutError: harness: response lost (write landed))",
+   "error": "The correction factor for \u201cFlash\u201d was NOT saved. LabCore could not be reached, so this did not go through and its state is unknown. Try again in a moment.",
+   "labcore": "unavailable",
+   "retry": true,
+   "retryable": false,
+   "saved": false
+  },
+  "after_first": {
+   "correction_rows": 1,
+   "audit_rows": 0
+  },
+  "retry_http": 200,
+  "after_retry": {
+   "correction_rows": 1,
+   "audit_rows": 1
+  },
+  "audit_spool": 0
+ },
+ "W3_api_status_cost": {
+  "http": 200,
+  "ops": 5,
+  "detail": {
+   "read:lem_meta": 1,
+   "read:lem_other": 4
+  }
+ },
+ "W4_log_mirror_resume": {
+  "first_pull": "LabCoreUnavailable: Read cancelled after 8s to protect the write queue (query too slow \u2014 likely an u",
+  "rows_after_failed_pull": 100,
+  "rows_after_resume": 250,
+  "source_rows": 250,
+  "state": {
+   "rows": 250,
+   "max_rowid": 250,
+   "filled_at": "2026-10-01T20:26:20+00:00",
+   "stale_reason": ""
+  }
+ }
+}

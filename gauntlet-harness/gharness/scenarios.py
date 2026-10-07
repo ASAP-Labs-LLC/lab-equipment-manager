@@ -1,0 +1,1653 @@
+"""Every scenario of transfer spec §9, as code.
+
+Three kinds:
+
+* **baseline** (29): phase 1's `run_faults.py` functions, called UNCHANGED with
+  `run_faults.Ctx` pointed at World. Their phase-1 columns must reproduce
+  `baseline/faults.json` exactly on v3.9.0.
+* **new, runnable anywhere**: file shapes (X1–X4, R7p, R6deep, Q1), the
+  analyst (A1, A3, A4, A5), per-index errors (B1), economy (E0–E3), legacy
+  projection (L1, L2), kills at named points (K1b, K7b, K8r), and the road
+  scenarios that need only HServer (T1, T2, D1). They run on v3.9 too and say
+  what today does — which is the point of a gate: the same scenario, two
+  answers.
+* **new, needing a v4 capability that has no code yet** (journal surgery,
+  checkpoint, adoption, bridge, replica, store transactions): the body raises
+  `Unsupported` naming exactly what is missing. That is a FAIL, never a skip,
+  and the message says which piece lands it.
+
+A scenario returns a dict of measurements; gate.py compares it with
+expectations.json.
+"""
+import os
+from datetime import timedelta
+
+from .world import Unsupported
+
+WEB_VOLATILE = {("W4", "state", "filled_at")}
+
+
+class Registry:
+    def __init__(self):
+        self.order = []
+        self.fns = {}
+        self.kind = {}
+
+    def add(self, sid, fn, kind):
+        if sid in self.fns:
+            raise ValueError("duplicate scenario id " + sid)
+        self.order.append(sid)
+        self.fns[sid] = fn
+        self.kind[sid] = kind
+
+
+def build(rf, rw, lh, W, mod, GateGateway, server_factory):
+    """Bind every scenario to the loaded target. Returns a Registry."""
+    reg = Registry()
+    lab_id, print_line = lh.lab_id, lh.print_line
+
+    # ── baseline: phase-1 functions, unchanged ──────────────────────────────
+    for fn in rf.R:
+        sid = _baseline_id(fn.__name__)
+        reg.add(sid, (lambda f: lambda: f())(fn), "baseline")
+
+    # ── the legacy road keeps its guards (v4 ships first on it, D8) ─────────
+    # A v2 bench no longer writes its machine log into LabCore, so phase 1's
+    # log-refusal scenarios (F1, N2) now measure the v2 sync — and the
+    # LabCore log drain that a v4 bench still uses against an OLD server went
+    # unexercised (two P0 mutations of it survived). F1L and N2L run the very
+    # same phase-1 functions with the server answering 404 from the start:
+    # the bench never speaks v2, and the old road must still lose nothing.
+    def on_legacy_road(fn):
+        def run():
+            keep = W.default_road_modes
+            W.default_road_modes = {"A": "404", "B": "404"}
+            try:
+                return fn()
+            finally:
+                W.default_road_modes = keep
+        return run
+
+    def new(sid, kind="new"):
+        def deco(fn):
+            reg.add(sid, fn, kind)
+            return fn
+        return deco
+
+    reg.add("F1L", on_legacy_road(rf.f1_log_refused_once), "new")
+    reg.add("N2L", on_legacy_road(rf.n2_log_insert_raise_before), "new")
+
+    # ── kills at named points (§3.3) ────────────────────────────────────────
+    @new("K1b")
+    def k1b():
+        c = W()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.emit(3)
+        c.kill_at("after_journal_before_cursor")
+        c.poll()
+        c.assert_killed("after_journal_before_cursor")
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.settle()
+        return c.tally("K1b single_csv", "kill after journal fsync, before cursor save")
+
+    @new("K7b")
+    def k7b():
+        c = W("multi_csv")
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.emit(3)
+        c.kill_at("after_journal_before_cursor")
+        c.poll()
+        c.assert_killed("after_journal_before_cursor")
+        c.settle()
+        return c.tally("K7b multi_csv", "kill after journal, before the move to processed/")
+
+    @new("K8r")
+    def k8r():
+        c = W("serial")
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.emit(3)
+        c.kill_at("serial_frame_complete_before_fsync")
+        c.poll()
+        c.assert_killed("serial_frame_complete_before_fsync")
+        c.settle()
+        return c.tally("K8r serial", "kill between a frame completing and its fsync")
+
+    # ── power loss mid-append (§3.1, §9.2 T5) ───────────────────────────────
+    @new("T5")
+    def t5():
+        """The process dies after the journal write and before its fsync, and
+        the power cut leaves only part of the last line on disk. The restart
+        must cut the torn line off (and keep it aside), re-deliver what the
+        surviving lines hold, and read the torn reading again from the file:
+        0 lost, 0 doubled."""
+        c = W()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.emit(3)
+        c.kill_at("after_journal_before_fsync")
+        c.before_next_restart(c.tear_journal_tail)
+        c.poll()
+        c.assert_killed("after_journal_before_fsync")
+        if not c.torn:
+            raise RuntimeError("T5 tore nothing — it measured nothing")
+        for _ in range(2):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("T5 single_csv", "power loss mid-append: the last journal line torn")
+        t.update(c.journal_check())
+        return t
+
+    # ── file shapes (§4) ────────────────────────────────────────────────────
+    def line(lab, val):
+        return "%s,%s\n" % (lab, val)
+
+    @new("X1")
+    def x1():
+        c = W()
+        L = [(lab_id(i), "0.%04d" % (8000 + i)) for i in range(3)]
+        for lab, val in (L[0], L[1], L[2], L[1]):     # L1 genuinely printed twice
+            c.emit_line(lab, val)
+        c.poll()
+        c.rewrite([line(*L[2]), line(*L[1])])          # in-place trim to [L2, L1]
+        c.emit_line(*L[1])                             # and L1 a third time
+        c.poll()
+        c.settle()
+        t = c.tally("X1 single_csv", "[L0,L1,L2,L1] trimmed in place to [L2,L1], plus genuine L1")
+        t["rows_lab1"] = sum(1 for r in c.stored_rows() if r["lab_id"] == L[1][0])
+        return t
+
+    @new("X2")
+    def x2():
+        c = W()
+        qc = [("QC-STD-%d" % k, "0.%04d" % (8100 + k)) for k in range(3)]
+        # Logged in as samples so the results road files them like any print:
+        # X2 is about the LOG, and a never-fileable id would add 3 res_lost
+        # that say nothing about rotation.
+        c.gw.seed_samples([q[0] for q in qc])
+        for lab, val in qc:
+            c.emit_line(lab, val)
+        c.poll()
+        c.emit(3); c.poll()
+        # rotation: the new file repeats the 3 QC lines — printed again for real
+        for lab, val in qc:
+            c.emit_line(lab, val, write=False)
+        c.rotate([line(*q) for q in qc])
+        c.poll()
+        c.settle()
+        return c.tally("X2 single_csv", "rotation: the new file repeats 3 earlier lines")
+
+    def _x3(via_temp):
+        c = W()
+        c.emit(6); c.poll()
+        tail = c.lines()[-3:]
+        new_lines = []
+        if not via_temp:
+            for l in tail:                              # genuinely printed again
+                lab, val = l.strip().split(",")
+                c.emit_line(lab, val, write=False)
+        new_lines += tail
+        for _ in range(2):
+            i = c.n; c.n += 1
+            lab, val = print_line(i).strip().split(",")
+            c.emit_line(lab, val, write=False)
+            new_lines.append(line(lab, val))
+        c.rotate(new_lines, via_temp=via_temp)
+        c.poll()
+        c.settle()
+        return c
+
+    @new("X3")
+    def x3():
+        c = _x3(via_temp=False)
+        return c.tally("X3 single_csv", "rotation whose first 3 lines equal the old file's last 3, plus 2 new")
+
+    @new("X3r")
+    def x3r():
+        c = _x3(via_temp=True)
+        return c.tally("X3r single_csv", "same bytes as X3; truth is a temp-file-plus-rename trim")
+
+    @new("X4")
+    def x4():
+        c = W()
+        c.emit(3); c.poll()
+        c.emit(2)                                       # appended, not yet polled
+        new_lines = []
+        for _ in range(2):
+            i = c.n; c.n += 1
+            lab, val = print_line(i).strip().split(",")
+            c.emit_line(lab, val, write=False)
+            new_lines.append(line(lab, val))
+        c.rotate(new_lines)
+        c.poll()
+        c.settle()
+        return c.tally("X4 single_csv", "2 lines appended to the old file, then renamed; new file starts")
+
+    @new("R7p")
+    def r7p():
+        c = W()
+        P = ("QC-P", "0.8500")
+        c.gw.seed_samples([P[0]])                       # fileable; see X2
+        for _ in range(3):
+            c.emit_line(*P)
+        c.poll()
+        c.rewrite([line(*P), line(*P)])                 # head trimmed in place
+        c.emit_line(*P)                                 # identical re-print: same bytes
+        c.poll()
+        c.settle()
+        return c.tally("R7p single_csv", "periodic identical lines: head trim plus identical re-print")
+
+    @new("R6deep")
+    def r6deep():
+        c = W()
+        for _ in range(10):
+            c.emit(20); c.poll()
+        lines = c.lines()
+        k = 100
+        lab, val = lines[k].strip().split(",")
+        corrected = val.replace("0.8", "0.9", 1)
+        assert len(corrected) == len(val)
+        lines[k] = line(lab, corrected)
+        c.printed[lab] = corrected                      # the correction is a genuine print
+        c.rewrite(lines)
+        for _ in range(30):                             # 15 minutes of polls
+            c.poll()
+        return c.tally("R6deep single_csv", "same-size edit outside the head and tail windows")
+
+    @new("Q1")
+    def q1():
+        c = W()
+        for _ in range(5):
+            c.emit(3); c.poll()
+        old = c.lines()
+        i = c.n; c.n += 1
+        new_line = print_line(i)
+        c.printed[new_line.split(",")[0]] = new_line.strip().split(",")[1]
+        c.rewrite(old[:7])                              # mid-rewrite: a prefix
+        c.poll()
+        c.rewrite(old + [new_line])                     # the rewrite completes
+        c.poll()
+        c.settle()
+        return c.tally("Q1 single_csv", "a mid-rewrite poll sees a prefix of the history")
+
+    # ── the analyst (§8) ────────────────────────────────────────────────────
+    @new("A1")
+    def a1():
+        c = W()
+        c.emit(5); c.poll()
+        for k in range(5):
+            c.analyst_edit(lab_id(k), "0.7%03d" % k)
+        c.restart()
+        c.settle()
+        return c.tally("A1 single_csv", "analyst corrects 5 filed cells; clean restart")
+
+    @new("A1j")
+    def a1j():
+        """A1 with the bench journal LOST before the restart, and a LEM that
+        cannot say where the bench's record ends — an old server (404) — so
+        the bench reads its file from the top again and the guard read,
+        alone, has to protect the analyst. Not a spec row — the spec's A1w
+        (below) is the same wipe with LEM up, where blind mode means nothing
+        is re-read at all — but the half of it that is the results road's:
+        with the journal (and so LEM's ledger of what it filed) gone, a cell
+        holding a value LEM cannot vouch for must be a conflict, never
+        overwritten. A1 alone cannot show this: there the journal suppresses
+        the re-read before the guard is ever asked. With LEM up (as this row
+        first ran, before P8's blind mode) the checkpoint now suppresses it
+        too, so the old server is what keeps the guard the only defence.
+
+        Since P4 the wiped bench's new journal ADOPTS before it reads
+        (§10.2), and on an old server it adopts through indexed LabCore
+        reads (U5): all 5 lines are in LabCore's record, so they join the
+        seen-set and the re-read never reaches the results road at all — 0
+        overwritten and 0 duplicated rows, and no cell to conflict over. The
+        guard's own coverage is A3, K4 and N4, where `guard_off` still goes
+        red."""
+        import shutil
+        c = W(road_modes={"A": "404", "B": "404"})
+        c.emit(5); c.poll()
+        for k in range(5):
+            c.analyst_edit(lab_id(k), "0.7%03d" % k)
+        c.before_next_restart(
+            lambda: shutil.rmtree(c.journal_dir(), ignore_errors=True))
+        c.restart()
+        c.settle()
+        return c.tally("A1j single_csv",
+                       "analyst corrects 5 filed cells; journal lost; restart")
+
+    @new("A1w")
+    def a1w():
+        """§9 A1w: A1 with the journal wiped and LEM up. Blind mode (§6.5):
+        the wiped bench does not read its file until LEM's checkpoint has
+        said where its record ends, so the five filed readings are not read
+        again — 0 re-sent — and the analyst's five corrections are never
+        even questioned, let alone overwritten. The wipe takes bench.key, so
+        re-enrolment needs a person (approved through Settings › Transfer,
+        as T4 does); afterwards the bench must be working, not merely
+        stuck-and-harmless: two new prints arrive and file."""
+        need_v2("A1w", "journal wipe + /checkpoint blind mode (P8)")
+        c = W()
+        c.emit(5); c.poll()
+        c.settle(polls=2)
+        for k in range(5):
+            c.analyst_edit(lab_id(k), "0.7%03d" % k)
+        c.before_next_restart(c.wipe_journal)
+        c.restart()
+        approved = None
+        for _ in range(AFTER_WIPE_POLLS):
+            c.poll()
+            if approved is None and c.m._transfer.enrol:
+                approved = c.approve_reenrolment()
+        c.emit(2); c.poll()
+        c.settle()
+        t = c.tally("A1w single_csv", "analyst corrects 5 filed cells; "
+                    "journal wiped; restart with LEM up")
+        t["records_resent"] = c.server.records_resent
+        t["approved"] = approved
+        t["blind_after"] = c.m._transfer_blind()
+        return t
+
+    @new("A3")
+    def a3():
+        c = W("serial")
+        held = [lab_id(3), lab_id(4), lab_id(5)]
+        c.gw.fake.sql("DELETE FROM samples WHERE lab_id IN (?,?,?)", held)
+        c.emit(3); c.poll()
+        c.emit(3); c.poll()                             # 3..5 held at the bench
+        c.gw.seed_samples(held)                         # the sample is logged in...
+        for k, lab in enumerate(held):
+            c.analyst_edit(lab, "0.6%03d" % k)          # ...and the analyst types the cell
+        c.settle(polls=10)
+        return c.tally("A3 serial", "analyst types the cell while the bench holds the reading")
+
+    @new("A4")
+    def a4():
+        c = W()
+        c.emit(3); c.poll()
+        lab = lab_id(1)
+        c.emit_line(lab, "0.8888")                      # the instrument re-ran the sample
+        c.poll()
+        c.settle()
+        return c.tally("A4 single_csv", "instrument re-run of a LEM-filed cell")
+
+    @new("A5")
+    def a5():
+        c = W(batch_mode="labcore")
+        c.emit(3); c.poll()
+        c.emit(3)
+        c.inject_between_read_and_batch(lab_id(3), "0.5555")
+        c.poll()
+        if not c.gw.injected:
+            raise RuntimeError("the A5 injection never fired: no read was followed "
+                               "by a batch carrying the cell — measured nothing")
+        c.settle()
+        return c.tally("A5 single_csv", "analyst edit between the guard read and the batch")
+
+    @new("B1")
+    def b1():
+        c = W(batch_mode="labcore")
+        bad = lab_id(1)
+        c.gw.fail_index(bad, "Density")
+        c.emit(3)
+        for _ in range(8):
+            c.poll()
+        t = c.tally("B1 single_csv", "a per-index error inside an ok batch")
+        t["failing_cell_sends"] = sum(n for (l, tn, v), n in c.gw.cell_sends.items()
+                                      if l == bad and tn == "Density")
+        t["failing_cell_errors"] = c.gw.per_index_errors[(bad, "Density")]
+        # "0 filed for that cell" (§9.2) as the bench's own record says it,
+        # not only as the empty cell implies it.
+        t["failing_cell_filed"] = c.filed_cells(bad)
+        return t
+
+    # ── economy (§9.2 E0–E3; phase 1's run_economy.py, re-run here) ─────────
+    reg.economy_runs = {}
+
+    def economy(source_type, prints, roads=None):
+        key = (source_type, prints, roads)
+        if key not in reg.economy_runs:
+            reg.economy_runs[key] = _economy_run(GateGateway, server_factory, mod, lh,
+                                                 source_type, prints, roads)
+        return reg.economy_runs[key]
+
+    @new("E0")
+    def e0():
+        r = economy("single_csv", 0)
+        return {"idle_labcore_ops": r["steady_ops"],
+                "idle_labcore_ops_per_min": round(r["steady_ops"] / r["steady_minutes"], 3),
+                "v2_syncs": r["v2_syncs"],
+                "polls": r["steady_polls"],
+                "lem_requests_on_poll_thread": r["lem_requests_on_poll_thread"]}
+
+    @new("E1")
+    def e1():
+        r = economy("single_csv", 1)
+        idle = economy("single_csv", 0)
+        polls = r["steady_polls"]
+        # The results road's own share, by category: the identity/guard read
+        # (`read:identity` — it reads "samples"), the key lookup on
+        # sample_tests for a cached sample, and the batch. The rest of
+        # "extra" is the machine-log row, which v2 mode sends to LEM (P8).
+        road = sum(n for cat, n in r["steady_by_cat"].items()
+                   if cat == "read:identity" or cat == "write:batch"
+                   or (cat.startswith("read:") and "SAMPLE_TESTS" in cat.upper()))
+        return {"labcore_ops_per_filing_poll": round(r["steady_ops"] / polls, 4),
+                "extra_ops_per_filing_poll": round((r["steady_ops"] - idle["steady_ops"]) / polls, 4),
+                "results_road_ops_per_filing_poll": round(road / polls, 4),
+                "v2_syncs": r["v2_syncs"],
+                "prints": r["prints"], "lem_run_rows": r["lem_run_rows"],
+                "cells_filed": r["cells_filed"]}
+
+    @new("E2")
+    def e2():
+        r = economy("single_csv", 0)
+        return {"first_poll_reads": r["first_poll_split"]["read"],
+                "first_poll_writes": r["first_poll_split"]["write"]}
+
+    @new("E3")
+    def e3():
+        r = economy("single_csv", 0, roads="404")
+        return {"idle_reads_per_min": r["steady_split_per_min"]["read"]}
+
+    # ── legacy projection (v4 bench against a server that answers 404) ──────
+    @new("L1")
+    def l1():
+        # An old server from before the bench exists: it never spoke v2.
+        c = W(road_modes={"A": "404", "B": "404"})
+        c.emit(3); c.poll()
+        c.emit(3)
+        c.gw.plan = rf.nth("sql:machine_log", 1, "raise_after")
+        c.poll()
+        c.settle()
+        return c.tally("L1 single_csv", "legacy projection: N3's shape")
+
+    @new("L2")
+    def l2():
+        # An old server from before the bench exists: it never spoke v2.
+        c = W(road_modes={"A": "404", "B": "404"})
+        c.emit(3); c.poll()
+        lab = lab_id(10)
+        c.emit_line(lab, "0.8010")
+        c.emit_line(lab, "0.8010")                      # printed twice, one poll
+        c.poll()
+        c.settle()
+        return c.tally("L2 single_csv", "legacy projection: two genuine prints of one lab_id and test in one poll")
+
+    # K6 and A1 again with the bench on today's server (D8: module v4 ships
+    # first, in legacy projection). The record is LabCore's there, and the
+    # two baseline faults the rollout most has to end — a restart doubling
+    # the log, a restart overwriting an analyst's cell — must end on THAT
+    # road too, not only once the server is v4 (T-P5).
+    reg.add("K6L", on_legacy_road(rf.k6_clean_restart_never_saved), "new")
+    reg.add("A1L", on_legacy_road(a1), "new")
+
+    from . import legacy_projection as _lp
+
+    @new("M3")
+    def m3():
+        if not hasattr(mod, "BenchUploader"):
+            # A v3.9 bench on a v3.9 server is M1, not M3: there is no v4
+            # bench here to put on today's server.
+            _unsupported("M3", "a v4 bench (journal, uploader: P1, P8)")
+        return _lp.m3(W, rf, mod, lab_id)
+
+    @new("M5")
+    def m5():
+        if not _has_store():
+            _unsupported("M5", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m5(W, rf, mod)
+
+    @new("M6r")
+    def m6r():
+        if not _has_store():
+            _unsupported("M6r", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m6r(W, rf, mod)
+
+    @new("DG2")
+    def dg2():
+        if not _has_store():
+            _unsupported("DG2", "a LEM store (P6) and its bridge (P9)")
+        return _lp.dg2(W, rf, mod)
+
+    # The same two rollbacks with LabStation restarted while the server
+    # answers 404 (critic, T-P5 round 2): the restart's walk and the
+    # fall-back offered the same records in one process, both copies went
+    # out in one keyed statement, and LabCore held them twice.
+    @new("DG2C")
+    def dg2c():
+        if not _has_store():
+            _unsupported("DG2C", "a LEM store (P6) and its bridge (P9)")
+        return _lp.dg2(W, rf, mod, restart=True)
+
+    @new("M5R")
+    def m5r():
+        if not _has_store():
+            _unsupported("M5R", "a LEM store (P6) and its bridge (P9)")
+        return _lp.m5(W, rf, mod, restart=True)
+
+    # ── roads (§6.2) ────────────────────────────────────────────────────────
+    v2_target = hasattr(mod, "BenchUploader")
+
+    def need_v2(sid, what):
+        if not v2_target:
+            _unsupported(sid, what)
+
+    def cells_for(c, labs):
+        res = c.gw.results("Density")
+        return sum(1 for lab in labs if res.get(lab) not in (None, ""))
+
+    def last_heard(c):
+        """When the bench last heard from LEM before the roads went dark:
+        the previous poll's sync, or its bind if it has not polled yet."""
+        return c.now - rf.POLL if c.k else c.now
+
+    def unconfirmed(c, heard):
+        """True for a print made now if the 60 s rule forbids filing it: the
+        bench has not heard LEM confirm its factors for more than 60 s."""
+        return (c.now - heard).total_seconds() > 60
+
+    @new("T1")
+    def t1():
+        """The LAN is dark from before the bench exists, and the public road
+        is Cloudflare: a request that does not name itself gets 1010. Every
+        reading still arrives — over the public road, because the bench says
+        who it is."""
+        c = W(road_modes={"A": "drop_before", "B": "1010-without-UA"})
+        for _ in range(10):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("T1 single_csv", "LAN road dark throughout")
+        t["default_ua_gets_1010"] = _default_ua_refused(c.server)
+        return t
+
+    @new("T2")
+    def t2():
+        """D2: both LEM roads dark for 2 h while the bench prints 240 times.
+        Results are HELD in the journal (no replica, no unconfirmed factor),
+        then filed — none lost — once a road returns."""
+        c = W()
+        heard = last_heard(c)
+        c.server.set_roads("down")
+        dark = []
+        for _ in range(240):
+            labs = [lab for _i, lab in _labs(c.emit(1))]
+            if unconfirmed(c, heard):
+                dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
+        c.server.set_roads("up")
+        c.settle(polls=10)
+        # (The "what" text is phase 1's, kept so the v3.9 row reproduces;
+        # under D2 v4 holds the results and files them after — see v4_spec.)
+        t = c.tally("T2 single_csv", "LEM down 2 h, 240 prints; results keep filing")
+        t["filed_while_dark"] = filed_dark
+        return t
+
+    #: Sync answers lost after LEM has executed them, per road, when T2L's
+    #: roads return: enough that the bench re-sends what LEM already holds
+    #: several times over, on both roads, before an answer gets through.
+    T2L_LOST_ANSWERS = 2
+
+    @new("T2L")
+    def t2l():
+        """T2, and the roads come back LOSING answers: LEM executes each sync
+        and the bench never hears (N3's shape), for the first few requests on
+        each road. The bench re-sends from its acked+1, so hundreds of the 240
+        held records reach LEM more than once, and LEM must keep one of each
+        — `records_resent` says the resends happened (dup 0 with none would
+        prove nothing). Then a second writer replays every bench row into
+        the store (`World.replay_bench_rows`): the store itself must refuse
+        each (uid, epoch, seq) it holds. Without this row no scenario could
+        see the server's de-duplication break (critic, T-P8 round 2)."""
+        need_v2("T2L", "lost sync answers after an outage: LEM's dedupe (P8)")
+        c = W()
+        heard = last_heard(c)
+        c.server.set_roads("down")
+        dark = []
+        for _ in range(240):
+            labs = [lab for _i, lab in _labs(c.emit(1))]
+            if unconfirmed(c, heard):
+                dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
+        c.server.set_roads("lose_response", times=T2L_LOST_ANSWERS)
+        # After two hours dark the uploader's backoff is at its 300 s cap:
+        # each lost answer costs a 300 s wait, so this settles for 40 min.
+        c.settle(polls=80)
+        tried, accepted = c.replay_bench_rows()
+        t = c.tally("T2L single_csv", "LEM down 2 h, 240 prints; the first "
+                    "answers after it are lost; then a second writer "
+                    "replays the bench's rows")
+        t["filed_while_dark"] = filed_dark
+        t["store_replays_tried"] = tried
+        t["store_replays_accepted"] = accepted
+        return t
+
+    @new("D1")
+    def d1():
+        c = W(n_samples=5000)                           # 4,803 prints, all fileable
+        heard = last_heard(c)
+        c.server.set_roads("down")
+        dark = []
+        for _ in range(480):
+            labs = [lab for _i, lab in _labs(c.emit(10))]
+            if unconfirmed(c, heard):
+                dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
+        c.server.set_roads("up")
+        drained = None
+        filed = None
+        for k in range(1, 11):
+            c.poll()
+            if drained is None and _drained(c):
+                drained = k
+            if filed is None and _filed(c):
+                filed = k
+        t = c.tally("D1 single_csv", "both roads down 4 h, 4,800 prints")
+        t["polls_to_drain"] = drained
+        t["filed_while_dark"] = filed_dark
+        # D2 holds results while LEM is dark, so they file after the record
+        # has drained, at the results road's own pace (2 identity reads a
+        # poll): keep polling — v4 only, so the v3.9 row stays phase 1's —
+        # and say how long it took.
+        k = 10
+        while v2_target and filed is None and k < 60:
+            k += 1
+            c.poll()
+            if _filed(c):
+                filed = k
+        t["polls_to_file"] = filed
+        t["res_lost_final"] = _res_lost(c)
+        return t
+
+    # ── adoption at the first v4 start (§10.2; P4) ──────────────────────────
+    #
+    # The world before each U scenario is what the floor holds on the day the
+    # v4 module is installed: an instrument file v3.9 has been reading, the
+    # `run` rows v3.9 logged from it (written with the target's own
+    # `run_log_events` + `build_log_insert`, which is v3.9's shape) and the
+    # cells it filed — and a bench journal that has never existed. "v4 server"
+    # (U1–U4) is the v2 world of E0–E2 plus LEM's store holding those rows as
+    # the §10.1 import copies them; U5 is the same world with no v2 (today's
+    # v3.9 server), where the bench must ask LabCore itself.
+
+    def adoption_world(logged, unlogged=0, pre=0, factor_then=None,
+                       factor_now=None, v2=True, qc_print=False, qc_replays=0,
+                       qc_downtime=False, qc_factor=None):
+        if not hasattr(mod, "plan_adoption"):
+            raise Unsupported("U1–U5 need adoption at the first v4 start "
+                              "(P4) — not present on this target")
+        # Today's v3.9 server has no v2 at all: every World has a v4 server
+        # since P8, so in that world it answers as the old one does — 404,
+        # from before the bench binds, the only signal that sends a bench to
+        # LabCore (§6.1). Its record stays LabCore's.
+        c = W() if v2 else W(road_modes={"A": "404", "B": "404"})
+        machine = c.m.machine()
+        at0 = c.now - timedelta(days=2)
+        for i in range(pre):                 # older than LEM on this bench
+            with open(c.path, "a") as f:
+                f.write(print_line(900 + i, "0.7%03d" % i))
+        # A QC standard's print, in the middle of the logged lines, judged
+        # then against a spec with no correction of its own while the factor
+        # was machine-level: v3.9 logged its verdict as a `qc` row holding
+        # the corrected value and no raw. Not a sample: not in the ledger,
+        # no cell. In the MIDDLE, so a bench that matched only the QC print
+        # would call everything after it recovered (not quietly "history").
+        qc_text = "QC-D,0.8500\n"
+        qc_at = logged // 2 if qc_print else None
+        texts, logged_texts = [], []
+        for i in range(logged + unlogged):
+            if i == qc_at:
+                c._write_lines([qc_text])
+                logged_texts.append(qc_text)
+            lab, val = print_line(i).strip().split(",")
+            texts.append(c.emit_line(lab, val))
+            if i < logged:
+                logged_texts.append(texts[-1])
+        # Each morning restart v3.9 re-read everything after its stored
+        # marker and logged it again: the standard's verdict, once more per
+        # restart (Agilent GC 1: 27 verdicts per AF26 test, ~12 prints).
+        logged_texts += [qc_text] * qc_replays
+        if qc_downtime:
+            # The standard run again while LabStation was down for the
+            # upgrade: new numbers, never logged. Round 2 matched it to a
+            # spare replayed verdict by count and lost it (critic, round 2).
+            c._write_lines(["QC-D,0.8420\n"])
+        saved = machine.corrections, machine.tests
+        if qc_print:
+            machine.tests = [mod.TestSpec(name="Density", value_col="Density",
+                                          expected=0.85, std_dev=0.05, k=2.0,
+                                          sample_id="QC-D")]
+        machine.corrections = dict(factor_then or {})
+        try:
+            for k, text in enumerate(logged_texts):
+                at = at0 + timedelta(minutes=k)
+                # `qc_factor`: the standard was logged under a factor that
+                # was changed again before any sample ran under it, so no run
+                # row of the record shows it.
+                factors = dict(qc_factor) if (qc_factor is not None
+                                              and text == qc_text) \
+                    else machine.corrections
+                rows = mod.apply_row_corrections(
+                    [mod.parse_print(machine, text.strip()).to_row(at)],
+                    factors)
+                for row, kind, lab, test, value, detail in mod.run_log_events(
+                        machine, rows, "analyst", None):
+                    sql, args = mod.build_log_insert(c.uid, kind, at, lab_id=lab,
+                                                     test_name=test, value=value,
+                                                     detail=detail)
+                    res = c.gw.fake.sql(sql, args)
+                    if res.get("error"):
+                        raise RuntimeError("U world: v3.9 row: " + res["error"])
+                    if kind != "run":
+                        continue
+                    res = c.gw.fake.write("update_cell", {
+                        "lab_id": lab, "test_name": "Density",
+                        "value": str(row["Density"])})
+                    if res.get("error"):
+                        raise RuntimeError("U world: v3.9 cell: " + res["error"])
+        finally:
+            machine.corrections, machine.tests = saved
+        if factor_now:
+            for test, corr in factor_now.items():
+                res = c.gw.fake.sql(
+                    "INSERT OR REPLACE INTO lem_correction_factors (machine_uid, "
+                    "test_name, correction) VALUES (?, ?, ?)", [c.uid, test, corr])
+                if res.get("error"):
+                    raise RuntimeError("U world: factor: " + res["error"])
+        c.saved_token = os.environ.get("LEM_LIVE_TOKEN")
+        if v2:
+            _v2_adoption_world(c, server_factory)
+        else:
+            # On today's floor LabCore holds every bench's configuration
+            # (v3.9 wrote it there); the v4 module binds from it on restart.
+            for sql, args in ((mod.CONFIG_TABLE_DDL, None),
+                              mod.build_config_upsert(
+                                  mod.Machine.from_dict(machine.to_dict()),
+                                  at0, by="analyst")):
+                res = c.gw.fake.sql(sql, args)
+                if res.get("error"):
+                    raise RuntimeError("U world: v3.9 config: " + res["error"])
+        # What the record held before the v4 start, in whichever store this
+        # world reads (LEM's, holding the import's copy, or LabCore's).
+        c.seeded_rows = len(c.stored_rows())
+        reads = c.adoption_reads = []
+        inner = c.gw.read_sql
+
+        def read_sql(sql, args=None, **kw):
+            if "MIN(ts)" in sql or "lab_id IN" in sql:
+                reads.append(sql)
+            return inner(sql, args, **kw)
+        c.gw.read_sql = read_sql
+        mod.__dict__["labcore_read_sql"] = read_sql
+        c.restart()                    # the v4 module starts (and reads lem_meta)
+        mod.__dict__["labcore_read_sql"] = read_sql
+        c.reads_before = _labcore_reads(c)
+        for _ in range(4):
+            c.poll()
+        c.reads_after = _labcore_reads(c)
+        return c
+
+    def adoption_measure(c):
+        try:
+            return _measure(c)
+        finally:
+            # The v2 world's server token must not outlive this world.
+            if c.saved_token is None:
+                os.environ.pop("LEM_LIVE_TOKEN", None)
+            else:
+                os.environ["LEM_LIVE_TOKEN"] = c.saved_token
+
+    def _measure(c):
+        rows = c.stored_rows()
+        recs = c.journal_records() or []
+        adoptions = [r for r in recs if r.get("kind") == "adoption"]
+        recovered = _recovered_rows(c)
+        led = _ledger_tally(c.ledger.truth(), rows)
+        recovered_labs = {lab for lab, _v in recovered}
+        status = c.m.evaluation().status if c.m.evaluation() else None
+        return {"new_rows": len(rows) - c.seeded_rows,
+                "cell_sends": sum(c.gw.cell_sends.values()),
+                "recovered_rows": len(recovered),
+                "recovered_lab_values": [list(r) for r in recovered],
+                "lost": led["lost"], "dup": led["dup"],
+                "auto_filed": sum(n for (lab, _t, _v), n in c.gw.cell_sends.items()
+                                  if lab in recovered_labs),
+                "adoption_summaries": len(adoptions),
+                "alarms": len(recovered) + (c.counters()["conflicts"] or 0)
+                + (1 if status == mod.STATUS_RED else 0),
+                "labcore_reads": len(c.adoption_reads),
+                # Every LabCore read of the four polls, adoption's and the
+                # bench's own (config, override, QC library — v3.9's road).
+                "labcore_reads_all_polls": c.reads_after - c.reads_before,
+                "adoption": {k: adoptions[-1].get(k) for k in (
+                    "path_kind", "matched", "presumed", "recovered",
+                    "pre_history_lines", "unchecked", "unreadable", "road",
+                    "labcore_reads")}
+                if adoptions else None,
+                "store": c.store_kind()}
+
+    @new("U1")
+    def u1():
+        """30 lines v3.9 fully logged; A's prototype logged 30 and sent 30."""
+        return adoption_measure(adoption_world(30))
+
+    @new("U2")
+    def u2():
+        """30 logged and 1 printed while LabStation was down for the upgrade."""
+        m = adoption_measure(adoption_world(30, unlogged=1))
+        # And a QC standard printed during the downtime, on both roads: the
+        # standard's one earlier print was logged as a verdict that kept no
+        # raw reading and replayed by three restarts, so four verdicts stand
+        # for one print. Exactly the new print is recovered.
+        for road in ("v2", "legacy"):
+            w = adoption_measure(adoption_world(
+                30, v2=(road == "v2"), qc_print=True, qc_replays=3,
+                qc_downtime=True))
+            qc = [v for lab, v in w["recovered_lab_values"] if lab == "QC-D"]
+            m["qc_downtime_recovered_" + road] = len(qc)
+            m["qc_downtime_other_recovered_" + road] = \
+                w["recovered_rows"] - len(qc)
+            m["qc_downtime_" + road] = w
+        return m
+
+    @new("U3")
+    def u3():
+        """Logged with +0.0100; the factor is +0.0200 (and, separately, 0 or
+        deleted) at the v4 start. Every
+        line was recorded, so every recovered row would be a false one. The
+        30 readings AND a QC standard's print, whose v3.9 verdict row kept no
+        raw (machine-level factor) — through LEM's digest and again through
+        LabCore's indexed reads (today's server)."""
+        worlds = {road: adoption_measure(adoption_world(
+            30, factor_then={"Density": 0.01}, factor_now={"Density": 0.02},
+            v2=(road == "v2"), qc_print=True)) for road in ("v2", "legacy")}
+        m = dict(worlds["v2"])
+        m["false_recovered"] = sum(w["recovered_rows"] for w in worlds.values())
+        m["legacy"] = worlds["legacy"]
+        # A factor change is also a factor REMOVED since logging: set to 0,
+        # or deleted, with the standard's print replayed by restarts (round-3
+        # critic, Z1/Z10/Z12: the logged QC print was falsely recovered on
+        # both roads). Counted into false_recovered, so the gate holds it.
+        for name, now in (("removed", {"Density": 0.0}), ("deleted", None)):
+            for road in ("v2", "legacy"):
+                w = adoption_measure(adoption_world(
+                    30, factor_then={"Density": 0.01}, factor_now=now,
+                    v2=(road == "v2"), qc_print=True, qc_replays=3))
+                m["false_recovered_%s_%s" % (name, road)] = w["recovered_rows"]
+                m["false_recovered"] += w["recovered_rows"]
+        # And a factor the record never shows: the standard logged under
+        # +0.01, changed to +0.02 before any sample ran, +0.02 today. Nothing
+        # explains its verdict, so only the one-test stand-in (`_QcMatch`
+        # stage B: a factor today) keeps its print from a false recovery.
+        for road in ("v2", "legacy"):
+            w = adoption_measure(adoption_world(
+                30, factor_then={"Density": 0.02}, factor_now={"Density": 0.02},
+                qc_factor={"Density": 0.01}, v2=(road == "v2"), qc_print=True))
+            m["false_recovered_unshown_" + road] = w["recovered_rows"]
+            m["false_recovered"] += w["recovered_rows"]
+        return m
+
+    @new("U4")
+    def u4():
+        """12 lines from before the bench was on LEM, then 15 LEM recorded."""
+        return adoption_measure(adoption_world(15, pre=12))
+
+    @new("U5")
+    def u5():
+        """U1 and U2 again on today's v3.9 server: no v2, the bench asks
+        LabCore through indexed reads. Gated: U1's 0/0, U2's 1/0/0/0, and the
+        reads adoption made in the worse of the two."""
+        one = adoption_measure(adoption_world(30, v2=False))
+        two = adoption_measure(adoption_world(30, unlogged=1, v2=False))
+        return {"new_rows": one["new_rows"],
+                "cell_sends": one["cell_sends"] + two["cell_sends"],
+                "recovered_rows": two["recovered_rows"], "lost": two["lost"],
+                "dup": two["dup"], "auto_filed": two["auto_filed"],
+                "labcore_reads": max(one["labcore_reads"], two["labcore_reads"]),
+                "labcore_reads_all_polls": max(one["labcore_reads_all_polls"],
+                                               two["labcore_reads_all_polls"]),
+                "u1": one, "u2": two}
+
+    # ── the mixed fleet (P9): a v3.9 bench under a v4 server, a projected
+    # bench meeting v2, a module rolled back. Asked of the target's bridge;
+    # `Unsupported` (a FAIL) on a target without one.
+    from . import mixed_fleet as _mf
+    for sid, fn in (("M2", _mf.m2), ("M6", _mf.m6), ("DG1", _mf.dg1)):
+        reg.add(sid, (lambda f: lambda: (f(rw) if _has_store() else
+                                         _unsupported(sid_of(f), "a LEM store "
+                                                      "and the bridge (P6, P9)")))(fn),
+                "new")
+
+    # ── journal wiped: blind mode and /checkpoint (§6.5) ────────────────────
+    # Polls after the roads are up in which the bench asks to re-enrol and a
+    # person approves it: the uploader may still be in its 300 s backoff from
+    # the dark spell, so up to ten polls before it asks, then one to collect.
+    AFTER_WIPE_POLLS = 12
+
+    def _wiped(sid, dark_polls):
+        need_v2(sid, "journal wipe + /checkpoint blind mode (P8)")
+        c = W()
+        for _ in range(5):
+            c.emit(3); c.poll()
+        c.settle(polls=2)
+        ops_before = _results_ops(c)
+        all_before = dict(c.gw.counts)
+        c.before_next_restart(c.wipe_journal)
+        if dark_polls:
+            c.server.set_roads("down")
+        c.restart()
+        blind_reads = []
+        for _ in range(dark_polls):
+            c.emit(3); c.poll()
+            blind_reads.append(c.m._transfer_blind())
+        c.server.set_roads("up")
+        approved = None
+        for _ in range(AFTER_WIPE_POLLS):
+            c.poll()           # the bench asks to re-enrol; a person approves
+            if approved is None and c.m._transfer.enrol:
+                approved = c.approve_reenrolment()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("%s single_csv" % sid, "journal wiped; roads %s"
+                    % ("down %d polls" % dark_polls if dark_polls else "up"))
+        t["records_resent"] = c.server.records_resent
+        t["approved"] = approved
+        t["blind_while_dark"] = all(blind_reads) if blind_reads else None
+        t["blind_after"] = c.m._transfer_blind()
+        t["_all_ops"] = _ops_since(c, all_before)
+        return t, c, ops_before
+
+    def _twin_ops(dark_polls):
+        """The same bench, the same prints, nothing wiped: the results road's
+        LabCore ops are what the wiped bench may spend and no more."""
+        c = W()
+        for _ in range(5):
+            c.emit(3); c.poll()
+        c.settle(polls=2)
+        before = _results_ops(c)
+        all_before = dict(c.gw.counts)
+        if dark_polls:
+            c.server.set_roads("down")
+        c.restart()
+        for _ in range(dark_polls):
+            c.emit(3); c.poll()
+        c.server.set_roads("up")
+        for _ in range(AFTER_WIPE_POLLS):
+            c.poll()
+        for _ in range(4):
+            c.emit(3); c.poll()
+        c.settle()
+        return _results_ops(c) - before, _ops_since(c, all_before)
+
+    def _extra_ops(t, twin_all):
+        """EVERY LabCore op the wiped bench spent beyond its twin, by kind —
+        not only the results road's (round-1 critic: a narrowed metric hid a
+        wiped bench's legacy-road heartbeat, DDL, status and log writes).
+        The one exception is §6.4's: the re-enrolment proves itself with the
+        shared token, one read of lem_meta, reported on its own."""
+        mine = t.pop("_all_ops")
+        extra = {k: n - twin_all.get(k, 0) for k, n in mine.items()
+                 if n - twin_all.get(k, 0) > 0}
+        t["enrol_token_reads"] = extra.pop("read:lem_meta", 0)
+        t["extra_labcore_ops"] = sum(extra.values())
+        t["extra_labcore_kinds"] = sorted(extra)
+
+    @new("T4")
+    def t4():
+        t, c, before = _wiped("T4", 0)
+        twin, twin_all = _twin_ops(0)
+        t["extra_guard_ops"] = (_results_ops(c) - before) - twin
+        _extra_ops(t, twin_all)
+        return t
+
+    @new("T4b")
+    def t4b():
+        t, c, before = _wiped("T4b", 3)
+        twin, twin_all = _twin_ops(3)
+        t["extra_guard_ops"] = (_results_ops(c) - before) - twin
+        _extra_ops(t, twin_all)
+        return t
+
+    # ── the 60 s factor rule, confirmed by the sync (§6.6; D2: no replica) ──
+    @new("CF1")
+    def cf1():
+        """Both roads dark, LabCore up. The confirmation ages out (4 polls
+        with nothing printed), then 12 prints: none may be filed with a factor
+        nobody confirmed in 60 s. When a road returns they are filed, each
+        with a factor confirmed ≤ 60 s before it was filed."""
+        need_v2("CF1", "the 60 s factor rule via the sync's config_rev (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        heard = last_heard(c)
+        c.server.set_roads("down")
+        for _ in range(4):
+            c.poll()
+        dark = []
+        for _ in range(6):
+            labs = [lab for _i, lab in _labs(c.emit(2))]
+            if not unconfirmed(c, heard):
+                raise RuntimeError("CF1 printed inside the 60 s window")
+            dark += labs
+            c.poll()
+        filed_dark = cells_for(c, dark)
+        c.server.set_roads("up")
+        c.settle(polls=12)
+        t = c.tally("CF1 single_csv", "both roads dark, LabCore up: results held, then filed")
+        ages = list(getattr(c.m, "_factor_ages", []) or [])
+        t["filed_while_dark"] = filed_dark
+        t["factor_confirmed_within_s"] = max(ages) if ages else None
+        t["filings"] = len(ages)
+        return t
+
+    @new("CF2")
+    def cf2():
+        """The factor changes in LEM while both roads are dark. The readings
+        made after the change wait, and are filed with the NEW factor."""
+        need_v2("CF2", "the 60 s factor rule via the sync's config_rev (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        c.server.set_roads("down")
+        for _ in range(4):
+            c.poll()
+        c.set_lem_factor("Density", 0.001)
+        after = {}
+        for _ in range(5):
+            for _i, lab in _labs(c.emit(2)):
+                after[lab] = c.printed[lab]
+            c.poll()
+        filed_dark = cells_for(c, list(after))
+        c.server.set_roads("up")
+        c.settle(polls=12)
+        t = c.tally("CF2 single_csv", "factor changed while both roads dark")
+        res = c.gw.results("Density")
+        wrong = stale = 0
+        for lab, raw in after.items():
+            got = res.get(lab)
+            if got in (None, ""):
+                continue
+            if abs(float(got) - (float(raw) + 0.001)) > 1e-9:
+                wrong += 1
+            if abs(float(got) - float(raw)) <= 1e-12:
+                stale += 1
+        # The ledger's res_wrong compares with the PRINTED value; for these
+        # readings the right result is the corrected one, so it is measured
+        # here instead, and over every reading made after the change.
+        t["res_wrong"] = wrong
+        t["filed_with_stale_factor"] = stale
+        t["filed_after_change"] = sum(1 for lab in after
+                                      if res.get(lab) not in (None, ""))
+        t["filed_while_dark"] = filed_dark
+        return t
+
+    # ── round 3 (T-P8): the critic's remaining point, kept in the gate ──────
+    @new("CF2u")
+    def cf2u():
+        """The factor changes in LEM while the roads are UP. A confirmation
+        from before a reading was read — however recent, inside the 60 s
+        rule — says nothing about a factor saved since, and round 3's critic
+        found the 2 readings printed straight after a change filed with the
+        factor LEM had already replaced. Every reading made after the change
+        must be filed with the NEW factor, and in the poll interval it was
+        read in (filed_late 0): holding it a poll would be a new delay, not a
+        fix."""
+        need_v2("CF2u", "filing on a confirmation made after the read (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        c.set_lem_factor("Density", 0.001)
+        after, late = {}, 0
+        for _ in range(3):
+            labs = [lab for _i, lab in _labs(c.emit(2))]
+            for lab in labs:
+                after[lab] = c.printed[lab]
+            c.poll()
+            late += len(labs) - cells_for(c, labs)
+        c.settle(polls=4)
+        t = c.tally("CF2u single_csv", "factor changed while the roads are up")
+        res = c.gw.results("Density")
+        wrong = stale = 0
+        for lab, raw in after.items():
+            got = res.get(lab)
+            if got in (None, ""):
+                continue
+            if abs(float(got) - (float(raw) + 0.001)) > 1e-9:
+                wrong += 1
+            if abs(float(got) - float(raw)) <= 1e-12:
+                stale += 1
+        t["res_wrong"] = wrong
+        t["filed_with_stale_factor"] = stale
+        t["filed_after_change"] = sum(1 for lab in after
+                                      if res.get(lab) not in (None, ""))
+        t["filed_late"] = late
+        return t
+
+    # ── round 2 (T-P8): the critic's two gaps, kept in the gate ─────────────
+    @new("CF2r")
+    def cf2r():
+        """CF2 with one LabStation restart while both roads are still dark.
+        The restart brings the held readings back from the journal carrying
+        the correction they were PARSED with (the old one); every one of the
+        12 made after the change must still be filed with the NEW factor.
+        Round 1 filed the 6 journaled before the restart with the old one."""
+        need_v2("CF2r", "the 60 s factor rule across a restart (P8)")
+        c = W()
+        c.emit(3); c.poll(); c.poll()
+        c.server.set_roads("down")
+        for _ in range(4):
+            c.poll()
+        c.set_lem_factor("Density", 0.001)
+        after = {}
+        for i in range(6):
+            for _i, lab in _labs(c.emit(2)):
+                after[lab] = c.printed[lab]
+            if i == 3:
+                c.restart()
+            c.poll()
+        filed_dark = cells_for(c, list(after))
+        c.server.set_roads("up")
+        c.settle(polls=12)
+        t = c.tally("CF2r single_csv", "factor changed while dark; one "
+                    "restart while still dark")
+        res = c.gw.results("Density")
+        wrong = stale = 0
+        for lab, raw in after.items():
+            got = res.get(lab)
+            if got in (None, ""):
+                continue
+            if abs(float(got) - (float(raw) + 0.001)) > 1e-9:
+                wrong += 1
+            if abs(float(got) - float(raw)) <= 1e-12:
+                stale += 1
+        t["res_wrong"] = wrong
+        t["filed_with_stale_factor"] = stale
+        t["filed_after_change"] = sum(1 for lab in after
+                                      if res.get(lab) not in (None, ""))
+        t["filed_while_dark"] = filed_dark
+        return t
+
+    def _unknown_bench(sid, mode):
+        """A bench that binds while LEM cannot answer v2 (`mode`), prints for
+        10 polls, then LEM comes up. Only a 404 means "old server" (§6.1,
+        §12.2): until LEM answers, the bench must spend NOTHING in LabCore —
+        no heartbeat, status, DDL, log rows — and afterwards its records are
+        in LEM once, never also in LabCore's machine log."""
+        need_v2(sid, "only a 404 means an old server (P8)")
+        c = W(road_modes={"A": mode, "B": mode})
+        before = dict(c.gw.counts)
+        for _ in range(10):
+            c.emit(2); c.poll()
+        dark = _ops_since(c, before)
+        c.server.set_roads("up")
+        c.settle(polls=15)
+        t = c.tally("%s single_csv" % sid, "binds with LEM %s; up after 10 "
+                    "polls" % mode)
+        t["labcore_ops_while_unknown"] = sum(dark.values())
+        t["labcore_kinds_while_unknown"] = sorted(dark)
+        everything = _ops_since(c, before)
+        t["legacy_road_ops"] = sum(
+            n for k, n in everything.items()
+            if k not in ("read:identity", "write:batch", "read:lem_meta"))
+        t["went_legacy"] = c.m._transfer.mode == "legacy"
+        return t
+
+    @new("N404")
+    def n404():
+        return _unknown_bench("N404", "down")
+
+    @new("N503")
+    def n503():
+        return _unknown_bench("N503", "503")
+
+    # ── T3: the store restored from a backup 10 polls old (§11) ─────────────
+    def t3():
+        """Ten polls are filed and synced; the server takes its hourly backup
+        (`Custody.backup_now`: the copy, its manifest, the durable mark and
+        the ledger witness); ten more polls are synced. Then the server is
+        stopped, that backup is restored with custody's own `restore` (which
+        refuses a file nothing witnesses), and the server boots on it. The
+        store now holds the bench's epoch only through the backup's seq; the
+        bench's next sync starts past it, the server answers 409 `cursor`
+        with what it holds, and the bench resends from there. Every print
+        once, every cell filed once.
+
+        The scenario proves the restore happened, not only that nothing was
+        lost: the restored store's acked must be BELOW the bench's (else the
+        backup was not 10 polls old), and the app must have answered at
+        least one 409 (else the bench never had to recover)."""
+        need_v2("T3", V4_ONLY["T3"])
+        if not _has_store():
+            _unsupported("T3", V4_ONLY["T3"])
+        import custody
+        c = W()
+        for _ in range(10):
+            c.emit(3); c.poll()
+        cust = c.server.app.config.get("CUSTODY")
+        if cust is None:
+            _unsupported("T3", "a custody service on the server (P11)")
+        bk = cust.backup_now()
+        if not bk.get("ok"):
+            raise RuntimeError("T3: the backup failed: %s" % bk.get("error"))
+        for _ in range(10):
+            c.emit(3); c.poll()
+        bench_acked = c.m._journal.acked
+        store_path = c.server.app.config["LEM_STORE"]
+        c.server.reboot()                                    # server stopped
+        out = custody.restore(bk["path"], store_path, offsite_dir=None)
+        restored_acked = _store_acked(store_path, c.uid)
+        answers_before = dict(c.server.sync_answers)
+        for _ in range(3):
+            c.emit(3); c.poll()
+        c.settle()
+        t = c.tally("T3 single_csv", "store restored from a backup 10 polls old")
+        answers = c.server.sync_answers
+        return {"lost": t["lost"], "dup": t["dup"],
+                "res_lost": t["res_lost"], "res_wrong": t["res_wrong"],
+                "cell_dup_sends": t["cell_dup_sends"],
+                "cell_dup_lands": t["cell_dup_lands"],
+                "restore_witnessed": not out["unwitnessed"],
+                "bench_acked_before_restore": bench_acked,
+                "store_acked_after_restore": restored_acked,
+                "restore_rolled_back_the_cursor": restored_acked < bench_acked,
+                "cursor_409s": answers.get(409, 0) - answers_before.get(409, 0),
+                "records_resent": t["records_resent"],
+                "bench_acked_at_end": c.m._journal.acked,
+                "store_acked_at_end": _store_acked(store_path, c.uid),
+                "drained": _store_acked(store_path, c.uid) == c.m._journal.acked,
+                "printed": t["printed"], "truth_prints": t["truth_prints"]}
+    reg.add("T3", t3, "new")
+
+    # ── M1 and M4: the two pairings with no hand-over between versions ─────
+    from . import order_matrix as _om
+
+    def m1():
+        # Today's pairing is reproduced on the TAGGED v3.9.0 code, which only
+        # a v4 gate can set beside a v4 target; on --target v3.9 the drift
+        # check IS M1, and the row there stays null.
+        need_v2("M1", V4_ONLY["M1"])
+        from . import env as _env
+        return _om.m1(_env.root())
+    reg.add("M1", m1, "new")
+
+    def m4():
+        need_v2("M4", V4_ONLY["M4"])
+        if not _has_store():
+            _unsupported("M4", "a LEM store (P6) and the v2 bench API (P7)")
+        return _om.m4(W, rf, mod, lab_id)
+    reg.add("M4", m4, "new")
+
+    # ── needs a v4 capability with no code yet ─────────────────────────────
+    for sid, needs in V4_ONLY.items():
+        if sid in reg.fns:
+            continue
+        reg.add(sid, (lambda s, n: lambda: _unsupported(s, n))(sid, needs), "new")
+
+    # ── web server (phase 1's run_web.py) ──────────────────────────────────
+    # On a server with a LEM store (P6) W1/W2/W3/W2b are asked of the split
+    # server — `create_app(LocalStoreGateway, labcore=WGateway)` — and count
+    # LabCore's ops, which is what they always measured (gharness/store_web).
+    from . import store_web
+
+    def web(name, fn, store_fn=None):
+        def run():
+            if _has_store():
+                if store_fn is None:
+                    raise Unsupported(
+                        "%s on a server with a LEM store measures the bridge's "
+                        "legacy pull, which lands with P9" % name)
+                return store_fn(rw)
+            return fn()
+        return run
+    from . import mixed_fleet
+    reg.add("W1", web("W1", rw.w1, store_web.w1_with_bridge), "web")
+    reg.add("W2", web("W2", rw.w2, store_web.w2), "web")
+    reg.add("W3", web("W3", rw.w3, store_web.w3), "web")
+    reg.add("W4", web("W4", rw.w4, mixed_fleet.w4), "web")
+    reg.add("W2b", lambda: (store_web.w2b(rw) if _has_store()
+                            else _unsupported("W2b", V4_WEB["W2b"])), "web")
+    return reg
+
+
+V4_ONLY = {
+    "T3": "store restored from a backup: a 409 cursor answer from /api/v2 sync (P7, P11)",
+    "M1": "order matrix pairing 1 (§12.2; P13)",
+    "M4": "order matrix pairing 4 (§12.2; P13)",
+}
+V4_WEB = {"W2b": "server INSERTs on the LEM store (P6)"}
+
+
+def _unsupported(sid, needs):
+    raise Unsupported("%s needs %s — not present on this target" % (sid, needs))
+
+
+def sid_of(fn):
+    return {"m2": "M2", "m6": "M6", "dg1": "DG1"}.get(fn.__name__, fn.__name__)
+
+
+def _has_store():
+    from .servers import find_store_gateway
+    return find_store_gateway() is not None
+
+
+def _store_acked(path, uid):
+    """The highest acked seq the store holds for this bench (any epoch). A
+    failed read raises: an unreadable cursor is not a cursor at 0."""
+    import sqlite3
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        row = con.execute("SELECT MAX(acked_seq) FROM bench_cursor WHERE "
+                          "machine_uid = ?", [uid]).fetchone()
+    finally:
+        con.close()
+    if row is None or row[0] is None:
+        raise RuntimeError("the store holds no cursor for %s" % uid)
+    return int(row[0])
+
+
+def _labcore_reads(c):
+    return sum(n for k, n in c.gw.counts.items() if k.startswith("read:"))
+
+
+def _recovered_rows(c):
+    """(lab_id, value) of the run rows the record holds as `recovered`: the
+    LEM store's `origin` column, or `detail.origin` in LabCore's log."""
+    import json as _json
+    if c.store_kind() == "lem":
+        import sqlite3
+        con = sqlite3.connect("file:%s?mode=ro" % os.environ["LEM_STORE_PATH"],
+                              uri=True)
+        try:
+            return [(r[0], r[1]) for r in con.execute(
+                "SELECT lab_id, detail FROM lem_machine_log WHERE machine_uid = ? "
+                "AND kind = 'run' AND origin = 'recovered'", [c.uid])]
+        finally:
+            con.close()
+    res = c.gw.fake.read_sql("SELECT lab_id, detail FROM lem_machine_log WHERE "
+                             "machine_uid = ? AND kind = 'run'", [c.uid])
+    if res.get("error"):
+        raise RuntimeError("recovered-row read failed: " + res["error"])
+    out = []
+    for r in res["rows"]:
+        try:
+            d = _json.loads(r["detail"] or "{}")
+        except ValueError:
+            continue
+        if d.get("origin") == "recovered":
+            out.append((r["lab_id"], r["detail"]))
+    return out
+
+
+def _ledger_tally(truth, rows):
+    from .ledger import tally
+    return tally(truth, rows)
+
+
+def _v2_adoption_world(c, server_factory):
+    """The v2 world for a U scenario: the server every World already has
+    (its store knows the bench; LabCore's lem_meta carries the shared token,
+    `world._published`), with the bench's legacy machine-log rows and
+    LabCore's correction factors copied into its store as §10.1's import
+    copies them (`origin='legacy_labcore'`, `legacy_key`).
+
+    Into the app that is ALREADY built when there is one: since P8 the
+    bench's uploader probes LEM the moment it binds, so the server exists
+    before the U world writes v3.9's rows. Seeding only a factory that is
+    never called again left LEM's store empty, and the first v4 start read
+    "no history" — U1's 30 new rows on a correct module."""
+    if c.server is None:
+        raise RuntimeError("v2 world: this World has no server")
+    if c.server._app is not None:
+        _seed_store_log_from_labcore(c.server._app, c.gw, c.uid)
+        return
+    built = c.server._factory
+
+    def factory():
+        app = built()
+        _seed_store_log_from_labcore(app, c.gw, c.uid)
+        return app
+    c.server._factory = factory
+
+
+def _seed_store_log_from_labcore(app, gw, uid):
+    from .servers import find_store_gateway
+    store_path = app.config.get("LEM_STORE")
+    Store = find_store_gateway()
+    if not store_path or Store is None:
+        return
+    rows = gw.fake.read_sql("SELECT rowid AS r, machine_uid, ts, kind, lab_id, "
+                            "test_name, value, detail FROM lem_machine_log WHERE "
+                            "machine_uid = ? ORDER BY rowid", [uid])
+    if rows.get("error"):
+        raise RuntimeError("v2 world: LabCore log read: " + rows["error"])
+    factors = gw.fake.read_sql("SELECT machine_uid, test_name, correction FROM "
+                               "lem_correction_factors")
+    if factors.get("error"):
+        raise RuntimeError("v2 world: LabCore factor read: " + factors["error"])
+    store = Store(store_path)
+    try:
+        for r in rows["rows"]:
+            res = store.sql(
+                "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                "test_name, value, detail, origin, legacy_key, legacy_rowid) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'legacy_labcore', ?, ?)",
+                [r["machine_uid"], r["ts"], r["kind"], r["lab_id"],
+                 r["test_name"], r["value"], r["detail"],
+                 "gate:%s" % r["r"], r["r"]])
+            if res.get("error"):
+                raise RuntimeError("v2 world: store log: " + res["error"])
+        for f in factors["rows"]:
+            res = store.sql("INSERT OR REPLACE INTO lem_correction_factors "
+                            "(machine_uid, test_name, correction) VALUES (?, ?, ?)",
+                            [f["machine_uid"], f["test_name"], f["correction"]])
+            if res.get("error"):
+                raise RuntimeError("v2 world: store factor: " + res["error"])
+    finally:
+        close = getattr(store, "close", None)
+        if callable(close):
+            close()
+    snaps = app.config.get("SNAPSHOTS")
+    if snaps is not None:
+        snaps.refresh()
+
+
+def _drained(c):
+    from .ledger import tally
+    t = tally(c.ledger.truth(), c.stored_rows())
+    return t["lost"] == 0
+
+
+def _res_lost(c):
+    from .ledger import results
+    return results(c.ledger, c.gw.results("Density"))["res_lost"]
+
+
+def _filed(c):
+    return _res_lost(c) == 0
+
+
+def _ops_since(c, before):
+    """Every LabCore op kind's count since `before` (a copy of gw.counts)."""
+    return {k: n - before.get(k, 0) for k, n in c.gw.counts.items()
+            if n - before.get(k, 0)}
+
+
+def _results_ops(c):
+    """LabCore ops of the results road: identity (guard) reads + batches."""
+    return sum(n for k, n in c.gw.counts.items()
+               if k in ("read:identity", "write:batch"))
+
+
+def _labs(emitted):
+    """(i, lab_id) of what `emit` printed."""
+    return [(i, line.split(",")[0]) for i, line in emitted]
+
+
+def _default_ua_refused(server):
+    """The harness's own check that road B enforces the User-Agent: a
+    request carrying urllib's default agent gets Cloudflare's 1010. Made with
+    the poll-thread tally switched off — it is the harness asking, not the
+    bench."""
+    import urllib.error
+    import urllib.request
+    keep, server.poll_thread = server.poll_thread, None
+    mode = server.modes["B"]
+    try:
+        server.set_road("B", "1010-without-UA")
+        req = urllib.request.Request("https://lem.asaplabs.net/api/v2/ping")
+        req.add_header("User-agent", "Python-urllib/3.12")
+        try:
+            server.urlopen(req)
+        except urllib.error.HTTPError as e:
+            return e.code == 403 and b"1010" in e.read()
+        return False
+    finally:
+        server.set_road("B", mode)
+        server.poll_thread = keep
+
+
+def _baseline_id(fn_name):
+    names = {
+        "s00_no_fault": "S0", "k1_kill_before_log_write": "K1",
+        "k2_kill_between_log_batches": "K2", "k3_kill_after_log_before_results": "K3",
+        "k4_kill_after_results_write_before_marker": "K4",
+        "k5_restart_marker_published_midway": "K5", "k6_clean_restart_never_saved": "K6",
+        "k7_multi_kill_after_move": "K7", "k8_serial_kill_before_log": "K8",
+        "k9_kill_with_held_rows": "K9", "k9c_held_control": "K9c",
+        "k9r_held_restart_after_mirror": "K9r", "n1_labcore_unreachable": "N1",
+        "n2_log_insert_raise_before": "N2", "n3_log_insert_raise_after": "N3",
+        "n4_results_batch_raise_after": "N4", "n5_identity_read_timeout": "N5",
+        "n6_everything_raises_10_polls": "N6", "f1_log_refused_once": "F1",
+        "f2_results_refused_once": "F2", "f3_all_refused_20_polls": "F3",
+        "f4_all_refused_60_polls": "F4", "f5_writes_refused_reads_ok_60_polls": "F5",
+        "r1_rewrite_same_prefix_plus_one": "R1", "r2_rewrite_newest_first": "R2",
+        "r3_rotate_keep_last_5": "R3", "r4_restart_then_reread_rewritten": "R4",
+        "r5_partial_line_at_poll": "R5", "r6_inplace_correction_same_size": "R6",
+    }
+    if fn_name not in names:
+        raise KeyError("baseline scenario %r has no gate id — run_faults.py changed?" % fn_name)
+    return names[fn_name]
+
+
+def _economy_run(GateGateway, server_factory, mod, lh, source_type, prints, roads,
+                 minutes=60, warm_minutes=5):
+    """`run_economy.run`, line for line (that file runs itself at import and
+    writes ../economy.json relative to the cwd, so it cannot be imported).
+    The only differences: fresh temp dirs, an HServer on the roads (whose
+    mode `roads` can set), the v2 world below, and two extra totals at the
+    end.
+
+    THE V2 WORLD (E0–E2 say "v2 mode"; E3 says "legacy projection", i.e. the
+    same world with the server answering 404). What production holds before a
+    v4 bench's first poll, and nothing more:
+      * LabCore's `lem_meta.live_token` — the shared token the server's boot
+        step publishes, which a first enrolment proves itself with (§6.4).
+        `live_url` is NOT published here: a v3.9 bench with an address pushes
+        to it and, on failure, re-reads `lem_meta` every few polls, which would
+        move the phase-1 numbers (economy.json) this run must reproduce on
+        v3.9. A bench with no address finds LEM on its compiled-in roads
+        (§6.2), which is what a v4 bench does.
+      * the server started with that token (`LEM_LIVE_TOKEN`, as the service
+        is), and in its store the bench's configuration row — copied from
+        LabCore's `lem_machine_config` exactly as the import tool copies it
+        (P9), and only when the bench first calls, so a bench that never calls
+        (v3.9) builds no server at all — then one snapshot build, which the
+        server's 12-second poller does in production.
+    Nothing here is counted: the counts are the bench's LabCore ops."""
+    import tempfile
+    from types import SimpleNamespace
+    from datetime import datetime
+    from .world import fresh_world_dirs
+    from .hserver import HServer
+    import threading
+    from .world import _published
+    fresh_world_dirs()
+    d = tempfile.mkdtemp(); path = os.path.join(d, "f.csv"); open(path, "w").close()
+    v2_target = hasattr(mod, "BenchUploader")
+    gw = _published(GateGateway(), v2_target)
+    gw.seed_samples([lh.lab_id(i) for i in range(5000)])
+    holder = SimpleNamespace(gw=gw, uid="b1")
+    server = HServer(lambda: server_factory(holder)).install()
+    server.poll_thread = threading.get_ident()
+    if roads:
+        server.set_roads(roads)
+    t0 = datetime(2026, 10, 1, 9, 0, 0)
+    clock = {"k": 0}
+    if v2_target:
+        mod.bench_now = lambda: t0 + timedelta(seconds=clock["k"] * 30)
+    m = lh.new_bench(gw, lh.density_machine("b1", path, source_type=source_type))
+
+    def settle():
+        # The uploader finishes what the bind / poll / pulse woke it for:
+        # the time between two polls (v4 only; v3.9 has no uploader).
+        wait = getattr(m, "_uploader_wait_idle", None)
+        if callable(wait) and not wait(120.0):
+            raise RuntimeError("the bench's uploader did not go idle")
+    settle()
+    POLL = 30
+    bind = gw.snapshot()
+    n = 0
+    first = warm = None
+    steps = int(minutes * 60 / POLL)
+    for k in range(steps):
+        clock["k"] = k
+        now = t0 + timedelta(seconds=k * POLL)
+        if source_type == "single_csv" and prints:
+            with open(path, "a") as f:
+                for _ in range(prints):
+                    f.write(lh.print_line(n)); n += 1
+        lh.poll(m, now)
+        settle()
+        if k % (mod.HEARTBEAT_SECONDS // POLL) == 0 and k:
+            m._send_pulse(now)
+            settle()
+        if k == 0:
+            first = gw.snapshot() - bind
+        if k == int(warm_minutes * 60 / POLL) - 1:
+            warm = gw.snapshot()
+    steady = gw.snapshot() - warm
+    steady_min = minutes - warm_minutes
+
+    def split(c):
+        out = {"read": 0, "write": 0}
+        for key, v in c.items():
+            out["read" if key.startswith("read") else "write"] += v
+        return out
+    return {"source_type": source_type, "prints_per_poll": prints,
+            "poll_s": POLL, "bind_ops": dict(bind), "first_poll_ops": dict(first),
+            "first_poll_split": split(first),
+            "steady_minutes": steady_min,
+            "steady_per_min": {k: round(v / steady_min, 3) for k, v in sorted(steady.items())},
+            "steady_split_per_min": {k: round(v / steady_min, 3) for k, v in split(steady).items()},
+            "prints": n, "log_rows": sum(gw.log_runs().values()),
+            "steady_ops": sum(steady.values()),
+            "steady_by_cat": dict(steady),
+            "steady_polls": steps - int(warm_minutes * 60 / POLL),
+            "v2_syncs": server.v2_syncs(),
+            "lem_requests_on_poll_thread": server.poll_thread_requests,
+            # Where the readings went, so a low op count can never be bought
+            # by not delivering them: run rows in LEM's store (v2) and cells
+            # in LabCore's results.
+            "lem_run_rows": _store_run_rows(server, "b1"),
+            "cells_filed": len([v for v in gw.results("Density").values()
+                                if v not in (None, "")])}
+
+
+def _store_run_rows(server, uid):
+    """Run rows LEM's store holds for `uid`; 0 when no v4 server was built."""
+    app = server._app
+    path = getattr(app, "config", {}).get("LEM_STORE") if app is not None else None
+    if not path:
+        return 0
+    import sqlite3
+    con = sqlite3.connect("file:%s?mode=ro" % path, uri=True)
+    try:
+        return con.execute("SELECT COUNT(*) FROM lem_machine_log WHERE "
+                           "machine_uid = ? AND kind = 'run'", [uid]).fetchone()[0]
+    except sqlite3.Error as exc:
+        raise RuntimeError("store run-row count failed: %s" % exc)
+    finally:
+        con.close()

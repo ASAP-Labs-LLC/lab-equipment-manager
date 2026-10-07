@@ -15,6 +15,8 @@ production runs against HttpLabCoreGateway — the app code is identical either 
 from __future__ import annotations
 
 import csv
+import hashlib
+import hmac
 import io
 import json
 import logging
@@ -23,11 +25,11 @@ import threading
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-from flask import (Flask, Response, g, jsonify, redirect, render_template,
-                   request, session, url_for)
+from flask import (Flask, Response, abort, g, jsonify, redirect,
+                   render_template, request, session, url_for)
 
 from data_source import build_sample_index, evaluate_box, qc_is_stale
 from db_config_store import DbConfigStore
@@ -36,6 +38,7 @@ from labcore_result import (LabCoreError, LabCoreRefused, LabCoreUnavailable,
                             rows as labcore_rows)
 from labcore_gateway import check_write, refusal_reason
 from labcore_source import LabCoreDataSource
+import ui_log
 from models import (
     AppConfig,
     BoxConfig,
@@ -128,7 +131,7 @@ def configure_logging(directory=None, level=logging.INFO) -> str:
     handler._lem = True
     root.addHandler(handler)
     # ONE EXCEPTION, and it is the difference between a useful log and a full
-    # one. `floor.html` re-reads its whole world every two seconds from every
+    # one. The old floor page re-read its whole world every two seconds from every
     # open browser and every bench POSTs /api/live on each poll; werkzeug logs
     # a line per request at INFO, which is thousands an hour and would rotate
     # the refusals — the only reason this file exists — out of the file within
@@ -202,9 +205,9 @@ def _is_background(path: str, method: str) -> bool:
     wrong twice in a row — first missing ``/api/me`` and ``/api/map``, then
     ``/api/qc-samples``, each time pinning idle time under a second so an
     unattended deploy could never fire. The failure is silent, and any new
-    poller added to floor.html would reintroduce it.
+    poller added to a page would reintroduce it.
 
-    So the rule is inverted. ``floor.html`` re-reads its whole world every two
+    So the rule is inverted. The old floor page re-read its whole world every two
     seconds from every open browser, which makes *any* GET indistinguishable
     from a wall display; enumerating them is a losing game. What actually
     deserves protection from a restart is someone **writing** — an edit, a
@@ -212,10 +215,15 @@ def _is_background(path: str, method: str) -> bool:
     reader loses at most the ~10s the floor takes to repoll.
 
     ``/api/live`` is excluded even though it is a POST: that is a bench module
-    pushing liveness, not a person.
+    pushing liveness, not a person. So is everything under ``/api/v2/bench/``
+    (transfer spec §6.1): a v4 bench syncs once per poll, and 17 benches doing
+    that would otherwise pin ``idle_seconds`` near zero for good — the same
+    silent failure as above, with benches in place of wall displays. A person
+    approving a bench's enrolment is at ``/api/transfer/...``, and counts.
+    Pinned by ``test_bench_posts_are_background``.
     """
     if method in _WRITE_METHODS:
-        return path == "/api/live"
+        return path == "/api/live" or path.startswith("/api/v2/bench/")
     return True
 
 
@@ -259,10 +267,31 @@ def serialize_config(cfg: AppConfig) -> dict:
 class StatusProvider:
     """Computes the dashboard snapshot from live LabCore data on demand."""
 
-    def __init__(self, gateway) -> None:
-        self.gateway = gateway
+    def __init__(self, gateway, labcore=None) -> None:
+        # The configuration is LEM's (the store); the QC rows it judges are
+        # LabCore's `samples`/`sample_tests`. W3: GET /api/status used to cost
+        # five LabCore reads, four of them `lem_*` — now it costs LabCore only
+        # the rows that really are LabCore's.
+        self.labcore = labcore if labcore is not None else gateway
+        self.gateway = self.labcore
         self.store = DbConfigStore(gateway)
-        self.source = LabCoreDataSource(gateway)
+        self.source = LabCoreDataSource(self.labcore)
+        # The QC rows' shared copy (see `_qc_rows`). `clock` is injectable so
+        # a test can walk through an interval without sleeping it.
+        self.clock = time.monotonic
+        self._rows_lock = threading.Lock()
+        self._rows_key = None
+        self._rows: Optional[List[dict]] = None
+        self._rows_at: Optional[float] = None        # clock() of the good read
+        self._rows_wall: Optional[str] = None        # its wall time, for words
+        self._rows_error: Optional[BaseException] = None
+        self._rows_error_at: Optional[float] = None
+        self._online: Optional[bool] = None
+        self._online_at: Optional[float] = None
+
+    #: How long a failed read of LabCore is believed before it is tried
+    #: again. Per request would put a dead LabCore's every poll on the queue.
+    RETRY_FAILED_SECONDS = 15.0
 
     def load_config(self) -> AppConfig:
         return self.store.load()
@@ -270,12 +299,78 @@ class StatusProvider:
     def save_config(self, cfg: AppConfig):
         return self.store.save(cfg)
 
+    def _qc_rows(self, cfg: AppConfig, sample_id_column: str, ttl: float):
+        """The dashboard's QC rows: (rows, as_of_wall, error_or_None).
+
+        W3. These rows are LabCore's (`samples`/`sample_tests`), so they are
+        read from LabCore, but at most once per the dashboard's refresh
+        interval for EVERY screen together, keyed on what is watched (a
+        changed watch list is read at once), one read in flight at a time.
+        Every open dashboard polls this; one read per poll per screen was
+        the remaining LabCore cost of `/api/status`.
+
+        A failed read is never an empty dashboard. With rows from an earlier
+        read they are served WITH the failure, which the caller words as
+        "as of"; with none the failure is raised, as before. A failure is
+        believed for RETRY_FAILED_SECONDS before LabCore is asked again.
+        """
+        key = (sample_id_column, tuple(
+            (s.name, (s.sample_id_val or "").strip(),
+             tuple((t.value_col or "").strip() for t in s.tests))
+            for s in cfg.samples))
+        with self._rows_lock:
+            now = self.clock()
+            same = key == self._rows_key
+            if same and self._rows is not None and self._rows_at is not None \
+                    and now - self._rows_at < ttl:
+                return self._rows, self._rows_wall, None
+            if same and self._rows_error is not None \
+                    and self._rows_error_at is not None \
+                    and now - self._rows_error_at < self.RETRY_FAILED_SECONDS:
+                if self._rows is None:
+                    raise self._rows_error
+                return self._rows, self._rows_wall, self._rows_error
+            if not same:
+                self._rows = self._rows_at = self._rows_wall = None
+                self._rows_error = self._rows_error_at = None
+            try:
+                rows = self.source.load_rows(cfg.samples, sample_id_column)
+            except LabCoreError as exc:
+                self._rows_key = key
+                self._rows_error, self._rows_error_at = exc, now
+                self._online, self._online_at = False, now
+                if self._rows is None:
+                    raise
+                return self._rows, self._rows_wall, exc
+            self._rows_key = key
+            self._rows, self._rows_at = rows, now
+            self._rows_wall = datetime.now().isoformat(timespec="seconds")
+            self._rows_error = self._rows_error_at = None
+            if any((s.sample_id_val or "").strip() for s in cfg.samples):
+                # A read just answered: that IS LabCore being online, and
+                # asking again with a probe would be a second trip for it.
+                self._online, self._online_at = True, now
+            return rows, self._rows_wall, None
+
+    def _labcore_online(self, ttl: float) -> bool:
+        with self._rows_lock:
+            now = self.clock()
+            if self._online is not None and self._online_at is not None \
+                    and now - self._online_at < ttl:
+                return self._online
+        online = bool(self.gateway.is_running())
+        with self._rows_lock:
+            self._online, self._online_at = online, self.clock()
+        return online
+
     def build_snapshot(self) -> dict:
         cfg = self.load_config()
         sample_id_column = cfg.sample_id_column or "Lab ID"
         samples_by_name: Dict[str, SampleSpec] = {s.name: s for s in cfg.samples}
+        refresh_seconds = max(60, int(cfg.poll_minutes) * 60)
 
-        rows = self.source.load_rows(cfg.samples, sample_id_column)
+        rows, rows_as_of, rows_error = self._qc_rows(
+            cfg, sample_id_column, float(refresh_seconds))
         sample_index = build_sample_index(rows, sample_id_column)
 
         boxes_payload: List[dict] = []
@@ -323,13 +418,27 @@ class StatusProvider:
                 })
             boxes_payload.append(payload)
 
+        errors: List[str] = []
+        if rows_error is not None:
+            errors.append(
+                "LabCore did not answer ({0}); the QC values shown are as of "
+                "{1}.".format(str(rows_error) or type(rows_error).__name__,
+                              rows_as_of))
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "boxes": boxes_payload,
-            "errors": [],
-            "refresh_seconds": max(60, int(cfg.poll_minutes) * 60),
-            "labcore_online": bool(self.gateway.is_running()),
+            "errors": errors,
+            "refresh_seconds": refresh_seconds,
+            "qc_rows_as_of": rows_as_of,
+            "labcore_online": (False if rows_error is not None
+                               else self._labcore_online(
+                                   float(refresh_seconds))),
         }
+
+
+def _truthy(value) -> bool:
+    """A query-string switch: `1`, `true`, `yes`, `on` — anything else is off."""
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _now() -> datetime:
@@ -1010,10 +1119,126 @@ def refusal_response(exc):
     return jsonify(body), (503 if exc.busy else 502), headers
 
 
-def create_app(gateway, admin_password: Optional[str] = None,
+def dev_tools_allowed(gateway, asked: bool) -> bool:
+    """Settings › Developer (the four Simulate tools) — only under --dev, and
+    only on the in-memory fake LabCore.
+
+    Two conditions, not one: `--dev` is a flag somebody types, and a boot
+    script that passed it to a server pointed at the real LabCore must still
+    not grow a "Simulate status" button on the lab's screens. The tools used to
+    sit in the floor's right-click menu in production, one click from a fake
+    RED on a wall display.
+    """
+    from labcore_gateway import FakeLabCoreGateway
+    return bool(asked) and isinstance(gateway, FakeLabCoreGateway)
+
+
+SIM_REASON = "Simulated in Settings › Developer, not from the bench."
+SIM_STATUSES = (STATUS_GREEN, STATUS_YELLOW, STATUS_RED, STATUS_SERVICE, STATUS_DEAD)
+
+
+def _register_dev_tools(app, gateway, snapshots) -> None:
+    """POST /api/dev/simulate — registered only when `dev_tools_allowed`.
+
+    A simulated STATUS goes on the live road (memory; it ages out in 20 min,
+    is gone on restart, and its reason says "Simulated" so a screenshot cannot
+    pass it off as real). Simulated RESULTS are written as `run` rows into the
+    fake LabCore's log, so the Logs page and the record show them the way a
+    bench's would; the log copy is pulled at once so they appear now, not in
+    five minutes. Nothing here can reach a real LabCore: see
+    `dev_tools_allowed`.
+    """
+    import secrets as _secrets
+    live = app.config["LIVE"]
+
+    @app.route("/api/dev/simulate", methods=["POST"])
+    def api_dev_simulate():
+        body = request.get_json(silent=True) or {}
+        uid = str(body.get("machine_uid") or "").strip()
+        action = str(body.get("action") or "")
+        snap = snapshots.get()
+        known = {m.get("machine_uid") for m in snap.get("machines") or []}
+        if uid not in known:
+            return jsonify({"error": "No instrument %r in the record." % uid}), 404
+        now = datetime.now()
+        if action == "status":
+            status = str(body.get("status") or "").upper()
+            if status not in SIM_STATUSES:
+                return jsonify({"error": "Pick one of " + ", ".join(SIM_STATUSES)}), 400
+            live.record(uid, {"status": status, "reason": SIM_REASON,
+                              "at": now.isoformat(timespec="seconds"),
+                              "interval_seconds": 3600})
+            return jsonify({"simulated": status, "machine_uid": uid})
+        if action == "clear":
+            had = live.forget(uid)
+            return jsonify({"cleared": had, "machine_uid": uid})
+        if action in ("result", "burst"):
+            n = 1 if action == "result" else 6
+            landed = 0
+            for i in range(n):
+                res = gateway.sql(
+                    "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+                    "test_name, value, detail) VALUES (?, ?, 'run', ?, '', '', ?)",
+                    [uid, (now + timedelta(seconds=i)).isoformat(timespec="seconds"),
+                     "SIM-" + _secrets.token_hex(2).upper(),
+                     json.dumps({"simulated": True})])
+                if refusal_reason(res):
+                    break
+                landed += 1
+            try:
+                app.config["LOG_MIRROR"].refresh()
+            except Exception as exc:                     # noqa: BLE001
+                logger.warning("dev: the log copy did not refresh: %s", exc)
+            snapshots.refresh_soon()
+            status = 200 if landed == n else 502
+            return jsonify({"landed": landed, "not_landed": n - landed}), status
+        return jsonify({"error": "Unknown action."}), 400
+
+
+def create_app(gateway, labcore_gateway=None,
+               admin_password: Optional[str] = None,
                secret: Optional[str] = None, authenticator=None,
                live=None, live_token: Optional[str] = None,
-               documents_root=None) -> Flask:
+               documents_root=None, labcore=None,
+               dev_tools: bool = False) -> Flask:
+    """The app, over TWO gateways: LEM's store and LabCore (transfer §5.3).
+
+    `gateway` is the STORE — every `lem_*` table, the machine log, the
+    snapshot, the log mirror, every store module. In production it is
+    `lem_store.LocalStoreGateway` on this server's disk.
+
+    `labcore_gateway` (alias `labcore=`, the name the gate harness passes) is
+    LabCore, and only the callers that need LabCore's OWN tables reach it:
+    sign-in (`LabCoreAuth`), the dashboard's QC rows (`LabCoreDataSource`, over
+    `samples`/`sample_tests`), and the test-method catalogue. Not one `lem_*`
+    statement goes there; `test_gateway_split.py` walks the pages with a
+    counting gateway in LabCore's place to prove it (S4).
+
+    Omitted, LabCore is the store's own gateway — the shape every test in this
+    suite uses, where one fake holds both LabCore's three tables and the LEM
+    store's. What is refused is the old production shape, LabCore AS the
+    store: the machine log there has no append-only triggers and no
+    `lem_machine_log_effective`, and every reader of the record now names that
+    view — so on LabCore they would fail, and a reader that treats "no such
+    table" as an empty log would report a lab with no history.
+    """
+    labcore = labcore_gateway if labcore_gateway is not None else labcore
+    if labcore is None:
+        labcore = gateway
+    from labcore_gateway import HttpLabCoreGateway
+    if isinstance(gateway, HttpLabCoreGateway):
+        raise ValueError(
+            "LabCore is not LEM's store any more: pass "
+            "create_app(LocalStoreGateway(path), labcore=HttpLabCoreGateway()).")
+    # Who LabCore IS, decided before it is wrapped: "is LabCore the store?"
+    # (the single-gateway shape) and "is it the in-memory fake?" (dev tools)
+    # are questions about the gateway, not about the meter around it.
+    labcore_raw = labcore
+    labcore_split = labcore_raw is not gateway
+    # Every LabCore call this app makes, counted by outcome for /healthz
+    # (baseline item 2: watchdog kills were unmeasured). Forwards everything.
+    from labcore_meter import LabCoreMeter
+    labcore = LabCoreMeter(labcore_raw)
     # Per-app, never module-global — see throttled_warning.
     warn_seen: Dict[str, list] = {}
 
@@ -1050,31 +1275,6 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def _app_version() -> str:
         return APP_VERSION
 
-    # The 3D floor loads as ES modules, and a static `import` cannot carry a
-    # version of its own — so the import map is the only place a fingerprint can
-    # go. Without it a screen holding last week's terrain.js runs it against
-    # this week's renderer, which is precisely the stale-static failure
-    # `static_version` exists to prevent. Bare specifiers throughout:
-    # `import {Rail} from "world/rail.js"`.
-    @app.template_global("worldmap")
-    def _world_importmap() -> str:
-        import json as _json
-
-        root = app.static_folder or "static"
-        imports = {"three": "/static/vendor/three.module.min.js?v="
-                            + static_version(os.path.join(
-                                root, "vendor", "three.module.min.js"))}
-        try:
-            names = sorted(os.listdir(os.path.join(root, "world")))
-        except OSError:
-            names = []                      # never fatal: see static_version
-        for name in names:
-            if name.endswith(".js"):
-                imports["world/" + name] = (
-                    "/static/world/" + name + "?v="
-                    + static_version(os.path.join(root, "world", name)))
-        return _json.dumps({"imports": imports}, indent=1)
-
     app.secret_key = secret or os.environ.get("LABMGR_SECRET", "lem-v5-dev-secret")
 
     # Login is the suite-wide LabCore one (same accounts + NFC cards as
@@ -1082,11 +1282,15 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # escape hatch for --dev runs with no LabCore.
     from labcore_auth import LabCoreAuth
 
-    auth_backend = authenticator or LabCoreAuth(gateway=gateway)
+    auth_backend = authenticator or LabCoreAuth(gateway=labcore)
     admin_pw = admin_password or os.environ.get("LABMGR_ADMIN_PASSWORD")
 
-    provider = StatusProvider(gateway)
+    provider = StatusProvider(gateway, labcore)
+    app.config["STATUS_PROVIDER"] = provider
     app.config["PROVIDER"] = provider
+    app.config["STORE_GATEWAY"] = gateway
+    app.config["LABCORE_GATEWAY"] = labcore
+    app.config["LABCORE_METER"] = labcore
 
     def _confirmed_write(sql: str, args: Optional[list] = None, *,
                          what: str = "") -> dict:
@@ -1119,9 +1323,175 @@ def create_app(gateway, admin_password: Optional[str] = None,
             res = gateway.sql(sql, args or [])
         except Exception as exc:                    # transport, not logic
             raise LabCoreUnavailable(
-                "LabCore could not be written to ({0}: {1})".format(
+                "{0} could not be written to ({1}: {2})".format(
+                    "the LEM store" if is_local_store(gateway) else "LabCore",
                     type(exc).__name__, exc)) from exc
         return check_write(res, what=what)
+
+    # ── one save, one transaction (transfer §5.2, W2) ─────────────────
+    #
+    # On the LEM store a change and everything that records it — the factor,
+    # its §7.8.2 receipt, its log line — commit together or not at all, and a
+    # browser retry carrying the same `X-Request-Id` is answered from
+    # `request_ledger` (written inside the same transaction) instead of being
+    # done twice. A gateway with no `transaction()` (a test double, LabCore
+    # itself) keeps the old one-statement-at-a-time path.
+    transactional = callable(getattr(gateway, "transaction", None))
+
+    def _request_id() -> str:
+        return (request.headers.get("X-Request-Id") or "").strip()[:128]
+
+    # WHAT AN ID NAMES. One request: this method on this path, this body,
+    # this person. The first version keyed on the id alone, so a DELETE sent
+    # with a POST's id was answered with the POST's 200 and removed nothing.
+    def _request_scope() -> tuple:
+        body = request.get_json(silent=True)
+        if body is not None:
+            # Canonical, so a retry that re-serialises the same JSON in
+            # another key order is still the same request.
+            raw = json.dumps(body, sort_keys=True,
+                             separators=(",", ":")).encode("utf-8")
+        else:
+            raw = request.get_data() or b""
+        return ("{0} {1}".format(request.method, request.path),
+                str(session.get("user", "")),
+                hashlib.sha256(raw).hexdigest())
+
+    class _AlreadyDone(Exception):
+        """Raised inside a transaction that found its own request already in
+        the ledger: rolls back (nothing was written yet) and carries the
+        answer to give instead."""
+
+        def __init__(self, response):
+            super().__init__("already done")
+            self.response = response
+
+    def _replay(rid: str, still_true=None):
+        """The stored answer to THIS request if it was already done, a 422
+        if the id was used for a different request, a 409 if it was done but
+        a later change has since made its answer false, or None.
+
+        `still_true(answer) -> None | (in_force, sentence)`: a replayed 200
+        is read by the page as "this is the state now", and the ledger only
+        knows "this is what that request did". The two agree until somebody
+        changes the same thing again: round 3's critic saved 0.5 (answer
+        lost), saved 0.6, then saved 0.5 again with the page's kept id and
+        was told "correction 0.5" while 0.6 was in force. So the route says
+        what its answer claims about the record, the record is asked, and a
+        claim that is no longer true is never replayed. Nothing is done
+        either: it may be a genuine late retry, and doing it again would
+        overwrite a colleague's later change without a word.
+
+        A ledger that cannot be READ is not "not done yet": doing the work
+        again on a blip is the duplicate this exists to prevent, so it raises
+        and the route reports it like any other unreadable record. Called
+        once before the work (cheap, no lock) and once more INSIDE the
+        transaction (`_claim`), which is the look-up that decides."""
+        if not rid or not transactional:
+            return None
+        res = gateway.read_sql(
+            "SELECT route, who, fingerprint, status, body FROM request_ledger "
+            "WHERE request_id = ?", [rid])
+        found = labcore_rows(res)
+        if not found:
+            return None
+        row = found[0]
+        route, who, fingerprint = _request_scope()
+        if (row.get("route"), row.get("who") or "",
+                row.get("fingerprint") or "") != (route, who, fingerprint):
+            # Neither replayed nor performed. Only the route is named: the
+            # body and the person behind the first use are not this caller's.
+            response = jsonify({
+                "error": ("This request id was already used for a different "
+                          "request ({0}). Nothing was done; send this change "
+                          "with a new id.").format(row.get("route") or "?"),
+                "request_id_reused": True})
+            response.status_code = 422
+            return response
+        status = int(row.get("status") or 200)
+        if still_true is not None and 200 <= status < 300:
+            try:
+                answer = json.loads(row.get("body") or "{}")
+            except ValueError:
+                answer = {}
+            stale = still_true(answer)
+            if stale is not None:
+                in_force, sentence = stale
+                response = jsonify({"error": sentence, "superseded": True,
+                                    "in_force": in_force})
+                response.status_code = 409
+                return response
+        response = app.response_class(
+            row.get("body") or "{}", status=status,
+            mimetype="application/json")
+        response.headers["X-Request-Replayed"] = "true"
+        return response
+
+    def _claim(rid: str, still_true=None) -> None:
+        """Inside the transaction, before any write: if this id is in the
+        ledger now, another copy of the request committed while this one
+        waited for the writer. BEGIN IMMEDIATE makes this look-up and the
+        ledger INSERT one serialised step, so a burst of identical retries
+        is one change and N true answers, never a primary-key clash
+        reported as "NOT saved" about a save that landed."""
+        done = _replay(rid, still_true)
+        if done is not None:
+            raise _AlreadyDone(done)
+
+    def _ledger(rid: str, body: dict, status: int = 200) -> None:
+        if not rid:
+            return
+        route, who, fingerprint = _request_scope()
+        _confirmed_write(
+            "INSERT INTO request_ledger (request_id, route, status, body, at, "
+            "who, fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [rid, route, status, json.dumps(body),
+             _now().isoformat(timespec="seconds"), who, fingerprint],
+            what="the record of this request was NOT written, so nothing "
+                 "was saved")
+
+    def _audit_line(action: str, machine_uid: str = "", detail=None) -> None:
+        """`_audit`'s INSERT, RAISING — for use inside a transaction, where a
+        refused log line must take the change back with it."""
+        _confirmed_write(
+            "INSERT INTO lem_machine_log (machine_uid, ts, kind, lab_id, "
+            "test_name, value, detail) VALUES (?, ?, 'config', '', ?, '', ?)",
+            [machine_uid, _now().isoformat(timespec="seconds"), action,
+             json.dumps({"action": action, "by": session.get("user", ""),
+                         **(detail or {})})],
+            what="the log line for this change was NOT written")
+
+    def _rolled_back(exc, what: str):
+        """The answer for a correction transaction on the LEM store that did
+        not commit, whatever the reason: a refusal, a raised transport error,
+        a disk error, a bug in a step. JSON, never Flask's HTML 500.
+
+        Worded for what is TRUE of a rolled-back local transaction, which is
+        not what `_labcore_failed` says about a queue: the state is known
+        (nothing changed; `what` says what is still in force), and the
+        database is LEM's own, not LabCore. 503 because pressing again is
+        the right next step, and `retryable` because the same request id is
+        safe to send again: nothing was recorded under it."""
+        logger.warning("correction transaction rolled back: %s: %s",
+                       type(exc).__name__, exc)
+        reason = getattr(exc, "reason", None) or str(exc) or type(exc).__name__
+        return jsonify({
+            "error": "{0}{1}. The LEM store did not commit the change "
+                     "({2}), so all of it was rolled back: nothing was "
+                     "changed and nothing was recorded. Try again in a "
+                     "moment.".format(what[:1].upper(), what[1:],
+                                      str(reason)[:160]),
+            "detail": "{0}: {1}".format(type(exc).__name__, exc),
+            "saved": False, "retry": True, "retryable": True,
+            "store": "rolled_back",
+        }), 503
+
+    def _not_saved(exc, what: str):
+        """Re-word a refusal raised inside a rolled-back transaction: whatever
+        step said no, NOTHING was saved, and the sentence has to say that."""
+        from labcore_gateway import LabCoreRefused as _Refused
+        result = getattr(exc, "result", None) or {"error": str(exc)}
+        raise _Refused(result, what) from exc
 
     def authed() -> bool:
         return bool(session.get("user"))
@@ -1151,27 +1521,829 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # Login → mode selector → Map or Checklists. The floor used to be the root,
     # which is wrong on a phone: someone walking the lab wants their checklist
     # or the map, not a 3D floor plan to pinch past.
+    # `/` is Instruments (ia-final §1, §3.2): find an instrument and see who
+    # needs you. It used to be a chooser between two big buttons, a click tax
+    # with no way to QC; the question every visitor brings ("can it run?")
+    # is now answered on arrival, in the table's Can it run? column.
     @app.route("/")
+    @app.route("/instruments")
     def home():
-        """Two big targets, and nothing else to get wrong."""
-        return render_template("home.html", active="/")
+        """The Instruments home. The first paint carries the same answer
+        `/api/ui/instruments` serves, so the verdicts are on screen without a
+        second request (T1 at 0 clicks); instruments.js keeps it live."""
+        # ?view=map is the same page drawn as the floor plan (piece 12): the
+        # same answer, the same Needs-you card, so the two views cannot
+        # disagree. Anything else in ?view is the list.
+        view = "map" if (request.args.get("view") or "") == "map" else "list"
+        return render_template("instruments.html", nav="instruments", view=view,
+                               data=_instruments_payload(),
+                               has_quality=any(r.rule == "/quality"
+                                               for r in app.url_map.iter_rules()))
 
+    @app.route("/favicon.ico")
+    def favicon_ico():
+        """Browsers ask for /favicon.ico on a first load whatever the page's
+        <link rel=icon> says; send it to the one icon there is rather than
+        logging a 404 in every console."""
+        return redirect("/static/favicon.svg", code=301)
+
+    # ── the wall kiosks (ia-final §3.8, piece 13) ───────────────────────
+    # /floor and /qc are TV bookmarks a year old, so they answer 200 with no
+    # redirect (O11) and draw the chromeless walls: no sidebar, sign-in, bell
+    # or toast, because nobody stands at a TV. Memory only: the first paint
+    # is the same answer the polls serve, so a wall says something true
+    # before its scripts run, and loading it costs LabCore nothing
+    # (tests/test_wall_pages.py counts).
     @app.route("/floor")
     def floor():
-        """The lab floor: every instrument on its bay, hover for a glance,
-        click for the full record, right-click to act on it."""
-        return render_template("floor.html", active="/floor")
+        """The floor wall: can the lab run? (wall_floor.html).
+
+        One query is not the wall's: `?machine=<uid>` is how the old floor
+        (and every "Show on the floor map" link people saved from it) opened
+        one instrument's panel. That panel is the record now, so the old
+        link lands there (ia-final §1). The uid is quoted as a path segment,
+        so a uid with a `/` or `?` in it reaches its own record or its
+        honest 404, never another URL. An empty `machine=` is no machine:
+        the wall."""
+        uid = request.args.get("machine") or ""
+        if uid:
+            from urllib.parse import quote
+            return redirect("/instruments/" + quote(uid, safe=""), code=302)
+        return render_template("wall_floor.html", data=_wall_floor_payload(), kind="floor")
 
     @app.route("/maintenance")
     def maintenance_page():
-        """Every machine's PM and calibration in one place, worst first."""
-        return render_template("maintenance.html", active="/maintenance")
+        """PM and calibration are a filter of Instruments now (ia-final §1):
+        a schedule belongs to its instrument's record, and a nav item for a
+        table with 0 rows in production was a judged defect (§12)."""
+        return redirect("/instruments?filter=maintenance")
+
+    # ── the round (ia-final §3.3, piece 9) ─────────────────────────────
+    # `/checklists` is the tablet's bookmark: it goes to the round that is
+    # open now. `/checklists/<slot>` is the round itself. Neither reads
+    # LabCore to draw: the day comes from the page cache when it is in
+    # memory, and from the browser's own GET when it is not.
+    ROUND_SLOTS = ("opening", "closing")
+
+    def _day_in_memory(day: str):
+        """Today's `/api/checklists` answer if it is in memory, else None.
+        A peek, never a read: a cold cache is unknown, not empty."""
+        with _pages_lock:
+            return _pages.get(f"checklists:{day}")
+
+    def _slot_open_now() -> str:
+        """The slot the bookmark opens. The round due next by the same rule
+        as the nav's "Opening 3/5" (ui_live.round_summary), so the two can
+        never point at different rounds. With nothing in memory the clock
+        decides (opening before noon): a redirect that waited on LabCore
+        would be a blank tablet."""
+        import ui_live as _ui_live
+        summary = _ui_live.round_summary(_day_in_memory(_today()), _now())
+        if summary and summary.get("slot") in ROUND_SLOTS:
+            return summary["slot"]
+        if summary and summary.get("slot") is None:
+            # Known, and nothing is set up: the lab is setting up, and setup
+            # starts with the opening round. At 14:00 the clock would say
+            # Closing and send the first person to define the wrong one.
+            return "opening"
+        return "opening" if _now().hour < 12 else "closing"
 
     @app.route("/checklists")
     def checklists():
-        """Opening and closing rounds. The checklist system itself isn't built
-        yet — this page says so rather than pretending."""
-        return render_template("checklists.html", active="/checklists")
+        """The bookmark: 302 to the round that is open now."""
+        qs = request.query_string.decode("utf-8", "replace")
+        return redirect("/checklists/" + _slot_open_now() + ("?" + qs if qs else ""), 302)
+
+    @app.route("/checklists/<slot>")
+    def checklist_round(slot):
+        """Do today's round. Tablet first (ia-final §3.3)."""
+        if slot not in ROUND_SLOTS:
+            abort(404)
+        day = _today()
+        cached = _day_in_memory(day)
+        mine = None
+        if isinstance(cached, dict):
+            mine = dict(cached)
+            mine["checklists"] = [cl for cl in (cached.get("checklists") or [])
+                                  if cl.get("slot") == slot]
+            mine["state"] = {cl["uid"]: (cached.get("state") or {}).get(cl["uid"], {})
+                             for cl in mine["checklists"]}
+        when = datetime.fromisoformat(day)
+        return render_template(
+            "round.html", nav="checklists", slot=slot, round=mine, day=day,
+            day_label=when.strftime("%A ") + str(when.day) + when.strftime(" %b"),
+            title=slot.capitalize() + " round", bench=True)
+
+    # ── defining rounds (ia-final §3.4, piece 10) ──────────────────────
+    # `/checklists/edit` lists the rounds; `/checklists/edit/<uid>` and
+    # `/checklists/edit/new?slot=` are the editor. Every read here is LEM's
+    # own store (local), never LabCore, and every one that fails says so:
+    # a list that could not be read is a 503 with a sentence, never "No
+    # rounds are set up", which would send someone to define the lab's
+    # rounds a second time.
+    EDIT_SLOTS = ("opening", "closing", "other")
+
+    def _round_edits():
+        """{round uid or name: {at, by}} for the newest "checklist saved" line
+        per round, from the machine log. None when the log could not be read
+        (the column then says so; it never says "never edited")."""
+        try:
+            res = gateway.read_sql(
+                "SELECT ts, detail FROM lem_machine_log_effective "
+                "WHERE kind = 'config' AND test_name = 'checklist saved' "
+                "ORDER BY ts DESC LIMIT 2000", [])
+            rows = labcore_rows(res, missing_ok=True)
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("round edit history unreadable: %s", exc)
+            return None
+        out: dict = {}
+        for row in rows:
+            try:
+                d = json.loads(row.get("detail") or "{}")
+            except (TypeError, ValueError):
+                continue
+            stamp = {"at": str(row.get("ts") or ""), "by": str(d.get("by") or "")}
+            for key in (d.get("uid"), d.get("checklist")):
+                if key and key not in out:
+                    out[key] = stamp
+        return out
+
+    def _when_words(iso: str) -> str:
+        """"2026-09-30" -> "30 Sep 2026"; "2026-09-30T13:42:10" -> "30 Sep 13:42"."""
+        try:
+            when = datetime.fromisoformat(str(iso))
+        except (TypeError, ValueError):
+            return str(iso or "")
+        if "T" in str(iso):
+            if when.date() == _now().date():
+                return "Today " + when.strftime("%H:%M")
+            return "%d %s %s" % (when.day, when.strftime("%b"), when.strftime("%H:%M"))
+        return "%d %s %d" % (when.day, when.strftime("%b"), when.year)
+
+    def _archive(uid=None):
+        try:
+            a = checklist_store.archive_summary(uid)
+        except LabCoreError as exc:
+            logger.warning("checklist archive unreadable: %s", exc)
+            return None
+        a["first_words"] = _when_words(a["first"]) if a["first"] else ""
+        a["last_words"] = _when_words(a["last"]) if a["last"] else ""
+        return a
+
+    @app.route("/checklists/edit")
+    def checklist_rounds():
+        """The rounds, and the way to a new one."""
+        failed = ""
+        rows = []
+        try:
+            rounds = checklist_store.all()
+        except LabCoreError as exc:
+            rounds, failed = None, str(exc)
+        if rounds is not None:
+            edits = _round_edits()
+            for cl in rounds:
+                work = [i for i in cl.items if i.item_type != "header"]
+                edited = None if edits is None else (edits.get(cl.uid) or edits.get(cl.name))
+                rows.append({
+                    "uid": cl.uid, "name": cl.name, "slot": cl.slot, "due": cl.due_time,
+                    "items": len(work),
+                    "readings": sum(1 for i in work if i.entry_type == "number"),
+                    "edited": edited,
+                    "edited_words": _when_words(edited["at"]) if edited else "",
+                    "edits_unread": edits is None,
+                })
+            order = {"opening": 0, "closing": 1}
+            rows.sort(key=lambda r: (order.get(r["slot"], 2), r["name"].lower(), r["uid"]))
+        html = render_template(
+            "round_edit.html", nav="checklists", view="list", rows=rows,
+            failed=failed, archive=_archive() if rounds is not None else None)
+        # 200 with the failed state, as every page that works offline does
+        # (tests/test_navigation.py): the PAGE works; its one card says the
+        # rounds could not be read, which is not the same as "none".
+        return html
+
+    def _due_from_hours(slot: str):
+        """(due, why): the prefilled due time and the sentence that says where
+        it came from. An opening round is due half an hour after the lab
+        opens; a closing round when it closes. Hours that could not be read or
+        were never set leave it blank, and the sentence says which."""
+        from lab_schedule import parse_hhmm
+        try:
+            sched = schedule_store.load()
+        except LabCoreError:
+            return "", "Lab hours could not be read, so no due time is filled in. Type one, or leave it blank."
+        if slot == "opening" and sched.opens:
+            t = parse_hhmm(sched.opens)
+            mins = t.hour * 60 + t.minute + 30
+            if mins < 24 * 60:
+                return ("%02d:%02d" % divmod(mins, 60),
+                        "Half an hour after the lab opens at %s (Settings › Lab hours)." % sched.opens)
+        if slot == "closing" and sched.closes:
+            return sched.closes, "When the lab closes at %s (Settings › Lab hours)." % sched.closes
+        if slot in ("opening", "closing"):
+            return "", "Lab hours have no %s time set, so no due time is filled in (Settings › Lab hours)." % (
+                "opening" if slot == "opening" else "closing")
+        return "", "Blank means the round has no deadline."
+
+    def _editor(cl, *, new: bool, due_why: str = "", status: int = 200):
+        tracked = {}
+        tracked_failed = False
+        shared: dict = {}
+        if not new and any(i.track_uid for i in cl.items):
+            try:
+                tracked = {t.uid: t for t in tracked_store.all()}
+            except LabCoreError:
+                tracked_failed = True
+            try:
+                for other in checklist_store.all():
+                    if other.uid == cl.uid:
+                        continue
+                    for i in other.items:
+                        if i.track_uid:
+                            shared.setdefault(i.track_uid, [])
+                            if other.name not in shared[i.track_uid]:
+                                shared[i.track_uid].append(other.name)
+            except LabCoreError:
+                shared = {}
+        items = []
+        for i in cl.items:
+            d = i.to_dict()
+            d["track"] = bool(i.track_uid)
+            d["limits_unknown"] = False
+            d["days_words"] = ", ".join(("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")[int(x)]
+                                        for x in sorted(set(i.days_active)) if 0 <= int(x) <= 6)
+            if i.track_uid:
+                thing = tracked.get(i.track_uid)
+                if thing is not None:
+                    d["min"], d["max"] = thing.min_value, thing.max_value
+                    d["units"] = i.units or thing.units
+                elif tracked_failed:
+                    d["limits_unknown"] = True
+                d["shared_with"] = shared.get(i.track_uid, [])
+            items.append(d)
+        definition = {"uid": cl.uid, "name": cl.name, "slot": cl.slot,
+                      "due_time": cl.due_time, "items": items, "new": new}
+        html = render_template(
+            "round_edit.html", nav="checklists", view="edit", R=definition,
+            due_why=due_why, archive=None if new else _archive(cl.uid),
+            fmt=lambda v: "" if v is None else _plain(v))
+        return html, status
+
+    @app.route("/checklists/edit/new")
+    def checklist_round_new():
+        """A new round: name and due time already filled in, one empty item
+        with the caret in it (T4a types no name and no time)."""
+        slot = (request.args.get("slot") or "opening").strip().lower()
+        if slot not in EDIT_SLOTS:
+            slot = "opening"
+        due, why = _due_from_hours(slot)
+        name = {"opening": "Opening round", "closing": "Closing round"}.get(slot, "New round")
+        import uuid as _uuid
+        from checklists import Checklist as _Checklist, ChecklistItem as _Item
+        cl = _Checklist(uid=_uuid.uuid4().hex[:12], name=name, slot=slot, due_time=due,
+                        items=[_Item(uid=_uuid.uuid4().hex[:12])])
+        return _editor(cl, new=True, due_why=why)
+
+    @app.route("/checklists/edit/<uid>")
+    def checklist_round_edit(uid):
+        try:
+            cl = checklist_store.get(uid)
+        except LabCoreError as exc:
+            return render_template("round_edit.html", nav="checklists", view="failed",
+                                   failed=str(exc), uid=uid), 503
+        if cl is None:
+            return render_template("round_edit.html", nav="checklists", view="missing",
+                                   uid=uid), 404
+        return _editor(cl, new=False,
+                       due_why="Blank means the round has no deadline.")
+
+    # ── the shell (ia-final §2) ───────────────────────────────────────
+    # What the sidebar foot, the rail badges and the words strip say on first
+    # paint, read from memory only (ui_shell). Once per request: _layout.html
+    # and _shell.html both ask, and the answer must be the same in both.
+    @app.template_global("shell_state")
+    def _shell_state() -> dict:
+        cached = getattr(g, "_lem_shell", None)
+        if cached is not None:
+            return cached
+        import ui_shell
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                                 STATUS_COLORS) if snap.get("ready") else None)
+        status = ui_shell.shell_status(snap, merged)
+        # The nav's counts on first paint come from the live payload, the SAME
+        # function the browser then polls (ui_live.nav_meta), so the page that
+        # loads and the poll that follows cannot say two things (§0.2).
+        live = _live_payload(None)
+        status["nav_meta"] = live["nav_meta"]
+        state, words = ui_shell.record_words(status)
+        has_quality = any(r.rule == "/quality" for r in app.url_map.iter_rules())
+        user = session.get("user") or ""
+        out = dict(status, nav=ui_shell.nav_items(has_quality),
+                   fleet_text=ui_shell.fleet_text(status["fleet"]),
+                   record_state=state, record_text=words, user=user,
+                   data_line=live.get("transfer"))
+        g._lem_shell = out
+        return out
+
+    # ── the live feed (ia-final §5): GET /api/ui/live ───────────────────
+    # Memory only, 0 LabCore ops (tests/test_ui_live.py counts them). A GET,
+    # so `_is_background` keeps /healthz `idle_seconds` rising while any
+    # number of pages poll it. NOT `POST /api/live`, the bench contract.
+    import jobs as _jobs_mod
+    import ui_live
+    app.config.setdefault("JOBS", _jobs_mod.Registry())
+    app.config["LIVE_FEED"] = ui_live.Feed()
+    app.config["NOTICES"] = ui_live.Notices()
+    # what the poller thread learned about certificates (None: not asked yet)
+    _certs: dict = {"items": None, "at": 0.0}
+    # the last round summary actually read, so a tick's cache drop does not
+    # blank the nav for the second it takes to re-read the day
+    _round_last: dict = {"day": None, "value": None}
+
+    def _record_href(uid: str, section: str) -> str:
+        """Where an instrument's record lives: `/instruments/<uid>`, with the
+        section as its #anchor. (Until piece 14 this could also answer the
+        old floor, for a build with no record page; the record is always
+        registered now, and the old floor is gone.)"""
+        return "/instruments/%s%s" % (uid, ("#" + section) if section else "")
+
+    def _today_round_day():
+        """Today's cached `/api/checklists` answer, or the last one read
+        today, or None. Never a read: a cold cache is unknown."""
+        day = _today()
+        with _pages_lock:
+            cached = _pages.get(f"checklists:{day}")
+        if cached is not None:
+            _round_last.update(day=day, value=cached)
+            return cached
+        return _round_last["value"] if _round_last["day"] == day else None
+
+    # ── QC is judged at a moment (§3.1: "A passing check counts for 24 h") ──
+    # Every UI answer (home, record, nav count, bell) reads the merged
+    # machines through this one door, stamped with the moment it is judged
+    # at and the window each machine's passes count for. /api/machines does
+    # not: it stays byte-for-byte what the benches and GC hub read.
+    _windows_memo: dict = {"key": None, "value": {}}
+
+    def _qc_windows(snap: dict) -> Dict[str, tuple]:
+        """uid -> (hours, which standard said so), for machines whose
+        assigned standards state their own life; the rest get 24 h. Built
+        once per snapshot from the library the benches read (qcsample arm),
+        by the bench's own rule (qc_samples.window_from_standards)."""
+        key = snap.get("built_at")
+        if _windows_memo["key"] == key and key is not None:
+            return _windows_memo["value"]
+        from qc_samples import window_from_standards
+        tables = snapshots.tables() or {}
+        library = [{"name": str((r or {}).get("c1") or ""), "tests": (r or {}).get("c3")}
+                   for r in tables.get("qcsample") or []]
+        out = {}
+        for m in snap.get("machines") or []:
+            hours, what = window_from_standards(library, m.get("qc_targets") or [])
+            if hours:
+                out[m.get("machine_uid")] = (hours, what)
+        _windows_memo.update(key=key, value=out)
+        return out
+
+    def _ui_merged(snap: dict, now: Optional[datetime] = None) -> Optional[List[dict]]:
+        """The merged machines the UI judges, or None when nothing was read."""
+        from live_presence import merge_machines
+        if not snap.get("ready"):
+            return None
+        merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+        return ui_live.judged(merged, now or _now(), _qc_windows(snap))
+
+    def _live_payload(cursor):
+        snap = snapshots.get(build_if_missing=False)
+        ready = bool(snap.get("ready"))
+        now = _now()
+        merged = _ui_merged(snap, now)
+        tables = snapshots.tables() if ready else None
+        mirror = app.config.get("LOG_MIRROR")
+        try:
+            mstatus = mirror.live_status() if mirror is not None else None
+        except Exception:                               # noqa: BLE001
+            mstatus = None
+        return ui_live.payload(
+            feed=app.config["LIVE_FEED"], cursor=cursor, snap=snap, merged=merged,
+            overrides=ui_live.overrides_from_tables(tables), day=_today_round_day(),
+            notices=app.config["NOTICES"], audit_spool=len(audit_spool),
+            certificates=_certs["items"], mirror=mstatus,
+            jobs=app.config["JOBS"].list(), version=APP_VERSION, href=_record_href,
+            now=now, tz=ui_live.lab_tz(),
+            custody=((app.config["CUSTODY"].status_items()
+                      if app.config.get("CUSTODY") is not None else [])
+                     + (app.config["BRIDGE"].status_items()
+                        if app.config.get("BRIDGE") is not None else [])
+                     if (app.config.get("CUSTODY") is not None
+                         or app.config.get("BRIDGE") is not None) else None),
+            transfer=_transfer_foot(merged))
+
+    def _transfer_foot(merged):
+        """The foot's Data line and its items (transfer §14): the bench
+        registry (memory) and TransferWatch (LEM's store, cached). Never
+        LabCore. None until the instrument record has been read."""
+        watch = app.config.get("TRANSFER_WATCH")
+        if watch is None or merged is None:
+            return None
+        import ui_transfer
+        reg = app.config["BENCH_REGISTRY"]
+        entries = {m["machine_uid"]: reg.get(m["machine_uid"]) for m in merged}
+        bridge = app.config.get("BRIDGE")
+        # a v3.9 bench's readings reach LEM through the bridge's pull when
+        # there is one; without a bridge LabCore and the store are one
+        legacy_ok = True
+        if bridge is not None:
+            st = bridge.status()
+            legacy_ok = bool(st.get("on")) and not (st.get("pull") or {}).get("last_error")
+        import legacy_import as _li
+        return ui_transfer.foot(
+            machines=merged, registry={u: e for u, e in entries.items() if e},
+            hydrated=reg.hydrated, facts=watch.facts(),
+            import_status=_li.cached_status(gateway) if is_local_store(gateway) else None,
+            legacy_ok=legacy_ok,
+            href=lambda uid, sec: "/instruments/%s%s" % (uid, ("#" + sec) if sec else ""))
+
+    # ── the Instruments home's answer (ia-final §3.2, §5) ───────────────
+    # Built once per snapshot cycle: the memo key is the snapshot's build
+    # stamp plus what the live road and the overrides changed since, so a
+    # page refetching between cycles gets the same object back. Memory only.
+    _inst_memo: dict = {"key": None, "value": None}
+
+    def _instruments_payload() -> dict:
+        import ui_instruments
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        meta = {"built_at": (snap.get("built_at") or None) if snap.get("ready") else None,
+                "stale": bool(snap.get("stale")) if snap.get("ready") else None,
+                "labcore_online": snap.get("labcore_online")}
+        if not snap.get("ready"):
+            err = snap.get("error")
+            if err:
+                # "SnapshotReadError('LabCore is not running.')" -> its words
+                m = re.match(r"^\w+\((['\"])(.*)\1\)$", str(err), re.S)
+                err = "LabCore did not answer the first read: %s" % (
+                    (m.group(2) if m else str(err)).strip().rstrip(".")[:200])
+            return dict(ui_instruments.unread(err), **meta)
+        now = _now()
+        merged = _ui_merged(snap, now) or []
+        overrides = ui_live.overrides_from_tables(snapshots.tables())
+        # A pass ages out with no new data at all, so the minute it is judged
+        # in is part of the key: the memo holds for a minute, never all night.
+        key = (snap.get("built_at"), now.strftime("%Y-%m-%dT%H:%M"),
+               tuple((m.get("machine_uid"), m.get("status"), bool(m.get("live")),
+                      m.get("last_poll"), m.get("module_state")) for m in merged),
+               tuple(sorted((overrides or {}).items())) if overrides is not None else None)
+        if _inst_memo["key"] != key:
+            _inst_memo["value"] = ui_instruments.build(
+                machines=merged, overrides=overrides, levels=snap.get("levels") or [],
+                href=_record_href, default_level=snap.get("default_level") or "")
+            # the record judges its rows at this same instant, so its table
+            # cannot disagree with the row it opened from
+            _inst_memo["value"]["judged_at"] = now.isoformat()
+            _inst_memo["key"] = key
+        return dict(_inst_memo["value"], **meta)
+
+    def _wall_floor_payload() -> dict:
+        """The Instruments answer plus the wall's words (ui_wall.floor) and
+        the lab's clock. Memory only."""
+        import ui_wall
+        from live_presence import merge_machines
+        p = _instruments_payload()
+        snap = snapshots.get(build_if_missing=False)
+        merged = (merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+                  if snap.get("ready") else None)
+        return dict(p, wall=ui_wall.floor(p, machines=merged),
+                    details=ui_wall.bay_details(p, now=_now()),
+                    details_short=ui_wall.bay_details(p, now=_now(), short=True), lab_tz=ui_live.lab_tz(),
+                    server_now=_now().astimezone().isoformat(timespec="seconds"))
+
+    @app.route("/api/ui/wall/floor")
+    def api_ui_wall_floor():
+        """/floor's answer: see _wall_floor_payload. 0 LabCore ops."""
+        resp = jsonify(_wall_floor_payload())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.route("/api/ui/instruments")
+    def api_ui_instruments():
+        """Readiness per instrument, the Needs-you card and the fleet pill:
+        see ui_instruments. 0 LabCore ops; /api/machines is not touched."""
+        resp = jsonify(_instruments_payload())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    # ── the record (ia-final §3.1, piece 5) ────────────────────────────
+    # One instrument, out of the same memory the home reads: its row of
+    # /api/ui/instruments (so the verdict is the home's) and its merged
+    # machine. Three answers, three sentences: the record, "no such
+    # instrument" (404, a statement about the lab) and "could not ask" (503,
+    # a statement about LEM). A record page that answered 404 while LabCore
+    # was down would tell a tech their instrument had been deleted.
+    def _record_payload(machine_uid: str):
+        """-> (status, payload). 0 LabCore ops: snapshot memory only."""
+        import ui_record
+        from live_presence import merge_machines
+        home = _instruments_payload()
+        meta = {k: home.get(k) for k in ("built_at", "stale", "labcore_online")}
+        if home.get("state") != "ready":
+            return 503, dict({"state": home.get("state"), "error": home.get("error"),
+                              "uid": machine_uid}, **meta)
+        row = next((r for r in home["instruments"] if r["uid"] == machine_uid), None)
+        snap = snapshots.get(build_if_missing=False)
+        merged = _ui_merged(snap, home.get("judged_at") and datetime.fromisoformat(home["judged_at"])) or []
+        m = next((x for x in merged if x.get("machine_uid") == machine_uid), None)
+        if row is None or m is None:
+            return 404, dict({"state": "missing", "uid": machine_uid}, **meta)
+        overrides = ui_live.overrides_from_tables(snapshots.tables()) or {}
+        levels = {str(lv.get("uid")): str(lv.get("name") or "")
+                  for lv in snap.get("levels") or []}
+        # the library from the same snapshot (0 ops): a check the bench has
+        # not published a band for shows the certified band, as the
+        # standard's page does, instead of "no certified values"
+        rec = ui_record.build(row, m, levels, override=overrides.get(machine_uid, ""),
+                              library=_snapshot_library())
+        return 200, dict(rec, **meta)
+
+    @app.route("/api/ui/instruments/<machine_uid>")
+    def api_ui_record(machine_uid):
+        """The record's answer: see ui_record. 0 LabCore ops."""
+        status, body = _record_payload(machine_uid)
+        resp = jsonify(body)
+        resp.status_code = status
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.route("/api/ui/instruments/<machine_uid>/bench")
+    def api_ui_record_bench(machine_uid):
+        """Bench and results' three counters (ia-final §3.1 #7; ui_log.
+        bench_counts): Filed to LabCore today, Held waiting for the sample,
+        Replays not re-sent. LEM's store and memory only, never LabCore, and
+        asked when a person opens the record, not on every live tick. A
+        counter the bench never reported is words, never 0."""
+        status, body = _record_payload(machine_uid)
+        if status == 404:
+            return jsonify({"error": "LEM has no instrument %s." % machine_uid}), 404
+        entry = app.config["BENCH_REGISTRY"].get(machine_uid)
+        cursor, filed, error = None, None, None
+        try:
+            got = labcore_rows(gateway.read_sql(
+                "SELECT mode, stats, last_seen FROM bench_cursor WHERE machine_uid = ? "
+                "ORDER BY last_seen DESC LIMIT 1", [machine_uid]))
+            if got:
+                try:
+                    stats = json.loads(got[0].get("stats") or "{}")
+                except (TypeError, ValueError):
+                    stats = {}
+                cursor = {"mode": got[0].get("mode"), "stats": stats}
+            v2 = entry is not None or str((cursor or {}).get("mode") or "") == "v2"
+            if v2:
+                # the ledger holds LEM's last filing per cell; a cell filed
+                # today counts once (today = this server's local day, as the
+                # bench's wall-clock filed_at is)
+                day = _now().strftime("%Y-%m-%d")
+                n = labcore_rows(gateway.read_sql(
+                    "SELECT COUNT(*) AS n FROM result_ledger WHERE machine_uid = ? "
+                    "AND filed_at >= ?", [machine_uid, day]))
+                filed = int((n[0] if n else {}).get("n") or 0)
+        except LabCoreError as exc:
+            error = str(exc) or exc.__class__.__name__
+        out = ui_log.bench_counts(entry=entry, cursor=cursor, filed_today=filed, error=error)
+        out["uid"] = machine_uid
+        resp = jsonify(out)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.route("/instruments/<machine_uid>")
+    def instrument_record(machine_uid):
+        """The record. The first paint carries the answer (a JSON island the
+        page draws with textContent); record.js keeps it live and fetches the
+        chart's history, the one read a person pays for by opening it."""
+        status, body = _record_payload(machine_uid)
+        if status != 200:
+            return render_template("instrument_missing.html", nav="instruments",
+                                   data=body), status
+        return render_template("instrument.html", nav="instruments", data=body,
+                               log_groups=ui_log.chips(),
+                               has_quality=any(r.rule == "/quality"
+                                               for r in app.url_map.iter_rules()))
+    @app.template_filter("groupby_runs")
+    def _groupby_runs(items, key: str):
+        """Runs of one `key` in their own order (ui_wall.runs)."""
+        import ui_wall as _uw
+        return _uw.runs(items, key)
+
+    @app.template_filter("json_island")
+    def _json_island(value) -> str:
+        """JSON safe inside <script type="application/json">: no "</" can
+        close the tag, whatever an instrument is named."""
+        import json as _json
+        from markupsafe import Markup
+        text = _json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return Markup(text.replace("<", "\\u003c").replace(">", "\\u003e")
+                      .replace("&", "\\u0026"))
+
+    @app.route("/api/ui/live")
+    def api_ui_live():
+        """Every open page's global status: see ui_live.payload."""
+        cursor = (request.args.get("since") or "").strip() or None
+        resp = jsonify(_live_payload(cursor))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    class _Done(Exception):
+        """Diagnostics: this row is written, go on to the next."""
+
+    def _diagnostics() -> dict:
+        """Settings › Diagnostics: what this server knows about itself.
+
+        Memory and the local log copy only, never a LabCore op: people open
+        this when something is slow, which is when the queue is deep. Each row
+        is a sentence with a glyph, and every row has a "could not tell"
+        wording distinct from its "nothing there" wording. `summary` is the one
+        line the section leads with; `healthz` is /healthz itself (one
+        function serves both, so they cannot disagree).
+        """
+        def _local_hm(iso: str) -> str:
+            # the mirror stamps UTC; the lab reads its own clock
+            try:
+                at = datetime.fromisoformat(iso)
+                if at.tzinfo is not None:
+                    at = at.astimezone()
+                return at.strftime("%d %b %H:%M") if at.date() != datetime.now().date() \
+                    else at.strftime("%H:%M")
+            except (TypeError, ValueError):
+                return iso
+        health = _health()
+        rows = []
+        split = labcore_split
+        snap = snapshots.get(build_if_missing=False)
+        interval = int(getattr(snapshots, "interval", 12))
+        if snap.get("ready"):
+            at = (snap.get("built_at") or "")[11:19]
+            err = snap.get("error")
+            rows.append({"key": "record", "label": "Instrument record",
+                         "glyph": "held" if snap.get("stale") else "final",
+                         "value": "Read at " + at if at else "Read",
+                         "at": snap.get("built_at") or "",
+                         "age_seconds": snap.get("age_seconds"),
+                         "note": ("the last refresh failed: " + str(err)[:120]) if err else
+                                 "read from %s every %d s, one read for every screen" % (
+                                     "the LEM store" if is_local_store(gateway) else "LabCore",
+                                     interval)})
+        else:
+            err = snap.get("error")
+            rows.append({"key": "record", "label": "Instrument record",
+                         "glyph": "error" if err else "never",
+                         "value": "Could not be read" if err else "Not read yet",
+                         "at": "", "age_seconds": None,
+                         "note": str(err)[:120] if err else "the first read starts when the server does"})
+        if split:
+            # The snapshot reads LEM's store now (transfer §5.3); what it
+            # knows about reachability is the STORE's, and saying "LabCore:
+            # Reachable" off it would be a sentence about the wrong database.
+            rows.append({"key": "labcore", "label": "LabCore",
+                         "glyph": "never", "value": "Not asked in the background",
+                         "note": "asked only for sign-in, the dashboard's QC "
+                                 "rows and the test-method list"})
+        else:
+            online = health["labcore"]
+            rows.append({"key": "labcore", "label": "LabCore road",
+                         "glyph": {"reachable": "final", "unreachable": "error"}.get(online, "never"),
+                         "value": {"reachable": "Reachable", "unreachable": "Not answering"}.get(
+                             online, "Not asked yet"),
+                         "note": ("schema: " + health["schema"] +
+                                  ((" (" + str(health["schema_error"])[:100] + ")")
+                                   if health.get("schema_error") else ""))})
+        store_h = health.get("store")
+        if store_h:
+            err = store_h.get("error") or ""
+            reach = store_h.get("reachable")
+            rows.append({"key": "store", "label": "LEM store",
+                         "glyph": "error" if (err or reach == "unreachable") else (
+                             "never" if reach == "unknown" else "final"),
+                         "value": ("Could not be read" if err or reach == "unreachable"
+                                   else "Read-only (candidate boot)"
+                                   if store_h.get("read_only") else "Read-write"),
+                         "note": err[:120] or str(store_h.get("path") or "")})
+        # The live road, where the bell's "Benches can't reach LEM directly"
+        # sends people. The same count /api/ui/live serves (fleet.live_road).
+        fleet = _live_payload(None).get("fleet")
+        if fleet:
+            road, n = fleet["live_road"], fleet["checking_in"]
+            rows.append({"key": "live_road", "label": "Bench live road",
+                         "glyph": "final" if n and road == n else "held",
+                         "value": "%d of %d %s %s the live road" % (
+                             road, n, "bench" if n == 1 else "benches",
+                             "uses" if road == 1 else "use"),
+                         "note": ("the rest read their settings from LabCore on a timer instead"
+                                  if road < n else "settings reach every bench at once")})
+        else:
+            rows.append({"key": "live_road", "label": "Bench live road", "glyph": "never",
+                         "value": "Not known yet",
+                         "note": "no instrument record has been read"})
+        waiting = int(health["audit_spool"])
+        rows.append({"key": "audit_spool", "label": "Correction audit",
+                     "glyph": "held" if waiting else "final",
+                     "value": ("%d %s waiting for LabCore" % (waiting, "row" if waiting == 1 else "rows")
+                               if waiting else "Nothing waiting"),
+                     "note": ("oldest " + str(health.get("audit_spool_oldest") or "")) if waiting
+                             else "every correction-factor change is in %s audit table" % (
+                                 "the LEM store's" if is_local_store(gateway) else "LabCore's")})
+        source = "source: LabCore lem_machine_log, copied here every 5 min"
+        try:
+            mirror = app.config["LOG_MIRROR"]
+            remembered = getattr(mirror, "remembered_state", None)
+            if callable(remembered):
+                # The record itself, read where it lives (transfer §5): not a
+                # copy, so "copied every 5 min" would send somebody looking
+                # for a lag that does not exist. And still memory only —
+                # this page is opened when things are slow, so it reports the
+                # count the last read of the log took, and says so, rather
+                # than counting 40,000 rows on the press.
+                source = "source: lem_machine_log in the LEM store, read in place"
+                mstate = remembered()
+                if mstate is None:
+                    rows.append({"key": "log_copy", "label": "Machine log",
+                                 "glyph": "never", "value": "Not counted yet",
+                                 "note": "counted the next time anything reads "
+                                         "the log; " + source})
+                    raise _Done()
+                why = mstate.get("stale_reason") or ""
+                n = int(mstate.get("rows") or 0)
+                rows.append({"key": "log_copy", "label": "Machine log",
+                             "glyph": "error" if why else "final",
+                             "value": ("Could not be read" if why else
+                                       "{:,} rows".format(n) if n else "No rows yet"),
+                             "note": "; ".join(x for x in (
+                                 why[:120], ("counted " + _local_hm(str(mstate.get("filled_at"))))
+                                 if mstate.get("filled_at") and not why else "",
+                                 source) if x)})
+                raise _Done()
+            mstate = mirror.state()
+            live = mirror.live_status() or {}
+            n = int(mstate.get("rows") or 0)
+            kind = live.get("state") or ("filled" if mstate.get("filled_at") else "empty")
+            why = live.get("reason") or mstate.get("stale_reason") or ""
+            done_to = live.get("complete_to") or mstate.get("filled_at") or ""
+            value = {"filled": "{:,} rows, complete".format(n),
+                     "filling": "Filling: {:,} rows so far".format(n),
+                     "partial": "Partial: {:,} rows".format(n),
+                     "behind": "Behind: {:,} rows".format(n),
+                     "empty": "Empty: not filled yet"}.get(kind, "{:,} rows".format(n))
+            glyph = {"filled": "final", "filling": "working"}.get(kind, "held")
+            note = "; ".join(x for x in (
+                why, ("complete to " + _local_hm(str(done_to))) if done_to and kind == "filled" else "",
+                source) if x)
+            rows.append({"key": "log_copy", "label": "Log copy", "glyph": glyph,
+                         "value": value, "note": note})
+        except _Done:
+            pass
+        except Exception as exc:                    # a local file; say it, never 0
+            rows.append({"key": "log_copy", "label": "Log copy", "glyph": "error",
+                         "value": "Could not be read", "note": str(exc)[:120] + "; " + source})
+        rows.append({"key": "version", "label": "Version", "glyph": "", "value": APP_VERSION,
+                     "note": "the build the updater put on, the same string /healthz reports"})
+        trouble = [r for r in rows if r["glyph"] in ("error", "held")]
+        bad = [r for r in trouble if r["glyph"] == "error"]
+        if not trouble:
+            unknown = [r for r in rows if r["glyph"] == "never"]
+            summary = ({"glyph": "never", "text": "Starting up: " + ", ".join(
+                           r["label"].lower() for r in unknown) + " not known yet."}
+                       if unknown else
+                       {"glyph": "final", "text": "Everything LEM depends on is answering."})
+        else:
+            names = ", ".join(r["label"] for r in trouble)
+            summary = {"glyph": "error" if bad else "held",
+                       "text": "%d %s a look: %s." % (len(trouble),
+                                                    "thing needs" if len(trouble) == 1 else "things need",
+                                                    names)}
+        return {"rows": rows, "summary": summary, "healthz": health}
+
+    @app.route("/api/ui/diagnostics")
+    def api_ui_diagnostics():
+        """Settings › Diagnostics, re-read without reloading the page. A GET
+        from memory (0 LabCore ops), like /api/ui/live."""
+        resp = jsonify(_diagnostics())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    @app.route("/settings")
+    def page_settings():
+        """Settings (ia-final §3.7). Rendered from memory: the levels, the lab
+        hours and the import previews are fetched by the page itself, so a slow
+        LabCore is a loading row and then a sentence, never a page that will
+        not open. The Developer section exists only under --dev."""
+        cust = app.config.get("CUSTODY")
+        return render_template("settings.html", nav="settings", diag=_diagnostics(),
+                               dev_tools=app.config["DEV_TOOLS"],
+                               custody=cust.view() if cust is not None else None)
+
+    @app.route("/help")
+    def page_help():
+        return render_template("help.html", nav="help")
 
     @app.route("/stations")
     @app.route("/dashboard")
@@ -1205,24 +2377,85 @@ def create_app(gateway, admin_password: Optional[str] = None,
         return jsonify({"authenticated": authed(), "user": session.get("user", "")})
 
     # ── auth ──────────────────────────────────────────────────────────
+    def _sign_in(username: str, password: str):
+        """(user, error). One road for the sheet (/api/login) and the no-JS
+        page (/signin), so the two cannot disagree about who got in.
+
+        Switch person: when somebody is already signed in on this browser and
+        the next person gets in, the last person's LabCore session is ended.
+        A tablet handed along a bench must not leave a token per analyst
+        behind. A failed attempt changes nothing: the sheet promises the last
+        person stays signed in if the switch is cancelled or mistyped.
+        """
+        previous = session.get("token", "")
+        user, token, error = auth_backend.login(username, password)
+        if not user and admin_pw and password == admin_pw:
+            # Offline escape hatch: only when an admin password is explicitly
+            # configured (LABMGR_ADMIN_PASSWORD) — e.g. a --dev run.
+            user, token, error = (username or "admin"), "", ""
+        if not user:
+            return None, (error or "Invalid credentials")
+        if previous and previous != token:
+            auth_backend.logout(previous)
+        session["user"] = user
+        session["token"] = token
+        return user, ""
+
     @app.route("/api/login", methods=["POST"])
     def api_login():
         body = request.get_json(silent=True) or {}
-        username = str(body.get("username", ""))
-        password = str(body.get("password", ""))
-        user, token, error = auth_backend.login(username, password)
+        user, error = _sign_in(str(body.get("username", "")), str(body.get("password", "")))
         if user:
-            session["user"] = user
-            session["token"] = token
             return jsonify({"ok": True, "user": user})
-        # Offline escape hatch: only when an admin password is explicitly
-        # configured (LABMGR_ADMIN_PASSWORD) — e.g. a --dev run.
-        if admin_pw and password == admin_pw:
-            session["user"] = username or "admin"
-            session["token"] = ""
-            return jsonify({"ok": True, "user": session["user"]})
-        return jsonify({"ok": False,
-                        "error": error or "Invalid credentials"}), 401
+        return jsonify({"ok": False, "error": error}), 401
+
+    def _safe_next(raw) -> str:
+        """Where /signin sends you afterwards: a path on THIS server. `next`
+        is off a URL anybody can craft, and an open redirect after a good
+        password hands the session's trust to a look-alike page. Same rule as
+        LEMSignInLogic.safeNext (tests/js/signin_logic.mjs)."""
+        s = str(raw or "")
+        if not s.startswith("/") or s[1:2] in ("/", "\\"):
+            return "/"
+        if re.search(r"[\x00-\x1f\x7f]", s) or re.match(r"/signin(?:[/?#]|$)", s):
+            return "/"
+        return s
+
+    def _signin_words(error: str) -> str:
+        """The page's version of LEMSignInLogic.failureText: a wrong password,
+        and LabCore not answering, are different problems."""
+        if re.search(r"connection error|not connected|labcore returned status", error or "", re.I):
+            return ("Not signed in: LabCore did not answer, so the password could "
+                    "not be checked. Try again in a moment.")
+        if not error or re.search(r"invalid", error, re.I):
+            return "That user name and password were not accepted."
+        return "Not signed in: " + error
+
+    @app.template_global("signin_href")
+    def _signin_href() -> str:
+        """Every Sign in link: /signin?next=<this page>. A plain link, so it
+        works with no script; signin.js turns the click into the sheet."""
+        from urllib.parse import quote
+        here = request.full_path if request.query_string else request.path
+        return "/signin?next=" + quote(here, safe="")
+
+    @app.route("/signin", methods=["GET", "POST"])
+    def page_signin():
+        """The no-JS road in (ia-final §8 T0). Every page's Sign in is a link
+        here; with a script it opens the sheet in place instead. Answers 303
+        to `next` on success, so a reload never re-posts the password."""
+        nxt = _safe_next(request.values.get("next"))
+        if request.method == "GET" and authed():
+            return redirect(nxt, code=303)
+        error, username = "", ""
+        if request.method == "POST":
+            username = request.form.get("username", "")
+            user, err = _sign_in(username, request.form.get("password", ""))
+            if user:
+                return redirect(nxt, code=303)
+            error = _signin_words(err)
+        return render_template("signin.html", nav="", signin_page=True, next=nxt,
+                               error=error, username=username), (401 if error else 200)
 
     @app.route("/api/logout", methods=["POST"])
     def api_logout():
@@ -1354,6 +2587,46 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # refresh_soon() refreshes inline, so behaviour stays correct either way.
     app.config["SNAPSHOTS"] = snapshots
 
+    # ── the v2 bench protocol (transfer spec §6) ───────────────────────
+    # Sync, config v2, checkpoint, adoption digest, enrolment and ping, all
+    # on the STORE: `bench_api.register` is never handed LabCore.
+    import bench_api
+    bench_registry = bench_api.BenchRegistry()
+    app.config["BENCH_REGISTRY"] = bench_registry
+    bench_api.register(app, gateway, snapshots=snapshots,
+                       live=app.config["LIVE"], registry=bench_registry,
+                       authed=lambda: bool(session.get("user")),
+                       current_user=lambda: session.get("user", ""),
+                       version=APP_VERSION)
+
+    # ── backup and custody (transfer spec §11) ──────────────────────────
+    # The service exists for every app on a local store so /healthz,
+    # Settings and the global status can say what it knows; it runs NOTHING
+    # here. The server's boot starts its schedule (web_server.pyw), like the
+    # snapshot poller: a factory that took backups would take one per test.
+    import custody as _custody
+    from lem_store import is_local_store as _is_store
+    if _is_store(gateway):
+        _cust = _custody.Custody(gateway)
+        _cust.hydrate()
+        _custody.attach(app, _cust)
+
+    # ── the mixed-fleet bridge (transfer spec §10.4) ────────────────────
+    # Only when the store and LabCore are two things: the bridge carries a
+    # v3.9 bench's rows in from LabCore and the config it reads out to it.
+    # Constructed here and started by the server's boot, like the snapshot
+    # poller; it does nothing until the import (§10.1) is verified and the
+    # switch is on, and it is never handed the store as its LabCore.
+    if _is_store(gateway) and labcore_split:
+        import bridge as _bridge
+        app.config["BRIDGE"] = _bridge.Bridge(gateway, labcore)
+    if _is_store(gateway):
+        # What /healthz says about the import (§10.1), read once here and then
+        # kept current by the importer and the bridge: the health check
+        # itself reads nothing.
+        import legacy_import as _li
+        _li.refresh_status(gateway)
+
     def _mirrored_last_qc():
         """The newest QC verdict per (machine, test) from the local log copy.
 
@@ -1403,11 +2676,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
     # Same lifecycle rule as the snapshot: constructed here, started by the
     # entry point, and correct with no thread at all — an unfilled mirror falls
     # back to reading LabCore rather than reporting a lab with no history.
-    from log_mirror import LogMirror, LogMirrorService
-    log_mirror = LogMirror(
-        gateway,
-        path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
-                          "log-mirror.sqlite3"))
+    from log_mirror import LogMirror, LogMirrorService, StoreLogMirror
+    from lem_store import is_local_store
+    if is_local_store(gateway):
+        # The record is already a local file: read it, do not copy it. Same
+        # API, over `lem_machine_log_effective` (log_mirror.StoreLogMirror).
+        # No first fill, so nothing to show in "Running now".
+        log_mirror = StoreLogMirror(gateway, jobs=app.config["JOBS"])
+    else:
+        log_mirror = LogMirror(
+            gateway,
+            path=os.path.join(documents_root or os.path.join(APP_DIR, "data"),
+                              "log-mirror.sqlite3"),
+            jobs=app.config["JOBS"])
     app.config["LOG_MIRROR"] = log_mirror
     app.config["LOG_MIRROR_SERVICE"] = LogMirrorService(
         log_mirror,
@@ -1493,11 +2774,30 @@ def create_app(gateway, admin_password: Optional[str] = None,
         talks to LabCore on a timer, so a raise here would end all of it.
         """
         for name, rider in (("audit spool", audit_spool.drain),
-                            ("search corpus", _refresh_search_corpus)):
+                            ("search corpus", _refresh_search_corpus),
+                            ("today's round", _warm_round),
+                            ("certificate expiry", _warm_certificates)):
             try:
                 rider()
             except Exception:                       # noqa: BLE001
                 logger.exception("%s failed on the snapshot cycle", name)
+
+    def _warm_round():
+        """Keep today's round in the page cache, so the live feed always has
+        it: a new day starts cold, and the feed may not read LabCore. A no-op
+        while the day is cached."""
+        _page(f"checklists:{_today()}", _build_checklist_day)
+
+    def _warm_certificates():
+        """The bell's "a certificate is expiring" items, at most every 30 min.
+        One LabCore read on this thread; the feed only reads the result. A
+        failed read leaves the last answer (or None: not known), never []."""
+        if time.time() - _certs["at"] < 1800:
+            return
+        _certs["at"] = time.time()
+        report = expiry_report(certificate_store, now=_now(), within_days=None)
+        _certs["items"] = [{"standard": c.standard_name, "expires": c.expires_at}
+                           for c in report.get("expiring") or []]
 
     snapshots.on_cycle = _on_cycle
 
@@ -1599,6 +2899,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
         LabCore blip fail a release that was never broken — this whole server
         exists to keep LabCore load independent of how many things are looking.
         """
+        return jsonify(_health())
+
+    def _health() -> dict:
+        """The /healthz answer, shared with Settings › Diagnostics so the two
+        can only ever say the same thing. Memory only (see healthz)."""
         online = getattr(snapshots, "_online", None)
         # Whether LabCore ever accepted our CREATEs and ALTERs. Deliberately
         # NOT part of `status`: a degraded schema still serves a usable floor,
@@ -1617,11 +2922,31 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # it takes the real signal with it.
         checked = getattr(snapshots, "schema_checked", True)
         schema = "ok" if schema_ok else ("degraded" if checked else "unknown")
-        return jsonify({
+        reach = "unknown" if online is None else (
+            "reachable" if online else "unreachable")
+        store_info = None
+        if is_local_store(gateway):
+            # The snapshot reads the STORE now (transfer §5.3), so what it
+            # knows about reachability is the store's. LabCore is reported as
+            # "unknown" when it is a different gateway, because nothing in the
+            # background asks it anything any more — and inventing an answer
+            # here is the one thing this route must not do.
+            store_info = dict(gateway.health(), reachable=reach)
+            cust = app.config.get("CUSTODY")
+            if cust is not None:
+                # last_backup_at/ok, offsite_last_ok (§12), from memory
+                store_info.update(cust.health())
+            # The import from LabCore (§10.1): its state, and how many LabCore
+            # reads it has cost — the number the production estimate is held
+            # to. Local reads of the store, never LabCore.
+            import legacy_import
+            store_info["import"] = legacy_import.cached_status(gateway)
+        split = labcore_split
+        return {
             "status": "ok",
             "version": APP_VERSION,
-            "labcore": "unknown" if online is None else (
-                "reachable" if online else "unreachable"),
+            "labcore": "unknown" if split else reach,
+            "store": store_info,
             "schema": schema,
             "schema_error": getattr(snapshots, "schema_error", ""),
             # Correction-factor audit rows LabCore would not take yet
@@ -1645,7 +2970,21 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # LEM has no per-user sessions the way COA does; the floor is
             # anonymous. Reported for a uniform shape across both apps.
             "active_sessions": 0,
-        })
+            # This server's own LabCore traffic over five minutes, by outcome
+            # (transfer §12.3; closes baseline item 2, "watchdog kills:
+            # unmeasured"). Beside `labcore`, not in it: `labcore` is today's
+            # reachability STRING, which the updater and Diagnostics read, and
+            # a superset of today's keys cannot change what one of them is.
+            # Counted in memory by `LabCoreMeter`: reading it asks nobody.
+            "labcore_ops": labcore.counts(),
+            # v2 benches, from what their syncs said (memory only).
+            "benches": bench_registry.summary(),
+            # The mixed-fleet bridge (§12.3: bridge{on,legacy_benches,outbox}),
+            # from the bridge's memory. None when there is no bridge (one
+            # gateway serving as both store and LabCore).
+            "bridge": (app.config["BRIDGE"].status()
+                       if app.config.get("BRIDGE") is not None else None),
+        }
 
     # ── the page cache ────────────────────────────────────────────────
     # For answers this process is the ONLY writer of: checklist definitions,
@@ -1719,6 +3058,31 @@ def create_app(gateway, admin_password: Optional[str] = None,
             for key in [k for k in _pages
                         if any(k.startswith(p) for p in prefixes)]:
                 _pages.pop(key, None)
+        today = f"checklists:{_today()}"
+        if any(today.startswith(p) for p in prefixes):
+            _rewarm_round()
+
+    def _rewarm_round() -> None:
+        """Re-read today's round off the request path after a checklist write.
+
+        `/api/ui/live` reads the round from this cache and never reads LabCore
+        itself, so without this a tick would leave every nav saying the old
+        count until somebody opened the checklist page. The cost lands on a
+        thread, once per write, which is the write's own cost, never a poll's.
+        Off in tests unless asked for (LEM_REWARM), so a test counting a
+        toggle's LabCore ops is not racing a thread.
+        """
+        if not app.config.get("LEM_REWARM", not app.config.get("TESTING")):
+            return
+
+        def run():
+            try:
+                _page(f"checklists:{_today()}", _build_checklist_day)
+            except Exception as exc:                    # noqa: BLE001
+                logger.warning("today's round could not be re-read: %s", exc)
+        t = threading.Thread(target=run, daemon=True, name="lem-round-rewarm")
+        app.config["LEM_REWARM_THREAD"] = t
+        t.start()
 
 
     from machine_configs import (ConfigReadUnavailable, MachineConfigError,
@@ -1835,6 +3199,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def _today() -> str:
         return _now().date().isoformat()
 
+    def _plain(v) -> str:
+        """3000.0 -> "3000", 0.5 -> "0.5": a limit as the person typed it."""
+        return ("%d" % v) if float(v).is_integer() else repr(float(v))
+
     @app.route("/api/checklists")
     def api_get_checklists():
         """Definitions scoped to the day, plus that day's ticks."""
@@ -1853,13 +3221,141 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # remembered blank day for the life of the process.
             return _labcore_unreadable(exc, "today's round")
 
+    def _refuse_item(index: int, field: str, message: str):
+        """A save refused because of one item, said so the editor can put the
+        sentence on that row and that field."""
+        return jsonify({"error": message, "item": index, "field": field}), 400
+
     @app.route("/api/checklists", methods=["POST"])
     def api_save_checklist():
+        """Save a whole round in ONE request: name, slot, due time and every
+        item in `items[]` (ia-final §3.4, piece 10).
+
+        P2 was a round built one POST per item, each of which made a new
+        checklist. The editor posts once, with a uid it minted when the page
+        opened, so pressing Save twice upserts one round.
+
+        Each item may also carry, for a number:
+        * `min` / `max` — text or a number; blank is no limit, never 0.0.
+          Not a number, or reversed, is refused and NOTHING is written.
+        * `track` — the "Track this reading" switch. On: the item feeds the
+          tracked thing of the same name (case and spacing aside), created if
+          there is none, and the limits are written to that thing, once. Off:
+          the item keeps its own series and its own limits. Absent: whatever
+          `track_uid` was posted stands (the import and the convert tool).
+
+        Everything is checked before the first write. The tracked things are
+        written before the round, so a refusal part-way leaves at most a thing
+        no round points at yet — invisible, and reused by the next Save —
+        never a round pointing at a thing that is not there.
+        """
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
+        raw_items = body.get("items")
+        if not isinstance(raw_items, list):
+            raw_items = []
         try:
-            saved = checklist_store.save(Checklist.from_dict(body))
+            checklist = Checklist.from_dict(body)
+        except (ValueError, TypeError) as exc:
+            return jsonify({"error": str(exc)}), 400
+
+        from checklists import parse_limit
+
+        seen: set = set()
+        wants_track: dict = {}       # item index -> True / False (switch sent)
+        limits_sent: dict = {}       # item index -> the post carried min/max
+        for n, (raw, item) in enumerate(zip(raw_items, checklist.items)):
+            raw = raw if isinstance(raw, dict) else {}
+            label = item.text.strip()
+            if not label:
+                return _refuse_item(n, "text", "Item %d has no label. Give it one, "
+                                               "or remove the row." % (n + 1))
+            item.text = label
+            if item.uid:
+                if item.uid in seen:
+                    return _refuse_item(n, "uid", "Two items share one id; reload "
+                                                  "the editor and save again.")
+                seen.add(item.uid)
+            if item.entry_type != "number" or item.item_type == "header":
+                # A tick or a note has no reading to judge, so a limit on it
+                # would be a number on the record that means nothing.
+                item.min_value = item.max_value = None
+                if "track" in raw:
+                    item.track_uid = ""
+                continue
+            limits = {}
+            for key in ("min", "max"):
+                try:
+                    limits[key] = parse_limit(raw.get(key))
+                except ValueError:
+                    return _refuse_item(
+                        n, key, "“%s”: the %s has to be a number, like 500, or "
+                                "left blank." % (label, "minimum" if key == "min" else "maximum"))
+            lo, hi = limits["min"], limits["max"]
+            if lo is not None and hi is not None and lo > hi:
+                return _refuse_item(
+                    n, "min", "“%s”: the minimum (%s) is above the maximum (%s). "
+                              "Every reading would be out of range." % (label, _plain(lo), _plain(hi)))
+            item.min_value, item.max_value = lo, hi
+            limits_sent[n] = "min" in raw or "max" in raw
+            if "track" in raw:
+                wants_track[n] = bool(raw.get("track"))
+        if not (checklist.name or "").strip():
+            return jsonify({"error": "A round needs a name.", "field": "name"}), 400
+
+        # Which thing each tracked item feeds is decided by a read. A failed
+        # read is not "no things yet": a second Nitrogen made out of it would
+        # split the very series the switch exists to join.
+        tracked_writes = []
+        if any(wants_track.values()):
+            try:
+                things = tracked_store.all()
+            except LabCoreError as exc:
+                return _labcore_unreadable(exc, "the tracked readings")
+            by_uid = {t.uid: t for t in things}
+            by_name = {normalise_tracked_name(t.name): t for t in things}
+            for n, on in wants_track.items():
+                item = checklist.items[n]
+                if not on:
+                    item.track_uid = ""
+                    continue
+                thing = by_uid.get(item.track_uid) or by_name.get(
+                    normalise_tracked_name(item.text))
+                lo, hi = item.min_value, item.max_value
+                if thing is not None and not limits_sent.get(n):
+                    # The editor leaves the limits out when it could not read
+                    # them; a field it never showed must not blank them.
+                    lo, hi = thing.min_value, thing.max_value
+                fresh = Tracked(uid=thing.uid if thing else "",
+                                name=thing.name if thing else item.text,
+                                units=item.units or (thing.units if thing else ""),
+                                min_value=lo, max_value=hi)
+                if thing is None:
+                    # minted here so two items in this one Save that share a
+                    # name feed ONE new thing, not two
+                    import uuid as _uuid
+                    fresh.uid = _uuid.uuid4().hex[:12]
+                    by_name[normalise_tracked_name(item.text)] = fresh
+                    by_uid[fresh.uid] = fresh
+                    tracked_writes.append(fresh)
+                elif (thing.units, thing.min_value, thing.max_value) != (
+                        fresh.units, fresh.min_value, fresh.max_value):
+                    tracked_writes.append(fresh)
+                    by_uid[thing.uid] = by_name[normalise_tracked_name(thing.name)] = fresh
+                item.track_uid = fresh.uid
+                item.min_value = item.max_value = None     # said once: on the thing
+        else:
+            for n in wants_track:
+                checklist.items[n].track_uid = ""
+
+        try:
+            done = {}
+            for thing in tracked_writes:
+                if thing.uid in done:
+                    continue
+                done[thing.uid] = tracked_store.save(thing, who=session.get("user", ""))
+            saved = checklist_store.save(checklist)
         except (ValueError, TypeError) as exc:
             return jsonify({"error": str(exc)}), 400
         except LabCoreError as exc:
@@ -1869,8 +3365,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
             return _labcore_failed(exc, "that checklist")
         _page_drop("checklists:")      # the definition changed, so every day did
         _audit("checklist saved", "",
-               {"checklist": saved.name, "items": len(saved.items)})
-        return jsonify({"ok": True, "checklist": saved.to_dict()})
+               {"checklist": saved.name, "uid": saved.uid, "items": len(saved.items),
+                "tracked": sorted(done)})
+        return jsonify({"ok": True, "checklist": saved.to_dict(),
+                        "tracked": [t.to_dict() for t in done.values()]})
 
     @app.route("/api/checklists/<uid>", methods=["DELETE"])
     def api_delete_checklist(uid):
@@ -1887,6 +3385,15 @@ def create_app(gateway, admin_password: Optional[str] = None,
         _audit("checklist deleted", "",
                {"checklist": (existing.name if existing else uid)})
         return jsonify({"ok": True})
+
+    def _log_undo(checklist, item_uid: str, day: str, was: dict) -> None:
+        """One line in the machine log for an Undo: what was undone, whose
+        tick it was and when, and who undid it (`_audit` adds `by`)."""
+        item = next((i for i in checklist.items if i.uid == item_uid), None)
+        _audit("checklist tick undone", "", {
+            "checklist": checklist.name, "item": item.text if item else item_uid,
+            "day": day, "was_by": was.get("user", ""), "was_at": was.get("at", ""),
+            "was_value": was.get("value", "")})
 
     @app.route("/api/checklists/<uid>/toggle", methods=["POST"])
     def api_toggle_checklist(uid):
@@ -1905,9 +3412,21 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if not item_uid:
             return jsonify({"error": "Which item?"}), 400
         day = (str(body.get("day") or "").strip() or _today())
+        checked = bool(body.get("checked"))
+        # Undo is logged as a new state (ia-final §3.3). The state table holds
+        # ONE row per item per day, so an untick overwrites who ticked it and
+        # when; the machine log keeps that, so the record of the round is
+        # never rewritten. Read before the write, and only on an untick: a
+        # tick, the common case, costs nothing extra.
+        was = {}
+        if not checked:
+            try:
+                was = (checklist_store.state(day).get(checklist.uid) or {}).get(item_uid) or {}
+            except LabCoreError:
+                was = {}
         try:
             touched = checklist_store.toggle(
-                checklist, item_uid, bool(body.get("checked")), day,
+                checklist, item_uid, checked, day,
                 session.get("user", ""))
         except LabCoreError as exc:
             # `toggle` writes the item and can cascade to its parent, so a
@@ -1919,6 +3438,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # answer is still correct and there is no reason to make someone pay for
         # it again.
         _page_drop(f"checklists:{day}", "checklisthistory")
+        if not checked and was.get("checked"):
+            _log_undo(checklist, item_uid, day, was)
         return jsonify({"ok": True, "touched": touched})
 
     @app.route("/api/checklists/<uid>/value", methods=["POST"])
@@ -1951,6 +3472,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                          + (f" in {item.units}." if item.units
                                             else ".")}), 400
         day = (str(body.get("day") or "").strip() or _today())
+        was = {}
+        if not value:
+            # clearing a reading is its Undo, logged like a tick's (see toggle)
+            try:
+                was = (checklist_store.state(day).get(uid) or {}).get(item_uid) or {}
+            except LabCoreError:
+                was = {}
         try:
             checklist_store.set_value(uid, item_uid, value, day,
                                       session.get("user", ""))
@@ -1959,6 +3487,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # it leaves a gap nobody knows to go back and fill.
             return _labcore_failed(exc, "that reading")
         _page_drop(f"checklists:{day}", "checklisthistory")
+        if not value and was.get("checked"):
+            _log_undo(checklist, item_uid, day, was)
         return jsonify({"ok": True})
 
     @app.route("/api/checklists/<uid>/values")
@@ -2193,14 +3723,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
         exists to make.
         """
         try:
-            lists = checklist_store.all()
-            readings = checklist_store.all_values()
-            tracked = {t.uid: t for t in tracked_store.all()}
+            return jsonify(_trends_payload())
         except LabCoreError as exc:
             # A flat, empty trend is a claim about a cylinder nobody has been
             # reading. The per-item route already refuses rather than draw one;
             # the dashboard must not undo that.
             return _labcore_unreadable(exc, "the checklist readings")
+
+    def _trends_payload() -> dict:
+        """`/api/checklists/trends`'s answer; raises LabCoreError when the
+        store could not be read (the page and the API both refuse then)."""
+        lists = checklist_store.all()
+        readings = checklist_store.all_values()
+        tracked = {t.uid: t for t in tracked_store.all()}
 
         # ONE SERIES PER THING, not per line of a round.
         #
@@ -2218,7 +3753,12 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 if thing is None:
                     continue           # deleted: falls back to its own series
                 slot = merged.setdefault(thing.uid, {
-                    "thing": thing, "points": [], "rounds": []})
+                    "thing": thing, "points": [], "rounds": [], "items": [],
+                    "edit": []})
+                # which items feed it: `/checklists/trends?item=<uid>` lands
+                # on this series for any of them
+                slot["items"].append(item.uid)
+                slot["edit"].append({"checklist_uid": cl.uid, "checklist": cl.name})
                 # WHICH ROUND a reading came from, carried on the point.
                 #
                 # A reading records a `day` and no time, so two readings on
@@ -2270,6 +3810,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 "last_at": last["day"] if last else "",
                 "last_by": last["user"] if last else "",
                 "first_at": points[0]["day"] if points else "",
+                "item_uids": slot["items"],
+                "edit": slot["edit"],
             })
 
         for cl in lists:
@@ -2281,11 +3823,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 points = readings.get((cl.uid, item.uid), [])
                 last = points[-1] if points else None
                 first = points[0] if points else None
-                out.append({
+                entry = {
                     "checklist_uid": cl.uid,
                     "checklist": cl.name,
                     "slot": cl.slot,
                     "item_uid": item.uid,
+                    "item_uids": [item.uid],
+                    "edit": [{"checklist_uid": cl.uid, "checklist": cl.name}],
                     "text": item.text,
                     "units": item.units or "",
                     "points": points,
@@ -2294,20 +3838,39 @@ def create_app(gateway, admin_password: Optional[str] = None,
                     "last_at": last["day"] if last else "",
                     "last_by": last["user"] if last else "",
                     "first_at": first["day"] if first else "",
-                })
+                }
+                if item.min_value is not None or item.max_value is not None:
+                    # Limits an operator typed into the editor: judged by the
+                    # same rule as a tracked thing's. Without them there is
+                    # still no verdict, and no `state` key at all.
+                    judge = Tracked(min_value=item.min_value,
+                                    max_value=item.max_value).judge
+                    entry.update({"min": item.min_value, "max": item.max_value,
+                                  "state": judge(last["value"]) if last else "NO READING"})
+                out.append(entry)
 
         # Never written comes first: it is the only thing on this page that is
         # a finding rather than a reading. After that, oldest reading first —
         # the one drifting out of anybody's attention.
         out.sort(key=lambda t: (1 if t["n"] else 0, t["last_at"], t["text"]))
-        return jsonify({"trends": out, "day": _today(),
-                        "counts": {"items": len(out),
-                                   "never_written": sum(1 for t in out
-                                                        if not t["n"])}})
+        return {"trends": out, "day": _today(),
+                "counts": {"items": len(out),
+                           "never_written": sum(1 for t in out if not t["n"])}}
 
     @app.route("/checklists/trends")
     def page_checklist_trends():
-        return render_template("checklist_trends.html")
+        """Readings (ia-final §1): every number the rounds record, one chart
+        each, tracked items merged at read time. `?item=<uid>` lands on one.
+        Drawn from the same answer the API gives, in the page, so there is no
+        "Loading…" on a page a supervisor leaves open; a failed read is a
+        sentence, never a page of flat lines."""
+        try:
+            data, failed = _trends_payload(), ""
+        except LabCoreError as exc:
+            data, failed = None, str(exc)
+        return render_template("checklist_trends.html", nav="checklists",
+                               data=data, failed=failed, when=_when_words,
+                               num=lambda v: "" if v is None else _plain(v))
 
     @app.route("/api/checklists/import-v4", methods=["POST"])
     def api_import_v4_checklists():
@@ -2356,7 +3919,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 body_json, status, headers = _labcore_failed(
                     exc, "the rest of the V4 import")
                 data = body_json.get_json()
-                data.update({"count": len(saved_names),
+                data.update({"landed": len(saved_names),
+                             "not_landed": len(found) - len(saved_names),
+                             "count": len(saved_names),
                              "checklists": preview,
                              "history_rows": 0, "history_days": 0,
                              "incomplete": True, "dry_run": False,
@@ -2389,7 +3954,12 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 data, status, headers = _labcore_failed(
                     exc, "the imported history")
                 payload = data.get_json()
-                payload.update({"count": len(found), "checklists": preview,
+                done = getattr(exc, "done", None)
+                payload.update({"landed": len(found), "not_landed": 0,
+                                "history_landed": done,
+                                "history_not_landed": (len(rows) - done
+                                                       if done is not None else None),
+                                "count": len(found), "checklists": preview,
                                 "history_rows": 0,
                                 "history_days": history_days,
                                 "incomplete": True, "dry_run": False,
@@ -2402,7 +3972,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
         _audit("checklist v4 import", "",
                {"imported": len(found), "names": [c.name for c in found],
                 "history_rows": history_rows, "history_days": history_days})
-        return jsonify({"count": len(found), "checklists": preview,
+        return jsonify({"landed": len(found), "not_landed": 0,
+                        "history_landed": history_rows, "history_not_landed": 0,
+                        "count": len(found), "checklists": preview,
                         "history_rows": history_rows,
                         "history_days": history_days, "dry_run": False})
 
@@ -2410,9 +3982,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def api_checklist_history():
         # A GROUP BY over every tick ever recorded (3094 rows and counting),
         # asked for again on every visit to the archive.
+        # `?checklist=<uid>`: one round's days (its editor's Archive). The
+        # archive sheet asks for up to ten years; the default stays 60 days
+        # for the callers that always had it.
+        one = (request.args.get("checklist") or "").strip()
         try:
-            return jsonify(_page("checklisthistory",
-                                 lambda: {"days": checklist_store.history()}))
+            limit = max(1, min(int(request.args.get("limit") or 60), 3660))
+        except ValueError:
+            limit = 60
+        key = "checklisthistory" + ((":" + one) if one else "") + ("" if limit == 60 else "@%d" % limit)
+        try:
+            return jsonify(_page(key, lambda: {"days": checklist_store.history(
+                limit, checklist_uid=one or None)}))
         except LabCoreError as exc:
             # This is the archive an auditor asks for. "No rounds recorded yet"
             # about three years of ticks is the worst answer this page can give.
@@ -2442,9 +4023,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # more recently than the queue could carry it. Failover, not merge —
         # see live_presence.merge_machines.
         from live_presence import merge_machines
-        return jsonify({"machines": merge_machines(snap.get("machines") or [],
-                                                   app.config["LIVE"],
-                                                   STATUS_COLORS),
+        machines = merge_machines(snap.get("machines") or [],
+                                  app.config["LIVE"], STATUS_COLORS)
+        # Transfer spec §12.3: ONE additive field per machine, from memory —
+        # the v2 bench's road, its backlog and how long since it synced; null
+        # for a bench that has never synced over v2. Every other key is
+        # exactly what it was (GC hub reads uid, title, status, closed_reason).
+        bench_registry.hydrate(gateway)
+        clock = time.time()
+        for machine in machines:
+            machine["transfer"] = bench_api.transfer_field(
+                bench_registry.get(machine.get("machine_uid")), clock)
+        return jsonify({"machines": machines,
                         "labcore_online": snap.get("labcore_online", True),
                         "age_seconds": snap.get("age_seconds"),
                         "stale": snap.get("stale", False),
@@ -2598,6 +4188,33 @@ def create_app(gateway, admin_password: Optional[str] = None,
         snapshots.refresh_soon()
         return jsonify({"ok": True})
 
+    @app.route("/api/machines/<machine_uid>/position", methods=["DELETE"])
+    def api_machine_position_reset(machine_uid):
+        """Reset position (the record's Placement section, piece 6): forget
+        the stored position, so the map lists the instrument as "Not on the
+        map · Place it" until somebody places it again.
+
+        The classic floor "reset" by POSTing (0, 0), which stood the
+        instrument in the plan's corner and called that its default. The same
+        lock applies as to a drag, and for the same reason: a frozen floor is
+        one the lab chose to freeze."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        try:
+            locked = map_settings.locked()
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this equipment's position")
+        if locked:
+            return jsonify({"error": "The map is locked. Unlock it to "
+                                     "rearrange the floor.", "saved": False}), 409
+        try:
+            layout_store.forget(machine_uid)
+        except (MachineMapError, LabCoreError) as exc:
+            return _labcore_failed(exc, "this equipment's position")
+        snapshots.refresh_soon()
+        _audit("position reset", machine_uid, {})
+        return jsonify({"ok": True})
+
     @app.route("/api/machines/<machine_uid>/qc-targets", methods=["POST"])
     def api_machine_targets(machine_uid):
         """Assign which QC sample + test this instrument is checked against."""
@@ -2631,7 +4248,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
     def api_delete_machine(machine_uid):
         """Retire a machine a station module registered — clears its live
         status, QC specs and control row. Its history in lem_machine_log is
-        kept unless purge_history is requested."""
+        always KEPT; `purge_history` hides it from every default view (a
+        `retired_at` on the config row) and deletes nothing."""
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
         body = request.get_json(silent=True) or {}
@@ -2646,7 +4264,12 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                             "equipment")
         if refusal is not None:
             return refusal
+        return _retire_machine(machine_uid, bool(body.get("purge_history")))
 
+    def _retire_machine(machine_uid: str, purge_history: bool = False):
+        """The retirement itself, after whatever gate the caller keeps: the
+        DELETE route's live-module guard, or the record's Remove sheet (the
+        typed name and the password, checked in `api_ui_remove`)."""
         # Retiring a machine is seven separate writes into a queue that takes
         # one statement at a time, so it CANNOT be atomic. What it can be is
         # honest: each step is confirmed, and the first refusal stops the
@@ -2674,6 +4297,18 @@ def create_app(gateway, admin_password: Optional[str] = None,
                     if not is_missing_table(exc):
                         raise
             return go
+
+        def _hide_history():
+            when = _now().isoformat(timespec="seconds")
+            _confirmed_write(
+                "INSERT INTO lem_machine_config (machine_uid, title, config, "
+                "updated_at, updated_by, retired_at) VALUES (?, ?, '{}', ?, ?, ?) "
+                "ON CONFLICT(machine_uid) DO UPDATE SET "
+                "retired_at = excluded.retired_at, "
+                "updated_at = excluded.updated_at, "
+                "updated_by = excluded.updated_by",
+                [machine_uid, machine_uid, when, session.get("user", ""), when],
+                what="the history of “{0}” was NOT hidden".format(machine_uid))
 
         def _tolerating_missing(run):
             """`_drop`'s exemption, for the steps that go through a store.
@@ -2746,8 +4381,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # this store refuses to create.
             ("documents", _tolerating_missing(_forget_documents)),
         ]
-        if body.get("purge_history"):
-            steps.append(("history", _drop("lem_machine_log")))
+        if purge_history:
+            # PURGE IS HIDE (transfer §5.2, D4). This was
+            # `DELETE FROM lem_machine_log WHERE machine_uid = ?` — the one
+            # route in the app that destroyed the 17025 record, on a click.
+            # The store's triggers refuse that statement now, and what
+            # replaces it removes nothing: a `retired_at` on the machine's
+            # config row, and every default reader (they all read
+            # `lem_machine_log_effective`) stops showing rows older than it.
+            # The rows are still in the record; un-retiring the uid brings
+            # them back. AFTER "configuration" on purpose: that step deletes
+            # the config, and this one leaves the tombstone that says why the
+            # history is not on screen.
+            steps.append(("history", _hide_history))
 
         removed = []
         for index, (label, step) in enumerate(steps):
@@ -2780,7 +4426,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # Audited AFTER the purge on purpose: wiping a machine's history is the
         # one action whose record must survive the wipe.
         _audit("machine deleted", machine_uid,
-               {"purged_history": bool(body.get("purge_history"))})
+               {"purged_history": bool(purge_history)})
         return jsonify({"ok": True})
 
     # ── equipment configuration, held centrally ────────────────────────
@@ -3052,7 +4698,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # Raises if refused; the schedule has NOT moved and the handler says
         # so, rather than the floor showing the task as done for a write that
         # never happened.
-        maint_store.complete(uid, when, note)
+        try:
+            maint_store.complete(uid, when, note)
+        except LabCoreError as exc:
+            # said as the operator's thing, not the queue's: "LabCore is
+            # busy" alone does not say the PM is still showing as overdue
+            return _labcore_failed(
+                exc, "marking “{0}” done".format(task.name),
+                "Its schedule has not moved.")
         snapshots.refresh_soon()
         # The completion belongs in the machine's history too. Second
         # statement, no transaction — so if this one is refused the schedule
@@ -3064,8 +4717,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # again, which moves the due date a second time and logs it twice.
         # `logged: false` plus the sentence is the honest shape, and it is the
         # one both pages that can complete a task actually render
-        # (`out.logged === false` in floor.html, `b.logged === false` in
-        # maintenance.html). Silence is what is forbidden here, not the 200.
+        # (`b.logged === false` in the record's Mark done, static/js/record.js). Silence is what is forbidden here, not the 200.
         #
         # `Exception`, not `LabCoreError`: a client that RAISES never produced
         # an answer, and the history row is equally missing either way. Letting
@@ -3178,23 +4830,35 @@ def create_app(gateway, admin_password: Optional[str] = None,
         response.set_data(json.dumps(body))
         return response
 
-    LOG_KINDS = ("run", "qc", "status_change", "override", "comment", "pm",
-                 "calibration", "config")
+    # Every kind a person can filter on (ui_log.KINDS): the v3.9 eight plus
+    # the rows the bench sync writes (`result_conflict`, shown as "Not
+    # re-sent"; `held_expired`) and the module's Re-read. Before piece 7 the
+    # filter knew only the eight, so asking for a conflict returned EVERY row.
+    LOG_KINDS = ui_log.KINDS
 
-    def _log_rows(args, failed=None) -> list:
+    def _log_machine(args) -> str:
+        # `equipment` is the address bar's word (ia-final §3.1 #3 links
+        # /logs?equipment=<uid>&kind=config); `machine` is the API's old one
+        return (args.get("equipment") or args.get("machine") or "").strip()
+
+    def _log_rows(args, failed=None, meta=None) -> list:
         """Every filter the logs page offers, applied in SQL where possible.
 
         `failed` is an out-parameter: a read that times out is reported, not
-        silently turned into an empty result.
+        silently turned into an empty result. `meta`, when given, receives
+        `total` (how many rows match, without the page limit; None when the
+        count could not be read). `before` is the keyset cursor "Load older"
+        sends (ui_log.cursor_for); one that does not parse raises
+        ui_log.BadCursor, never silently serves page one again.
         """
         where, params = [], []
-        machine = (args.get("machine") or "").strip()
+        machine = _log_machine(args)
         if machine:
             where.append("machine_uid = ?")
             params.append(machine)
-        kinds = [k.strip().lower() for k in (args.get("kind") or "").split(",")
-                 if k.strip()]
-        kinds = [k for k in kinds if k in LOG_KINDS]
+        # a chip name is a group of kinds (ui_log.GROUPS): "results" asks for
+        # run, held_expired, result_conflict and reread together
+        kinds = ui_log.expand_kinds(args.get("kind") or "")
         if kinds:
             where.append(f"kind IN ({','.join('?' for _ in kinds)})")
             params += kinds
@@ -3221,14 +4885,47 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # and the database was never the reason: 41,903 rows measured at 1.00s.
         _raw = str(args.get("limit") or "").strip()
         limit = None if _raw.lower() == "all" else max(1, int(_raw or 500))
+        count_clause = ("WHERE " + " AND ".join(where)) if where else ""
+        count_params = list(params)
+        before = (args.get("before") or "").strip()
+        if before:
+            # (ts, id) keyset: rows strictly older than the oldest on screen,
+            # ties on ts broken by id, so a page boundary inside a batch of
+            # same-instant verdicts neither skips nor repeats a row
+            b_ts, b_id = ui_log.parse_cursor(before)
+            where.append("(ts < ? OR (ts = ? AND id < ?))")
+            params += [b_ts, b_ts, b_id]
         clause = ("WHERE " + " AND ".join(where)) if where else ""
+        table = ("lem_machine_log" if _truthy(args.get("include_rereads"))
+                 else "lem_machine_log_effective")
         try:
-            sql = ("SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                   f"detail FROM lem_machine_log {clause} ORDER BY ts DESC")
+            if table == "lem_machine_log":
+                # The "include re-reads" switch (transfer §5.2): the WHOLE
+                # record, rows an approved annotation hides included. A person
+                # asked for it by name; the default stays the effective view.
+                sql = ("SELECT id, machine_uid, ts, kind, lab_id, test_name, value, "
+                       f"detail FROM lem_machine_log {clause} "  # raw-log: the include-re-reads switch
+                       "ORDER BY ts DESC, id DESC")
+            else:
+                sql = ("SELECT id, machine_uid, ts, kind, lab_id, test_name, value, "
+                       f"detail FROM lem_machine_log_effective {clause} "
+                       "ORDER BY ts DESC, id DESC")
             if limit is not None:
                 sql += " LIMIT ?"
             res = gateway.read_sql(
                 sql, params + ([limit] if limit is not None else []))
+            if meta is not None:
+                # The count header's number ("385 events"). Its own read, so
+                # a count that failed is None (the header then says how many
+                # are shown, not a total), never the page length passed off
+                # as the whole.
+                try:
+                    got = labcore_rows(gateway.read_sql(
+                        f"SELECT COUNT(*) AS n FROM {table} {count_clause}",
+                        count_params))
+                    meta["total"] = int((got[0] if got else {}).get("n") or 0)
+                except (LabCoreError, ValueError, TypeError):
+                    meta["total"] = None
             # `labcore_rows`, not `res.get("error")` (2026-08-25). The verdict
             # was still hand-rolled here, in the file that imports the shared
             # rule and uses it three lines further down — so a refusal carrying
@@ -3251,7 +4948,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 failed["at"] = True
             return []
 
-    def _log_entries(args, failed=None, unnamed=None, searched=None) -> list:
+    def _log_entries(args, failed=None, unnamed=None, searched=None, meta=None) -> list:
         # TWO FLAGS, NOT ONE (2026-08-25). `_titles()` reaches LabCore when the
         # snapshot has not built, and it raises rather than shrugging — but a
         # missing NAME and a missing EVENT are different facts and folding them
@@ -3292,7 +4989,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # empty page — the mirror is a cache, never the record.
         mirror = app.config.get("LOG_MIRROR")
         searched_all = False
-        rows = _log_rows(args, failed=failed)
+        rows = _log_rows(args, failed=failed, meta=meta)
 
         if needle and mirror is not None and mirror.state()["rows"]:
             # BOTH SOURCES, because each is missing something the other has.
@@ -3305,13 +5002,26 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # read the page was already doing.
             raw = str(args.get("limit") or "").strip()
             lim = None if raw.lower() == "all" else max(1, int(raw or 500))
-            deep = mirror.query(
-                term=needle,
-                machine_uid=(args.get("machine") or "").strip(),
-                kind=(args.get("kind") or "").strip(),
-                since=(args.get("since") or "").strip(),
-                until=(args.get("until") or "").strip(),
-                limit=lim if lim is not None else 100000)
+            # the mirror filters one kind in SQL; a chip's group (or a list)
+            # is asked without it and narrowed here, never silently dropped
+            wanted = ui_log.expand_kinds(args.get("kind") or "")
+            try:
+                deep = mirror.query(
+                    term=needle,
+                    machine_uid=_log_machine(args),
+                    kind=wanted[0] if len(wanted) == 1 else "",
+                    since=(args.get("since") or "").strip(),
+                    until=(args.get("until") or "").strip(),
+                    limit=lim if lim is not None else 100000)
+                if len(wanted) > 1:
+                    deep = [r for r in deep if str(r.get("kind") or "") in wanted]
+            except LabCoreError:
+                # The whole-record search could not be answered — on the LEM
+                # store the mirror IS a read, and reads can fail. Reported
+                # like the page read's failure, never served as "no match".
+                if failed is not None:
+                    failed["at"] = True
+                deep = []
             # The live page still has to be filtered — it was fetched without
             # the term. Dedupe on what identifies a row to a reader; `rowid` is
             # not in the LabCore page's columns.
@@ -3342,6 +5052,9 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 detail = {}
             uid = str(row.get("machine_uid") or "")
             entry = {
+                # the row's id in the record: "Load older" pages by it and
+                # the Log entry sheet names it (None from the mirror's search)
+                "id": row.get("id") if isinstance(row.get("id"), int) else None,
                 "machine_uid": uid,
                 "machine_title": titles.get(uid, uid),
                 "ts": str(row.get("ts") or ""),
@@ -3379,6 +5092,33 @@ def create_app(gateway, admin_password: Optional[str] = None,
             searched["all_time"] = searched_all
         return out
 
+    def _log_source() -> dict:
+        """The count header's source line (ia-final §3.6, §7): who keeps the
+        log and how complete it is. Memory only. "Kept by LEM" once the
+        record is in LEM's store; "complete to" is as of this read, because
+        the store IS the record. While the record is still moving from
+        LabCore (the import, transfer §10.1) or the LabCore copy is
+        refilling, it says the list is incomplete instead of implying it is
+        the whole record."""
+        mirror = app.config.get("LOG_MIRROR")
+        try:
+            st = mirror.live_status() if mirror is not None else {}
+        except Exception:                               # noqa: BLE001
+            st = {}
+        local = is_local_store(gateway)
+        incomplete = ""
+        if local:
+            import legacy_import as _li
+            imp = _li.cached_status(gateway)
+            if imp.get("state") in ("running", "incomplete"):
+                incomplete = "the record is still moving from LabCore"
+        elif (st or {}).get("state") in ("empty", "filling", "partial", "behind"):
+            incomplete = "the log copy is refilling"
+        at = (st or {}).get("complete_to") or _now()
+        return {"kept_by": "LEM" if local else "LabCore",
+                "complete_to": at.isoformat(timespec="seconds") if hasattr(at, "isoformat") else str(at),
+                "incomplete": incomplete or None}
+
     @app.route("/api/logs")
     def api_logs():
         # An unreadable log must not be served as an empty one. The queue bursts,
@@ -3386,7 +5126,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
         # about a lab that has plenty.
         failed = {"at": False}
         searched = {"all_time": False}
-        entries = _log_entries(request.args, failed=failed, searched=searched)
+        meta = {"total": None}
+        try:
+            entries = _log_entries(request.args, failed=failed, searched=searched, meta=meta)
+        except ui_log.BadCursor as exc:
+            # refused, never ignored: an ignored cursor serves page one again
+            # under "Load older", and the page then shows every row twice
+            return jsonify({"error": str(exc)}), 400
 
         # "The read failed" and "this lab has no log yet" are two facts, and
         # this used to answer `[]` to both — judged with `res.get("error")`,
@@ -3401,7 +5147,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # six fixed words. On the live table that is the same shape of query
             # that once took eight seconds — and it was running per request.
             res = gateway.read_sql(
-                "SELECT DISTINCT kind FROM lem_machine_log ORDER BY kind")
+                "SELECT DISTINCT kind FROM lem_machine_log_effective ORDER BY kind")
             try:
                 found = labcore_rows(res)
             except LabCoreError:
@@ -3424,7 +5170,21 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # would leave the fallback list in place for days, reported as if
             # it had been read.
             _page_drop("logkinds")
-        out = {"events": entries, "kinds": kinds,
+        limit_raw = str(request.args.get("limit") or "").strip()
+        limit = None if limit_raw.lower() == "all" else max(1, int(limit_raw or 500))
+        needle = (request.args.get("q") or "").strip()
+        last = entries[-1] if entries else None
+        # "Load older": a full page of a plain listing has a next page; a
+        # search already looked at the whole record, and a short page ended
+        nxt = (ui_log.cursor_for(last["ts"], last["id"])
+               if (last and not needle and limit is not None and len(entries) >= limit
+                   and isinstance(last.get("id"), int)) else None)
+        out = {"events": entries, "kinds": ui_log.known_kinds(kinds),
+               "next": nxt,
+               # how many rows match the filters (None: the count failed, or
+               # a search, whose own sentence says what it looked through)
+               "total": None if needle else meta["total"],
+               "source": _log_source(),
                "kinds_known": not kinds_failed["at"],
                # Whether this was a search of the WHOLE record or a page
                # listing. "12 matches" over the newest 500 rows and over
@@ -3470,8 +5230,10 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     @app.route("/logs")
     def logs_page():
-        """Everything that has happened, searchable."""
-        return render_template("logs.html", active="/logs")
+        """Everything that has happened, searchable (ia-final §3.6). The
+        filters are read from the address bar by logs.js; the server draws the
+        frame, the chips and the sheet."""
+        return render_template("logs.html", nav="log", log_groups=ui_log.chips())
 
     @app.route("/api/machines/<machine_uid>/maintenance-history")
     def api_maintenance_history(machine_uid):
@@ -3486,7 +5248,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                                               "calibration"]
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
-            "SELECT ts, kind, detail FROM lem_machine_log "
+            "SELECT ts, kind, detail FROM lem_machine_log_effective "
             f"WHERE machine_uid = ? AND kind IN ({placeholders}) "
             "ORDER BY ts DESC LIMIT 500", [machine_uid] + kinds)
         try:
@@ -3536,7 +5298,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 return jsonify({"error": "limit must be a number, or 'all'."}), 400
         placeholders = ",".join("?" for _ in kinds)
         res = gateway.read_sql(
-            "SELECT machine_uid, ts, kind, detail FROM lem_machine_log "
+            "SELECT machine_uid, ts, kind, detail FROM lem_machine_log_effective "
             f"WHERE kind IN ({placeholders}) ORDER BY ts DESC LIMIT ?",
             kinds + [limit])
         try:
@@ -3596,8 +5358,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
         the import idempotent, and an empty answer during a blip would report
         every completion in the file as new and write the lot again.
         """
+        # The RECORD, not the effective view: this read is what makes the
+        # import idempotent, and a completion that is merely hidden (a retired
+        # machine's history) is still a completion the file must not re-add.
         res = gateway.read_sql(
-            "SELECT machine_uid, detail FROM lem_machine_log "
+            "SELECT machine_uid, detail FROM lem_machine_log "  # raw-log: import dedupe
             "WHERE kind IN ('pm','calibration')")
         out = set()
         for row in labcore_rows(res):
@@ -3722,6 +5487,15 @@ def create_app(gateway, admin_password: Optional[str] = None,
         payload["created"] = made
         payload["refused"] = refused
         payload["rescheduled"] = rescheduled
+        # The two words every bulk write in this app reports in (constraints
+        # A.1): `landed` is what LabCore acknowledged, `not_landed` what it did
+        # not — refused, or never sent after the queue said no. Settings ›
+        # Imports reads only these, so its sentence cannot drift from the
+        # truth the way "imported 3094" did.
+        payload["landed"] = made
+        payload["not_landed"] = refused
+        payload["reschedule_not_landed"] = (len(plan["reschedule"]) - rescheduled
+                                            if stopped is not None else 0)
         _audit("maintenance history imported", "",
                {"created": made, "refused": refused,
                 "skipped": payload["skipped"],
@@ -3820,7 +5594,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             args.append(machine_uid)
         res = gateway.read_sql(
             "SELECT machine_uid, ts, lab_id, test_name, value, detail "
-            f"FROM lem_machine_log {where} ORDER BY ts ASC LIMIT ?",
+            f"FROM lem_machine_log_effective {where} ORDER BY ts ASC LIMIT ?",
             args + [int(limit)])
         # Raises rather than returning []. This feeds the control chart AND the
         # QC export an assessor asks for; a file that silently contains no QC at
@@ -3951,6 +5725,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
             },
         }
 
+    def _trim_qc_points(points, rng):
+        """`ui_record.trim_points` over QcPoint objects (it reads dicts)."""
+        import ui_record
+        keyed = [{"ts": str(p.ts or ""), "i": i} for i, p in enumerate(points)]
+        kept = ui_record.trim_points(keyed, rng, _now().isoformat())
+        return [points[k["i"]] for k in kept]
+
     @app.route("/api/machines/<machine_uid>/qc-trend")
     def api_qc_trend(machine_uid):
         """The control chart: is this instrument IN CONTROL, and what does its
@@ -3963,6 +5744,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
         moved, reported as perfect.
         """
         import qc_series
+        import ui_record
+        # ?range=24|90d|all is the record's "24 runs · 90 days · All" seg.
+        # Without it the answer is the floor's: the last CHART_POINTS.
+        rng = (request.args.get("range") or "").strip()
+        if rng and rng not in ui_record.RANGES:
+            return jsonify({"error": "A chart range is one of %s, not %r."
+                            % (", ".join(ui_record.RANGES), rng[:20])}), 400
         try:
             events = _qc_events(machine_uid)
         except LabCoreError as exc:
@@ -4009,9 +5797,11 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # the series it was found in, so analysing the whole history and
             # then trimming the points would leave every index off by the
             # number dropped and the UI circling the wrong readings.
+            pts = (series.points[-CHART_POINTS:] if not rng else
+                   _trim_qc_points(series.points, rng))
             shown = qc_series.QcSeries(
                 machine_uid=series.machine_uid, test_name=series.test_name,
-                points=series.points[-CHART_POINTS:],
+                points=pts,
                 pass_band=series.pass_band, sample_id=series.sample_id)
             std_dev, k = certs.get((name, sample_id), (None, None))
             limits = qc_series.certificate_limits(
@@ -4203,7 +5993,76 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     @app.route("/qc")
     def page_qc_wall():
-        return render_template("qc.html")
+        """The QC wall: one card per (instrument, check), worst first."""
+        return render_template("wall_qc.html", qc=_wall_qc_payload(), kind="qc")
+
+    @app.route("/wall")
+    def page_wall():
+        """One TV for both walls: ?show=floor,qc&every=60 alternates them
+        (wall.js). Both first paints ride along, so the switch draws at once."""
+        return render_template("wall.html", data=_wall_floor_payload(),
+                               qc=_wall_qc_payload(), kind="wall")
+
+    # The chart history behind /qc is the local record (the store, or the
+    # log copy), never LabCore. A wall polls; the history moves when a QC
+    # result lands, minutes apart, so it is read at most once a minute and
+    # held here. A read that fails is remembered as a failure (the cards say
+    # the history is missing), never as "no history".
+    _wall_qc_memo: dict = {"at": 0.0, "rows": None, "ok": False, "missing": "unread"}
+    WALL_QC_HISTORY_SECONDS = 60.0
+    WALL_QC_HISTORY_DAYS = 180
+
+    def _wall_qc_rows():
+        """(rows, missing): the QC rows, or None and why they are missing.
+        "filling" is a log copy that has never filled (empty, no fill
+        stamp): nothing failed, there is just nothing local yet. "unread"
+        is a read that failed, or no local record at all."""
+        import time as _time
+        mirror = app.config.get("LOG_MIRROR")
+        now = _time.monotonic()
+        m = _wall_qc_memo
+        if m["at"] and now - m["at"] < WALL_QC_HISTORY_SECONDS:
+            return (m["rows"] if m["ok"] else None), m["missing"]
+        rows, ok, missing = None, False, "unread"
+        try:
+            if mirror is not None:
+                st = None if isinstance(mirror, StoreLogMirror) else mirror.state()
+                if st is not None and not st["rows"] and not st.get("filled_at"):
+                    missing = "filling"
+                else:
+                    since = (_now() - timedelta(days=WALL_QC_HISTORY_DAYS)).isoformat(timespec="seconds")
+                    rows = mirror.query(kind="qc", since=since, limit=20000)
+                    ok = True
+        except Exception:                                   # noqa: BLE001
+            rows, ok, missing = None, False, "unread"
+        m.update(at=now, rows=rows, ok=ok, missing=missing)
+        return (rows if ok else None), missing
+
+    def _wall_qc_payload() -> dict:
+        import ui_wall
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            err = snap.get("error")
+            out = ui_wall.qc(None, rows=None, href=_record_href,
+                             error=(str(err)[:200] if err else None))
+        else:
+            merged = merge_machines(snap.get("machines") or [], app.config["LIVE"], STATUS_COLORS)
+            rows, missing = _wall_qc_rows()
+            out = ui_wall.qc(merged, rows=rows, href=_record_href, now=_now(), missing=missing)
+            out["built_at"] = snap.get("built_at") or None
+            out["stale"] = bool(snap.get("stale"))
+        out["lab_tz"] = ui_live.lab_tz()
+        out["server_now"] = _now().astimezone().isoformat(timespec="seconds")
+        return out
+
+    @app.route("/api/ui/wall/qc")
+    def api_ui_wall_qc():
+        """/qc's cards: verdicts from the snapshot, history from the local
+        record. 0 LabCore ops."""
+        resp = jsonify(_wall_qc_payload())
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     # ── the status gutter ─────────────────────────────────────────────
     # The events list with a colour band down its left: for each event, what
@@ -4312,7 +6171,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             try:
                 res = gateway.read_sql(
                     "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                    "detail FROM lem_machine_log WHERE machine_uid = ? "
+                    "detail FROM lem_machine_log_effective WHERE machine_uid = ? "
                     "ORDER BY ts DESC LIMIT ?", [machine_uid, EVENT_LIMIT])
                 rows = [dict(r) for r in labcore_rows(res)]
             except LabCoreError as exc:
@@ -4443,7 +6302,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
         is the honest `{}` rather than an invented one.
         """
         res = gateway.read_sql(
-            "SELECT test_name, correction, units FROM lem_correction_factors "
+            "SELECT test_name, correction, units, updated_at, updated_by "
+            "FROM lem_correction_factors "
             "WHERE machine_uid = ? ORDER BY test_name", [machine_uid])
         out = {}
         for r in labcore_rows(res):
@@ -4451,9 +6311,13 @@ def create_app(gateway, admin_password: Optional[str] = None,
             if not name:
                 continue
             try:
+                # who and when ride along (the record's "test → offset, who
+                # and when", §3.1 #3); the guard compares `correction` only
                 out[name] = {"test_name": name,
                              "correction": float(r.get("correction") or 0.0),
-                             "units": str(r.get("units") or "")}
+                             "units": str(r.get("units") or ""),
+                             "updated_at": str(r.get("updated_at") or "") or None,
+                             "updated_by": str(r.get("updated_by") or "") or None}
             except (TypeError, ValueError):
                 continue
         return out
@@ -4507,8 +6371,16 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # again over one that is already there.
             return _labcore_unreadable(exc, "this equipment's correction "
                                             "factors")
+        # How many changes the §7.8.2 trail holds, for the record's "Change
+        # history (n)". A count that could not be read is None, never 0: "no
+        # changes" is a claim about the trail.
+        try:
+            history = len(correction_audit.history(machine_uid))
+        except Exception as exc:                        # noqa: BLE001
+            logger.warning("correction history count unreadable: %s", exc)
+            history = None
         return jsonify({"corrections": list(saved.values()),
-                        "methods": methods})
+                        "methods": methods, "history": history})
 
     @app.route("/api/machines/<machine_uid>/corrections", methods=["POST"])
     def api_save_correction(machine_uid):
@@ -4534,8 +6406,19 @@ def create_app(gateway, admin_password: Optional[str] = None,
             # Refused rather than coerced: a correction is added to every reading
             # this bench produces, and "a bit" would silently become 0.0.
             return jsonify({"error": f"{raw!r} is not a number."}), 400
+        rid = _request_id()
+        still = _correction_still(machine_uid, test_name, correction)
+        try:
+            replay = _replay(rid, still)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "whether this save was already made")
+        if replay is not None:
+            return replay
         existing = _corrections(machine_uid).get(test_name)
         previous = existing["correction"] if existing else 0.0
+        if transactional:
+            return _save_correction_in_one_transaction(
+                machine_uid, test_name, correction, previous, body, rid, still)
         # THE write this whole guard exists for. `corrected = raw + correction`
         # is applied to EVERY measurement this bench takes — before the QC
         # verdict, before the LabCore write, before anything is displayed — so a
@@ -4604,11 +6487,116 @@ def create_app(gateway, admin_password: Optional[str] = None,
         return jsonify({"ok": True, "test_name": test_name,
                         "correction": correction})
 
+    def _fmt_factor(v) -> str:
+        return "{0:g}".format(float(v))
+
+    def _correction_still(machine_uid, test_name, want):
+        """`still_true` for the correction routes (see `_replay`): the
+        answer claimed `want` is in force (None: that no correction is).
+        Reads the factor table, which every change goes through, with or
+        without an id, so a change made by an older page counts as well."""
+        def check(_answer):
+            now = _corrections(machine_uid).get(test_name)
+            have = None if now is None else now["correction"]
+            if have == want:
+                return None
+            if want is None:
+                did = "removed the correction for “{0}”".format(test_name)
+            else:
+                did = "set the correction for “{0}” to {1}".format(
+                    test_name, _fmt_factor(want))
+            if have is None:
+                now_txt = "no correction for “{0}” is in force".format(test_name)
+            else:
+                now_txt = "the correction in force is {0}".format(
+                    _fmt_factor(have))
+            again = ("Press Remove again to remove it." if want is None else
+                     "Press Save again to make it {0}.".format(
+                         _fmt_factor(want)))
+            return have, ("This request already {0}, but a later change "
+                          "replaced it: {1}. Nothing was changed now. {2}"
+                          ).format(did, now_txt, again)
+        return check
+
+    def _save_correction_in_one_transaction(machine_uid, test_name,
+                                            correction, previous, body, rid,
+                                            still=None):
+        """Factor, receipt, log line and ledger row: one commit (W2).
+
+        Every step RAISES here, unlike `_record_correction_change` and
+        `_audit`, which must never fail a change that has already landed.
+        Inside a transaction nothing has landed until the end, so a refused
+        receipt is a refused save — rolled back, and reported as NOT saved,
+        which for the first time is exactly what happened."""
+        units = str(body.get("units") or "")
+        what = (f"the correction for “{test_name}” was NOT saved and this "
+                f"instrument is still applying the previous one")
+        answer = {"ok": True, "test_name": test_name, "correction": correction}
+        # Declarations first and outside: DDL is not part of the change.
+        snapshots.ensure_schema()
+        _corrections_schema()
+        try:
+            with gateway.transaction():
+                _claim(rid, still)
+                # Re-read under the writer: what the receipt calls "previous"
+                # is what this commit replaces, not what was there when the
+                # request arrived and another save may since have changed.
+                was = _corrections(machine_uid).get(test_name)
+                previous = was["correction"] if was else 0.0
+                _confirmed_write(
+                    "INSERT INTO lem_correction_factors (machine_uid, "
+                    "test_name, correction, units, updated_at, updated_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(machine_uid, test_name) DO UPDATE SET "
+                    "correction=excluded.correction, units=excluded.units, "
+                    "updated_at=excluded.updated_at, "
+                    "updated_by=excluded.updated_by",
+                    [machine_uid, test_name, correction, units,
+                     _now().isoformat(timespec="seconds"),
+                     session.get("user", "")], what=what)
+                correction_audit.record(
+                    machine_uid=machine_uid, test_name=test_name,
+                    previous=previous, new_value=correction, units=units,
+                    by=session.get("user", ""),
+                    reason=str(body.get("reason") or ""),
+                    when=_now().isoformat(timespec="seconds"),
+                    uid=uuid.uuid4().hex)
+                _audit_line("correction factor set", machine_uid,
+                            {"test": test_name, "previous": previous,
+                             "new": correction})
+                _ledger(rid, answer)
+        except _AlreadyDone as done:
+            return done.response
+        except LabCoreRefused as exc:
+            # A step's statement was REFUSED with a reason (busy, or broken
+            # and not worth retrying): `refusal_response` keeps that
+            # distinction and the Retry-After, worded as NOT saved.
+            _not_saved(exc, what)
+        except Exception as exc:                        # noqa: BLE001
+            # Anything else inside BEGIN IMMEDIATE … COMMIT — a raised
+            # transport or disk error, a bug in a step — was rolled back by
+            # the store too, and gets the same true sentence, as JSON.
+            return _rolled_back(exc, what)
+        # Committed. Only now is there anything for a bench to re-read.
+        app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+        _page_drop("logkinds")
+        snapshots.refresh_soon()
+        return jsonify(answer)
+
     @app.route("/api/machines/<machine_uid>/corrections/<test_name>",
                methods=["DELETE"])
     def api_delete_correction(machine_uid, test_name):
         if not authed():
             return jsonify({"error": "Authentication required"}), 401
+        rid = _request_id()
+        still = _correction_still(machine_uid, test_name, None)
+        try:
+            replay = _replay(rid, still)
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "whether this removal was already "
+                                            "made")
+        if replay is not None:
+            return replay
         try:
             existing = _corrections(machine_uid).get(test_name)
         except LabCoreError as exc:
@@ -4619,6 +6607,51 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                             "factors")
         if existing is None:
             return jsonify({"error": f"No correction for “{test_name}”."}), 404
+        if transactional:
+            what = (f"the correction for “{test_name}” was NOT removed and "
+                    f"this instrument is still applying it")
+            answer = {"ok": True, "deleted": test_name}
+            snapshots.ensure_schema()
+            try:
+                with gateway.transaction():
+                    _claim(rid, still)
+                    existing = _corrections(machine_uid).get(test_name)
+                    if existing is None:
+                        # Removed by another request while this one waited
+                        # for the writer: the same true 404 as above.
+                        raise _AlreadyDone(app.response_class(
+                            json.dumps({"error": "No correction for "
+                                                 "“{0}”.".format(test_name)}),
+                            status=404, mimetype="application/json"))
+                    _confirmed_write(
+                        "DELETE FROM lem_correction_factors "
+                        "WHERE machine_uid = ? AND test_name = ?",
+                        [machine_uid, test_name], what=what)
+                    # A removal is a change TO ZERO, not an absence.
+                    correction_audit.record(
+                        machine_uid=machine_uid, test_name=test_name,
+                        previous=existing["correction"], new_value=0.0,
+                        units=str(existing.get("units") or ""),
+                        by=session.get("user", ""),
+                        reason=str((request.get_json(silent=True) or {})
+                                   .get("reason") or ""),
+                        when=_now().isoformat(timespec="seconds"),
+                        uid=uuid.uuid4().hex)
+                    _audit_line("correction factor removed", machine_uid,
+                                {"test": test_name,
+                                 "previous": existing["correction"],
+                                 "new": 0.0})
+                    _ledger(rid, answer)
+            except _AlreadyDone as done:
+                return done.response
+            except LabCoreRefused as exc:
+                _not_saved(exc, what)
+            except Exception as exc:                    # noqa: BLE001
+                return _rolled_back(exc, what)
+            app.config["LIVE"].mark_stale(machine_uid, STALE_CORRECTIONS)
+            _page_drop("logkinds")
+            snapshots.refresh_soon()
+            return jsonify(answer)
         # Removing an offset changes every future reading exactly as setting
         # one does. A removal reported as done that did not happen leaves the
         # bench quietly still applying it, and the editor showing that it does
@@ -5308,7 +7341,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
         try:
             res = gateway.read_sql(
                 "SELECT machine_uid, ts, kind, lab_id, test_name, value, "
-                "detail FROM lem_machine_log ORDER BY ts DESC LIMIT ?",
+                "detail FROM lem_machine_log_effective ORDER BY ts DESC LIMIT ?",
                 [SEARCH_CORPUS_ROWS])
             got = labcore_rows(res)
         except LabCoreError as exc:
@@ -5447,7 +7480,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
                 try:
                     res = gateway.read_sql(
                         "SELECT machine_uid, ts, kind, lab_id, test_name, value "
-                        "FROM lem_machine_log WHERE lab_id = ? "
+                        "FROM lem_machine_log_effective WHERE lab_id = ? "
                         "ORDER BY ts DESC LIMIT 50", [query.strip()],
                         timeout=30)
                     rows = labcore_rows(res, missing_ok=True)
@@ -5577,12 +7610,36 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     @app.route("/api/qc-standards/certificates/<uid>/download")
     def api_download_certificate(uid):
+        # A download is a READ. `_document_failed` words a failed SAVE, and
+        # answered an unknown id with 503 "this certificate was NOT saved".
+        # Same three answers as the equipment documents' download instead:
+        # unreadable, no such certificate, or listed with its file gone.
+        try:
+            listed = certificate_store.get(uid)
+        except CertificateRejected as exc:
+            return jsonify({"error": str(exc)}), 404
+        except CertificateStoreError as exc:
+            cause = getattr(exc, "__cause__", None)
+            return _labcore_unreadable(
+                cause if isinstance(cause, LabCoreError) else exc,
+                "this certificate")
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "this certificate")
+        if listed is None:
+            # Reached only through a read that SUCCEEDED.
+            return jsonify({"error": "No such certificate."}), 404
         try:
             cert, data = certificate_store.fetch(uid)
         except CertificateRejected as exc:
             return jsonify({"error": str(exc)}), 404
         except CertificateStoreError as exc:
-            return _document_failed(exc, "this certificate")
+            cause = getattr(exc, "__cause__", None)
+            if isinstance(cause, LabCoreError):
+                return _labcore_unreadable(cause, "this certificate")
+            logger.warning("certificate %r is listed and its file is "
+                           "missing: %s", uid, exc)
+            return jsonify({"error": str(exc), "retry": False,
+                            "storage": "missing"}), 500
         except LabCoreError as exc:
             return _labcore_unreadable(exc, "this certificate")
         return Response(data, mimetype=cert.content_type or "application/pdf",
@@ -5919,7 +7976,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
             args.append(kind)
         res = gateway.read_sql(
             "SELECT ts, kind, lab_id, test_name, value, detail FROM "
-            f"lem_machine_log {where} ORDER BY ts ASC LIMIT 20000", args)
+            f"lem_machine_log_effective {where} ORDER BY ts ASC LIMIT 20000", args)
         try:
             # A downloaded file with a header row and nothing under it is the
             # least recoverable version of this bug: it leaves the building.
@@ -5998,6 +8055,72 @@ def create_app(gateway, admin_password: Optional[str] = None,
                                    "raw_value", "correction", "received_at"],
                              "LEM QC history.csv",
                              note="" if named else NAMES_UNREAD)
+
+    @app.route("/api/export/equipment.csv")
+    def api_export_equipment():
+        """The equipment register (Settings › Records and exports): every
+        instrument, where it stands, its state and its PM/calibration dates.
+
+        From the in-memory record, 0 LabCore ops. Before the first read it is
+        a 503, never a header with no rows: an empty equipment register is a
+        statement that the lab owns nothing.
+        """
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return jsonify({"error": "The instrument record has not been read from "
+                                     "LabCore yet, so there is no register to give. "
+                                     "Try again in a moment."}), 503
+        from live_presence import merge_machines
+        machines = merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                                  STATUS_COLORS)
+        names = {lv.get("uid"): lv.get("name") for lv in snap.get("levels") or []}
+
+        def due(m, kind):
+            tasks = [t for t in m.get("maintenance") or [] if t.get("kind") == kind]
+            if not tasks:
+                return "", ""
+            first = min(tasks, key=lambda t: str(t.get("next_due") or "9999"))
+            return str(first.get("last_done") or ""), str(first.get("next_due") or "")
+
+        out = []
+        for m in sorted(machines, key=lambda m: str(m.get("title") or "").lower()):
+            pm_last, pm_next = due(m, "pm")
+            cal_last, cal_next = due(m, "calibration")
+            out.append([m.get("machine_uid"), m.get("title"),
+                        names.get(m.get("level_uid"), ""), m.get("status"),
+                        m.get("reason"), len(m.get("qc_targets") or []) + len(m.get("qc_specs") or []),
+                        pm_last, pm_next, cal_last, cal_next,
+                        "yes" if m.get("live") else "no", m.get("watching") or ""])
+        note = ("" if not snap.get("stale") else
+                "This register was read at %s and LabCore has not answered since."
+                % (snap.get("built_at") or "an unknown time"))
+        return _csv_response(out, ["machine_uid", "instrument", "level", "status", "reason",
+                                   "qc_checks", "pm_last_done", "pm_next_due",
+                                   "calibration_last_done", "calibration_next_due",
+                                   "bench_live", "watching"],
+                             "LEM equipment register.csv", note=note)
+
+    @app.route("/api/export/uncertainty.csv")
+    def api_export_uncertainty():
+        """The uncertainty register (SOP 2.10), every estimate in force, one
+        row each with its twelve Register fields. A failed read is a 503: "no
+        estimates on file" is itself a finding at an assessment."""
+        try:
+            current = uncertainty_store.list_current()
+        except LabCoreError as exc:
+            return _labcore_unreadable(exc, "the uncertainty register")
+        fields = list(uncertainty.REGISTER_FIELDS)
+        titles, named = _titles_soft()
+        out = []
+        for est in current:
+            reg = est.to_register_row()
+            out.append([est.estimate_id, est.machine_uid, titles.get(est.machine_uid, ""),
+                        est.test_name] + [reg.get(f, "") for f in fields])
+        note = "" if out else "No approved uncertainty estimates are on file."
+        if not named:
+            note = (note + " " if note else "") + NAMES_UNREAD
+        return _csv_response(out, ["estimate_id", "machine_uid", "instrument", "test"] + fields,
+                             "LEM uncertainty register.csv", note=note)
 
     @app.route("/api/machines/<machine_uid>/events")
     def api_machine_events(machine_uid):
@@ -6145,7 +8268,7 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     # ── QC samples: the V4 model, central and shared ──────────────────
     import qc_samples as qc_samples_mod
-    from qc_samples import QcSample, QcSampleStore
+    from qc_samples import QcSample, QcSampleStore, QcSampleTest
 
     sample_store = QcSampleStore(gateway)
 
@@ -6366,14 +8489,14 @@ def create_app(gateway, admin_password: Optional[str] = None,
         if cached:
             return jsonify({"tests": cached, "cached": True})
         try:
-            names = gateway.get_test_names()
+            names = labcore.get_test_names()
         except Exception:                       # a client that raises outright
             names = None
         if names is None:
             # Couldn't ask LabCore. The DISTINCT scan is the safety net, and it
             # needs a generous timeout: it reads every result row in the lab.
             try:
-                res = gateway.read_sql(
+                res = labcore.read_sql(
                     "SELECT DISTINCT test_name FROM sample_tests "
                     "WHERE test_name IS NOT NULL AND TRIM(test_name) != '' "
                     "ORDER BY test_name", timeout=60)
@@ -6398,6 +8521,430 @@ def create_app(gateway, admin_password: Optional[str] = None,
             _test_name_cache["names"] = names
         return jsonify({"tests": names or []})
 
+    # ── QC across the lab (ia-final §3.5, piece 8) ─────────────────────
+    # /quality is QA's view: Latest checks (one verdict per instrument and
+    # check, the record's rule) and the standards library. Drawing it costs
+    # LabCore nothing: verdicts come from the snapshot in memory, the control
+    # captions from LEM's own log (memoized, as the /qc wall does), and the
+    # library, its assignments and its certificates from LEM's store. A read
+    # that fails is said on the page, never drawn as an empty table.
+    import ui_quality
+
+    def _snapshot_library():
+        """The QC library as the snapshot read it (0 ops), or None."""
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        rows = (snapshots.tables() or {}).get("qcsample")
+        if rows is None:
+            return None
+        out = []
+        for r in rows:
+            try:
+                tests = json.loads((r or {}).get("c3") or "[]")
+            except (TypeError, ValueError):
+                tests = []
+            out.append({"name": str((r or {}).get("c1") or ""),
+                        "sample_id_val": str((r or {}).get("c2") or ""),
+                        "tests": tests if isinstance(tests, list) else []})
+        return out
+
+    def _store_why(exc) -> str:
+        """A store read's failure, in a sentence the page can carry."""
+        text = str(exc).strip().rstrip(".") or exc.__class__.__name__
+        return "LEM's store did not answer (%s)" % text[:200]
+
+    def _quality_latest() -> dict:
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            err = snap.get("error")
+            out = ui_quality.latest(None, href=_record_href,
+                                    error=("LabCore did not answer the first read" if err else None))
+        else:
+            merged = _ui_merged(snap, _now()) or []
+            rows, missing = _wall_qc_rows()
+            out = ui_quality.latest(merged, href=_record_href, library=_snapshot_library(),
+                                    rows=rows, missing=missing)
+        out["built_at"] = snap.get("built_at") if snap.get("ready") else None
+        out["stale"] = bool(snap.get("stale")) if snap.get("ready") else None
+        return out
+
+    def _read_library():
+        """(samples, error): the library from the store, or why it is unknown."""
+        try:
+            return [s.to_dict() for s in sample_store.list_samples()], None
+        except LabCoreError as exc:
+            return None, _store_why(exc)
+
+    def _read_targets():
+        try:
+            return target_store.all(missing_ok=True), None
+        except LabCoreError as exc:
+            return None, _store_why(exc)
+
+    def _read_certs():
+        try:
+            return certificate_store.by_standard(), None
+        except (CertificateStoreError, LabCoreError) as exc:
+            return None, _store_why(exc)
+
+    def _standards_payload() -> dict:
+        lib, err = _read_library()
+        targets, _terr = _read_targets() if lib is not None else (None, None)
+        certs, _cerr = _read_certs() if lib is not None else (None, None)
+        out = ui_quality.standards(lib, targets, certs, today=_now().date(), error=err)
+        return out
+
+    def _instrument_list():
+        """[{uid, title}] for the chips, from the snapshot (None: not read)."""
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        return sorted(({"uid": str(m.get("machine_uid") or ""), "title": str(m.get("title") or m.get("machine_uid") or "")}
+                       for m in snap.get("machines") or []), key=lambda m: (m["title"].lower(), m["uid"]))
+
+    def _standard_payload(name: str):
+        """-> (status, payload, redirect_to)."""
+        lib, err = _read_library()
+        if lib is None:
+            return 503, {"state": "unreadable", "name": name, "error": err}, None
+        sample, other = ui_quality.resolve(lib, name)
+        if sample is None:
+            if other:
+                return 302, None, other
+            return 404, {"state": "missing", "name": name}, None
+        targets, _terr = _read_targets()
+        try:
+            certs = certificate_store.certificates(sample["name"])
+        except (CertificateStoreError, LabCoreError):
+            certs = None
+        snap = snapshots.get(build_if_missing=False)
+        merged = _ui_merged(snap, _now()) if snap.get("ready") else None
+        out = ui_quality.standard(sample, targets=targets, certs=certs, machines=merged,
+                                  today=_now().date(), href=_record_href)
+        out["instruments"] = _instrument_list()
+        out["built_at"] = snap.get("built_at") if snap.get("ready") else None
+        return 200, out, None
+
+    def _no_store(resp):
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    def _quality_page(view: str):
+        data = {"view": view, "instruments": _instrument_list()}
+        if view == "latest":
+            data["latest"] = _quality_latest()
+        else:
+            data["standards"] = _standards_payload()
+        # the bottom of the QC window chain, as resolve_qc_window has it: the
+        # New standard sheet says it rather than typing a 24 that could drift
+        return render_template("quality.html", nav="qc", view=view, data=data,
+                               qc_default_hours="%g" % qc_samples_mod.QC_WINDOW_DEFAULT_HOURS)
+
+    @app.route("/quality")
+    def quality_page():
+        """Latest checks: the latest verdict of every check, worst first."""
+        return _quality_page("latest")
+
+    @app.route("/quality/standards")
+    def quality_standards_page():
+        """The standards library."""
+        return _quality_page("standards")
+
+    @app.route("/quality/standards/<path:name>")
+    def quality_standard_page(name):
+        """One standard. A Lab ID or another spelling redirects to its
+        name; "no such standard" (404) and "could not ask" (503) are two
+        pages, because only one is a statement about the library."""
+        status, body, to = _standard_payload(name)
+        if to:
+            return redirect(ui_quality.standard_href(to), code=302)
+        if status != 200:
+            return render_template("standard.html", nav="qc", data=body), status
+        return render_template("standard.html", nav="qc", data=body)
+
+    @app.route("/api/ui/quality")
+    def api_ui_quality():
+        return _no_store(jsonify(_quality_latest()))
+
+    @app.route("/api/ui/standards")
+    def api_ui_standards():
+        body = _standards_payload()
+        resp = jsonify(body)
+        if body.get("state") == "unreadable":
+            resp.status_code = 503
+        return _no_store(resp)
+
+    @app.route("/api/ui/standards/<path:name>")
+    def api_ui_standard(name):
+        status, body, to = _standard_payload(name)
+        if to:
+            body, status = {"state": "moved", "name": to, "href": ui_quality.standard_href(to)}, 200
+        resp = jsonify(body)
+        resp.status_code = status
+        return _no_store(resp)
+
+    # held on the app so a test can forget it
+    _reporting_memo: dict = app.config.setdefault("QC_REPORTING", {"at": 0.0, "pairs": None})
+    REPORTING_SECONDS = 600.0
+
+    @app.route("/api/ui/quality/reporting")
+    def api_ui_quality_reporting():
+        """normalised test -> instruments that report it (LEM's log, held ten
+        minutes, plus what each instrument is QC'd on now). A log that could
+        not be read is a 503 with a sentence: the sheet then lists the
+        instruments by name and says why, rather than claiming none report."""
+        now = time.monotonic()
+        memo = _reporting_memo
+        if memo["pairs"] is None or now - memo["at"] > REPORTING_SECONDS:
+            mirror = app.config.get("LOG_MIRROR")
+            try:
+                if mirror is None:
+                    raise LabCoreUnavailable("there is no local copy of the log")
+                memo["pairs"] = list(mirror.reported_tests())
+                memo["at"] = now
+            except Exception as exc:                      # noqa: BLE001 said, never swallowed
+                memo["pairs"] = None
+                return _no_store(jsonify({
+                    "error": "Couldn't read which instruments report each test: %s." % (
+                        str(exc).strip().rstrip(".") or exc.__class__.__name__),
+                    "tests": None})), 503
+        snap = snapshots.get(build_if_missing=False)
+        machines = snap.get("machines") if snap.get("ready") else None
+        return _no_store(jsonify({"tests": ui_quality.reporting(memo["pairs"], machines)}))
+
+    def _known_uids():
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        return {str(m.get("machine_uid")) for m in snap.get("machines") or []}
+
+    def _set_instruments(name: str, test: str, wanted: List[str]):
+        """Make `wanted` exactly the instruments checked on (name, test),
+        leaving every other check on those instruments as it was. Read
+        fresh from the store, so two people editing are not undone by a
+        page's stale copy. -> (added, removed, failed)."""
+        all_targets = target_store.all(missing_ok=True)
+        pair = WatchedTarget(name, test)
+        holders = {uid for uid, ts in all_targets.items() if pair in ts}
+        added, removed, failed = [], [], []
+        for uid in sorted(set(wanted) | holders):
+            current = list(all_targets.get(uid, []))
+            want = uid in wanted
+            has = pair in current
+            if want == has:
+                continue
+            new = current + [pair] if want else [t for t in current if t != pair]
+            try:
+                target_store.assign(uid, new)
+            except LabCoreError as exc:
+                failed.append({"uid": uid, "error": str(exc)})
+                continue
+            (added if want else removed).append(uid)
+            _audit("qc-targets assigned", uid, {"targets": [t.to_dict() for t in new],
+                                                 "via": "standard " + name})
+        if added or removed:
+            snapshots.refresh_soon()
+        return added, removed, failed
+
+    def _test_named(sample, test: str):
+        key = " ".join(str(test or "").split()).lower()
+        for t in sample.tests:
+            if key in (" ".join(t.name.split()).lower(), " ".join((t.value_col or "").split()).lower()):
+                return t
+        return None
+
+    def _num_field(raw, what: str, *, required: bool = True, minimum=None):
+        if raw is None or str(raw).strip() == "":
+            if required:
+                raise ValueError("Enter the %s." % what)
+            return None
+        try:
+            v = float(str(raw).strip())
+        except ValueError:
+            raise ValueError("The %s has to be a number, like 63.7." % what)
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ValueError("The %s has to be a number, like 63.7." % what)
+        if minimum is not None and v < minimum:
+            raise ValueError("The %s cannot be negative." % what)
+        return v
+
+    @app.route("/api/qc-samples/new", methods=["POST"])
+    def api_new_qc_sample():
+        """New standard (§3.5, T5): one standard with one check, and the
+        instruments it is checked on, in one request.
+
+        Unlike POST /api/qc-samples (an upsert by name, which the old
+        library's edit dialog needs), a NEW standard refuses a name or a Lab
+        ID the library already holds: a second lot saved over the first
+        would silently replace its certified values, and two standards on
+        one Lab ID leave the bench unable to tell which one it ran. The
+        duplicate check reads the library, and a library that could not be
+        read refuses the save rather than guess."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        name = " ".join(str(body.get("name") or "").split())
+        lab_id = str(body.get("lab_id") or "").strip()
+        t = body.get("test") if isinstance(body.get("test"), dict) else {}
+        test_name = " ".join(str(t.get("name") or "").split())
+        wanted = [str(u) for u in body.get("instruments") or [] if str(u).strip()]
+        try:
+            if not name:
+                raise ValueError("A standard needs a name.")
+            if not lab_id:
+                raise ValueError("A standard needs the Lab ID it runs under.")
+            if not test_name:
+                raise ValueError("Pick the test it certifies, from LabCore's list.")
+            expected = _num_field(t.get("expected"), "expected value")
+            std_dev = _num_field(t.get("std_dev"), "standard deviation", minimum=0.0)
+            k = _num_field(t.get("k"), "k", required=False) or 2.0
+            if k <= 0:
+                raise ValueError("k must be greater than zero.")
+            hours = _num_field(t.get("qc_expire_hours"), "QC window", required=False, minimum=0.0) or 0.0
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "saved": False, "retry": False}), 400
+        known = _known_uids()
+        unknown = [u for u in wanted if known is not None and u not in known]
+        if unknown:
+            return jsonify({"error": "There is no instrument %s in LEM. Nothing was saved."
+                            % ", ".join(unknown), "saved": False, "retry": False}), 400
+        if wanted and known is None:
+            return jsonify({"error": "LEM has not read its instruments yet, so it cannot check them "
+                                     "on this standard. Nothing was saved; try again in a moment.",
+                            "saved": False, "retry": True}), 503
+        try:
+            library = sample_store.list_samples()
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read the QC library to check this name and Lab ID "
+                                     "are new: %s. Nothing was saved." % _store_why(exc),
+                            "saved": False, "retry": True}), 503
+        for s in library:
+            if s.name.strip().lower() == name.lower():
+                return jsonify({"error": "There is already a standard called %s. Give the new lot a "
+                                         "name of its own, or replace that one with a new lot from "
+                                         "its page." % s.name, "saved": False, "retry": False}), 400
+            if s.sample_id_val.strip().lower() == lab_id.lower():
+                return jsonify({"error": "%s is already the Lab ID of %s. A Lab ID names one standard, "
+                                         "or the bench cannot tell which one it ran." % (lab_id, s.name),
+                                "saved": False, "retry": False}), 400
+        sample = QcSample(name=name, sample_id_val=lab_id, tests=[QcSampleTest(
+            name=test_name, value_col=test_name, expected=expected, std_dev=std_dev, k=k,
+            units=str(t.get("units") or "").strip(), qc_expire_hours=hours)])
+        try:
+            sample_store.save(sample)
+        except ValueError as exc:
+            return jsonify({"error": str(exc), "saved": False, "retry": False}), 400
+        except LabCoreError as exc:
+            return _labcore_failed(exc, "this QC standard")
+        _audit("qc-sample saved", "", {"standard": name, "lab_id": lab_id, "tests": 1, "new": True})
+        snapshots.refresh_soon()
+        added, failed = [], []
+        if wanted:
+            try:
+                added, _removed, failed = _set_instruments(name, test_name, wanted)
+            except LabCoreError as exc:
+                failed = [{"uid": u, "error": _store_why(exc)} for u in wanted]
+        return jsonify({"ok": True, "name": name, "href": ui_quality.standard_href(name),
+                        "assigned": added, "failed": failed})
+
+    @app.route("/api/qc-samples/assign", methods=["POST"])
+    def api_qc_sample_assign():
+        """Which instruments one check of one standard is checked on (the
+        standard page's Check it on…). Sets exactly that set, for that check
+        only; every other assignment on those instruments stands."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        name = str(body.get("name") or "").strip()
+        test = str(body.get("test") or "").strip()
+        raw = body.get("instruments")
+        if not isinstance(raw, list):
+            return jsonify({"error": "Expected a list of instruments."}), 400
+        wanted = sorted({str(u) for u in raw if str(u).strip()})
+        try:
+            library = {s.name: s for s in sample_store.list_samples(missing_ok=False)}
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read the QC library: %s. Nothing was changed." % _store_why(exc),
+                            "retry": True}), 503
+        sample = library.get(name)
+        if sample is None:
+            return jsonify({"error": "There is no QC standard called %s. Nothing was changed." % name,
+                            "retry": False}), 400
+        t = _test_named(sample, test)
+        if t is None:
+            return jsonify({"error": "%s does not certify %s, so nothing can be checked on it. "
+                                     "Nothing was changed." % (name, test), "retry": False}), 400
+        known = _known_uids()
+        if known is not None:
+            unknown = [u for u in wanted if u not in known]
+            if unknown:
+                return jsonify({"error": "There is no instrument %s in LEM. Nothing was changed."
+                                % ", ".join(unknown), "retry": False}), 400
+        try:
+            added, removed, failed = _set_instruments(name, t.name, wanted)
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read what is assigned now: %s. Nothing was changed."
+                            % _store_why(exc), "retry": True}), 503
+        if failed:
+            return jsonify({"error": "Not every instrument was changed: %s. Those that were stay "
+                                     "changed; save again to finish." % "; ".join(
+                                         "%s (%s)" % (f["uid"], f["error"]) for f in failed),
+                            "added": added, "removed": removed, "failed": failed,
+                            "partial": bool(added or removed)}), 503
+        return jsonify({"ok": True, "added": added, "removed": removed})
+
+    @app.route("/api/qc-samples/rename", methods=["POST"])
+    def api_qc_sample_rename():
+        """Rename a standard and keep everything that hangs off its name.
+
+        The library keys a standard by name, and so do the assignments and
+        the certificates. The old floor renamed by saving the new name and
+        deleting the old, which carried the certificate (renamed_to) but left
+        every assigned instrument pointing at a name that no longer existed:
+        its checks went quietly unassigned. Here it is three steps, each
+        confirmed: the new name with the same Lab ID and values and every
+        instrument moved (``qc_samples.changeover``), the certificates
+        repointed, then the old name removed."""
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        old = str(body.get("name") or "").strip()
+        new = " ".join(str(body.get("new_name") or "").split())
+        if not new:
+            return jsonify({"error": "Give it a new name.", "retry": False}), 400
+        if new == old:
+            return jsonify({"error": "That is the name it already has. Nothing was changed.",
+                            "retry": False}), 400
+        from qc_samples import changeover
+        try:
+            library = {s.name: s for s in sample_store.list_samples(missing_ok=False)}
+        except LabCoreError as exc:
+            return jsonify({"error": "Couldn't read the QC library: %s. Nothing was changed." % _store_why(exc),
+                            "retry": True}), 503
+        if old not in library:
+            return jsonify({"error": "There is no QC standard called %s." % old, "retry": False}), 400
+        clash = next((n for n in library if n.lower() == new.lower() and n != old), None)
+        if clash:
+            return jsonify({"error": "There is already a standard called %s. Nothing was changed." % clash,
+                            "retry": False}), 400
+        landed = []
+        try:
+            moved = changeover(gateway, old, new, library[old].sample_id_val, retire_old=False)
+            landed.append("the new name, with %d instrument%s moved" % (moved, "" if moved == 1 else "s"))
+            certificate_store.repoint_certificates(old, new)
+            landed.append("the certificates")
+            sample_store.delete(old)
+            landed.append("the old name removed")
+        except (CertificateStoreError, CertificateRejected, LabCoreError, ValueError) as exc:
+            return jsonify({"error": "The rename stopped part-way: %s. Done so far: %s. Rename again "
+                                     "to finish; nothing done twice." % (
+                                         str(exc).strip().rstrip("."), ", ".join(landed) or "nothing"),
+                            "landed": landed, "partial": bool(landed), "retry": True}), 503
+        _audit("qc-sample renamed", "", {"from": old, "to": new, "instruments": moved})
+        snapshots.refresh_soon()
+        return jsonify({"ok": True, "name": new, "href": ui_quality.standard_href(new), "moved": moved})
+
     def _warm() -> None:
         """Fill the caches before anybody asks, on a background thread.
 
@@ -6409,6 +8956,8 @@ def create_app(gateway, admin_password: Optional[str] = None,
         server that dies warming a cache is worse than a slow first page.
         """
         for label, job in (("floor", lambda: snapshots.get()),
+                           # which benches are v2, for the floor's `transfer`
+                           ("benches", lambda: bench_registry.hydrate(gateway)),
                            ("checklists", lambda: _page(
                                f"checklists:{_today()}", _build_checklist_day)),
                            ("archive", lambda: _page(
@@ -6421,4 +8970,87 @@ def create_app(gateway, admin_password: Optional[str] = None,
 
     app.config["WARM"] = _warm
     app.config["PAGE"] = _page          # exercised directly by the cache tests
+
+    # The fake is LabCore's, not the store's: under --dev the store is
+    # still a LocalStoreGateway, and it is LabCore that must be the fake.
+    app.config["DEV_TOOLS"] = dev_tools_allowed(labcore_raw, dev_tools)
+    if app.config["DEV_TOOLS"]:
+        _register_dev_tools(app, gateway, snapshots)
+    # §10.5: dedupe dry run, per-bench approval, apply, reinstate. On the
+    # store only — `dedupe` refuses any gateway that is not LEM's store.
+    import dedupe_routes
+
+    def _dedupe_password_ok(user: str, password: str) -> bool:
+        """The approver's password, checked again at the moment of approving
+        (D7). The admin password is the --dev escape hatch, as at sign-in;
+        otherwise LabCore's login answers, and the session it opens is
+        closed straight away — this is a check, not a second sign-in."""
+        if admin_pw and hmac.compare_digest(str(password), str(admin_pw)):
+            return True
+        try:
+            got, token, _err = auth_backend.login(user, password)
+        except Exception:                              # noqa: BLE001
+            return False
+        if token:
+            try:
+                auth_backend.logout(token)
+            except Exception:                          # noqa: BLE001
+                pass
+        return bool(got) and str(got).strip().lower() == user.strip().lower()
+
+    dedupe_routes.register(app, gateway,
+                           verify_password=_dedupe_password_ok)
+
+    # ── the record's Remove (ia-final §3.1 #9, piece 6) ────────────────
+    # The one action the page cannot undo, so both halves of its gate are
+    # the server's, not the sheet's: the name typed must be the
+    # instrument's, and the person's password is checked again at the moment
+    # of removing (the admin unlock; the same check D7 uses for approvals).
+    # The typed name is also the confirmation the DELETE route asks for when
+    # a module is running it: the sheet says so before anyone types.
+    @app.route("/api/ui/instruments/<machine_uid>/remove", methods=["POST"])
+    def api_ui_remove(machine_uid):
+        if not authed():
+            return jsonify({"error": "Authentication required"}), 401
+        body = request.get_json(silent=True) or {}
+        status, rec = _record_payload(machine_uid)
+        if status == 404:
+            return jsonify({"error": "No such instrument.", "saved": False}), 404
+        if status != 200:
+            return jsonify({"error": "LEM could not read this instrument, so "
+                                     "nothing was removed. Try again in a "
+                                     "moment.", "saved": False}), 503
+        title = str(rec.get("title") or machine_uid)
+        typed = str(body.get("name") or "").strip()
+        if typed != title.strip():
+            return jsonify({"error": "Type the instrument's name exactly as "
+                                     "it is shown: \u201c%s\u201d. Nothing "
+                                     "was removed." % title,
+                            "saved": False, "field": "name"}), 400
+        if not _dedupe_password_ok(session.get("user", ""),
+                                   str(body.get("password") or "")):
+            return jsonify({"error": "That password was not accepted. "
+                                     "Nothing was removed.",
+                            "saved": False, "field": "password"}), 403
+        return _retire_machine(machine_uid, False)
+
+    # ── what people see of the transfer (transfer §14, T-P12) ───────────
+    # The instrument's Data transfer section, /results/conflicts, Settings ›
+    # Transfer. On the store; LabCore is not handed in.
+    import transfer_routes
+
+    def _merged_now():
+        from live_presence import merge_machines
+        snap = snapshots.get(build_if_missing=False)
+        if not snap.get("ready"):
+            return None
+        return merge_machines(snap.get("machines") or [], app.config["LIVE"],
+                              STATUS_COLORS)
+
+    transfer_routes.register(
+        app, gateway, registry=bench_registry, machines=_merged_now,
+        href=lambda uid, sec: "/instruments/%s%s" % (uid, ("#" + sec) if sec else ""),
+        authed=lambda: bool(session.get("user")),
+        current_user=lambda: session.get("user", ""),
+        split=labcore_split)
     return app
