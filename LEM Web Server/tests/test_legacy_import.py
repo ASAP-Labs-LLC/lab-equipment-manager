@@ -758,29 +758,38 @@ class TestProductionCost:
 # ── the server's boot ───────────────────────────────────────────────────────
 
 class TestBoot:
-    def test_a_live_boot_holds_syncs_and_imports_only_when_asked(
+    def test_a_live_boot_holds_syncs_and_imports_by_itself(
             self, tmp_path, mirror):
         """Boot (never create_app) decides. A live store whose import is not
-        verified is held; nothing reads LabCore until --import-from-mirror
-        names a mirror; then the import runs on a thread and the hold goes
-        when it is verified. A candidate boot (read-only store) does
-        nothing."""
+        verified is held, and the import starts on its own: v4.0.0 waited for
+        --import-from-mirror, which the updater never passes, and served an
+        empty store (test_import_on_boot.py). With no log copy anywhere it
+        walks LabCore. A named mirror is used when given. A candidate boot
+        (read-only store) does nothing."""
         import time
         import bench_v2_kit as bk
         import web_server
         from lem_store import LocalStoreGateway
-        store = make_store(tmp_path)
+        walked = make_store(tmp_path, "walked.db")
         lab = kit.labcore_from_mirror(mirror)
-        app = bk.make_app(store, labcore=lab)
-        out = web_server.start_transfer(app, store, dev=False)
+        app = bk.make_app(walked, labcore=lab)
+        out = web_server.start_transfer(app, walked, dev=False, retry_s=0.1,
+                                        mirror_candidates=[])
         try:
-            assert out == {"held": True, "importing": False, "bridge": True}
-            assert meta(store, "sync_hold").startswith("importing")
-            time.sleep(1.5)                      # the bridge thread is idle
-            assert lab.calls == []
+            assert out["held"] is True and out["importing"] is True
+            assert out["mirror"] is None
+            for _ in range(300):
+                if meta(walked, "import_state") == "verified":
+                    break
+                time.sleep(0.05)
+            assert meta(walked, "import_state") == "verified"
+            assert lab.calls, "a walk with no copy reads LabCore"
         finally:
             app.config["BRIDGE"].stop()
+            app.config["IMPORT_SERVICE"].stop()
+            walked.close()
 
+        store = make_store(tmp_path)
         app2 = bk.make_app(store, labcore=lab)
         out = web_server.start_transfer(app2, store, dev=False,
                                         import_mirror=mirror, retry_s=0.1)

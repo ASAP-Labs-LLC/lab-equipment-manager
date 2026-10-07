@@ -190,15 +190,58 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+MIRROR_NAME = "log-mirror.sqlite3"
+
+
+def default_log_mirror_candidates() -> list:
+    """Where a v3.x server left its local copy of `lem_machine_log`, newest
+    first. v3.x wrote it under its own code directory (`<release>/data/`), and
+    a deploy swaps release folders, so the copy v4 wants sits in a SIBLING
+    release (`releases/v3.10.0/data/`). The data directory (LEM_DATA_DIR) is
+    searched first in case an install kept it there. A list with nothing in
+    it is fine: the importer then walks LabCore's log instead."""
+    import glob
+
+    import tray
+
+    out = [os.path.join(tray.data_dir(), MIRROR_NAME),
+           os.path.join(tray.data_dir(), "data", MIRROR_NAME)]
+    here = os.path.dirname(os.path.abspath(__file__))
+    found = []
+    for root in {os.path.dirname(os.path.realpath(here)),
+                 os.path.join(os.path.dirname(here), "releases")}:
+        found += glob.glob(os.path.join(root, "*", "data", MIRROR_NAME))
+    found = sorted(set(found), key=os.path.getmtime, reverse=True)
+    for p in [os.path.join(here, "data", MIRROR_NAME)] + found:
+        if p not in out:
+            out.append(p)
+    return out
+
+
+def find_log_mirror(candidates):
+    """The first candidate that is a file, or None."""
+    for path in candidates or []:
+        if path and os.path.isfile(path):
+            return path
+    return None
+
+
 def start_transfer(app, store, *, dev: bool, import_mirror=None,
-                   retry_s: float = 60.0) -> dict:
-    """The import hold, the import itself when asked, and the bridge
-    (transfer §10.1, §10.4). Boot, never `create_app`: the factory stays free
-    of side effects.
+                   retry_s: float = 60.0, mirror_candidates=None) -> dict:
+    """The import hold, the import itself, and the bridge (transfer §10.1,
+    §10.4). Boot, never `create_app`: the factory stays free of side effects.
 
     * A live store whose import is not verified holds v2 syncs (503 +
       Retry-After) — a bench must not add to a record still being moved.
-    * `import_mirror` runs the import on a thread, resuming until verified.
+    * The import runs on a thread, resuming until verified, on EVERY live
+      boot whose record is not verified yet: from `import_mirror` when named,
+      else the first v3.x log copy found among `mirror_candidates` (default
+      `default_log_mirror_candidates()`), else by walking LabCore's log.
+      v4.0.0 waited for `--import-from-mirror`, which the updater never
+      passes, and served an empty store (test_import_on_boot.py).
+    * Until it is verified, `IMPORT_GATE` makes every API answer 503 "moving"
+      and every page say so (web_app's before_request); /healthz stays open.
+      It lifts by itself when the import verifies.
     * The bridge thread starts on every writable store with a separate
       LabCore; it does nothing until the import is verified and the switch
       is on.
@@ -218,14 +261,20 @@ def start_transfer(app, store, *, dev: bool, import_mirror=None,
         app.config.pop("BRIDGE", None)
     if not dev:
         out["held"] = legacy_import.hold_until_verified(store)
-        if out["held"] and import_mirror:
+        legacy_import.refresh_status(store)
+        if out["held"]:
+            app.config["IMPORT_GATE"] = True
+            if mirror_candidates is None:
+                mirror_candidates = default_log_mirror_candidates()
+            mirror = import_mirror or find_log_mirror(mirror_candidates)
             service = legacy_import.ImportService(
                 legacy_import.Importer(store, app.config["LABCORE_GATEWAY"],
-                                       mirror_path=import_mirror),
+                                       mirror_path=mirror),
                 retry_s=retry_s)
             app.config["IMPORT_SERVICE"] = service
             service.start()
             out["importing"] = True
+            out["mirror"] = mirror
     bridge = app.config.get("BRIDGE")
     if bridge is not None:
         bridge.start()
@@ -311,10 +360,11 @@ def main(argv) -> int:
     if transfer["held"]:
         print("LEM's record has not been imported from LabCore and verified: "
               "v2 benches are held (503, nothing lost). %s" % (
-                  "Importing now from a copy of %s." % args.import_from_mirror
-                  if transfer["importing"] else
-                  "Run the import with --import-from-mirror PATH "
-                  "(Ryan's step)."))
+                  "Importing now, %s; LEM answers 'moving' until it is "
+                  "verified." % ("from a copy of %s" % transfer["mirror"]
+                                 if transfer.get("mirror") else
+                                 "walking LabCore's log (no v3.x log copy found)")
+                  if transfer["importing"] else "Not importing."))
     # The local copy of lem_machine_log, refreshed every five minutes. Same
     # rule as the snapshot: the factory builds it, the server owns its thread.
     # The first pull is the whole table (1.00s / 18.9 MB measured on the live

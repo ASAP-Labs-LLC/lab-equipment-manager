@@ -2885,6 +2885,51 @@ def create_app(gateway, labcore_gateway=None,
             _last_activity = time.time()
             _last_activity_path = f"{request.method} {request.path}"
 
+    @app.before_request
+    def _moving_gate():
+        """A record still being moved out of LabCore is not an empty record.
+
+        The boot sets `IMPORT_GATE` on a live store whose import is not
+        verified (web_server.start_transfer). Until it is, every API answers
+        503 + Retry-After with `"stale": true` (the bench contract's "I have
+        nothing yet": a v3.x bench keeps its config and asks LabCore) and every
+        page says LEM is moving. v4.0.0 served the empty store instead: 0
+        instruments on the floor, and benches told their correction factors
+        were none. /healthz and static files stay open so the updater sees a
+        healthy server. The gate reads the import status from memory and lifts
+        by itself when the import verifies (test_import_on_boot.py)."""
+        if not app.config.get("IMPORT_GATE"):
+            return None
+        path = request.path or "/"
+        if path == "/healthz" or path.startswith("/static/"):
+            return None
+        import legacy_import
+        st = legacy_import.cached_status(gateway)
+        if st.get("state") == "verified":
+            app.config["IMPORT_GATE"] = False
+            return None
+        done, total = st.get("tables_verified"), st.get("tables_total")
+        progress = ("%s of %s tables verified" % (done, total)
+                    if total else "starting")
+        msg = ("LEM is moving its record out of LabCore (%s). "
+               "Back in a minute; nothing is lost." % progress)
+        if path.startswith("/api/"):
+            resp = jsonify({"error": msg, "stale": True, "moving": True,
+                            "import": st})
+        else:
+            import html as _html
+            resp = Response(
+                "<!doctype html><meta charset=utf-8>"
+                "<meta http-equiv=refresh content=15>"
+                "<title>LEM is moving</title>"
+                "<body style='font:16px system-ui;margin:3rem'>"
+                "<h1>LEM is moving its record</h1><p>%s</p>"
+                "<p>This page reloads by itself.</p>" % _html.escape(msg),
+                mimetype="text/html")
+        resp.status_code = 503
+        resp.headers["Retry-After"] = "30"
+        return resp
+
     @app.route("/healthz")
     def healthz():
         """Deployment health check — no auth, no LabCore call.

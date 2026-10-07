@@ -1210,9 +1210,14 @@ class ImportService:
                                         daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self, wait_s: float = 10.0) -> None:
+        """Ask the thread to stop, and wait (bounded) for a run in flight to
+        finish, so whoever closes the store next does not pull it out from
+        under a write."""
         if self._stop is not None:
             self._stop.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(wait_s)
 
     def _run(self) -> None:
         while not self._stop.is_set():

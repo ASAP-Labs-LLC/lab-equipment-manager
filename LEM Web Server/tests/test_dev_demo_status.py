@@ -47,9 +47,12 @@ def _dev_app(tmp_path):
 
 
 def _stop(app):
-    b = app.config.get("BRIDGE")
-    if b is not None:
-        b.stop()
+    # A live (non-dev) boot also starts the import (v4.0.1); stop it before
+    # the store is closed under it.
+    for key in ("BRIDGE", "IMPORT_SERVICE"):
+        svc = app.config.get(key)
+        if svc is not None:
+            svc.stop()
 
 
 def _running(app):
