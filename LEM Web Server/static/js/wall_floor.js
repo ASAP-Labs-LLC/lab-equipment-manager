@@ -11,15 +11,19 @@
        the footer says "Stale" (wall_logic.liveState). Checked every second.
      * refreshes from /api/ui/wall/floor (memory only, 0 LabCore ops) when
        the live feed says something changed, and once a minute regardless.
-     * levels: one at a time, every 20 s, pausing while a pointer or a
-       finger is on the wall; ?level=<uid> pins one, ?rotate=0 and reduced
-       motion stop it (then ‹ › step by hand).
+     * levels are pages (Ryan, 2026-10-07: "like android app pages, where
+       you slide left to right on them"): one level at a time, in the
+       positions placed with Arrange, each up for ?dwell= seconds (20),
+       pausing while a pointer is on the wall. Tabs, arrow keys, ‹ › and a
+       swipe turn it by hand and hold it a minute; each tab carries the
+       worst state on its level. ?level=<uid> pins one, ?rotate=0 and
+       reduced motion stop it. Every level at once only with ?whole=1.
    Every string goes in through textContent. GETs only. */
 (function () {
     'use strict';
     const L = window.LEMWallLogic;
     const P = window.LEMPlan;
-    const LEVEL_MS = 20000;
+    const HOLD_MS = 60000;
     const REFRESH_MS = 60000;
     const GLYPH_FOR_TONE = { stop: 'error', ok: 'final', warn: 'half' };
 
@@ -57,6 +61,7 @@
         // ── levels ───────────────────────────────────────────────────────
         function levels() { return (data && data.levels) || []; }
         const pinned = () => !!kiosk.level && levels().some(l => l.uid === kiosk.level);
+        const LEVEL_MS = kiosk.dwell * 1000;
         const rot = L.rotator({ count: Math.max(1, levels().length), every: LEVEL_MS, now: Date.now(),
                                 enabled: kiosk.rotate && !reduced && !pinned() });
         function levelNow() {
@@ -255,7 +260,7 @@
             // the whole floor needs no level bar (the footer says "All 3
             // levels shown"), and its 38px go to the bays and the hole
             const card = section.querySelector('.wall-plan-card');
-            const tryWhole = !!(ready && data.instruments.length && levels().length >= 2 && !pinned());
+            const tryWhole = !!(kiosk.whole && ready && data.instruments.length && levels().length >= 2 && !pinned());
             card.classList.toggle('whole', tryWhole);
             whole = tryWhole ? packAll(main.clientWidth, wrap.clientHeight) : null;
             if (!whole) card.classList.remove('whole');
@@ -322,6 +327,13 @@
                     oneVocabulary(one('full'), one);
                 }
             }
+            if (!whole || whole.mode !== 'hole') {
+                // the column too: details to one line, then names, before
+                // anything is clipped
+                attnEl.classList.remove('tight', 'tighter');
+                if (!attnFits()) attnEl.classList.add('tight');
+                if (!attnFits()) attnEl.classList.add('tighter');
+            }
             if (lost.length) {
                 unplaced.hidden = false;
                 unplaced.replaceChildren(h('span', { className: 'wu-head', text: 'Not on the plan:' }),
@@ -332,11 +344,35 @@
                 unplaced.replaceChildren();
             }
         }
+        /** The level tabs: every page by name, the one shown marked, each
+            with the worst state on it, so a problem on a page nobody is
+            looking at is still on the screen. */
         function drawDots(level) {
             const lv = levels();
-            const dots = $('wf-dots');
-            dots.replaceChildren(...(lv.length > 1 && level ? lv.map(l => h('i', { className: l.uid === level ? 'on' : '' })) : []));
-            $('wf-step').hidden = !(lv.length > 1 && level && !pinned() && !rot.running());
+            const tabs = $('wf-tabs');
+            const many = lv.length > 1 && !!level;
+            tabs.hidden = !many;
+            tabs.replaceChildren(...(many ? lv.map((l, i) => {
+                const here = P.onLevel(data.instruments, l.uid, data);
+                const st = L.worstState(here.map(r => r.readiness && r.readiness.state));
+                const b = h('button', { type: 'button', className: 'wp-tab' + (st ? ' s-' + st : ''),
+                                        'data-state': st, 'aria-current': l.uid === level ? 'page' : null,
+                                        disabled: pinned() ? true : null },
+                    h('span', { className: 'glyph ' + (L.stateGlyph(st) || 'dashed'), 'aria-hidden': 'true' }),
+                    h('span', { className: 'wp-tname', text: l.name }));
+                b.addEventListener('click', () => turn(i - rot.index));
+                return b;
+            }) : []));
+            $('wf-step').hidden = !(many && !pinned());
+        }
+        /** A page turned by hand: shown at once, held a minute. */
+        function turn(step) {
+            if (pinned() || whole || levels().length < 2 || !step) return;
+            const now = Date.now();
+            rot.go(step, now);
+            if (rot.enabled) rot.hold(now, HOLD_MS);
+            drawPlan();
+            $('wf-rot').textContent = rotText(now);
         }
         function rotText(now) {
             const lv = levels();
@@ -344,10 +380,11 @@
             if (whole) return 'All ' + whole.parts.length + ' levels shown · nothing to rotate' + skipped;
             if (lv.length < 2) return (lv.length ? '1 level' : 'One floor') + ' · nothing to rotate';
             const i = Math.max(0, lv.findIndex(l => l.uid === lastLevel)) + 1;
-            const head = 'Level ' + i + ' of ' + lv.length;
+            const head = levelName(lastLevel) + ' · ' + i + ' of ' + lv.length;
             if (pinned()) return head + ' · pinned';
             if (!kiosk.rotate) return head + ' · not rotating';
             if (reduced) return head + ' · rotation off (reduced motion)';
+            if (rot.holdUntil) return head + ' · held · cycling again in ' + Math.ceil((rot.holdUntil - now) / 1000) + ' s';
             if (rot.paused) return head + ' · held while you point';
             return head + ' · next in ' + Math.ceil(rot.remaining(now) / 1000) + ' s';
         }
@@ -410,7 +447,9 @@
         function tick(now) {
             if (!shown) return;
             const before = rot.index;
+            const held = rot.holdUntil;
             if (!whole) rot.tick(now);
+            if (held && !rot.holdUntil) drawDots(lastLevel);
             const live = liveNow(now);
             if (live.kind !== lastKind) { lastKind = live.kind; drawHead(live); }
             else $('wf-live').textContent = live.footer;
@@ -421,12 +460,33 @@
         }
 
         // somebody reading the wall holds it still
-        section.addEventListener('pointerenter', () => rot.pause(Date.now()));
-        section.addEventListener('pointerdown', () => rot.pause(Date.now()));
-        section.addEventListener('pointerleave', () => rot.resume(Date.now()));
-        section.addEventListener('touchend', () => setTimeout(() => rot.resume(Date.now()), LEVEL_MS));
-        $('wf-prev').addEventListener('click', () => { rot.go(-1, Date.now()); drawPlan(); });
-        $('wf-next').addEventListener('click', () => { rot.go(1, Date.now()); drawPlan(); });
+        // (a hand turn's minute outlasts the pointer that made it)
+        section.addEventListener('pointerenter', (e) => { if (e.pointerType === 'mouse') rot.pause(Date.now()); });
+        section.addEventListener('pointerleave', (e) => {
+            if (e.pointerType === 'mouse' && !rot.holdUntil) rot.resume(Date.now());
+        });
+        $('wf-prev').addEventListener('click', () => turn(-1));
+        $('wf-next').addEventListener('click', () => turn(1));
+        document.addEventListener('keydown', (e) => {
+            if (!shown || e.altKey || e.ctrlKey || e.metaKey) return;
+            if (e.key === 'ArrowRight') { e.preventDefault(); turn(1); }
+            else if (e.key === 'ArrowLeft') { e.preventDefault(); turn(-1); }
+        });
+        // a swipe across the plan turns the page, like a phone's home
+        // screens; the bay under the finger at the end is not opened
+        const wrapEl = $('wf-plan-wrap');
+        let down = null, swallow = false;
+        wrapEl.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, id: e.pointerId }; });
+        wrapEl.addEventListener('pointerup', (e) => {
+            if (!down || down.id !== e.pointerId) return;
+            const step = L.swipeStep(e.clientX - down.x, e.clientY - down.y);
+            down = null;
+            if (step) { swallow = true; setTimeout(() => { swallow = false; }, 400); turn(step); }
+        });
+        wrapEl.addEventListener('pointercancel', () => { down = null; });
+        wrapEl.addEventListener('click', (e) => {
+            if (swallow) { e.preventDefault(); e.stopPropagation(); swallow = false; }
+        }, true);
         let resizeT = null;
         window.addEventListener('resize', () => { clearTimeout(resizeT); resizeT = setTimeout(drawPlan, 120); });
 

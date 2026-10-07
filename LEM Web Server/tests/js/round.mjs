@@ -302,5 +302,24 @@ check('bar: saved', L.saveWords({ saving: 0, failed: 0 }, '2026-10-01T08:02:00')
 check('bar: nothing yet', L.saveWords({ saving: 0, failed: 0 }, ''),
       { kind: 'idle', text: 'Nothing ticked yet today' });
 
+// ── a section's own progress (2026-10-07) ─────────────────────────────────
+// Ryan: the checklists did not feel consistent with the rest of the app. A
+// heading like "Check and Record Gas Levels" now says how far its own rows
+// are, so the progress is where the work is, not only in the pill at the top.
+{
+  const rows = [
+    { uid: 'h1', kind: 'header', st: {} },
+    { uid: 'a', kind: 'tick', st: { checked: true } },
+    { uid: 'h2', kind: 'header', st: {} },
+    { uid: 'o2', kind: 'number', st: { checked: true } },
+    { uid: 'n2', kind: 'number', st: { checked: false } },
+    { uid: 'h3', kind: 'header', st: {} },
+  ];
+  check('each heading counts the rows under it, to the next heading', L.sections(rows),
+        [{ uid: 'h1', done: 1, total: 1 }, { uid: 'h2', done: 1, total: 2 }, { uid: 'h3', done: 0, total: 0 }]);
+  check('rows before any heading belong to none', L.sections([{ uid: 'x', kind: 'tick', st: { checked: true } }]), []);
+}
+
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall round checks passed');

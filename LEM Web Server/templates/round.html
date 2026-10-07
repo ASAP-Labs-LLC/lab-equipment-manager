@@ -20,7 +20,7 @@
 {%- set done = st and st.checked -%}
 <div class="item rrow{% if item.item_type == 'subtask' %} sub{% endif %}" data-item="{{ item.uid }}" data-cl="{{ cl_uid }}" data-kind="{{ kind }}" data-checked="{{ '1' if done else '' }}" data-state="{{ 'done' if done else 'todo' }}">
   <button type="button" class="tick" aria-pressed="{{ 'true' if done else 'false' }}" aria-label="{{ item.text }}"{% if kind != 'tick' %} data-reading="1"{% endif %}>
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5.5 12.5 4.2 4.2 8.8-9.4"/></svg>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path pathLength="1" d="m5.5 12.5 4.2 4.2 8.8-9.4"/></svg>
   </button>
   <div class="rbody">
     <span class="rlabel">{{ item.text }}</span>
@@ -81,7 +81,7 @@
     {%- if lists|length > 1 %}<h2 class="rgroup">{{ cl.name }}</h2>{% endif %}
     {%- for item in cl["items"] %}
     {%- if item.item_type == 'header' %}
-    <h3 class="rhead">{{ item.text }}</h3>
+    <h3 class="rhead" data-head="{{ item.uid }}"><span class="rhead-t">{{ item.text }}</span><span class="rhead-n"></span></h3>
     {%- else %}
     {{ row(cl.uid, item, ((R.state or {}).get(cl.uid) or {}).get(item.uid)) }}
     {%- endif %}
@@ -118,6 +118,7 @@
     <span class="bb-out" id="bb-out"{% if who %} hidden{% endif %}><span>Not signed in</span><button type="button" class="linkbtn" id="bb-signin">Sign in to tick</button></span>
   </div>
   <div class="bb-live" id="bb-live" role="status"><span class="live-dot" id="bb-dot" data-state="connecting" aria-hidden="true"></span><span id="bb-live-text">Connecting…</span></div>
+  <span class="bb-count" id="bb-count" hidden></span>
   <div class="bb-saved" id="bb-saved" role="status"><span class="glyph never" id="bb-glyph" aria-hidden="true"></span><span><span id="bb-saved-text">&nbsp;</span><span class="bb-tail" id="bb-saved-tail"></span></span></div>
 </div>
 {% endblock %}

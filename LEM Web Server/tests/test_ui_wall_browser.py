@@ -383,6 +383,9 @@ def test_qc_on_production_tells_every_card_apart(server, drv, prod_snapshot, siz
 
 # ── the whole floor at once (round 2) ──────────────────────────────────────
 #
+# Since 2026-10-07 only with ?whole=1: Ryan wants levels as separate pages
+# (see "levels are pages" below). The mode is kept, asked for by name.
+#
 # The blind judge picked C's mock over round 1's wall because the mock showed
 # the whole floor at a glance, while round 1 showed one level of three (5 of
 # 13 benches) in large, mostly empty bays and rotated through the rest. A
@@ -400,7 +403,7 @@ return [...document.querySelectorAll('#wf-plan .bay .b-name, #wf-plan .bay .b-wt
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_the_whole_demo_floor_is_on_the_wall_at_once(server, drv, size, theme):
     shape(server, "demo")
-    _open(drv, server.base, "/floor", size, theme)
+    _open(drv, server.base, "/floor?whole=1", size, theme)
     m = drv.execute_script(MEASURE)
     bays = drv.execute_script("return document.querySelectorAll('#wf-plan .bay').length")
     assert bays == m["fleet"] == 13, (bays, m["fleet"])
@@ -487,9 +490,9 @@ def test_every_bay_says_its_word_on_one_line_and_keeps_its_reason(server, drv, k
 def test_needs_attention_fills_the_room_the_levels_leave(server, drv, size, theme):
     """Three 3x2 levels two to a row leave a level-sized hole. Needs
     attention goes there, the levels get the whole width, and nothing on
-    the wall's body is a dead block."""
+    the wall's body is a dead block. (The whole floor at once: ?whole=1.)"""
     shape(server, "demo")
-    _open(drv, server.base, "/floor", size, theme)
+    _open(drv, server.base, "/floor?whole=1", size, theme)
     c = drv.execute_script(COVER)
     assert c["mode"] == "hole" and c["attnInPlan"], c
     assert c["cover"] >= 0.85, c
@@ -678,3 +681,138 @@ def test_a_frozen_data_feed_goes_stale_too(server, drv, path):
                               dimmed) == "grayscale(1)"
     drv.execute_cdp_cmd("Network.setBlockedURLs", {"urls": []})
     drv.execute_script("window.__skew = 0")
+
+
+# ── levels are pages (2026-10-07) ──────────────────────────────────────────
+#
+# Ryan, on the wall as a permanent lab-monitor screen: "we dont want
+# everything on the screen all the time. Grid is for what you want to view
+# and where you want to place, and levels is for different 'screens' … like
+# android app pages, where you slide left to right on them." So /floor shows
+# one level per page, in the positions placed with Arrange, cycling on its
+# own; tabs, arrow keys, ‹ › and a swipe turn it by hand and hold it a
+# minute. Each tab carries the worst state on its level, so a monitor on the
+# Mezzanine still says the Upper Lab has an instrument that cannot run.
+
+STATE_RANK = {"ok": 0, "off_line": 1, "cant_tell": 2, "ok_but": 3, "not_ok": 4}
+
+PAGE = r"""
+const tabs = [...document.querySelectorAll('#wf-tabs .wp-tab')];
+return {
+  level: document.getElementById('wf-level').textContent,
+  rot: document.getElementById('wf-rot').textContent,
+  panels: document.querySelectorAll('#wf-plan .wl-panel').length,
+  bays: [...document.querySelectorAll('#wf-plan .bay')].map(b => b.querySelector('.b-name').textContent.replace(/\u00a0/g, ' ')),
+  tabs: tabs.map(t => ({ name: t.querySelector('.wp-tname').textContent, state: t.dataset.state || null,
+                         current: t.getAttribute('aria-current') === 'page' })),
+  url: location.href,
+};
+"""
+
+
+def _levels_and_worst(server):
+    d = server.app.test_client().get("/api/ui/wall/floor").get_json()
+    known = {lv["uid"] for lv in d["levels"]}
+    fallback = d["default_level"] if d["default_level"] in known else d["levels"][0]["uid"]
+    worst = {}
+    names = {}
+    for r in d["instruments"]:
+        lv = r.get("level_uid") if r.get("level_uid") in known else fallback
+        st = r["readiness"]["state"]
+        names.setdefault(lv, set()).add(r["title"])
+        if lv not in worst or STATE_RANK[st] > STATE_RANK[worst[lv]]:
+            worst[lv] = st
+    return d["levels"], worst, names
+
+
+@pytest.mark.parametrize("size", list(SIZES))
+def test_one_level_per_page_with_its_worst_state_on_every_tab(server, drv, size):
+    shape(server, "demo")
+    levels, worst, names = _levels_and_worst(server)
+    _open(drv, server.base, "/floor", size, "dark")
+    pg = drv.execute_script(PAGE)
+    assert pg["panels"] == 0, "the whole floor was drawn without ?whole=1"
+    assert pg["level"] == levels[0]["name"]
+    assert set(pg["bays"]) == names[levels[0]["uid"]], pg["bays"]
+    assert pg["rot"].startswith(levels[0]["name"] + " · 1 of 3"), pg["rot"]
+    assert [t["name"] for t in pg["tabs"]] == [lv["name"] for lv in levels]
+    assert [t["state"] for t in pg["tabs"]] == [worst.get(lv["uid"]) for lv in levels]
+    assert [t["current"] for t in pg["tabs"]] == [True, False, False]
+    m = drv.execute_script(MEASURE)
+    assert m["bad"] == [], m["bad"]
+    assert (m["scrollW"], m["scrollH"]) == (m["w"], m["h"]), m
+
+
+def test_arrow_keys_and_tabs_turn_the_page_and_hold_it(server, drv):
+    from selenium.webdriver.common.action_chains import ActionChains
+    from selenium.webdriver.common.keys import Keys
+    shape(server, "demo")
+    levels, _, names = _levels_and_worst(server)
+    _open(drv, server.base, "/floor", (1440, 900), "light")
+    ActionChains(drv).send_keys(Keys.ARROW_RIGHT).perform()
+    assert _wait(lambda: drv.execute_script(PAGE)["level"] == levels[1]["name"])
+    pg = drv.execute_script(PAGE)
+    assert set(pg["bays"]) == names[levels[1]["uid"]]
+    assert "held" in pg["rot"], pg["rot"]
+    ActionChains(drv).send_keys(Keys.ARROW_LEFT).perform()
+    assert _wait(lambda: drv.execute_script(PAGE)["level"] == levels[0]["name"])
+    drv.find_elements("css selector", "#wf-tabs .wp-tab")[2].click()
+    assert _wait(lambda: drv.execute_script(PAGE)["level"] == levels[2]["name"])
+    assert [t["current"] for t in drv.execute_script(PAGE)["tabs"]] == [False, False, True]
+    # a minute later, nobody touching it, it cycles again by itself
+    drv.execute_script("window.__skew = 61000")
+    assert _wait(lambda: "next in" in drv.execute_script(PAGE)["rot"], timeout=4)
+
+
+SWIPE = r"""
+const el = document.getElementById('wf-plan-wrap');
+const r = el.getBoundingClientRect();
+const y = r.top + r.height / 2, x0 = r.left + r.width * 0.7, x1 = x0 + arguments[0];
+const at = (type, x) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true,
+  clientX: x, clientY: y, pointerId: 7, pointerType: 'touch', isPrimary: true }));
+at('pointerdown', x0); at('pointermove', (x0 + x1) / 2); at('pointerup', x1);
+document.elementFromPoint(x1, y) && document.elementFromPoint(x1, y).dispatchEvent(
+  new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x1, clientY: y }));
+"""
+
+
+def test_a_swipe_turns_the_page_like_a_phone_and_opens_nothing(server, drv):
+    shape(server, "demo")
+    levels, _, _ = _levels_and_worst(server)
+    _open(drv, server.base, "/floor", (1440, 900), "dark")
+    start = drv.current_url
+    drv.execute_script(SWIPE, -200)          # finger right-to-left: next page
+    assert _wait(lambda: drv.execute_script(PAGE)["level"] == levels[1]["name"])
+    drv.execute_script(SWIPE, 200)           # and back
+    assert _wait(lambda: drv.execute_script(PAGE)["level"] == levels[0]["name"])
+    time.sleep(0.4)
+    assert drv.current_url == start, "the swipe's end opened the bay under the finger"
+
+
+FITS = r"""
+const vis = e => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && !e.closest('[hidden]'); };
+const head = document.getElementById('wf-headline-text');
+const aside = document.querySelector('.wall-attn').getBoundingClientRect();
+const parts = [...document.querySelectorAll('.wa-item, .wa-more')].filter(vis).map(e => {
+  const r = e.getBoundingClientRect(); return { t: e.textContent.trim().slice(0, 30), top: r.top, bottom: r.bottom }; });
+const over = [];
+for (let i = 1; i < parts.length; i++) if (parts[i].top < parts[i - 1].bottom - 0.5) over.push(parts[i - 1].t + ' / ' + parts[i].t);
+return {
+  headCut: head.scrollWidth > head.clientWidth + 0.5 || head.scrollHeight > head.clientHeight + 1
+           || getComputedStyle(head).textOverflow === 'ellipsis',
+  over, outside: parts.filter(p => p.bottom > aside.bottom + 0.5).map(p => p.t),
+};
+"""
+
+
+@pytest.mark.parametrize("size", [(1440, 1000), (1440, 900), (1920, 1080), (1280, 720)])
+def test_the_headline_is_never_cut_and_needs_attention_never_overlaps(server, drv, size):
+    """Ryan's screenshot, 2026-10-07 at 1440x1000: "2 instruments are not
+    OK to r…", and "and 4 more on Instruments" drawn over "Cetane Bench and
+    GC-1" at the bottom of Needs attention."""
+    shape(server, "demo")
+    _open(drv, server.base, "/floor", size, "dark")
+    f = drv.execute_script(FITS)
+    assert not f["headCut"], f
+    assert f["over"] == [], f
+    assert f["outside"] == [], f

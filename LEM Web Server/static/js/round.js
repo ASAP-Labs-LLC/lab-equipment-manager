@@ -311,7 +311,21 @@
         };
     }
 
-    const logic = { parseReading, limitsText, judge, byline, daysText, pill, saveWords, createRound };
+    /** Each heading's own progress: the rows under it, to the next heading.
+        [{uid, done, total}], in order; rows before any heading count for none. */
+    function sections(rows) {
+        const out = [];
+        let cur = null;
+        for (const r of rows || []) {
+            if (r.kind === 'header') { cur = { uid: r.uid, done: 0, total: 0 }; out.push(cur); continue; }
+            if (!cur) continue;
+            cur.total++;
+            if (r.st && r.st.checked) cur.done++;
+        }
+        return out;
+    }
+
+    const logic = { parseReading, limitsText, judge, byline, daysText, pill, saveWords, sections, createRound };
     root.LEMRoundLogic = logic;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = logic;
     if (typeof document === 'undefined') return;
@@ -367,8 +381,8 @@
             const v = r.st.checked ? judge(r.st.value, tr) : '';
             if (v) parts.push(v);
         }
-        const days = daysText(r.days);
-        if (days) parts.push(days);
+        // no "Only on Mon, Tue…": the round lists today's items only
+        // (active_items), so it would be true of every row and say nothing
         return parts.join(' · ');
     }
 
@@ -435,6 +449,17 @@
             $('round-pill-glyph').className = 'glyph ' + (p.kind === 'done' ? 'final' : p.kind === 'overdue' ? 'error' : 'half');
             setText($('round-pill-text'), p.text);
         }
+        // each heading's own count, and a mark when its rows are all done
+        for (const sct of sections(round.rows())) {
+            const h = $('lists').querySelector('.rhead[data-head="' + (root.CSS && CSS.escape ? CSS.escape(sct.uid) : sct.uid) + '"]');
+            if (!h) continue;
+            const n = h.querySelector('.rhead-n');
+            if (n) setText(n, sct.total ? sct.done + ' of ' + sct.total : '');
+            h.dataset.done = sct.total && sct.done === sct.total ? '1' : '';
+        }
+        // the same count where the eye always is: the bench bar
+        setText($('bb-count'), c.total ? c.done + ' of ' + c.total : '');
+        $('bb-count').hidden = !c.total;
         // the progress edge: the pill's count as a length, painted with it
         const meter = $('round-meter');
         if (meter && meter.firstElementChild) {
@@ -492,7 +517,13 @@
                 if (r.kind === 'header') {
                     const h = document.createElement('h3');
                     h.className = 'rhead';
-                    h.textContent = r.text;
+                    h.dataset.head = r.uid;
+                    const t = document.createElement('span');
+                    t.className = 'rhead-t';
+                    t.textContent = r.text;
+                    const n = document.createElement('span');
+                    n.className = 'rhead-n';
+                    h.append(t, n);
                     box.appendChild(h);
                     continue;
                 }
@@ -582,8 +613,20 @@
         if (root.LEMSignIn) root.LEMSignIn.need(act, again);
     }
 
+    /** The one moment that moves: a tick somebody just made draws itself.
+        Never on a repaint, so a page that opens on a done round is still. */
+    function justTicked(uid) {
+        const el = rowEl(uid);
+        const r = round.row(uid);
+        if (!el || !r || !r.st.checked) return;
+        el.classList.remove('just');
+        void el.offsetWidth;                 // restart the animation
+        el.classList.add('just');
+        setTimeout(() => el.classList.remove('just'), 700);
+    }
     function tapRow(uid) {
         const what = round.tap(uid);
+        justTicked(uid);
         if (what === 'signin') gate('tick', () => tapRow(uid));
         else if (what === 'focus') {
             const el = rowEl(uid);
@@ -599,6 +642,7 @@
         const input = el && el.querySelector('.rinput');
         if (!input) return;
         const what = round.save(uid, input.value);
+        justTicked(uid);
         if (what === 'signin') gate('save this reading', () => saveRow(uid));
         else if (what === 'saving') input.setAttribute('value', round.row(uid).st.value);
         else if (what === 'refused') input.focus();

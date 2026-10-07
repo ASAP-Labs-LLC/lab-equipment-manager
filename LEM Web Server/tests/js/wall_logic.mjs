@@ -117,13 +117,58 @@ check('losing LEM outranks an old record',
       live({ nowMs: T0 + 95000, snapshotStale: true, builtAt: '2026-10-01T13:02:11-07:00' }).kind, 'lost');
 
 // ── kiosk parameters ──────────────────────────────────────────────────────
-check('defaults', W.parseKiosk(''), { theme: '', level: '', rotate: true, show: ['floor', 'qc'], every: 60 });
+check('defaults', W.parseKiosk(''), { theme: '', level: '', rotate: true, show: ['floor', 'qc'], every: 60, dwell: 20, whole: false });
 check('a pinned TV', W.parseKiosk('?theme=dark&level=ee1ce78a6d79&rotate=0'),
-      { theme: 'dark', level: 'ee1ce78a6d79', rotate: false, show: ['floor', 'qc'], every: 60 });
-check('junk is ignored', W.parseKiosk('?theme=neon&level=<script>&rotate=maybe&show=x,y&every=abc'),
-      { theme: '', level: '', rotate: true, show: ['floor', 'qc'], every: 60 });
+      { theme: 'dark', level: 'ee1ce78a6d79', rotate: false, show: ['floor', 'qc'], every: 60, dwell: 20, whole: false });
+check('junk is ignored', W.parseKiosk('?theme=neon&level=<script>&rotate=maybe&show=x,y&every=abc&dwell=soon&whole=yes'),
+      { theme: '', level: '', rotate: true, show: ['floor', 'qc'], every: 60, dwell: 20, whole: false });
 check('show one wall', W.parseKiosk('?show=qc').show, ['qc']);
 check('every is held to 15..600 s', [W.parseKiosk('?every=2').every, W.parseKiosk('?every=9999').every], [15, 600]);
+
+// ── levels are pages (2026-10-07) ─────────────────────────────────────────
+// Ryan: "levels is for different screens … like android app pages, where you
+// slide left to right on them", and "we dont want everything on the screen
+// all the time". The wall shows one level per page; how long each page stays
+// up is ?dwell= (seconds), and the old everything-at-once floor is now only
+// ?whole=1, asked for by name.
+check('a page stays up 20 s unless told', W.parseKiosk('').dwell, 20);
+check('dwell is a TV setting', W.parseKiosk('?dwell=45').dwell, 45);
+check('dwell is held to 5..600 s', [W.parseKiosk('?dwell=1').dwell, W.parseKiosk('?dwell=9999').dwell], [5, 600]);
+check('the whole floor at once only when asked', [W.parseKiosk('').whole, W.parseKiosk('?whole=1').whole], [false, true]);
+
+// A monitor showing the Mezzanine must still say the Upper Lab has an
+// instrument that cannot run: each level's tab carries the worst state on it.
+check('the worst state on a level wins', W.worstState(['ok', 'ok_but', 'not_ok', 'ok']), 'not_ok');
+check('never checked in is worse than taken off line on purpose', W.worstState(['off_line', 'cant_tell', 'ok']), 'cant_tell');
+check('OK, but beats both', W.worstState(['cant_tell', 'ok_but']), 'ok_but');
+check('all OK is OK', W.worstState(['ok', 'ok']), 'ok');
+check('an empty level has no state, not an OK one', W.worstState([]), null);
+check('an unknown state is not read as OK', W.worstState(['ok', 'martian']), 'cant_tell');
+check('glyphs match the counts', ['not_ok', 'ok_but', 'cant_tell', 'off_line', 'ok', null].map(W.stateGlyph),
+      ['error', 'half', 'dashed', 'off', 'final', '']);
+
+// Swipe like a phone's home screens: finger right-to-left is the next page.
+// A short drag, or a mostly vertical one, is a tap or a scroll, not a turn.
+check('swipe left is the next page', W.swipeStep(-90, 10), 1);
+check('swipe right is the previous page', W.swipeStep(90, -5), -1);
+check('a short drag is not a swipe', W.swipeStep(-30, 0), 0);
+check('a vertical drag is not a swipe', W.swipeStep(-80, 140), 0);
+
+// Turning a page by hand (tab, arrow key, swipe, ‹ ›) holds it for a minute,
+// then the wall goes back to cycling on its own: a monitor nobody touches
+// again must not stay on the page somebody last looked at.
+{
+  const r = W.rotator({ count: 3, every: 20000, now: 0 });
+  r.go(1, 1000).hold(1000, 60000);
+  check('held after a hand turn', [r.tick(40000).index, r.running()], [1, false]);
+  check('still held just before the minute', r.tick(60999).index, 1);
+  r.tick(61000);
+  check('cycling again after the minute', r.running(), true);
+  check('…a full page later, not at once', [r.tick(80999).index, r.tick(81000).index], [1, 2]);
+  const p = W.rotator({ count: 3, every: 20000, now: 0, enabled: false });
+  p.hold(0, 60000); p.tick(61000);
+  check('a hold never starts a wall that was not rotating', p.running(), false);
+}
 
 // ── rotation ──────────────────────────────────────────────────────────────
 {

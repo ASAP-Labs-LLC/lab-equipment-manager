@@ -138,12 +138,17 @@
         const lv = p.get('level') || '';
         const show = String(p.get('show') || '').split(',').map(s => s.trim()).filter(s => WALLS.includes(s));
         const every = parseInt(p.get('every'), 10);
+        const dwell = parseInt(p.get('dwell'), 10);
         return {
             theme,
             level: SAFE_KEY.test(lv) ? lv : '',
             rotate: p.get('rotate') !== '0',
             show: show.length ? Array.from(new Set(show)) : WALLS.slice(),
             every: Number.isFinite(every) ? Math.min(600, Math.max(15, every)) : 60,
+            // seconds each level (page) stays up on the floor wall
+            dwell: Number.isFinite(dwell) ? Math.min(600, Math.max(5, dwell)) : 20,
+            // every level at once, the pre-2026-10-07 floor: only by name
+            whole: p.get('whole') === '1',
         };
     }
     function wallSequence(show) { return (show && show.length ? show : WALLS).slice(); }
@@ -160,14 +165,21 @@
             index: 0, count: Math.max(1, o.count | 0), every, enabled,
             paused: false, since: o.now || 0,
             tick(now) {
+                if (this.holdUntil && now >= this.holdUntil) {
+                    this.holdUntil = 0;
+                    this.resume(now);
+                }
                 if (this.enabled && !this.paused && this.count > 1 && now - this.since >= this.every) {
                     this.index = (this.index + 1) % this.count;
                     this.since = now;
                 }
                 return this;
             },
+            holdUntil: 0,
             pause(now) { if (!this.paused) { this.paused = true; this.since = now; } return this; },
-            resume(now) { if (this.paused) { this.paused = false; this.since = now; } return this; },
+            /** A hand turn: still for `ms`, then cycling again by itself. */
+            hold(now, ms) { this.pause(now); this.holdUntil = now + ms; return this; },
+            resume(now) { this.holdUntil = 0; if (this.paused) { this.paused = false; this.since = now; } return this; },
             go(step, now) {
                 this.index = ((this.index + step) % this.count + this.count) % this.count;
                 this.since = now;
@@ -182,6 +194,27 @@
             running() { return this.enabled && !this.paused && this.count > 1; },
         };
         return r;
+    }
+
+    // ── levels as pages ──────────────────────────────────────────────────
+    // Worst first. "Can't tell" (never checked in) outranks "Off line",
+    // which somebody chose; anything unrecognised is "Can't tell", never OK.
+    const STATE_RANK = { ok: 0, off_line: 1, cant_tell: 2, ok_but: 3, not_ok: 4 };
+    const STATE_GLYPH = { not_ok: 'error', ok_but: 'half', cant_tell: 'dashed', off_line: 'off', ok: 'final' };
+    /** The worst readiness state among `states`; null for none at all. */
+    function worstState(states) {
+        let worst = null;
+        for (const raw of states || []) {
+            const st = Object.prototype.hasOwnProperty.call(STATE_RANK, raw) ? raw : 'cant_tell';
+            if (worst === null || STATE_RANK[st] > STATE_RANK[worst]) worst = st;
+        }
+        return worst;
+    }
+    function stateGlyph(state) { return STATE_GLYPH[state] || ''; }
+    /** A finished drag as a page turn: -1, 0 or +1 (finger leftwards = next). */
+    function swipeStep(dx, dy) {
+        if (Math.abs(dx) < 60 || Math.abs(dx) < 1.5 * Math.abs(dy)) return 0;
+        return dx < 0 ? 1 : -1;
     }
 
     // ── /qc capacity ─────────────────────────────────────────────────────
@@ -297,7 +330,7 @@
         return best;
     }
 
-    const api = { STALE_MS, STALE_AFTER_MS, POLL_MS, TICK_MS, FETCH_TIMEOUT_MS, overdue, wallLayout, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages };
+    const api = { STALE_MS, STALE_AFTER_MS, POLL_MS, TICK_MS, FETCH_TIMEOUT_MS, overdue, wallLayout, floorPack, clock, when, toMs, liveState, parseKiosk, wallSequence, rotator, qcGrid, pages, worstState, stateGlyph, swipeStep };
     root.LEMWallLogic = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

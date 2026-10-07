@@ -613,3 +613,10 @@ V5 has central PM/CAL (better placed than V4) but a thinner task model.
       `web_server.pyw`, `run.bat`/`run.sh`, and the headings of `CLAUDE.md` and
       `HANDOFF.md` still say V5. Retire the generation name everywhere a person
       sees it, and print VERSION in the banner instead.
+- [ ] **Sign-in: Chrome autofill can't be picked** (Ryan, 2026-10-07: "I can't
+      select autofill in, because some select text elements are in front";
+      desktop Chrome, both the sheet and /signin). Not reproduced headless:
+      nothing covers either form's fields (elementFromPoint), focus never
+      leaves the field and the form never moves or repaints over 12 s while
+      the page is live. Needs a screenshot of it happening, or a headed
+      Chrome profile with a saved LabCore password, before a fix.

@@ -370,3 +370,77 @@ def test_no_horizontal_scroll_and_aa_text(drv, server, opening, scheme, w, h):
         '#lists .tick, #lists .undo:not([hidden]), #lists .rinput, #bench-bar button')].filter(e => e.offsetParent)
         .map(e => [e.className, e.getBoundingClientRect().height]).filter(x => x[1] < 40);""")
     assert small == [], small
+
+
+# ── one reading, one control at rest (2026-10-07) ─────────────────────────
+#
+# Ryan: the checklists did not feel like the rest of the app, and scaled
+# badly on a phone. A gas row was a box, a field AND a Save, every row said
+# "Only on Mon, Tue, Wed, Thu and Fri" (the round lists only today's items,
+# so that was true of every one), and progress lived only in the pill that
+# scrolls away. Now: Save shows only while there is something to save, the
+# days stay in the editor, each heading counts its own rows, the bench bar
+# carries the round's count, a phone keeps a number on its label's line, and
+# only a tick somebody just made moves.
+
+def _round_with_heading(server):
+    c = server["app"].test_client()
+    with c.session_transaction() as s:
+        s["user"] = "setup"
+    for cl in c.get("/api/checklists").get_json().get("checklists", []):
+        c.delete(f"/api/checklists/{cl['uid']}")
+    r = c.post("/api/checklists", json={
+        "name": "Opening round", "slot": "opening", "due_time": "23:59",
+        "items": [{"text": "Gas levels", "item_type": "header"},
+                  {"text": "Oxygen", "entry_type": "number", "units": "PSI", "days_active": [0, 1, 2, 3, 4, 5, 6]},
+                  {"text": "Nitrogen", "entry_type": "number", "units": "PSI"},
+                  {"text": "Fans on", "days_active": [0, 1, 2, 3, 4, 5, 6]}]})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    return r.get_json()["checklist"]
+
+
+@pytest.mark.parametrize("w,h", [(1440, 1000), (390, 844)])
+def test_a_reading_shows_save_only_with_something_to_save(drv, server, w, h):
+    d = drv
+    _round_with_heading(server)
+    _sign_in(d)
+    _size(d, w, h)
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 3)
+    shown = "const b=arguments[0].querySelector('.rsave'); const s=getComputedStyle(b);" \
+            "return s.display !== 'none' && s.visibility !== 'hidden';"
+    oxy = _rows(d)[0]
+    assert not _js(d, shown, oxy), "an empty reading shows a Save"
+    oxy.find_element(By.CSS_SELECTOR, ".rinput").send_keys("2400")
+    assert _js(d, shown, oxy), "a typed reading has no Save to press"
+    sw, cw = _js(d, "return [document.documentElement.scrollWidth, document.documentElement.clientWidth]")
+    assert sw <= cw, (sw, cw)
+    if w < 700:
+        # the field sits on its label's line, not under it
+        lab, inp = _js(d, "const r=arguments[0]; return [r.querySelector('.rlabel').getBoundingClientRect().top,"
+                          " r.querySelector('.rinput').getBoundingClientRect().top];", oxy)
+        assert abs(lab - inp) < 24, (lab, inp)
+    oxy.find_element(By.CSS_SELECTOR, ".rinput").send_keys("\n")
+    assert _wait(lambda: _rows(d)[0].get_attribute("data-checked") == "1")
+    assert _wait(lambda: not _js(d, shown, _rows(d)[0])), "a saved reading still shows Save"
+
+
+def test_no_days_on_the_round_and_each_heading_counts_its_rows(drv, server):
+    d = drv
+    cl = _round_with_heading(server)
+    _sign_in(d)
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 3)
+    caps = _js(d, "return [...document.querySelectorAll('#lists .rcap')].map(e => e.textContent)")
+    assert not any("Only on" in t for t in caps), caps
+    assert _js(d, "return document.querySelector('#lists .rhead .rhead-n').textContent") == "0 of 3"
+    assert _js(d, "return document.getElementById('bb-count').textContent") == "0 of 3"
+    _rows(d)[2].find_element(By.CSS_SELECTOR, ".tick").click()
+    assert _wait(lambda: _js(d, "return document.querySelector('#lists .rhead .rhead-n').textContent") == "1 of 3")
+    assert _js(d, "return document.getElementById('bb-count').textContent") == "1 of 3"
+    # the tick just made moves; a page opened on it does not
+    assert _js(d, "return arguments[0].classList.contains('just')", _rows(d)[2])
+    assert _wait(lambda: server_state(server, cl["uid"]).get(cl["items"][3]["uid"], {}).get("checked"))
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 3)
+    assert _js(d, "return document.querySelectorAll('#lists .rrow.just').length") == 0

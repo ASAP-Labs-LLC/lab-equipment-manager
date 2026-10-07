@@ -239,6 +239,17 @@ body.anon .btn-primary[data-gated]::before, body.anon .btn.gate-lock[data-gated]
 .round-card .rhead {
     font-size: var(--fs-sm); font-weight: 600; color: var(--text-muted); letter-spacing: 0;
     padding: var(--s4) var(--s5) var(--s1); border-top: 1px solid var(--border-light); margin: 0;
+    display: flex; align-items: baseline; gap: var(--s3);
+}
+/* a heading's own progress, right-aligned like a count in a GC table; a
+   finished section says so with a mark, in ink */
+.round-card .rhead .rhead-t { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.round-card .rhead .rhead-n { flex: none; font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.round-card .rhead .rhead-n:empty { display: none; }
+.round-card .rhead[data-done="1"] .rhead-n { color: var(--text); }
+.round-card .rhead[data-done="1"] .rhead-n::before {
+    content: ""; display: inline-block; width: 9px; height: 5px; margin: 0 7px 3px 0;
+    border: solid currentColor; border-width: 0 0 2px 2px; transform: rotate(-45deg);
 }
 
 .rrow {
@@ -269,6 +280,12 @@ body.anon .btn-primary[data-gated]::before, body.anon .btn.gate-lock[data-gated]
     cursor: pointer; transition: background var(--t-fast) var(--ease-std), border-color var(--t-fast) var(--ease-std);
 }
 .rrow .tick svg { width: 26px; height: 26px; opacity: 0; transform: scale(.6); transition: opacity var(--t-fast) var(--ease-out), transform var(--t-base) var(--ease-out); }
+/* a tick somebody just made (round.js .just): the box presses in and the
+   mark draws itself, the one thing on the page that moves */
+.rrow.just .tick[aria-pressed="true"] { animation: tick-press 360ms var(--ease-out); }
+.rrow.just .tick[aria-pressed="true"] path { stroke-dasharray: 1; animation: tick-draw 320ms 60ms var(--ease-out) both; }
+@keyframes tick-press { 0% { transform: scale(.88); } 60% { transform: scale(1.04); } 100% { transform: none; } }
+@keyframes tick-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 .rrow:not([data-checked="1"]):hover .tick { border-color: var(--ink); }
 .rrow .tick[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); }
 .rrow .tick[aria-pressed="true"] svg { opacity: 1; transform: none; }
@@ -312,7 +329,9 @@ body.anon .btn-primary[data-gated]::before, body.anon .btn.gate-lock[data-gated]
 .rrow .runits { font-size: var(--fs-sm); color: var(--text-muted); min-width: 28px; }
 .rrow .rsave { height: 44px; padding: 0 20px; font-weight: 600; }
 /* a saved reading shows its value, not a Save, until somebody changes it */
-.rrow[data-checked="1"]:not([data-dirty="1"]) .rsave { visibility: hidden; }
+/* …and an empty field shows no Save either: three controls for one reading
+   was the clunk (2026-10-07). Typing brings it back; Enter saves too */
+.rrow:not([data-dirty="1"]) .rsave { visibility: hidden; }
 
 /* every state that is not a round has its own sentence */
 .round-note { padding: var(--s5); display: grid; gap: var(--s3); justify-items: start; }
@@ -373,7 +392,15 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
     /* the meta stays one line: progress · due (the date is today's anyway) */
     .round .page-head #round-date, .round .page-head #round-due-sep { display: none; }
     .rrow { grid-template-columns: 48px minmax(0, 1fr); grid-template-areas: "tick body" "tick meta"; padding: var(--s3) var(--s4) var(--s3) var(--s3); column-gap: var(--s3); }
-    .rrow[data-kind="number"], .rrow[data-kind="text"] { grid-template-areas: "tick body" "tick entry" "tick meta"; }
+    /* a number sits on its label's line, as on a tablet; its Save comes in
+       under the field only while there is something to save */
+    .rrow[data-kind="number"] { grid-template-columns: 48px minmax(0, 1fr) auto; grid-template-areas: "tick body entry" "tick meta meta"; }
+    .rrow[data-kind="number"] .rentry { margin-top: 0; flex-wrap: wrap; justify-content: flex-end; max-width: 136px; row-gap: var(--s1); }
+    .rrow[data-kind="number"] .rsave { order: 3; }
+    .rrow[data-kind="number"] .rbody { align-self: start; }
+    .rrow[data-kind="number"]:not([data-dirty="1"]) .rsave { display: none; }
+    .gc .rrow[data-kind="number"] .rinput { width: 92px; height: 48px; }
+    .rrow[data-kind="text"] { grid-template-areas: "tick body" "tick entry" "tick meta"; }
     .rrow.sub { padding-left: calc(var(--s3) + 24px); }
     .rrow .rmeta { justify-content: flex-start; }
     /* the label sits on the tick's centre line, not above it */
@@ -391,7 +418,12 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
 }
 @media (prefers-reduced-motion: reduce) {
     .rrow .tick svg { transition: none; }
+    .rrow.just .tick[aria-pressed="true"], .rrow.just .tick[aria-pressed="true"] path { animation: none; }
 }
+/* the round's count in the bench bar: where the eye is at the bottom of a
+   long round, not only in the pill that scrolled away */
+.bench-bar .bb-count { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bench-bar .bb-count[hidden] { display: none; }
 
 /* ── status glyphs LEM adds to GC's set (§4.1) ────────────────────────────
    half-ring: OK to run, but… / QC due; rotated square: Off line; dashed
@@ -1398,7 +1430,9 @@ a.bay:hover { border-color: var(--border-strong); }
     display: flex; align-items: center; gap: 14px; margin: 0; min-width: 0;
     font-size: max(30px, 4.1vh); line-height: 1.12; font-weight: 650; letter-spacing: -0.02em;
 }
-.wh-title > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* the sentence wraps, never "…": "2 instruments are not OK to r…" told the
+   room less than the counts beside it (2026-10-07) */
+.wh-title > span:last-child { min-width: 0; overflow-wrap: anywhere; }
 .wall .wh-glyph { scale: 2.1; margin: 0 10px 0 8px; }
 .wh-sub {
     margin: 6px 0 0; font-size: max(17px, 2.1vh); line-height: 1.35; color: var(--text-muted);
@@ -1426,9 +1460,30 @@ a.bay:hover { border-color: var(--border-strong); }
 .wall-plan-card { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
 .wp-bar { display: flex; align-items: center; gap: var(--s3); min-height: 30px; margin-bottom: 8px; }
 .wp-title { margin: 0; font-size: max(16px, 1.75vh); font-weight: 600; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wp-dots, .wq-pages { display: inline-flex; gap: 6px; align-items: center; }
-.wp-dots i, .wq-pages i { width: 22px; height: 4px; border-radius: 2px; background: var(--border); }
-.wp-dots i.on, .wq-pages i.on { background: var(--ink); }
+.wq-pages { display: inline-flex; gap: 6px; align-items: center; }
+.wq-pages i { width: 22px; height: 4px; border-radius: 2px; background: var(--border); }
+.wq-pages i.on { background: var(--ink); }
+/* levels are pages: one tab a level, the one shown raised, each with the
+   worst state on it (a problem on a page nobody is looking at stays on the
+   screen) */
+.wp-tabs { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; padding: 3px; border-radius: var(--radius-lg); background: var(--bg-sunken); min-width: 0; }
+.wp-tabs[hidden] { display: none; }
+/* with the tabs up, the current tab names the page: the title is said once,
+   to a screen reader */
+.wp-bar:has(.wp-tabs:not([hidden])) .wp-title {
+    position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
+}
+.wp-tab {
+    display: inline-flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 14px 0 10px; border: 0;
+    border-radius: var(--radius-pill); background: transparent; color: var(--text); font: inherit;
+    font-size: max(15px, 1.6vh); font-weight: 500; white-space: nowrap; cursor: pointer;
+}
+.wp-tab:hover { background: var(--bg-hover); }
+.wp-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.wp-tab[aria-current="page"] { background: var(--bg-card); font-weight: 650; box-shadow: var(--e1); }
+.wp-tab:disabled { cursor: default; }
+.wp-tab.s-not_ok .wp-tname { color: var(--st-error); }
+.wall-plan-wrap { touch-action: pan-y; }
 .wp-step[hidden], .wq-step[hidden] { display: none; }
 .wp-step, .wq-step { display: inline-flex; gap: 6px; margin-left: auto; }
 .wall-plan-wrap { flex: 1; min-height: 0; position: relative; }
@@ -1531,7 +1586,11 @@ a.bay:hover { border-color: var(--border-strong); }
 .wall-attn { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; container-type: inline-size; }
 .wa-h { margin: 0 0 8px; min-height: 30px; display: flex; align-items: center; font-size: max(16px, 1.75vh); font-weight: 600; color: var(--text-muted); white-space: nowrap; }
 .wa-h .wa-h-note { margin-left: 6px; font-weight: 500; }
-.wa-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: clamp(10px, 1.3vh, 16px); min-height: 0; }
+/* the groups keep their height and the list clips them; a squeezed list
+   once let its rows draw on past it, under "and N more" (2026-10-07) */
+.wa-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: clamp(10px, 1.3vh, 16px); min-height: 0; overflow: hidden; flex: 0 1 auto; }
+.wa-list > .wa-group { flex-shrink: 0; }
+.wa-more { flex: none; }
 .wa-group {
     display: flex; flex-direction: column; gap: clamp(4px, 0.6vh, 8px); min-width: 0;
     padding: clamp(10px, 1.3vh, 16px) clamp(14px, 1.2vw, 20px);
@@ -2072,7 +2131,8 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
 .ta-list li[aria-selected="true"], .ta-list li:hover, .uon-row:hover, .uon-none, .wa-group, .wall-empty, .preview, .arc-month,
 .ready-stale, .rtile, .ntile, .needs-empty, .tile, .load-state, .plan-empty, .sb-running, .sb-recent li a:hover,
 .set-nav a:hover, .set-nav a.active, .linkbtn:hover, .log-sheet-say, .empty-note, .hol-list li.empty,
-.day-chips .chip[aria-pressed="true"] {
+.day-chips .chip[aria-pressed="true"],
+.wp-tabs, .wp-tab:hover {
     --text-muted: var(--text-muted-sunken);
     /* and the amber words, 4.36:1 on a selected row in light: the pill's
        darker amber, made for text on a tint */
