@@ -15,10 +15,10 @@
 {%- set SLOT_NAME = slot|capitalize ~ ' round' -%}
 {%- set who = session.get('user') or '' -%}
 {%- macro byline(st) -%}{% if st and st.checked %}{{ st.user ~ ' · ' if st.user }}{{ (st.at or '')[11:16] }}{% endif %}{%- endmacro -%}
-{%- macro row(cl_uid, item, st, blank=False) -%}
+{%- macro row(cl_uid, item, st, blank=False, sec='') -%}
 {%- set kind = 'number' if item.entry_type == 'number' else ('text' if item.entry_type == 'text' else 'tick') -%}
 {%- set done = st and st.checked -%}
-<div class="item rrow{% if item.item_type == 'subtask' %} sub{% endif %}" data-item="{{ item.uid }}" data-cl="{{ cl_uid }}" data-kind="{{ kind }}" data-checked="{{ '1' if done else '' }}" data-state="{{ 'done' if done else 'todo' }}">
+<div class="item rrow{% if item.item_type == 'subtask' %} sub{% endif %}" data-item="{{ item.uid }}" data-cl="{{ cl_uid }}" data-kind="{{ kind }}" data-checked="{{ '1' if done else '' }}" data-state="{{ 'done' if done else 'todo' }}"{% if sec %} data-sec="{{ sec }}"{% endif %}>
   <button type="button" class="tick" aria-pressed="{{ 'true' if done else 'false' }}" aria-label="{{ item.text }}"{% if kind != 'tick' %} data-reading="1"{% endif %}>
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path pathLength="1" d="m5.5 12.5 4.2 4.2 8.8-9.4"/></svg>
   </button>
@@ -61,6 +61,8 @@
       data-slot="{{ slot }}" data-day="{{ day }}"
       data-state="{{ ('ready' if lists else 'empty') if R else 'reading' }}"
       {%- if R %} data-round='{{ R|tojson }}'{% endif %}>
+  <div class="round-layout">
+  <aside class="round-panel" id="round-panel" aria-label="Progress">
   <div class="page-head">
     <h1>{{ SLOT_NAME }}</h1>
     <div class="meta">
@@ -71,21 +73,33 @@
       <span id="round-due"{% if not ns.due %} hidden{% endif %}>Due {{ ns.due }}</span>
     </div>
   </div>
+  {#- the count, big, and as a length; then every section as a link with
+      its own progress (round.js fills the list) -#}
+  <div class="round-count" id="round-count"{% if not ns.total %} hidden{% endif %}><b id="round-count-n">{{ ns.done }}</b><span id="round-count-of">of {{ ns.total }} done</span></div>
+  <div class="round-meter" id="round-meter" aria-hidden="true"><i style="width: {{ '%.4f'|format(100 * ns.done / ns.total) if ns.total else 0 }}%"></i></div>
+  <ol class="round-toc" id="round-toc" aria-label="Sections"></ol>
+  </aside>
+  <div class="round-sheet">
 
   <section class="card round-card" id="lists" aria-labelledby="round-items-title"{% if not lists %} hidden{% endif %}>
     <h2 class="visually-hidden" id="round-items-title">{{ SLOT_NAME }} items</h2>
-    {#- the pill as a length along the card's top edge: decoration of the
-        same count (aria-hidden; the pill is what is read out) -#}
-    <div class="round-meter" id="round-meter" aria-hidden="true"><i style="width: {{ '%.4f'|format(100 * ns.done / ns.total) if ns.total else 0 }}%"></i></div>
+    {#- readings next to each other are one panel of tiles (the gas check's
+        six cylinders); round.js builds the same shape -#}
     {%- for cl in lists %}
     {%- if lists|length > 1 %}<h2 class="rgroup">{{ cl.name }}</h2>{% endif %}
+    {%- set sec = namespace(uid='', tiles=False) %}
     {%- for item in cl["items"] %}
+    {%- set is_num = item.item_type != 'header' and item.entry_type == 'number' %}
+    {%- if sec.tiles and not is_num %}</div>{% set sec.tiles = False %}{% endif %}
     {%- if item.item_type == 'header' %}
-    <h3 class="rhead" data-head="{{ item.uid }}"><span class="rhead-t">{{ item.text }}</span><span class="rhead-n"></span></h3>
+    {%- set sec.uid = item.uid %}
+    <h3 class="rhead" data-head="{{ item.uid }}" id="sec-{{ item.uid }}"><span class="rhead-t">{{ item.text }}</span><span class="rhead-n"></span></h3>
     {%- else %}
-    {{ row(cl.uid, item, ((R.state or {}).get(cl.uid) or {}).get(item.uid)) }}
+    {%- if is_num and not sec.tiles %}<div class="rreadings">{% set sec.tiles = True %}{% endif %}
+    {{ row(cl.uid, item, ((R.state or {}).get(cl.uid) or {}).get(item.uid), sec=sec.uid) }}
     {%- endif %}
     {%- endfor %}
+    {%- if sec.tiles %}</div>{% endif %}
     {%- endfor %}
   </section>
 
@@ -105,6 +119,8 @@
   </section>
 
   <p class="round-foot"><a class="link" id="round-edit-foot" href="/checklists/edit">Edit this round</a></p>
+  </div>
+  </div>
 
   <template id="row-tpl">{{ row('', {'uid': '', 'text': '', 'item_type': 'item', 'entry_type': 'none', 'units': ''}, None) }}</template>
   <template id="reading-tpl">{{ row('', {'uid': '', 'text': '', 'item_type': 'item', 'entry_type': 'number', 'units': ''}, None) }}</template>

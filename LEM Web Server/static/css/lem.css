@@ -392,14 +392,6 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
     /* the meta stays one line: progress · due (the date is today's anyway) */
     .round .page-head #round-date, .round .page-head #round-due-sep { display: none; }
     .rrow { grid-template-columns: 48px minmax(0, 1fr); grid-template-areas: "tick body" "tick meta"; padding: var(--s3) var(--s4) var(--s3) var(--s3); column-gap: var(--s3); }
-    /* a number sits on its label's line, as on a tablet; its Save comes in
-       under the field only while there is something to save */
-    .rrow[data-kind="number"] { grid-template-columns: 48px minmax(0, 1fr) auto; grid-template-areas: "tick body entry" "tick meta meta"; }
-    .rrow[data-kind="number"] .rentry { margin-top: 0; flex-wrap: wrap; justify-content: flex-end; max-width: 136px; row-gap: var(--s1); }
-    .rrow[data-kind="number"] .rsave { order: 3; }
-    .rrow[data-kind="number"] .rbody { align-self: start; }
-    .rrow[data-kind="number"]:not([data-dirty="1"]) .rsave { display: none; }
-    .gc .rrow[data-kind="number"] .rinput { width: 92px; height: 48px; }
     .rrow[data-kind="text"] { grid-template-areas: "tick body" "tick entry" "tick meta"; }
     .rrow.sub { padding-left: calc(var(--s3) + 24px); }
     .rrow .rmeta { justify-content: flex-start; }
@@ -420,6 +412,119 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
     .rrow .tick svg { transition: none; }
     .rrow.just .tick[aria-pressed="true"], .rrow.just .tick[aria-pressed="true"] path { animation: none; }
 }
+/* ── the round as a bench sheet (2026-10-07, Ryan approved the mockup) ──
+   A panel that stays put beside the work: the round's name and status, the
+   count big and as a length, and every section as a link with a ring that
+   fills. The sheet is flat sections under ruled headings, not one card; a
+   run of readings is a panel of tiles (the gas check's cylinders), and a
+   reading outside its limits turns its tile and its section's ring to the
+   error colour. Phone: one column, the panel's list folds away. */
+.content.round { max-width: 1180px; }
+.round-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 40px; align-items: start; }
+.round-sheet { min-width: 0; display: grid; gap: var(--s4); }
+.round-panel { position: sticky; top: calc(var(--topbar-h, 56px) + var(--s5)); display: grid; gap: var(--s5); min-width: 0; }
+.round-panel .page-head { margin: 0; }
+.round-panel .page-head h1 { font-size: 30px; line-height: 1.1; letter-spacing: -0.02em; text-wrap: balance; }
+.round-panel .page-head .meta { flex-wrap: wrap; row-gap: var(--s1); }
+/* the pill takes its own line in the panel; the dot after it would start the next */
+.round-panel #round-pill + .sep { display: none; }
+.round-count { display: flex; align-items: baseline; gap: var(--s2); font-variant-numeric: tabular-nums; margin-bottom: calc(-1 * var(--s3)); }
+.round-count[hidden] { display: none; }
+.round-count b { font-size: 56px; line-height: 1; font-weight: 700; letter-spacing: -0.03em; }
+.round-count span { color: var(--text-muted); font-size: var(--fs-md); }
+.round-panel .round-meter { height: 8px; border-radius: 4px; overflow: hidden; }
+.round-toc { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.round-toc:empty { display: none; }
+.round-toc a {
+    display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; align-items: center;
+    min-height: 40px; padding: 6px 10px; border-radius: var(--radius-md); color: var(--text); text-decoration: none; font-size: var(--fs-sm);
+}
+.round-toc a:hover { background: var(--bg-hover); }
+.round-toc li.on a { background: var(--bg-sunken); font-weight: 600; }
+.round-toc a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.round-toc .t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.round-toc .n { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.round-toc .ring { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--text-muted); position: relative; }
+.round-toc .ring.part { border-color: var(--ink); background: conic-gradient(var(--ink) var(--deg, 0deg), transparent 0); }
+.round-toc .ring.done { border-color: var(--ink); background: var(--ink); color: var(--ink-fg); }
+.round-toc .ring.done::after {
+    content: ""; position: absolute; left: 4.5px; top: 2px; width: 4px; height: 7px;
+    border: solid currentColor; border-width: 0 1.6px 1.6px 0; transform: rotate(45deg);
+}
+.round-toc .ring.bad { border-color: var(--st-error); background: var(--bad-soft); }
+
+/* the sheet: flat, ruled sections */
+.round-card.card { background: transparent; border: 0; border-radius: 0; box-shadow: none; overflow: visible; }
+.round-card .rhead {
+    font-size: 18px; font-weight: 650; color: var(--text); letter-spacing: -0.01em;
+    padding: var(--s6) var(--s1) var(--s2); border-top: 0; border-bottom: 1px solid var(--border);
+    scroll-margin-top: calc(var(--topbar-h, 56px) + var(--s4));
+}
+.round-card > h2.visually-hidden + .rhead { padding-top: 0; }
+.round-card .rhead .rhead-n { font-size: var(--fs-sm); color: var(--text-muted); }
+.round-card .rhead[data-done="1"] .rhead-n { color: var(--text); font-weight: 600; }
+
+/* a plain item: a lighter row; the box is drawn 32 px inside a 48 px target */
+.round-card .rrow { min-height: 56px; padding: var(--s2) var(--s2) var(--s2) 0; border-top: 0; border-bottom: 1px solid var(--border-light); }
+.round-card .rrow .tick { border: 0; background: transparent; position: relative; color: var(--ink-fg); }
+.round-card .rrow .tick::before {
+    content: ""; position: absolute; inset: 8px; border-radius: 9px; border: 2px solid var(--text-muted); background: var(--bg-card);
+    transition: background var(--t-fast) var(--ease-std), border-color var(--t-fast) var(--ease-std);
+}
+.round-card .rrow .tick svg { position: relative; width: 18px; height: 18px; }
+.round-card .rrow .tick[aria-pressed="true"] { background: transparent; }
+.round-card .rrow .tick[aria-pressed="true"]::before { background: var(--ink); border-color: var(--ink); }
+.round-card .rrow:not([data-checked="1"]):hover .tick::before, .round-card .rrow.next .tick::before { border-color: var(--ink); }
+.round-card .rrow .rlabel { font-size: 15px; }
+.round-card .rrow.next { box-shadow: inset 3px 0 0 var(--ink); }
+/* sub-items hang from their parent on a thread */
+.round-card .rrow.sub { margin-left: 22px; padding-left: 14px; border-left: 2px solid var(--border-light); min-height: 48px; }
+.round-card .rrow.sub .tick::before { inset: 11px; border-radius: 7px; }
+
+/* a run of readings: one tile each */
+.rreadings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s3); padding-top: var(--s3); }
+.round-card .rreadings .rrow {
+    grid-template-columns: minmax(0, 1fr) 48px; grid-template-areas: "body tick" "entry entry" "meta meta";
+    align-items: start; row-gap: var(--s2); min-height: 0; padding: var(--s3) var(--s2) var(--s3) var(--s4);
+    border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-card); cursor: default;
+    transition: border-color var(--t-fast) var(--ease-std), background var(--t-fast) var(--ease-std);
+}
+.round-card .rreadings .rrow.next { box-shadow: none; border-color: var(--ink); }
+.round-card .rreadings .rrow:hover { background: var(--bg-card); }
+.round-card .rreadings .rrow .tick { margin: -10px -4px 0 0; justify-self: end; }
+.round-card .rreadings .rrow .tick::before { inset: 12px; border-radius: 7px; }
+.round-card .rreadings .rrow .tick svg { width: 14px; height: 14px; }
+.round-card .rreadings .rrow .rbody { align-self: center; }
+.round-card .rreadings .rrow .rlabel { font-size: 15px; font-weight: 600; }
+.round-card .rreadings .rrow .rentry { justify-content: flex-start; flex-wrap: wrap; gap: var(--s2); }
+.gc .round-card .rreadings .rrow .rinput {
+    flex: 1 1 0; min-width: 0; width: auto; height: 48px; padding: 0 2px; text-align: left;
+    font-size: 30px; font-weight: 650; letter-spacing: -0.02em;
+    border: 0; border-bottom: 2px solid var(--border); border-radius: 0; background: transparent;
+}
+.gc .round-card .rreadings .rrow .rinput:focus { border-bottom-color: var(--ink); box-shadow: none; }
+.round-card .rreadings .rrow .runits { align-self: flex-end; padding-bottom: 8px; }
+.round-card .rreadings .rrow .rsave { flex: 1 0 100%; height: 40px; }
+.round-card .rreadings .rrow:not([data-dirty="1"]) .rsave { display: none; }
+.round-card .rreadings .rrow .rmeta { justify-content: space-between; }
+.round-card .rreadings .rrow .rmeta:not(:has(.rby:not(:empty))):not(:has(.undo:not([hidden]))) { display: none; }
+.round-card .rreadings .rrow[data-verdict="out"] { border-color: var(--st-error); background: var(--bad-soft); }
+.round-card .rreadings .rrow[data-verdict="out"] .rcap { color: var(--st-error); font-weight: 600; }
+
+@media (max-width: 1099px) {
+    .round-layout { grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
+    .round-panel { position: static; gap: var(--s3); }
+    .round-toc { display: none; }
+    .round-count b { font-size: 40px; }
+}
+@media (max-width: 699px) {
+    .round-panel .page-head h1 { font-size: 26px; }
+    .rreadings { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s2); }
+    .round-card .rreadings .rrow { padding-left: var(--s3); }
+    .gc .round-card .rreadings .rrow .rinput { font-size: 24px; }
+    .round-card .rrow.sub { margin-left: 12px; }
+}
+
 /* the round's count in the bench bar: where the eye is at the bottom of a
    long round, not only in the pill that scrolled away */
 .bench-bar .bb-count { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -2132,7 +2237,8 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
 .ready-stale, .rtile, .ntile, .needs-empty, .tile, .load-state, .plan-empty, .sb-running, .sb-recent li a:hover,
 .set-nav a:hover, .set-nav a.active, .linkbtn:hover, .log-sheet-say, .empty-note, .hol-list li.empty,
 .day-chips .chip[aria-pressed="true"],
-.wp-tabs, .wp-tab:hover {
+.wp-tabs, .wp-tab:hover,
+.round-toc a:hover, .round-toc li.on a {
     --text-muted: var(--text-muted-sunken);
     /* and the amber words, 4.36:1 on a selected row in light: the pill's
        darker amber, made for text on a tint */

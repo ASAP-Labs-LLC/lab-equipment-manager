@@ -356,8 +356,10 @@ def test_no_horizontal_scroll_and_aa_text(drv, server, opening, scheme, w, h):
     # empty boxes the faintest, so the eye went to what was done. An open box
     # is a 2 px edge, and the next one is drawn in ink, the colour a done
     # tick is filled with: the eye finds what is left first.
+    # (since the bench-sheet redesign the box is drawn by the tick's ::before,
+    # 32 px inside its 48 px target; the rule is the box's, wherever drawn)
     edges = _js(d, """const t=[...document.querySelectorAll('#lists .rrow .tick')];
-      const s=t.map(e=>getComputedStyle(e));
+      const s=t.map(e=>getComputedStyle(e, '::before'));
       return {open: parseFloat(s[2].borderTopWidth), nextEdge: s[2].borderTopColor, doneFill: s[0].backgroundColor};""")
     assert edges["open"] >= 2, edges
     assert edges["nextEdge"] == edges["doneFill"], edges
@@ -415,11 +417,10 @@ def test_a_reading_shows_save_only_with_something_to_save(drv, server, w, h):
     assert _js(d, shown, oxy), "a typed reading has no Save to press"
     sw, cw = _js(d, "return [document.documentElement.scrollWidth, document.documentElement.clientWidth]")
     assert sw <= cw, (sw, cw)
-    if w < 700:
-        # the field sits on its label's line, not under it
-        lab, inp = _js(d, "const r=arguments[0]; return [r.querySelector('.rlabel').getBoundingClientRect().top,"
-                          " r.querySelector('.rinput').getBoundingClientRect().top];", oxy)
-        assert abs(lab - inp) < 24, (lab, inp)
+    # readings are tiles (the bench-sheet redesign): side by side, two to a
+    # row on a phone and more on a desktop, never one long column of rows
+    tops = _js(d, "return [...document.querySelectorAll('#lists .rreadings > .rrow')].map(e => Math.round(e.getBoundingClientRect().top))")
+    assert len(tops) == 2 and tops[0] == tops[1], tops
     oxy.find_element(By.CSS_SELECTOR, ".rinput").send_keys("\n")
     assert _wait(lambda: _rows(d)[0].get_attribute("data-checked") == "1")
     assert _wait(lambda: not _js(d, shown, _rows(d)[0])), "a saved reading still shows Save"
@@ -444,3 +445,75 @@ def test_no_days_on_the_round_and_each_heading_counts_its_rows(drv, server):
     d.get(server["base"] + "/checklists/opening")
     assert _wait(lambda: len(_rows(d)) == 3)
     assert _js(d, "return document.querySelectorAll('#lists .rrow.just').length") == 0
+
+
+# ── the round as a bench sheet (2026-10-07) ────────────────────────────────
+#
+# Ryan approved a redesign of the round after v4.1.0 "didn't look any
+# different": a panel beside the work with the count and every section as a
+# link with its own progress, flat ruled sections, and a run of readings as
+# one panel of tiles. A reading under its minimum turns its tile and its
+# section's ring to the error colour, so a low cylinder is seen from the
+# panel without scrolling to it.
+
+def _gas_round(server):
+    c = server["app"].test_client()
+    with c.session_transaction() as s:
+        s["user"] = "setup"
+    for cl in c.get("/api/checklists").get_json().get("checklists", []):
+        c.delete(f"/api/checklists/{cl['uid']}")
+    r = c.post("/api/checklists", json={
+        "name": "Opening round", "slot": "opening", "due_time": "23:59",
+        "items": [{"text": "Start the lab", "item_type": "header"},
+                  {"text": "Fans on"},
+                  {"text": "Gas levels", "item_type": "header"},
+                  {"text": "Oxygen", "entry_type": "number", "units": "PSI", "min": 300},
+                  {"text": "Helium", "entry_type": "number", "units": "PSI", "min": 300},
+                  {"text": "Dishes", "item_type": "header"},
+                  {"text": "Put away glassware"}]})
+    assert r.status_code == 200, r.get_data(as_text=True)
+    return r.get_json()["checklist"]
+
+
+TOC = """return [...document.querySelectorAll('#round-toc li')].map(li => [
+  li.querySelector('.t').textContent, li.querySelector('.n').textContent,
+  li.querySelector('.ring').className.replace('ring', '').trim()]);"""
+
+
+@pytest.mark.parametrize("w,h", [(1440, 1000), (390, 844)])
+def test_the_panel_lists_every_section_and_readings_are_tiles(drv, server, w, h):
+    d = drv
+    _gas_round(server)
+    _sign_in(d)
+    _size(d, w, h)
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 4)
+    # the server's first paint already groups the readings
+    assert _js(d, "return [...document.querySelectorAll('#lists .rreadings > .rrow .rlabel')].map(e => e.textContent)") \
+        == ["Oxygen", "Helium"]
+    assert _js(d, TOC) == [["Start the lab", "0/1", ""], ["Gas levels", "0/2", ""], ["Dishes", "0/1", ""]]
+    toc_shown = _js(d, "return getComputedStyle(document.getElementById('round-toc')).display !== 'none'")
+    assert toc_shown == (w >= 1100), "the section list shows beside the work, and folds away on a phone"
+    assert _js(d, "return document.getElementById('round-count-n').textContent") == "0"
+    sw, cw = _js(d, "return [document.documentElement.scrollWidth, document.documentElement.clientWidth]")
+    assert sw <= cw, (sw, cw)
+
+
+def test_a_low_reading_turns_its_tile_and_its_sections_ring(drv, server):
+    d = drv
+    _gas_round(server)
+    _sign_in(d)
+    _size(d, 1440, 1000)
+    d.get(server["base"] + "/checklists/opening")
+    assert _wait(lambda: len(_rows(d)) == 4)
+    helium = _rows(d)[2]
+    helium.find_element(By.CSS_SELECTOR, ".rinput").send_keys("240\n")
+    assert _wait(lambda: _rows(d)[2].get_attribute("data-verdict") == "out")
+    assert _wait(lambda: _js(d, TOC)[1] == ["Gas levels", "1/2", "bad"]), _js(d, TOC)
+    border, err = _js(d, "return [getComputedStyle(arguments[0]).borderTopColor,"
+                         " getComputedStyle(document.documentElement).getPropertyValue('--st-error').trim()];", _rows(d)[2])
+    assert border != "rgba(0, 0, 0, 0)" and err, (border, err)
+    _rows(d)[1].find_element(By.CSS_SELECTOR, ".rinput").send_keys("2400\n")
+    assert _wait(lambda: _rows(d)[1].get_attribute("data-verdict") == "ok")
+    assert _js(d, TOC)[1] == ["Gas levels", "2/2", "bad"], "the low cylinder still marks the section"
+    assert _js(d, "return document.getElementById('round-count-n').textContent") == "2"

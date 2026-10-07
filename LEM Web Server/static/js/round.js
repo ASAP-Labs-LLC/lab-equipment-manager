@@ -400,6 +400,11 @@
         const err = el.querySelector('.rerr');
         setText(err, r.error || '');
         err.hidden = !r.error;
+        if (r.kind === 'number') {
+            const tr = r.track ? (tracked && tracked !== 'failed' ? tracked[r.track] : null) : r.lim;
+            const v = r.st.checked ? judge(r.st.value, tr) : '';
+            el.dataset.verdict = v === 'In range' ? 'ok' : v ? 'out' : '';
+        }
         const cap = el.querySelector('.rcap');
         const words = caption(r);
         cap.textContent = '';
@@ -432,6 +437,57 @@
         el.dataset.dirty = input.value.trim() !== r.st.value ? '1' : '';
     }
 
+    /** The panel's section list: each heading as a link, with a ring that
+        fills as its rows are done, and turns to the error colour when a
+        reading in it is outside its limits. */
+    function paintToc() {
+        const toc = $('round-toc');
+        if (!toc) return;
+        const secs = sections(round.rows());
+        if (toc.children.length !== secs.length || [...toc.children].some((li, i) => li.dataset.head !== secs[i].uid)) {
+            toc.replaceChildren(...secs.map(sct => {
+                const li = document.createElement('li');
+                li.dataset.head = sct.uid;
+                const a = document.createElement('a');
+                a.href = '#sec-' + sct.uid;
+                const ring = document.createElement('span');
+                ring.className = 'ring';
+                ring.setAttribute('aria-hidden', 'true');
+                const t = document.createElement('span');
+                t.className = 't';
+                t.textContent = (round.row(sct.uid) || {}).text || '';
+                const n = document.createElement('span');
+                n.className = 'n';
+                a.append(ring, t, n);
+                li.appendChild(a);
+                return li;
+            }));
+            spy();
+        }
+        secs.forEach((sct, i) => {
+            const li = toc.children[i];
+            const out = !!$('lists').querySelector('.rrow[data-sec="' + (root.CSS && CSS.escape ? CSS.escape(sct.uid) : sct.uid) + '"][data-verdict="out"]');
+            const ring = li.querySelector('.ring');
+            ring.className = 'ring' + (out ? ' bad' : sct.total && sct.done === sct.total ? ' done' : sct.done ? ' part' : '');
+            ring.style.setProperty('--deg', (sct.total ? 360 * sct.done / sct.total : 0) + 'deg');
+            setText(li.querySelector('.n'), sct.total ? sct.done + '/' + sct.total : '');
+        });
+    }
+    /** The section on screen is the one lit in the list. */
+    let spyObs = null;
+    function spy() {
+        if (!('IntersectionObserver' in root)) return;
+        if (spyObs) spyObs.disconnect();
+        spyObs = new IntersectionObserver((es) => {
+            for (const e of es) {
+                if (!e.isIntersecting) continue;
+                const uid = e.target.dataset.head;
+                for (const li of $('round-toc').children) li.classList.toggle('on', li.dataset.head === uid);
+            }
+        }, { rootMargin: '-80px 0px -70% 0px' });
+        $('lists').querySelectorAll('.rhead').forEach(h => spyObs.observe(h));
+    }
+
     function paintHead() {
         const c = round.counts();
         const lists = round.lists();
@@ -457,6 +513,10 @@
             if (n) setText(n, sct.total ? sct.done + ' of ' + sct.total : '');
             h.dataset.done = sct.total && sct.done === sct.total ? '1' : '';
         }
+        setText($('round-count-n'), String(c.done));
+        setText($('round-count-of'), 'of ' + c.total + ' done');
+        $('round-count').hidden = !c.total;
+        paintToc();
         // the same count where the eye always is: the bench bar
         setText($('bb-count'), c.total ? c.done + ' of ' + c.total : '');
         $('bb-count').hidden = !c.total;
@@ -511,13 +571,19 @@
                 h.textContent = cl.name || '';
                 box.appendChild(h);
             }
+            // readings next to each other are one panel of tiles, as the
+            // template draws them on first paint
+            let tiles = null, sec = '';
             for (const i of (cl.items || [])) {
                 const r = round.row(String(i.uid));
                 if (!r) continue;
+                if (r.kind !== 'number') tiles = null;
                 if (r.kind === 'header') {
+                    sec = r.uid;
                     const h = document.createElement('h3');
                     h.className = 'rhead';
                     h.dataset.head = r.uid;
+                    h.id = 'sec-' + r.uid;
                     const t = document.createElement('span');
                     t.className = 'rhead-t';
                     t.textContent = r.text;
@@ -531,6 +597,7 @@
                 const el = tpl.content.firstElementChild.cloneNode(true);
                 el.dataset.item = r.uid;
                 el.dataset.cl = r.cl;
+                if (sec) el.dataset.sec = sec;
                 el.dataset.kind = r.kind;
                 el.classList.toggle('sub', r.sub);
                 el.querySelector('.tick').setAttribute('aria-label', r.text);
@@ -547,7 +614,10 @@
                         if (!u) input.after(span);
                     } else if (u) u.remove();
                 }
-                box.appendChild(el);
+                if (r.kind === 'number') {
+                    if (!tiles) { tiles = document.createElement('div'); tiles.className = 'rreadings'; box.appendChild(tiles); }
+                    tiles.appendChild(el);
+                } else box.appendChild(el);
             }
         }
         round.rows().forEach(r => { if (r.kind !== 'header') paintRow(r.uid); });
