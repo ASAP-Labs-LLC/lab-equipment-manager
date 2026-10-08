@@ -442,6 +442,7 @@
             const full = host.classList.contains('fullwords');
             const wrap = host.classList.contains('wrapwords');
             if (host.classList.contains('wraplines')) { fitLines(host); return; }
+            host.querySelectorAll('.bay .b-dots').forEach(d => { d.hidden = true; });
             for (const bay of host.querySelectorAll('.bay')) {
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
@@ -453,10 +454,31 @@
                 if (word && full) {
                     bay.removeAttribute('data-word-cut');
                     if (!wrap && over(word, false)) bay.setAttribute('data-word-cut', '1');
+                    // a cut name asks for the tight floor too (2026-10-07): the
+                    // long "OK to run, but…" used to trigger it on production's
+                    // seven columns, and the short "Attention" never does, so
+                    // "Anton Paar DMA…" was cut in a bay the tight floor widens
+                    const nt = (ntext || name);
+                    if (!wrap && nt && /…$/.test(nt.textContent)) bay.setAttribute('data-word-cut', '1');
                 } else if (word) fitText(word, word.textContent, shortWord(state), false, word);
                 if (det) det.hidden = false;
                 if (det && det.textContent) fitText(det, det.textContent, det.getAttribute('data-short') || '', false);
                 if (full && det && bay.scrollHeight > bay.clientHeight + 1) det.hidden = true;
+            }
+            keepDots(host);
+        }
+        /** The check dots come back only where they squeeze nothing: a full
+            bay gives up height from its name (overflow hidden) rather than
+            overflowing, so a line getting shorter is the sign. */
+        function keepDots(host) {
+            for (const dots of host.querySelectorAll('.bay .b-dots')) {
+                const bay = dots.closest('.bay');
+                const kids = [...bay.querySelectorAll('.b-name, .b-word, .b-detail')].filter(e => !e.hidden);
+                dots.hidden = true;
+                const before = kids.map(e => e.clientHeight);
+                dots.hidden = false;
+                const squeezed = kids.some((e, i) => e.clientHeight < before[i] || e.scrollHeight > e.clientHeight + 1);
+                if (squeezed || bay.scrollHeight > bay.clientHeight + 1) dots.hidden = true;
             }
         }
         /* The map's bays (wraplines): the name may take two lines as
@@ -493,17 +515,7 @@
                 if (tooBig()) det.textContent = shortDetail(full);
                 if (tooBig()) { det.textContent = full; det.hidden = true; }
             }
-            for (const dots of host.querySelectorAll('.bay .b-dots')) {
-                // a crowded bay does not overflow, it squeezes: the name (its
-                // own overflow hidden) gives up height first. So the dots stay
-                // only if no line got shorter and nothing spilled.
-                const bay = dots.closest('.bay');
-                const kids = [...bay.querySelectorAll('.b-name, .b-word, .b-detail')].filter(e => !e.hidden);
-                const before = kids.map(e => e.clientHeight);
-                dots.hidden = false;
-                const squeezed = kids.some((e, i) => e.clientHeight < before[i] || e.scrollHeight > e.clientHeight + 1);
-                if (squeezed || bay.scrollHeight > bay.clientHeight + 1) dots.hidden = true;
-            }
+            keepDots(host);
         }
         api.fit = fit;
     }

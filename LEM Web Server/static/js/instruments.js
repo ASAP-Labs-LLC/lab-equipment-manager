@@ -262,6 +262,7 @@
             h('span', { className: 'c-bench bstate' }, glyph(b.glyph || 'never'),
                 h('span', { text: (b.word || '') + (benchWhen ? ' · ' + benchWhen : '') })));
         const card = h('article', { className: 'icard irow s-' + rd.state, 'data-state': rd.state, 'data-uid': r.uid,
+                                    'data-off-line': rd.off_line ? '1' : null,
                                     'data-testid': 'inst-row', 'aria-label': r.title + ', ' + rd.word },
             top, run, chips, foot);
         card.addEventListener('click', (ev) => {

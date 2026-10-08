@@ -407,7 +407,7 @@ def test_a_cause_steps_the_other_bays_back(drv, server):
     assert _wait(lambda: "cause=not_ok-qc" in drv.current_url)
     assert _js(drv, "return document.querySelectorAll('#plan .bay:not(.dim)').length") >= 1
     assert _js(drv, "return [...document.querySelectorAll('#plan .bay:not(.dim)')]"
-                    ".every(b => /Not OK/.test(b.title))")
+                    ".every(b => /Stop/.test(b.title))")
     assert _js(drv, "return document.querySelector('[data-key=\"not_ok-qc\"]').classList.contains('current')")
 
 

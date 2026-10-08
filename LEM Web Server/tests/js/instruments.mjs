@@ -50,7 +50,10 @@ const data = {
                             problems: [{ key: 'cant_tell-stopped', words: 'Bench stopped' }] }),
     row('d', 'no_qc', { maintenance: 2, last_qc: { word: 'No QC assigned', assigned: false } }),
     row('e', 'ok', { level_uid: 'L2' }),
-    row('f', 'off_line', { bench: { state: 'never' }, last_qc: { word: 'No QC assigned', assigned: false } }),
+    // off line rides beside its state (2026-10-07): its own state, plus the badge
+    row('f', 'no_qc', { bench: { state: 'never' }, last_qc: { word: 'No QC assigned', assigned: false },
+                        readiness: { state: 'no_qc', word: '', glyph: '', reason: '', detail: '', next: null, tiles: [],
+                                     off_line: { word: 'Off line', reason: 'Out for service' } } }),
   ],
   levels: [{ uid: 'L1', name: 'Ground Floor' }, { uid: 'L2', name: 'Upper Lab' }],
   has_maintenance: true,

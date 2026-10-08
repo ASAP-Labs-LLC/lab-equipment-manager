@@ -508,39 +508,35 @@ def test_needs_attention_fills_the_room_the_levels_leave(server, drv, size, them
 
 
 @pytest.mark.parametrize("theme", ["light", "dark"])
-def test_not_ok_reads_as_alarm_in_the_word_not_the_box(server, drv, theme):
+def test_stop_reads_as_alarm_in_the_word_and_the_bay(server, drv, theme):
     """The alarm is the word, set as the app's error pill (.pill.error:
     --bad-soft under --pill-error-fg): status colour as glyph + word (§0.1).
 
-    The box around it stays quiet. Round 2's 3px ink border and round 3's
-    2px one both read as "selected" to the blind judges, and in dark as the
-    loudest, whitest thing on the wall with no status meaning. The bay now
-    has exactly the spec's 1.5px ink border (§3.8; on a TV at
-    device-pixel-ratio 1 Chrome draws it as a 1px ink hairline) and its card
-    background: no red fill, no red border. Needs attention has no ring at
-    all: its Not-OK group is the one raised card, and its heading is the
-    pill."""
+    Rounds 2-4 kept the bay itself quiet (card background, an ink hairline)
+    after blind judges read a heavy ink border as "selected". Ryan overruled
+    the quiet box on 2026-10-07: "the map needs to show the status very
+    clearly and publicly", and approved a mockup whose bays are tinted by
+    state. So a Stop bay is now the error tint, edged in the error colour at
+    the same 1-1.5 px (never a heavy ring), and its word is still the pill.
+    Needs attention still has no ring: its Stop group is the one raised card."""
     shape(server, "demo")
     _open(drv, server.base, "/floor", (1440, 900), theme)
     r = drv.execute_script(r"""
-      const b = document.querySelector('#wf-plan .bay.stop');
+      const b = document.querySelector('#wf-plan .bay.s-not_ok');
       const w = b.querySelector('.b-word'); const bs = getComputedStyle(b), ws = getComputedStyle(w);
-      const card = getComputedStyle(document.querySelector('#wf-plan .bay:not(.stop)')).backgroundColor;
-      const a = getComputedStyle(document.querySelector('#wf-attn .wa-group.s-not_ok .wa-word'));
+      const card = getComputedStyle(document.querySelector('#wf-plan .bay:not(.s-not_ok)')).backgroundColor;
       const ab = getComputedStyle(document.querySelector('#wf-attn .wa-group.s-not_ok'));
-      const ink = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
-      const probe = document.createElement('i'); probe.style.color = ink; document.body.append(probe);
-      const inkRgb = getComputedStyle(probe).color; probe.remove();
+      const a = getComputedStyle(document.querySelector('#wf-attn .wa-group.s-not_ok .wa-word'));
+      const tok = (name, prop) => { const p = document.createElement('i'); p.style[prop] = 'var(' + name + ')';
+        document.body.append(p); const v = getComputedStyle(p)[prop]; p.remove(); return v; };
       return { wordBg: ws.backgroundColor, bayBg: bs.backgroundColor, card, border: parseFloat(bs.borderTopWidth),
-               borderColor: bs.borderTopColor, inkRgb, attnWordBg: a.backgroundColor,
-               attnBorder: parseFloat(ab.borderTopWidth) || 0 };""")
+               borderColor: bs.borderTopColor, errRgb: tok('--st-error', 'color'), tint: tok('--bad-soft', 'backgroundColor'),
+               attnWordBg: a.backgroundColor, attnBorder: parseFloat(ab.borderTopWidth) || 0 };""")
     clear = ("rgba(0, 0, 0, 0)", "transparent")
     assert r["wordBg"] not in clear and r["attnWordBg"] not in clear, r
-    assert r["bayBg"] == r["card"], r
-    assert 1 <= r["border"] <= 1.5 and r["borderColor"] == r["inkRgb"], r
+    assert r["bayBg"] == r["tint"] and r["bayBg"] != r["card"], r
+    assert 1 <= r["border"] <= 1.5 and r["borderColor"] == r["errRgb"], r
     assert r["attnBorder"] == 0, r
-    rgb = [int(x) for x in re.findall(r"\d+", r["borderColor"])[:3]]
-    assert not (rgb[0] > 150 and rgb[1] < 120 and rgb[2] < 120), r   # never a red border
 
 
 # ── round 4: the worst cards say their whole reason ───────────────────────

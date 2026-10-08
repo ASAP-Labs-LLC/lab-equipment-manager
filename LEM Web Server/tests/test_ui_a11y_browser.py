@@ -435,7 +435,7 @@ def test_t1_at_390_the_verdict_at_0_clicks_and_the_full_answer_at_1(drv, server)
     assert _wait(lambda: _visible_text(d, row))
     text = _visible_text(d, row)
     # the verdict word and its reason are on the row, on screen, at 0 clicks
-    assert "GC-2" in text and ("Ready" in text or "Not OK" in text), text
+    assert "GC-2" in text and any(w in text for w in ("Ready", "Attention", "Stop", "No data")), text
     clicks = 0
     link = d.find_element(By.CSS_SELECTOR, row + ' a[href="/instruments/gc-2"]')
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", link)   # a scroll, not a click

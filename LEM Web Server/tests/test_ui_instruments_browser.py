@@ -306,9 +306,11 @@ def test_a_view_the_page_does_not_have_is_said(drv, server):
 
 def test_off_line_is_a_view(drv, server):
     _open(drv, server.base, "/?filter=offline")
-    states = drv.execute_script("return [...document.querySelectorAll('.irow')].map(r => r.dataset.state)")
+    # Off line rides beside the state (2026-10-07): the view is every
+    # instrument wearing the badge, whatever its state
+    states = drv.execute_script("return [...document.querySelectorAll('.irow')].map(r => r.dataset.offLine || '')")
     none = drv.find_element("id", "inst-none")
-    assert all(s == "off_line" for s in states), states
+    assert all(s == "1" for s in states), states
     assert states or none.is_displayed(), "an empty view says so"
     assert not drv.find_element("css selector", "[data-testid=view-unknown]").is_displayed()
 

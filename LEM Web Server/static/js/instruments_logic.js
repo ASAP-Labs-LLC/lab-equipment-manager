@@ -69,7 +69,8 @@
         switch (view.filter) {
             case 'needs': if (!r.needs_you) return false; break;
             case 'noqc': if (!noQc(r)) return false; break;
-            case 'offline': if (st !== 'off_line') return false; break;
+            // off line rides beside the state (2026-10-07): the view is everyone with the badge
+            case 'offline': if (!(r.readiness && r.readiness.off_line)) return false; break;
             case 'maintenance': if (!(r.maintenance > 0)) return false; break;
             case 'quiet': if (!r.bench || r.bench.state === 'in') return false; break;
             default: break;
