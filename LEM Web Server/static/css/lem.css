@@ -2223,6 +2223,13 @@ dialog.sheet.log-sheet .actions .spacer { flex: 1; }
 .t-big .t-word, .t-big .t-last { font-size: var(--fs-md); }
 .t-big .t-limits, .t-big .t-method { font-size: var(--fs-sm); }
 @media (max-width: 699px) { .t-bar #t-range { order: 3; } }
+/* the headline may be long ("3 checks out of spec · 2 no verdict yet · 7 in spec"): it wraps, never pushes the page sideways */
+.q-trends-page .q-pill { height: auto; min-height: 24px; padding: 3px 10px; white-space: normal; max-width: 100%; }
+/* a finger on a tablet or a phone: 44px targets */
+@media (max-width: 1099px) {
+    #t-range button { min-height: 44px; padding: 0 14px; }
+    .t-gname .t-name { display: inline-flex; align-items: center; min-height: 44px; min-width: 44px; }
+}
 .quality .page-head .meta { min-height: 26px; }
 .pill.q-pill { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
 .q-card { overflow: hidden; }
