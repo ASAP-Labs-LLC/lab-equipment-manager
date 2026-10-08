@@ -4,7 +4,7 @@
    It lists LEM's notifications newest first, each with its level as a glyph
    and a word (never colour alone), when it began, and a "Go to" link to where
    it is dealt with; Dismiss one, or Dismiss all. It follows LEMLive: an
-   instrument that stops being OK to run shows without a reload.
+   instrument that goes to Stop shows without a reload.
 
    What changed for LEM, and why:
    * The items come IN the live answer (`notifications`, only when they
@@ -77,7 +77,7 @@
         if (!o || !o.known) return 'Checking for notifications…';
         if (o.folded) return 'Nothing else. ' + foldNote(o.fold || 'instruments');
         if (o.any) return 'Nothing new. Everything here was dismissed on this computer.';
-        return 'No notifications. Instruments that stop being OK to run, overdue rounds and LabCore trouble will show here.';
+        return 'No notifications. Instruments that go to Stop, overdue rounds and LabCore trouble will show here.';
     }
     /** Dismissed ids that still name a live item (the rest are forgotten, so
         the stored list cannot grow without end). */

@@ -36,7 +36,7 @@ if (!P) { console.log('  FAIL plan.js does not define window.LEMPlan'); process.
 
 const row = (uid, pos, extra) => Object.assign({
   uid, title: uid.toUpperCase(), href: '/instruments/' + uid, level_uid: 'L1',
-  readiness: { state: 'ok', word: 'OK to run', glyph: 'final', reason: '', detail: '2 checks in spec' },
+  readiness: { state: 'ok', word: 'Ready', glyph: 'final', reason: '', detail: '2 checks in spec' },
   bench: { state: 'in', word: 'Checking in' }, where: { level: 'Ground Floor', placed: !!pos, pos: pos || null },
   problems: [],
 }, extra || {});
@@ -123,19 +123,19 @@ check('on no level: everyone', P.onLevel(lv.instruments, '', lv).map(r => r.uid)
 
 // ── a bay's words ──────────────────────────────────────────────────────────
 const bad = row('o', [0, 0], { title: 'OptiMPP 1',
-  readiness: { state: 'not_ok', word: 'Not OK to run', glyph: 'error',
+  readiness: { state: 'not_ok', word: 'Stop', glyph: 'error',
                detail: 'Cloud Point and Pour Point out of spec · calibration overdue since 9 Aug too' } });
 const w = P.bayWords(bad);
 check('bay: name, glyph and word, one detail line', [w.name, w.glyph, w.word, w.detail],
-      ['OptiMPP 1', 'error', 'Not OK to run', 'Cloud Point and Pour Point out of spec']);
+      ['OptiMPP 1', 'error', 'Stop', 'Cloud Point and Pour Point out of spec']);
 check('bay: the full story is in the title, never lost to the ellipsis', w.title,
-      'OptiMPP 1 · Not OK to run: Cloud Point and Pour Point out of spec · calibration overdue since 9 Aug too');
+      'OptiMPP 1 · Stop: Cloud Point and Pour Point out of spec · calibration overdue since 9 Aug too');
 check('bay: a stop is marked (ink border, bold word), not filled red', [w.stop, w.state], [true, 'not_ok']);
 const quiet = P.bayWords(row('q', [0, 0], { bench: { state: 'stopped', word: 'Stopped' },
-  readiness: { state: 'cant_tell', word: "Can't tell", glyph: 'dashed', detail: 'Its bench stopped checking in' } }));
+  readiness: { state: 'cant_tell', word: "No data", glyph: 'dashed', detail: 'Its bench stopped checking in' } }));
 check('bay: a stopped bench gets the dashed outline', [quiet.stopped, quiet.stop], [true, false]);
 check('bay: never checked in is stopped too', P.bayWords(row('n', [0, 0], { bench: { state: 'never' } })).stopped, true);
-check('bay: an OK bay with no detail says nothing extra', P.bayWords(row('k', [0, 0], { readiness: { state: 'ok', word: 'OK to run', glyph: 'final', detail: '' } })).title, 'K · OK to run');
+check('bay: an OK bay with no detail says nothing extra', P.bayWords(row('k', [0, 0], { readiness: { state: 'ok', word: 'Ready', glyph: 'final', detail: '' } })).title, 'K · Ready');
 
 // a short last word stays with the one before it, so a two-line name never
 // strands its number ("PAC Flash / 1" on the wall at 1440): it breaks as
@@ -160,7 +160,7 @@ check('cell height: no room reported', P.cellHeight(NaN, 3, 12), 112);
 // ── a short word, for a bay too narrow for the whole one ───────────────────
 // the glyph's SHAPE still tells the states apart; the title has the words
 check('short words', ['not_ok', 'ok_but', 'ok', 'off_line', 'cant_tell', 'no_qc', 'zzz'].map(P.shortWord),
-      ['Not OK', 'OK, but…', 'OK', 'Off line', 'Can’t tell', 'No QC', '']);
+      ['Stop', 'Attn', 'Ready', 'Off line', 'No data', 'No data', '']);
 check('a cut at a word, never mid-word when a word boundary is near', P.cutAt('Calibration overdue since 25 Jul', 24), 'Calibration overdue…');
 check('a cut with no space to use cuts the word', P.cutAt('Pensky-Martens', 8), 'Pensky-M…');
 check('a cut never ends on a separator', P.cutAt('PM overdue · calibration', 13), 'PM overdue…');
@@ -192,8 +192,8 @@ check('dimmed: a cause it has', P.dimmed(row('x', [0, 0], { problems: [{ key: 'n
   const lv = { levels: [{ uid: 'L1', name: 'Ground' }, { uid: 'L2', name: 'Upstairs' }, { uid: 'L3', name: 'Empty' }],
                default_level: 'L1', instruments: [
     row('a', [0, 0], { level_uid: 'L1', needs_you: false }),
-    row('b', [0, 2.05], { level_uid: 'L1', needs_you: true, readiness: { state: 'ok_but', word: 'OK to run, but…', glyph: 'half' } }),
-    row('c', [0, 0], { level_uid: 'L2', needs_you: true, readiness: { state: 'not_ok', word: 'Not OK to run', glyph: 'error' } }),
+    row('b', [0, 2.05], { level_uid: 'L1', needs_you: true, readiness: { state: 'ok_but', word: 'Attention', glyph: 'half' } }),
+    row('c', [0, 0], { level_uid: 'L2', needs_you: true, readiness: { state: 'not_ok', word: 'Stop', glyph: 'error' } }),
     row('d', [2.05, 0], { level_uid: 'L2', needs_you: true, readiness: { state: 'off_line', word: 'Off line', glyph: 'off' } }),
     row('e', [4.1, 0], { level_uid: 'nowhere', needs_you: false }),   // an unknown level counts on the default
   ] };

@@ -162,9 +162,9 @@ def test_the_head_leads_with_the_pill_and_the_bench(server, drv):
     uid = next(r["uid"] for r in _rows(server) if r["readiness"]["state"] == "ok")
     _open(drv, server, uid)
     pill = drv.find_element("css selector", "#rec-meta [data-testid=record-pill]")
-    assert pill.text == "OK to run"
+    assert pill.text == "Ready"
     meta = drv.find_element("id", "rec-meta").text
-    assert meta.index("OK to run") < meta.index("Bench checking in") < meta.index(uid)
+    assert meta.index("Ready") < meta.index("Bench checking in") < meta.index(uid)
     # the pill's fill is neutral: colour only in its glyph (§0.1)
     bg = drv.execute_script("return getComputedStyle(arguments[0]).backgroundColor", pill)
     r, g, b = [int(x) for x in bg[bg.index("(") + 1:bg.index(")")].split(",")[:3]]

@@ -144,7 +144,7 @@ class TestTheCardSaysTheHomesVerdict:
     def test_agilent_gc1_is_not_ok_because_of_qc(self):
         rec = record(prod("Agilent GC 1"))
         r = rec["readiness"]
-        assert r["word"] == "Not OK to run"
+        assert r["word"] == "Stop"
         cap = r["caption"]
         # what failed, against which standard, and what to do about it
         assert cap["lead"] == "QC out of spec on 10% Recovery and 50% Recovery"
@@ -158,7 +158,7 @@ class TestTheCardSaysTheHomesVerdict:
             {"uid": "c", "kind": "calibration", "status": "RED", "name": "Annual calibration",
              "next_due": "2026-07-11", "interval_days": 365, "last_done": "2025-07-11"}])
         r = record(m)["readiness"]
-        assert r["state"] == "ok_but" and r["word"] == "OK to run, but…"
+        assert r["state"] == "ok_but" and r["word"] == "Attention"
         assert r["caption"]["lead"] == "Calibration overdue since 11 Jul"
         # a warning, so no stop; but its next step is a button (round 6)
         assert r["primary"]["act"] == "done"
@@ -188,7 +188,10 @@ class TestOnePrimaryAndItIsTheNextStep:
 
     def test_off_line_puts_it_back_and_says_it_once(self):
         rec = record(prod("PAC Flash 2"), override="SERVICE")
-        assert rec["readiness"]["state"] == "off_line"
+        # its own state, and Off line beside it (Ryan, 2026-10-07)
+        assert (rec["readiness"]["state"], rec["readiness"]["word"]) == ("ok", "Ready")
+        assert rec["readiness"]["off_line"] == {"word": "Off line", "glyph": "off",
+                                                "reason": "Taken off line (SERVICE)"}
         assert rec["readiness"]["primary"] == {"label": "Put back on line…", "act": "online"}
         # in the lab's words, not the control table's code
         assert rec["readiness"]["caption"]["lead"] == "Taken off line for service"
@@ -202,7 +205,7 @@ class TestOnePrimaryAndItIsTheNextStep:
 
     @pytest.mark.parametrize("title", ["PAC Flash 2", "Eravap"])
     def test_nothing_to_do_here_means_no_primary(self, title):
-        """OK (nothing to do) and Can't tell (the remedy is at the bench's own
+        """OK (nothing to do) and No data (the remedy is at the bench's own
         computer) have no button. No QC assigned has one now: see
         TestNoQcAssignedIsNotADeadEnd."""
         assert record(prod(title))["readiness"]["primary"] is None
@@ -235,7 +238,7 @@ class TestOnePrimaryAndItIsTheNextStep:
 
 
 class TestAWarningsNextStepIsTheButton:
-    """Round 6's critic: on "OK to run, but…" (GC-2 and six others in the
+    """Round 6's critic: on "Attention" (GC-2 and six others in the
     dev seed) the card said "Next: calibrate it, then mark the calibration
     done" and offered no button for it. The only way to act was the small
     "See the schedule" link on the Maintenance tile, which led to a table
@@ -463,10 +466,10 @@ class TestTheQcTable:
 class TestAPassCountsFor24Hours:
     """§3.1's QC sentence: "A passing check counts for 24 h", and §4.1's QC
     due for a pass that has aged out of it. Round 3's critic found OptiMPP 1
-    and 2 reading "OK to run · All 2 checks in spec (4 Aug)" in production off
+    and 2 reading "Ready · All 2 checks in spec (4 Aug)" in production off
     passes two months old. A pass says the instrument read true THEN; the
     record's one answer is about NOW, so a pass past its window is QC due
-    (OK to run, but…), never In spec.
+    (Attention), never In spec.
 
     The window is the lab's own rule (qc_samples.resolve_qc_window): a
     standard that states its own life wins, else 24 h. The boundary is the
@@ -476,7 +479,7 @@ class TestAPassCountsFor24Hours:
     def test_optimpp_august_passes_are_qc_due_not_in_spec(self):
         rec = record(prod("OptiMPP 1"))
         r = rec["readiness"]
-        assert r["state"] == "ok_but" and r["word"] == "OK to run, but…"
+        assert r["state"] == "ok_but" and r["word"] == "Attention"
         for c in rec["qc"]["checks"]:
             assert c["verdict"]["key"] == "due", c
             assert c["verdict"]["word"] == "QC due"
@@ -497,8 +500,8 @@ class TestAPassCountsFor24Hours:
         due = sorted(m["title"] for m in PROD["machines"]
                      if ui_live.readiness(prod(m["title"]))["reason"].startswith("QC due"))
         assert due == ["Aquamax 3", "OptiMPP 1", "OptiMPP 2"]
-        assert record(prod("Multitek S"))["readiness"]["word"] == "OK to run"
-        assert record(prod("PAC Flash 2"))["readiness"]["word"] == "OK to run"
+        assert record(prod("Multitek S"))["readiness"]["word"] == "Ready"
+        assert record(prod("PAC Flash 2"))["readiness"]["word"] == "Ready"
 
     def test_the_boundary_is_the_benches(self):
         """Multitek S passed at 2026-09-30T14:00:24.759917."""
@@ -564,12 +567,12 @@ class TestTheRouteJudgesQcNow:
     def test_a_pass_ages_out_without_any_new_data(self, tmp_path, monkeypatch):
         """Nothing in LabCore changes when a pass turns 24 h old; the answer
         must change anyway. The home's memo was keyed on the data alone, so
-        it would have served the morning's "OK to run" all night."""
+        it would have served the morning's "Ready" all night."""
         app, gw = _seeded(tmp_path)
         c = app.test_client()
         first = c.get("/api/ui/instruments").get_json()
         ok_now = {r["uid"] for r in first["instruments"] if r["readiness"]["state"] == "ok"}
-        assert ok_now, "the dev seed has instruments that are OK to run"
+        assert ok_now, "the dev seed has instruments that are Ready"
         self._shift(monkeypatch, 48)
         later = c.get("/api/ui/instruments").get_json()
         states = {r["uid"]: r["readiness"]["state"] for r in later["instruments"]}
@@ -620,7 +623,9 @@ class TestNoVerdictYetIsNotNoQcAssigned:
     def test_nothing_assigned_is_said_as_such(self):
         rec = record(prod("Agilent GC 2"))
         assert rec["qc"]["assigned"] is False and rec["qc"]["checks"] == []
-        assert rec["readiness"]["word"] == "No QC assigned"
+        # the word is No data (Ryan's words); the line says why
+        assert rec["readiness"]["word"] == "No data"
+        assert rec["readiness"]["caption"]["lead"] == "Nothing is assigned to judge it by"
 
 
 class TestTheHead:
@@ -742,7 +747,7 @@ class TestTheRoutes:
         j = c.get("/api/ui/instruments/optimpp-1")
         assert j.status_code == 200 and j.headers["Cache-Control"] == "no-store"
         assert gw.calls == [], gw.calls
-        assert j.get_json()["readiness"]["word"] == "Not OK to run"
+        assert j.get_json()["readiness"]["word"] == "Stop"
 
     def test_the_record_carries_data_transfer_and_still_costs_labcore_nothing(self, tmp_path):
         """T-P12's Data transfer section belongs on the record (transfer §14),
@@ -947,7 +952,7 @@ def _qc_tile(rec):
 class TestEveryCheckIsJudgedByTheCardsRule:
     """The card's verdict, the QC tile and each row of the QC table are one
     judgement (§0.2, §4.1). If the card says "QC due on X", a row says QC due
-    on X; if the bench is stopped and the card says Can't tell, no row may
+    on X; if the bench is stopped and the card says No data, no row may
     still say In spec off a result the bench is no longer vouching for."""
 
     @pytest.mark.parametrize("name,m", list(_variants()), ids=lambda v: v if isinstance(v, str) else "")
@@ -1008,7 +1013,7 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         it, in §4.1's hollow ring, with the reason "never run".
 
         The instrument's verdict is a different level of §4.1 and is
-        unchanged: a check is owed, so the card says "OK to run, but… No
+        unchanged: a check is owed, so the card says "Attention No
         verdict yet on <check>. Next: run AF26", and the QC tile is the current tile,
         because it is the one that explains the "but". The row keeps key
         "due" so everything that counts what makes the card say "QC due"
@@ -1016,7 +1021,7 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         m = prod("PAC Flash 2")
         s = dict(m["effective_specs"][0], last_qc_in_spec=None, last_qc_at=None, last_qc_value=None)
         rec = record(dict(m, effective_specs=[s]))
-        assert rec["readiness"]["word"] == "OK to run, but…"
+        assert rec["readiness"]["word"] == "Attention"
         (c,) = rec["qc"]["checks"]
         assert c["verdict"] == {"key": "due", "word": "No verdict yet", "glyph": "never",
                                 "detail": "never run"}
@@ -1050,11 +1055,11 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         assert ("due", "QC due") in words, words
 
     def test_viscocity_old_pass_on_a_stopped_bench_is_no_verdict_yet(self):
-        """Production Viscocity: bench stopped, card Can't tell, and a pass
+        """Production Viscocity: bench stopped, card No data, and a pass
         from 3 Sep. The pass stays on the row as history (value and date),
         but the row's word is §4.1's: No verdict yet · bench stopped."""
         rec = record(prod("Viscocity"))
-        assert rec["readiness"]["word"] == "Can't tell"
+        assert rec["readiness"]["word"] == "No data"
         (c,) = rec["qc"]["checks"]
         assert c["verdict"]["word"] == "No verdict yet"
         assert c["verdict"]["detail"] == "bench stopped"
@@ -1071,32 +1076,32 @@ class TestEveryCheckIsJudgedByTheCardsRule:
 
     def test_a_warning_behind_a_stopped_bench_is_said_too(self):
         """Calibration overdue AND the bench stopped. Until round 5 the card
-        said "OK to run, but… Calibration overdue" with the stopped bench as
+        said "Attention Calibration overdue" with the stopped bench as
         a "too"; the critic found that on Multitek S (never checked in) and
         called it the record's weakest honesty point: the page told an
         analyst the instrument may run while nothing was vouching for it.
-        Now the verdict is Can't tell, and the overdue calibration, which is
+        Now the verdict is No data, and the overdue calibration, which is
         still true and still needs doing, is in the same sentence."""
         m = dict(prod("Viscocity"), maintenance=[
             {"uid": "t1", "name": "Calibration", "kind": "calibration", "status": "RED",
              "next_due": "2026-09-01", "last_done": "2025-09-01", "interval_days": 365}])
         rec = record(m)
-        assert rec["readiness"]["word"] == "Can't tell"
+        assert rec["readiness"]["word"] == "No data"
         cap = rec["readiness"]["caption"]
         assert cap["lead"] == "Its bench stopped checking in, so nothing new is judged"
         assert cap["too"] == "calibration overdue since 1 Sep too"
-        assert rec["readiness"]["primary"] is None, "Can't tell has no primary button (§3.1)"
+        assert rec["readiness"]["primary"] is None, "No data has no primary button (§3.1)"
         assert [c["verdict"]["word"] for c in rec["qc"]["checks"]] == ["No verdict yet"]
 
     def test_a_check_never_run_on_a_silent_bench_is_no_verdict_yet(self):
         """A check with no result on a bench that is not checking in used to
         read "QC due · bench stopped" under a card that, from round 5, says
-        Can't tell: "QC due" asks for a run that nothing would pick up. The
+        No data: "QC due" asks for a run that nothing would pick up. The
         row says what the card says."""
         m = prod("Viscocity")
         s = dict(m["effective_specs"][0], last_qc_in_spec=None, last_qc_at=None, last_qc_value=None)
         rec = record(dict(m, effective_specs=[s]))
-        assert rec["readiness"]["word"] == "Can't tell"
+        assert rec["readiness"]["word"] == "No data"
         (c,) = rec["qc"]["checks"]
         assert (c["verdict"]["word"], c["verdict"]["detail"]) == ("No verdict yet", "bench stopped")
 
@@ -1105,7 +1110,7 @@ class TestEveryCheckIsJudgedByTheCardsRule:
         and the record name the same checks."""
         m = dict(prod("Agilent GC 2"), qc_targets=[{"sample": "STD-9", "test": "ASTM D1 - Thing"}])
         row = ui_instruments.instrument(m, "", LEVELS, href)
-        assert row["readiness"]["word"] == "OK to run, but…"
+        assert row["readiness"]["word"] == "Attention"
         assert "ASTM D1 - Thing" in json.dumps(row)
         rec = record(m)
         # assigned, never run: owed (the card's "QC due on …"), and in §4.1's
@@ -1133,7 +1138,7 @@ class TestEveryCheckIsJudgedByTheCardsRule:
 
 class TestOneWordForNeverRunOnEveryPage:
     def test_the_tile_wears_the_rows_ring(self):
-        """§4.1 gives No verdict yet a hollow ring and Can't tell a dashed
+        """§4.1 gives No verdict yet a hollow ring and No data a dashed
         one. The row drew the hollow ring and the QC tile above it the dashed
         one, so the same words wore two shapes a few centimetres apart. The
         tile now wears "never", which the page draws as a solid hollow ring."""
@@ -1169,24 +1174,24 @@ class TestOneWordForNeverRunOnEveryPage:
         assert seen >= 1, "the seed should exercise this (Koehler K23000)"
         k = next(r for r in rows if r["title"] == "Koehler K23000")
         rec = c.get("/api/ui/instruments/%s" % k["uid"]).get_json()
-        assert rec["readiness"]["word"] == "OK to run, but…"
+        assert rec["readiness"]["word"] == "Attention"
         assert "QC due" not in json.dumps(rec["qc"]), "the rows say §4.1's word, not the card's"
 
 
 class TestASilentBenchIsCantTell:
     def test_multitek_s_in_the_dev_seed(self, tmp_path):
         """Round 5's critic, on this seed: Multitek S's head and Bench tile
-        said "Bench never checked in", and the card said "OK to run, but…"
-        because an overdue calibration outranked Can't tell. The page told an
+        said "Bench never checked in", and the card said "Attention"
+        because an overdue calibration outranked No data. The page told an
         analyst it may run off a bench nobody has heard from. Now the card
-        says Can't tell, the calibration is still said in the same sentence,
+        says No data, the calibration is still said in the same sentence,
         the QC row and tile say No verdict yet, and there is no primary
-        button (§3.1: Can't tell -> nothing). The home's row agrees."""
+        button (§3.1: No data -> nothing). The home's row agrees."""
         app, _ = _seeded(tmp_path)
         c = app.test_client()
         rec = c.get("/api/ui/instruments/multitek-s").get_json()
         r = rec["readiness"]
-        assert (r["state"], r["word"]) == ("cant_tell", "Can't tell"), r
+        assert (r["state"], r["word"]) == ("cant_tell", "No data"), r
         assert r["caption"]["lead"] == "Its bench has never checked in, so nothing is judged"
         assert r["caption"]["too"].startswith("calibration overdue since "), r["caption"]
         assert r["caption"]["next"] == "Start the LEM module in LabStation on its computer"
@@ -1195,7 +1200,7 @@ class TestASilentBenchIsCantTell:
         assert _qc_tile(rec)["word"] == "No verdict yet"
         row = next(x for x in c.get("/api/ui/instruments").get_json()["instruments"]
                    if x["uid"] == "multitek-s")
-        assert row["readiness"]["word"] == "Can't tell"
+        assert row["readiness"]["word"] == "No data"
         assert [p["key"] for p in row["problems"]] == ["cant_tell-never", "ok_but-cal"]
 
 
@@ -1322,7 +1327,7 @@ class TestNoQcAssignedIsNotADeadEnd:
         assert c.post("/api/machines/multitek-ns/qc-targets", json={"targets": []}).get_json() == {"ok": True}
         snaps.refresh()
         rec = c.get("/api/ui/instruments/multitek-ns").get_json()
-        assert rec["readiness"]["word"] == "No QC assigned"
+        assert (rec["readiness"]["state"], rec["readiness"]["word"]) == ("no_qc", "No data")
         assert rec["readiness"]["primary"] == {"label": "Assign a QC standard…", "act": "assign"}
         assert rec["qc"]["targets"] == []
 
@@ -1332,7 +1337,7 @@ class TestNoQcAssignedIsNotADeadEnd:
         snaps.refresh()
         rec = c.get("/api/ui/instruments/multitek-ns").get_json()
         assert rec["qc"]["targets"] == [want]
-        assert rec["readiness"]["word"] != "No QC assigned"
+        assert rec["readiness"]["state"] != "no_qc"
         assert [ch["verdict"]["word"] for ch in rec["qc"]["checks"]] == ["No verdict yet"]
         assert rec["readiness"]["primary"] is None or rec["readiness"]["primary"]["act"] != "assign"
 

@@ -413,9 +413,17 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
     state = row["readiness"]["state"]
     reason = str(row["readiness"].get("reason") or "")
     rows = ui_quality.fill_certified_bands(checks(m), library)
-    keys = ui_live.problems(m, override)
-    primary = _primary(state, rows, m, reason)
-    off = state == OFF_LINE
+    off = row["readiness"].get("off_line")
+    if off:
+        # off line rides beside the state (Ryan, 2026-10-07): the caption and
+        # the button are about putting it back, and every fact of its state
+        # is still said behind that
+        keys = ui_live.problems(m, override, as_if_on_line=True)
+        said, why = OFF_LINE, off["reason"]
+    else:
+        keys = ui_live.problems(m, override)
+        said, why = state, reason
+    primary = _primary(said, rows, m, why)
     b = ui_instruments.bench(m)
     return {
         "state": "ready",
@@ -433,7 +441,8 @@ def build(row: dict, m: dict, levels: Dict[str, str], override: Optional[str] = 
                    "map": "/?view=map&focus=" + row["uid"]},
         "readiness": {
             "state": state, "word": row["readiness"]["word"], "glyph": row["readiness"]["glyph"],
-            "caption": caption(m, state, reason, rows, keys),
+            "caption": caption(m, said, why, rows, keys),
+            "off_line": off or None,
             "primary": primary,
             "tiles": _tiles(row, primary, rows),
         },

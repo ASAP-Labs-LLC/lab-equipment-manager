@@ -3,7 +3,7 @@
 What this answers, and why each part is a test rather than a hope:
 
 * **Can it run? at 0 clicks (T1).** The home page exists so that "is Agilent
-  GC 2 OK to run?" is answered by looking, not by opening a record. The answer
+  GC 2 Ready?" is answered by looking, not by opening a record. The answer
   is ONE rule, `ui_live.readiness`, computed server-side. The nav's "6 need
   you", the Needs-you card and the table all read it, so they cannot disagree
   (§0.2): a nav that said 6 above a card that showed 5 was a judged defect.
@@ -155,7 +155,7 @@ class TestEachInstrumentSaysWhetherItCanRun:
         p = build([machine("gc1", "Agilent GC 1", specs=[spec("IBP", False)])])
         r = row(p, "gc1")["readiness"]
         assert {"state", "word", "glyph", "reason", "next", "tiles"} <= set(r)
-        assert r["state"] == "not_ok" and r["word"] == "Not OK to run"
+        assert r["state"] == "not_ok" and r["word"] == "Stop"
         assert r["glyph"] == "error"
         assert "IBP" in r["reason"]
         assert r["next"]["href"] == "/instruments/gc1#qc"
@@ -180,17 +180,22 @@ class TestEachInstrumentSaysWhetherItCanRun:
         different glyph classes, so a colour-blind reader can still tell them."""
         ms = [machine("a", specs=[spec("X", False)]), machine("b", specs=[spec("X", None)]),
               machine("d", running=False, module_state="stopped", specs=[spec("X", True)]),
-              machine("e"), machine("f", specs=[spec("X", True)]), machine("g")]
+              machine("e"), machine("f", specs=[spec("X", True)]), machine("g", specs=[spec("X", True)])]
         p = build(ms, overrides={"g": "DEAD-LINE"})
         got = {row(p, u)["readiness"]["state"]: (row(p, u)["readiness"]["word"],
                                                   row(p, u)["readiness"]["glyph"])
-               for u in "abdefg"}
-        assert got == {"not_ok": ("Not OK to run", "error"),
-                       "ok_but": ("OK to run, but…", "half"),
-                       "cant_tell": ("Can't tell", "dashed"),
-                       "no_qc": ("No QC assigned", "never"),
-                       "ok": ("OK to run", "final"),
-                       "off_line": ("Off line", "off")}
+               for u in "abdef"}
+        # Ryan's words, 2026-10-07
+        assert got == {"not_ok": ("Stop", "error"),
+                       "ok_but": ("Attention", "half"),
+                       "cant_tell": ("No data", "dashed"),
+                       "no_qc": ("No data", "never"),
+                       "ok": ("Ready", "final")}
+        # off line is a badge beside the state, with its own shape
+        g = row(p, "g")["readiness"]
+        assert (g["state"], g["word"]) == ("ok", "Ready")
+        assert g["off_line"] == {"word": "Off line", "glyph": "off", "reason": "Taken off line (DEAD-LINE)"}
+        assert row(p, "f")["readiness"]["off_line"] is None
 
     def test_an_overdue_calibration_is_a_but_not_a_no(self):
         """Ryan, 2026-10-01: only QC or an override can make the answer No.
@@ -198,7 +203,7 @@ class TestEachInstrumentSaysWhetherItCanRun:
         passed this morning because a calibration date lapsed."""
         p = build([machine("a", maint=[task("calibration", "RED")], specs=[spec("X", True)])])
         r = row(p, "a")
-        assert r["readiness"]["word"] == "OK to run, but…"
+        assert r["readiness"]["word"] == "Attention"
         assert r["cause"]["words"] == "Calibration overdue"
         assert r["readiness"]["next"]["href"] == "/instruments/a#maintenance"
         assert p["fleet"]["pill"]["text"] == "It can run"
@@ -261,7 +266,7 @@ class TestNoVerdictYetIsNotNoQcAssigned:
     def test_the_fact_is_a_field_not_a_word_to_match(self):
         """Round 2's critic: the "No QC assigned" view was empty while three
         rows said "No QC assigned" in Last QC, because the view keyed on the
-        readiness state (the WORST fact: Off line, Can't tell) instead of the
+        readiness state (the WORST fact: Off line, No data) instead of the
         fact the chip names. `last_qc.assigned` is that fact, the same one
         the column's words come from, so the view and the column agree."""
         p = build([machine("kf"), machine("gc1", running=False, module_state="unknown", last_poll=""),
@@ -342,9 +347,13 @@ class TestEveryProblemIsOnItsRow:
         p = build([machine("kf", maint=[task("calibration", "RED")], specs=[spec("X", False)])],
                   overrides={"kf": "SERVICE"})
         r = row(p, "kf")
-        assert r["readiness"]["state"] == "off_line"
+        # its QC failed, so it is Stop, and Off line beside it (Ryan, 2026-10-07)
+        assert r["readiness"]["state"] == "not_ok"
+        assert r["readiness"]["off_line"]["reason"] == "Taken off line (SERVICE)"
         assert [x["key"] for x in r["problems"]] == ["ok_but-cal"]
-        assert r["readiness"]["detail"] == "Taken off line (SERVICE) · calibration overdue since 1 Sep too"
+        assert r["readiness"]["detail"] == "X out of spec · calibration overdue since 1 Sep too"
+        assert r["needs_you"] is False, "somebody already decided about it"
+        assert r["readiness"]["next"]["text"] == "Put it back on line when the work is done"
 
     def test_a_tile_is_about_everyone_with_the_problem(self):
         p = build([machine("alpha", specs=[spec("X", True)], maint=[task("calibration", "RED")]),
@@ -566,16 +575,16 @@ class TestTheBellAgreesWithTheCard:
     def test_notices_keep_the_mark_and_recoveries_carry_it(self):
         clock = [1000.0]
         n = ui_live.Notices(clock=lambda: clock[0])
-        out = n.update([{"key": "notok:a", "level": "error", "message": "A is not OK to run.",
+        out = n.update([{"key": "notok:a", "level": "error", "message": "A is at Stop.",
                          "href": "/x", "link": "Open A", "about": "instruments"},
                         {"key": "audit", "level": "warning", "message": "2 rows.",
                          "href": "/settings", "link": "Open"}],
                        {"a": "A"}, {"notok": {"a"}, "offline": set()})
         assert {o["message"]: o.get("about") for o in out} == {
-            "A is not OK to run.": "instruments", "2 rows.": None}
+            "A is at Stop.": "instruments", "2 rows.": None}
         clock[0] += 5
         out = n.update([], {"a": "A"}, {"notok": set(), "offline": set()})
-        assert [(o["message"], o.get("about")) for o in out] == [("A is OK to run again.", "instruments")]
+        assert [(o["message"], o.get("about")) for o in out] == [("A is no longer at Stop.", "instruments")]
 
 
 class TestTheFleetPill:
@@ -584,7 +593,7 @@ class TestTheFleetPill:
 
     def test_something_not_ok(self):
         p = build([machine("a", specs=[spec("X", False)]), machine("b", specs=[spec("X", True)])])
-        assert p["fleet"]["pill"] == {"glyph": "error", "level": "error", "text": "1 not OK to run"}
+        assert p["fleet"]["pill"] == {"glyph": "error", "level": "error", "text": "1 at Stop"}
 
     def test_all_can_run(self):
         p = build([machine("a", specs=[spec("X", True)]), machine("b"),

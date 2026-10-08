@@ -28,7 +28,7 @@
       one sentence ending in the next step; the button is that step. -#}
   <section class="card checklist ready-card" id="readiness" aria-labelledby="ready-title" data-testid="readiness">
     <div class="bar">
-      <h2 id="ready-title"><span class="rglyph" id="ready-glyph" aria-hidden="true"></span><span id="ready-word">{{ data.readiness.word }}</span></h2>
+      <h2 id="ready-title"><span class="rglyph" id="ready-glyph" aria-hidden="true"></span><span id="ready-word">{{ data.readiness.word }}</span><span class="offbadge" id="ready-off"{% if not data.readiness.off_line %} hidden{% endif %} title="{{ data.readiness.off_line.reason if data.readiness.off_line else '' }}"><span class="glyph off" aria-hidden="true"></span><span>Off line</span></span></h2>
       <p class="ready-cap" id="ready-cap" data-testid="ready-caption"></p>
       <button type="button" class="btn btn-primary" id="ready-primary" data-testid="ready-primary" hidden></button>
     </div>

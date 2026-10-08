@@ -59,7 +59,7 @@ t.eq(N.without(list, 'a').map((x) => x.id), ['b', 'c']);
 t.eq(N.visible(list, new Set(['b'])).map((x) => x.id), ['a', 'c']);
 t.eq(N.visible(list, new Set()).length, 3);
 // the condition cleared and came back: a new id, so it shows again
-const back = [{ id: 'notok:gc1:1790000999', ts: '2026-09-30T14:00:00', level: 'error', message: 'GC-1 is not OK to run' }];
+const back = [{ id: 'notok:gc1:1790000999', ts: '2026-09-30T14:00:00', level: 'error', message: 'GC-1 is at Stop' }];
 t.eq(N.visible(back, new Set(['notok:gc1:1790000000'])).length, 1);
 // dismissals of items that are gone are forgotten (the stored list stays small)
 t.eq([...N.prune(new Set(['a', 'gone', 'b']), list)].sort(), ['a', 'b']);
@@ -80,7 +80,7 @@ t.eq(N.DISMISS_KEY, 'lem.notes-dismissed');
 // listed nor counted in the badge; the panel says, without a name or a
 // number, that they are on the page. Other pages fold nothing.
 const mixed = [
-  { id: 'notok:a:1', level: 'error', message: 'A is not OK to run.', ts: '2026-09-30T14:00:00', about: 'instruments' },
+  { id: 'notok:a:1', level: 'error', message: 'A is at Stop.', ts: '2026-09-30T14:00:00', about: 'instruments' },
   { id: 'caldue:a,b:1', level: 'warning', message: '2 instruments are overdue for calibration: A and B.', ts: '2026-09-30T13:00:00', about: 'instruments' },
   { id: 'audit:1', level: 'warning', message: '2 audit rows waiting.', ts: '2026-09-30T12:00:00', about: null },
   { id: 'round:1', level: 'warning', message: 'The morning round is overdue.', ts: '2026-09-30T11:00:00' },
@@ -94,7 +94,7 @@ t.eq(N.folded(mixed, new Set(), ''), false);
 t.eq(N.foldNote('instruments'), 'Instrument problems are on this page, each on its own row.');
 // the empty sentence on a folding page does not claim "no notifications"
 t.eq(N.emptyText({ known: true, any: true, folded: true }), 'Nothing else. Instrument problems are on this page, each on its own row.');
-t.eq(N.emptyText({ known: true, any: false, folded: false }), 'No notifications. Instruments that stop being OK to run, overdue rounds and LabCore trouble will show here.');
+t.eq(N.emptyText({ known: true, any: false, folded: false }), 'No notifications. Instruments that go to Stop, overdue rounds and LabCore trouble will show here.');
 t.eq(N.emptyText({ known: false }), 'Checking for notifications…');
 t.eq(N.emptyText({ known: true, any: true, folded: false }), 'Nothing new. Everything here was dismissed on this computer.');
 

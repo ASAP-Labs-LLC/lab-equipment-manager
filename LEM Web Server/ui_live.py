@@ -53,8 +53,12 @@ OK_BUT = "ok_but"
 CANT_TELL = "cant_tell"
 NO_QC = "no_qc"
 OK = "ok"
-WORDS = {NOT_OK: "Not OK to run", OFF_LINE: "Off line", OK_BUT: "OK to run, but…",
-         CANT_TELL: "Can't tell", NO_QC: "No QC assigned", OK: "OK to run"}
+# Ryan, 2026-10-07: "OK to run, but…" was not clear at a glance. Ready /
+# Attention / Stop, and No data where there is nothing to judge it by (the
+# line under the word says whether the bench is silent or no QC is
+# assigned). Off line is not one of them: it rides beside the state.
+WORDS = {NOT_OK: "Stop", OFF_LINE: "Off line", OK_BUT: "Attention",
+         CANT_TELL: "No data", NO_QC: "No data", OK: "Ready"}
 # The states that put an instrument on the Needs-you card. Off line is a
 # decision somebody already made (with a comment); No QC assigned is a filter
 # of its own (§3.2 chips), not a problem that happened.
@@ -342,21 +346,40 @@ def _silent(machine: dict) -> str:
     return "Bench stopped" if st == "stopped" else "Bench never checked in"
 
 
-def readiness(machine: dict, override: Optional[str] = None) -> dict:
-    """``{state, reason}`` for one merged machine (ia-final §3.1).
+def off_line(machine: dict, override: Optional[str] = None) -> Optional[str]:
+    """Why somebody took it off line, or None when it is on line.
 
-    `override` is the instrument's manual override from ``lem_machine_control``
-    ("" = none, None = not read). A bench reporting SERVICE counts as off line
-    either way: SERVICE only ever comes from an override the bench holds,
-    possibly one set before the table was last read. DEAD-LINE does not: a
-    bench also says DEAD-LINE when no data arrives, which is not a decision
-    anybody made.
-    """
+    A bench reporting SERVICE counts as off line either way: SERVICE only
+    ever comes from an override the bench holds, possibly one set before the
+    table was last read. DEAD-LINE does not: a bench also says DEAD-LINE
+    when no data arrives, which is not a decision anybody made."""
     ov = (override or "").strip().upper()
     if ov:
-        return {"state": OFF_LINE, "reason": "Taken off line (%s)" % ov}
+        return "Taken off line (%s)" % ov
     if machine.get("status") == "SERVICE":
-        return {"state": OFF_LINE, "reason": machine.get("reason") or "Out for service"}
+        return machine.get("reason") or "Out for service"
+    return None
+
+
+def readiness(machine: dict, override: Optional[str] = None) -> dict:
+    """``{state, reason}`` for one merged machine (ia-final §3.1), plus
+    ``off_line`` (why) when somebody took it off line.
+
+    Off line rides BESIDE the state, never instead of it (Ryan, 2026-10-07:
+    "offline is an additional status, it should not take away from the
+    overall ready attention stop"): an instrument off line for a column
+    change whose last QC failed is still Stop, and says Off line too."""
+    out = dict(_readiness(machine))
+    why = off_line(machine, override)
+    if why:
+        out["off_line"] = why
+    return out
+
+
+def _readiness(machine: dict) -> dict:
+    """The state the instrument is in, whether or not it is off line.
+
+    """
     bad = _out_of_spec(machine)
     if bad:
         names = ", ".join(sorted({str(s.get("test_name") or "") for s in bad}))
@@ -402,7 +425,8 @@ PROBLEM_WORDS = {"not_ok-qc": "QC out of spec", "ok_but-qc": "QC due",
                  "cant_tell-closed": "Lab closed"}
 
 
-def problems(machine: dict, override: Optional[str] = None) -> List[str]:
+def problems(machine: dict, override: Optional[str] = None, *,
+             as_if_on_line: bool = False) -> List[str]:
     """Every problem one instrument has, as keys, worst first.
 
     The first is the one its verdict is about (``readiness``'s reason), so the
@@ -413,13 +437,14 @@ def problems(machine: dict, override: Optional[str] = None) -> List[str]:
     and the bell count 5 overdue calibrations where the schedule had 7.
 
     Off line is a decision about running it, so the QC and bench facts that
-    decide "can it run?" are moot; its overdue tasks are not.
+    decide "can it run?" are nobody's next step while it is off; its overdue
+    tasks still are. `as_if_on_line` gives every fact, for the line that
+    says what its state is about (Ryan, 2026-10-07: off line rides beside
+    the state, so the state's own reason is still said).
     """
-    r = readiness(machine, override)
-    state = r["state"]
     cal, pm = bool(_overdue(machine, "calibration")), bool(_overdue(machine, "pm"))
     tasks = (["ok_but-cal"] if cal else []) + (["ok_but-pm"] if pm else [])
-    if state == OFF_LINE:
+    if not as_if_on_line and off_line(machine, override):
         return tasks
     rest = (["ok_but-qc"] if _qc_due(machine) else []) + tasks
     out = ["not_ok-qc"] if _out_of_spec(machine) else []
@@ -628,7 +653,7 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
     ms = machines or []
     title = {m.get("machine_uid"): (m.get("title") or m.get("machine_uid")) for m in ms}
 
-    # Not OK to run: one item per instrument, except that instruments with
+    # Stop: one item per instrument, except that instruments with
     # the SAME reason merge into one line (§3.2), so a lab where five
     # calibrations lapsed together reads one sentence, not five. The merged
     # key names its members: a sixth joining it is a new item, which shows
@@ -643,12 +668,12 @@ def conditions(*, machines: Optional[List[dict]], ready: Dict[str, dict],
         if len(uids) == 1:
             uid = uids[0]
             out.append({"key": "notok:" + uid, "level": "error", "about": "instruments",
-                        "message": "%s is not OK to run: %s." % (title[uid], reason),
+                        "message": "%s is at Stop: %s." % (title[uid], reason),
                         "href": href(uid, "qc"), "link": "Open " + title[uid]})
         else:
             digest = hashlib.sha1(("%s|%s" % (reason, ",".join(sorted(uids)))).encode()).hexdigest()[:10]
             out.append({"key": "notok:group:" + digest, "level": "error", "about": "instruments",
-                        "message": "%s are not OK to run: %s." % (
+                        "message": "%s are at Stop: %s." % (
                             _names([title[u] for u in uids]), _lower_first(reason)),
                         "href": "/?cause=not_ok-qc", "link": "Show them"})
     for m in ms:
@@ -767,13 +792,13 @@ class Notices:
 
         `watched` is {"notok": uids, "offline": uids} right now. An instrument
         that WAS in one and is not any more, and still exists, gets a
-        "back" item ("GC-1 is OK to run again."), whatever item it was
+        "back" item ("GC-1 is no longer at Stop."), whatever item it was
         merged into while it was bad.
         """
         now = self._clock()
         with self._lock:
             # None: nothing was read this time, so nothing can have recovered
-            for kind, words in (() if watched is None else (("notok", "%s is OK to run again."),
+            for kind, words in (() if watched is None else (("notok", "%s is no longer at Stop."),
                                                             ("offline", "%s is back on line."))):
                 was = self._watched.get(kind, set())
                 for uid in sorted(was - set(watched.get(kind) or ())):
@@ -896,7 +921,9 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
         fleet = {"checking_in": sum(1 for m in machines if _checking_in(m)),
                  "total": len(machines),
                  "live_road": sum(1 for m in machines if m.get("live"))}
-    needs_you = (sum(1 for r in ready.values() if r["state"] in NEEDS_YOU)
+    # off line: somebody already decided about it, with a comment (as before
+    # Ryan's 2026-10-07 change), so it is on nobody's Needs-you count
+    needs_you = (sum(1 for r in ready.values() if r["state"] in NEEDS_YOU and not r.get("off_line"))
                  if machines is not None else None)
     qc_out = (sum(len(_out_of_spec(m)) for m in machines) if machines is not None else None)
     rnd = round_summary(day, now)
@@ -913,8 +940,8 @@ def payload(*, feed: Feed, cursor: Any, snap: dict, merged: Optional[List[dict]]
     notices.remember_links({u: href(u, "") for u in titles})
     watched = None
     if machines is not None:
-        watched = {"notok": {u for u, r in ready.items() if r["state"] == NOT_OK},
-                   "offline": {u for u, r in ready.items() if r["state"] == OFF_LINE}}
+        watched = {"notok": {u for u, r in ready.items() if r["state"] == NOT_OK and not r.get("off_line")},
+                   "offline": {u for u, r in ready.items() if r.get("off_line")}}
     notes = notices.update(items, titles, watched)
     age = snap.get("age_seconds")
     parts = {"round": json.dumps(rnd, sort_keys=True),

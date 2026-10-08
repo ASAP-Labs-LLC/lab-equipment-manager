@@ -344,7 +344,7 @@ class TestTheBell:
         clock = [1000.0]
         board = ui_live.Notices(clock=lambda: clock[0])
         board.remember_links({"gc1": "/floor"})
-        item = {"key": "notok:gc1", "level": "error", "message": "GC-1 is not OK to run: x.",
+        item = {"key": "notok:gc1", "level": "error", "message": "GC-1 is at Stop: x.",
                 "href": "/floor", "link": "Open GC-1"}
         titles = {"gc1": "GC-1"}
         first = board.update([item], titles, {"notok": {"gc1"}})
@@ -355,7 +355,7 @@ class TestTheBell:
         assert board.update([], {}, None) == []
         clock[0] += 60
         after = board.update([], titles, {"notok": set()})
-        assert [n["message"] for n in after] == ["GC-1 is OK to run again."]
+        assert [n["message"] for n in after] == ["GC-1 is no longer at Stop."]
         assert after[0]["level"] == "success" and after[0]["href"] == "/floor"
         clock[0] += ui_live.RECOVERED_SECONDS + 1
         assert board.update([], titles, {"notok": set()}) == []
@@ -375,16 +375,16 @@ class TestTheBell:
                                       audit_spool=0, live_road=None, certificates=None,
                                       href=lambda u, s: "/floor", now=datetime(2026, 10, 1, 10))
         two = items(["a", "b"])
-        assert [i["message"] for i in two] == ["A and B are not OK to run: QC out of spec: IBP."], \
+        assert [i["message"] for i in two] == ["A and B are at Stop: QC out of spec: IBP."], \
             "an acronym keeps its capitals ('qC out of spec' was the old lower-casing)"
         three = items(["a", "b", "c"])
         assert three[0]["key"] != two[0]["key"]
         one = items(["a"])
-        assert one[0]["message"] == "A is not OK to run: QC out of spec: IBP."
+        assert one[0]["message"] == "A is at Stop: QC out of spec: IBP."
 
     def test_overdue_calibrations_are_one_bell_item(self):
         """§5 lists "a calibration is overdue" as a bell item. It used to ride
-        inside "not OK to run"; since calibration is a warning (Ryan,
+        inside "not Ready"; since calibration is a warning (Ryan,
         2026-10-01) it needs its own line, merged across instruments."""
         m = [{"machine_uid": u, "title": u.upper(), "module_state": "running", "module_running": True,
               "effective_specs": [{"test_name": "IBP", "last_qc_in_spec": True,
@@ -430,8 +430,9 @@ class TestReadiness:
 
     def test_each_row_of_the_table(self):
         assert self._r() == ui_live.OK
-        assert self._r("SERVICE") == ui_live.OFF_LINE
-        assert self._r(status="SERVICE") == ui_live.OFF_LINE
+        # off line rides beside the state (test_off_line_rides_beside_…)
+        assert self._r("SERVICE") == ui_live.OK
+        assert ui_live.readiness(dict(self.BASE, status="SERVICE"), "").get("off_line") == "Out for service"
         assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": False}]) == ui_live.NOT_OK
         assert self._r(maintenance=[{"kind": "calibration", "status": "RED"}]) == ui_live.OK_BUT
         assert self._r(effective_specs=[{"test_name": "IBP", "last_qc_in_spec": None}]) == ui_live.OK_BUT
@@ -459,14 +460,14 @@ class TestReadiness:
         assert failed["state"] == ui_live.NOT_OK, "QC out of spec still says No"
 
     def test_a_silent_bench_is_cant_tell_even_with_a_warning(self):
-        """"OK to run, but…" says the instrument may run. Saying that needs a
+        """"Attention" says the instrument may run. Saying that needs a
         bench that is vouching for it now. Round 5's critic found Multitek S
-        (dev seed) reading "OK to run, but… Calibration overdue" while its
+        (dev seed) reading "Attention Calibration overdue" while its
         head and Bench tile said "Bench never checked in": the warning ranked
-        above Can't tell, so the page told an analyst it could run off a
+        above No data, so the page told an analyst it could run off a
         bench nobody has heard from. A warning (calibration, PM, QC due) is
         something to do; it is not evidence the instrument reads true. So a
-        bench that is not checking in reads Can't tell, whatever the
+        bench that is not checking in reads No data, whatever the
         warnings, and the warnings are still said behind it (``problems``).
         Only a failed QC (a stop stands until somebody reruns it) and an
         override rank above it."""
@@ -483,10 +484,11 @@ class TestReadiness:
         # the verdict's own fact first, every other one still said behind it
         assert ui_live.problems(dict(quiet, maintenance=cal + pm), "") == [
             "cant_tell-never", "ok_but-cal", "ok_but-pm"]
-        # a failed QC and an override still outrank it
+        # a failed QC still outranks it; an override is said beside it
         assert ui_live.readiness(dict(quiet, effective_specs=[
             {"test_name": "IBP", "last_qc_in_spec": False}]), "")["state"] == ui_live.NOT_OK
-        assert ui_live.readiness(dict(quiet, maintenance=cal), "SERVICE")["state"] == ui_live.OFF_LINE
+        off = ui_live.readiness(dict(quiet, maintenance=cal), "SERVICE")
+        assert (off["state"], off["off_line"]) == (ui_live.CANT_TELL, "Taken off line (SERVICE)")
         # A shut lab is not silence: the bench vouched until closing time and
         # rests on purpose, so its warning is still the answer overnight and
         # "Lab closed" only when there is nothing else to say.
@@ -511,6 +513,31 @@ class TestReadiness:
             {"test_name": "IBP", "sample_id": "AF27", "last_qc_in_spec": False,
              "last_qc_superseded_by": "AF26"}]))
         assert c["verdict"]["detail"] == "not yet run against AF27"
+
+    def test_off_line_rides_beside_the_state_it_would_have(self):
+        """Ryan, 2026-10-07: "offline is an additional status, it should not
+        take away from the overall ready attention stop." An instrument taken
+        off line still says whether it could run: Stop when its QC failed,
+        Attention when a calibration is overdue, Ready when nothing is wrong.
+        Off line is said beside that, with why, never instead of it."""
+        r = ui_live.readiness(self.BASE, "SERVICE")
+        assert r["state"] == ui_live.OK
+        assert r["off_line"] == "Taken off line (SERVICE)"
+        bad = ui_live.readiness(dict(self.BASE, effective_specs=[
+            {"test_name": "IBP", "last_qc_in_spec": False}]), "SERVICE")
+        assert (bad["state"], bad["off_line"]) == (ui_live.NOT_OK, "Taken off line (SERVICE)")
+        svc = ui_live.readiness(dict(self.BASE, status="SERVICE", reason="Column change"), "")
+        assert (svc["state"], svc["off_line"]) == (ui_live.OK, "Column change")
+        # on line says so by its absence, not by an empty reason that reads true
+        assert ui_live.readiness(self.BASE, "").get("off_line") is None
+
+    def test_the_words_are_ready_attention_stop(self):
+        """Ryan chose the words, 2026-10-07: "Attention" was not clear
+        at a glance. No QC assigned and No data are both No data: there is
+        nothing to judge it by; the line under the word says which."""
+        assert [ui_live.WORDS[s] for s in (ui_live.OK, ui_live.OK_BUT, ui_live.NOT_OK,
+                                           ui_live.CANT_TELL, ui_live.NO_QC, ui_live.OFF_LINE)] == [
+            "Ready", "Attention", "Stop", "No data", "No data", "Off line"]
 
     def test_dead_line_from_silence_is_not_off_line(self):
         """A bench says DEAD-LINE when no data arrives. That is not a decision

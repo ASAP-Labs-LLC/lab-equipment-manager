@@ -317,7 +317,7 @@ class TestTheStatusWordsComeFromMemory:
         assert text(by_id(page, "rs-fleet")) == "%d of %d benches checking in" % (running, total)
         qc = re.search(r'data-nav="qc"[^>]*aria-label="([^"]+)"[^>]*>(.*?)</a>', page, re.S)
         # "checks", said: round 2's critic read "QC 3 out of spec" beside the
-        # Instruments pill "2 not OK to run" as two counts of one problem.
+        # Instruments pill "2 at Stop" as two counts of one problem.
         # They count different things (checks vs instruments); the nav says
         # its unit so the two numbers cannot read as a disagreement.
         unit = "check" if out == 1 else "checks"

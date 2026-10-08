@@ -11,7 +11,7 @@ third on the page before it.
 analyst at the bench: **QC due** is a pass that aged out of its window (the
 instrument read true once and nobody has shown it still does), **No verdict
 yet** is an assigned check that has never run (nobody has ever shown it reads
-true). Both leave the instrument "OK to run, but…", and both are remedied by
+true). Both leave the instrument "Attention", and both are remedied by
 running the standard, so the verdict, its problem key ("ok_but-qc") and its
 next step do not change. Only the words do, and they change everywhere a
 reason is put into words: the readiness reason, the list row's line, the
@@ -68,7 +68,7 @@ class TestTheReasonSaysWhichKindOfOwed:
 class TestTheListRowSaysIt:
     def test_never_run_row(self):
         r = _row([machine("k", "Koehler K23000", specs=[spec("Vapour", None, sample="STD-1")])], "k")
-        assert r["readiness"]["word"] == "OK to run, but…"
+        assert r["readiness"]["word"] == "Attention"
         assert r["readiness"]["detail"] == "No verdict yet on Vapour"
         assert r["readiness"]["next"]["text"] == "Run STD-1"
         assert r["cause"]["key"] == "ok_but-qc" and r["cause"]["words"] == "No verdict yet"

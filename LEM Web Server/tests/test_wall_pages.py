@@ -291,7 +291,7 @@ class TestTheFirstPaintIsTheAnswer:
         sit on top, and both are held here: every ASSIGNED check is a card
         (an assignment with no result yet is "No verdict yet", round 2's
         Eravap), and a stopped bench's old pass is "No verdict yet", never
-        "In spec" (the floor calls it Can't tell). A failure is never
+        "In spec" (the floor calls it No data). A failure is never
         softened by a stopped bench."""
         app, _s, _l = seeded
         q = app.test_client().get("/api/ui/wall/qc").get_json()

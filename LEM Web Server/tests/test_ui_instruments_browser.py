@@ -3,7 +3,7 @@
 The bar for piece 4 (ia-final §14) has three parts a person checks by
 looking, so they are checked here the same way:
 
-* **T1 at 0 clicks.** "Is GC-2 OK to run?" is answered by the row's Can it
+* **T1 at 0 clicks.** "Is GC-2 Ready?" is answered by the row's Can it
   run? column as the page arrives, at desk, tablet and phone widths. No
   click, no hover, and (at desk and tablet) no scroll.
 * **No horizontal page scroll at 820x1180 or 390x844, in both themes.** A
@@ -14,7 +14,7 @@ looking, so they are checked here the same way:
   cause and its next step and names nobody, and carries no count beside the
   pill's. The card has at most six tiles; chips and caption carry no digits.
   Round 3: the bell, opened on this page, named the rows' problems again
-  ("OptiMPP 1 is not OK to run: QC out of spec…"). It folds them here, so
+  ("OptiMPP 1 is at Stop: QC out of spec…"). It folds them here, so
   with the bell open every instrument is still named exactly once.
 * **Every problem is on its row.** OptiMPP 2's overdue PM, behind its
   overdue calibration, was on no row, tile or bell line.
@@ -114,8 +114,8 @@ def test_t1_the_verdict_is_on_screen_with_no_click(drv, server, size):
         const b = v.getBoundingClientRect();
         return {word: v.textContent.trim(), w: b.width, h: b.height, top: b.top,
                 bottom: b.bottom, vh: innerHeight};""")
-    assert got["word"] in ("OK to run", "OK to run, but…", "Not OK to run", "Off line",
-                           "Can't tell", "No QC assigned"), got
+    assert got["word"] in ("Ready", "Attention", "Stop", "Off line",
+                           "No data", "No QC assigned"), got
     assert got["w"] > 0 and got["h"] > 0, "the verdict is drawn, not hidden"
     if size[0] >= 700:
         # §8 counts clicks, not scrolls: GC-2 may sit lower in a worst-first

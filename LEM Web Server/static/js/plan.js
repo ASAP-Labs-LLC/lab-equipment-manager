@@ -212,8 +212,10 @@
             stopped: bench.state === 'stopped' || bench.state === 'never',
         };
     }
-    const SHORT = { not_ok: 'Not OK', ok_but: 'OK, but…', ok: 'OK', off_line: 'Off line',
-                    cant_tell: 'Can’t tell', no_qc: 'No QC' };
+    // the words are short already (Ready / Attention / Stop / No data,
+    // Ryan, 2026-10-07); a bay too narrow for "Attention" says "Attn"
+    const SHORT = { not_ok: 'Stop', ok_but: 'Attn', ok: 'Ready', off_line: 'Off line',
+                    cant_tell: 'No data', no_qc: 'No data' };
     /** The verdict in fewer letters, for a bay too narrow for the whole
         word. The glyph's shape still tells the states apart. */
     function shortWord(state) { return SHORT[state] || ''; }

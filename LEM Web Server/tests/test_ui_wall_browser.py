@@ -419,14 +419,14 @@ def test_the_whole_demo_floor_is_on_the_wall_at_once(server, drv, size, theme):
     assert drv.execute_script(NAMES_CUT) == []
     words = set(drv.execute_script(
         "return [...document.querySelectorAll('#wf-plan .b-wtext')].map(e => e.textContent)"))
-    assert words <= {"OK to run", "OK to run, but…", "Not OK to run", "Off line", "Can’t tell",
-                     "Can't tell", "No QC assigned"}, words
+    assert words <= {"Ready", "Attention", "Stop", "Off line", "No data",
+                     "No data", "No QC assigned"}, words
 
 
 # ── round 3: one-line words, every detail, no dead block ──────────────────
 #
 # The round-2 critic, at 1440x900 on the demo floor: the state word broke
-# onto two lines in 9 of 13 bays ("OK to run, / but…", "Not OK to / run"),
+# onto two lines in 9 of 13 bays ("Ready, / but…", "Not OK to / run"),
 # Pensky-Martens 1, a Not-OK bay, lost its reason ("QC out of spec") because
 # a short bay hid its detail line, and a 520x360 block under Mezzanine was
 # empty (J1's dead area). On production's shape 7 of 12 words broke and 4
@@ -473,16 +473,16 @@ def test_every_bay_says_its_word_on_one_line_and_keeps_its_reason(server, drv, k
         "return [...document.querySelectorAll('#wf-plan .b-wtext')].map(e => e.textContent)"))
     # The app's whole words, always, on both shapes. Round 4 fell back to
     # "OK, but…" / "Not OK" on production's seven columns, beside counts
-    # and a Needs-attention list saying "OK to run, but…" / "Not OK to
+    # and a Needs-attention list saying "Attention" / "Not OK to
     # run": two vocabularies on one screen (§4.1, round 4's critic). The
     # bay makes room instead: its glyph sits in its corner, not in front
     # of the word, and a too-narrow floor tightens the bay's padding.
-    assert words <= {"OK to run", "OK to run, but…", "Not OK to run", "Off line", "No QC assigned",
-                     "Can’t tell", "Can't tell"}, words
-    assert "Not OK to run" in words and "OK to run, but…" in words, words
+    assert words <= {"Ready", "Attention", "Stop", "Off line", "No QC assigned",
+                     "No data", "No data"}, words
+    assert "Stop" in words and "Attention" in words, words
     counted = set(drv.execute_script(
         "return [...document.querySelectorAll('#wf-counts .wc-w, #wf-attn .wa-wtext')].map(e => e.textContent)"))
-    assert words <= counted | {"Off line", "OK to run"}, (words, counted)
+    assert words <= counted | {"Off line", "Ready"}, (words, counted)
 
 
 @pytest.mark.parametrize("size", list(SIZES))
@@ -550,7 +550,7 @@ def test_not_ok_reads_as_alarm_in_the_word_not_the_box(server, drv, theme):
 # Point out of spec · calibration overdue…". That hid the overdue date on the
 # two instruments the wall exists to point at, and nobody can hover a TV to
 # read a title. Both blind judges also read the list as crowded: the state
-# word "OK to run, but…" said once per card, every card boxed alike, and the
+# word "Attention" said once per card, every card boxed alike, and the
 # Not-OK cards ringed in a 2px ink (in dark: white) box that "reads as
 # selected" and is "the loudest thing on screen but carries no status".
 #
@@ -590,7 +590,7 @@ def test_the_worst_cards_say_their_whole_reason(server, drv, size, theme):
     assert a["n"] == 5 and a["rows"] == 5 and a["inside"] == 5, a
     # the word once per state, as the group's heading
     assert a["words"] == a["states"] == 2, a
-    assert a["groups"] == ["Not OK to run x2", "OK to run, but… x3"], a
+    assert a["groups"] == ["Stop x2", "Attention x3"], a
     # the Not-OK reasons whole, word for word, never cut
     assert [x["shown"] for x in a["notOk"]] == a["want"], a
     assert not any(x["cut"] for x in a["notOk"]), a

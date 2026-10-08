@@ -530,6 +530,15 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
 .bench-bar .bb-count { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bench-bar .bb-count[hidden] { display: none; }
 
+/* Off line, beside an instrument's state (Ryan, 2026-10-07: "an additional
+   status, it should not take away from the overall ready attention stop") */
+.offbadge {
+    display: inline-flex; align-items: center; gap: 6px; margin-left: 10px; padding: 2px 10px 2px 8px;
+    border-radius: var(--radius-pill); background: var(--bg-sunken); color: var(--text);
+    font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; vertical-align: middle;
+}
+.offbadge[hidden] { display: none; }
+
 /* ── status glyphs LEM adds to GC's set (§4.1) ────────────────────────────
    half-ring: OK to run, but… / QC due; rotated square: Off line; dashed
    ring: Can't tell. GC's final (dot), error (triangle) and never (hollow
@@ -2287,7 +2296,8 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
 .set-nav a:hover, .set-nav a.active, .linkbtn:hover, .log-sheet-say, .empty-note, .hol-list li.empty,
 .day-chips .chip[aria-pressed="true"],
 .wp-tabs, .wp-tab:hover,
-.round-toc a:hover, .round-toc li.on a {
+.round-toc a:hover, .round-toc li.on a,
+.offbadge {
     --text-muted: var(--text-muted-sunken);
     /* and the amber words, 4.36:1 on a selected row in light: the pill's
        darker amber, made for text on a tint */

@@ -101,6 +101,9 @@
         const r = data.readiness;
         $('ready-word').textContent = r.word;
         $('ready-word').className = 's-' + r.state;
+        // off line rides beside the state (Ryan, 2026-10-07)
+        const off = $('ready-off');
+        if (off) { off.hidden = !r.off_line; off.title = r.off_line ? r.off_line.reason : ''; }
         $('ready-glyph').replaceChildren(circle(r.glyph === 'final' ? 'ok' : r.glyph));
         $('ready-cap').textContent = R.captionText(r.caption);
         const p = $('ready-primary');

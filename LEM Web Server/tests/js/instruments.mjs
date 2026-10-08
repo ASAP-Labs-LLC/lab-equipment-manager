@@ -80,7 +80,7 @@ check('needs you = the card (not_ok, ok_but, cant_tell)', uids(L.filterRows(data
 // view" while three rows said "No QC assigned" in their Last QC column. The
 // filter keyed on the readiness STATE, which is the worst thing about an
 // instrument: an off-line instrument, or one whose bench never checked in,
-// has no QC assigned too, but its state says Off line / Can't tell. A chip
+// has no QC assigned too, but its state says Off line / No data. A chip
 // is a fact, and its view is every row of which the fact is true, the same
 // fact the Last QC column draws (last_qc.assigned).
 check('no QC assigned: every row whose Last QC says so, whatever its verdict',
@@ -93,7 +93,7 @@ check('maintenance: instruments with a schedule', uids(L.filterRows(data.instrum
 check('quiet: the fleet line\'s link, benches not checking in', uids(L.filterRows(data.instruments, { filter: 'quiet' })), ['c', 'f']);
 check('a merged tile\'s link shows exactly its members', uids(L.filterRows(data.instruments, { cause: 'ok_but-qc' })), ['b']);
 // Round 3: a tile's filter is about EVERY instrument with its problem, not
-// only those for which it is the worst. "a" is not OK to run (QC) and its
+// only those for which it is the worst. "a" is at Stop (QC) and its
 // calibration is overdue too; "a2"'s PM hides behind its calibration. The
 // PM view that showed 2 of 3 overdue PMs was this filter keying on the cause.
 check('a calibration tile\'s link: everyone with an overdue calibration',

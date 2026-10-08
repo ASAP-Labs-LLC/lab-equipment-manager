@@ -173,7 +173,10 @@ def bench(m: dict) -> dict:
 
 def _cause(m: dict, ready: dict) -> tuple:
     """(key, cause words, section) for an instrument on the Needs-you card.
-    The key is what merges tiles: same key, one tile."""
+    The key is what merges tiles: same key, one tile. Off line is on no
+    tile: somebody already decided about it, with a comment."""
+    if ready.get("off_line"):
+        return ("", "", "")
     state, reason = ready["state"], str(ready.get("reason") or "")
     if state == NOT_OK:
         return ("not_ok-qc", "QC out of spec", "qc")
@@ -227,8 +230,6 @@ def _primary(m: dict, ready: dict) -> str:
         return ui_live.owed_phrase(ui_live.qc_due(m), _tests)
     if state == OK_BUT:
         return "PM overdue" + _since(m, "pm")
-    if state == OFF_LINE:
-        return reason
     if state == CANT_TELL:
         return {"Bench stopped": "Its bench stopped checking in",
                 "Lab closed": "Lab closed: the bench is resting"}.get(reason, "Its bench never checked in")
@@ -242,8 +243,11 @@ def _detail(m: dict, ready: dict, keys: List[str]) -> str:
     """The one line under a verdict: what it is about, then every other
     problem the instrument has (round 3: OptiMPP 2's overdue PM, behind its
     calibration, was on no row, no tile and in no bell line)."""
-    behind = keys if ready["state"] == OFF_LINE else keys[1:]
-    return _primary(m, ready) + _too(m, behind)
+    if ready.get("off_line"):
+        # off line rides beside the state, so the line still says what the
+        # state is about, with every fact behind it (Ryan, 2026-10-07)
+        keys = ui_live.problems(m, as_if_on_line=True)
+    return _primary(m, ready) + _too(m, keys[1:])
 
 
 def _next(m: dict, ready: dict, href: Href) -> Optional[dict]:
@@ -251,6 +255,9 @@ def _next(m: dict, ready: dict, href: Href) -> Optional[dict]:
     uid = m["machine_uid"]
     state, reason = ready["state"], str(ready.get("reason") or "")
     specs = _specs(m)
+    if ready.get("off_line"):
+        return {"text": "Put it back on line when the work is done", "label": "Open the record",
+                "href": href(uid, "")}
     if state == NOT_OK:
         std = _and(sorted({str(s.get("sample_id") or "") for s in specs
                            if s.get("last_qc_in_spec") is False}))
@@ -259,9 +266,6 @@ def _next(m: dict, ready: dict, href: Href) -> Optional[dict]:
     if state == OK_BUT and reason.startswith("Calibration"):
         return {"text": "Calibrate it, then mark the calibration done", "label": "See the schedule",
                 "href": href(uid, "maintenance")}
-    if state == OFF_LINE:
-        return {"text": "Put it back on line when the work is done", "label": "Open the record",
-                "href": href(uid, "")}
     if state == OK_BUT and ui_live.is_qc_owed(reason):
         std = _and(sorted({c["sample_id"] for c in ui_live.qc_due(m) if c["sample_id"]}))
         return {"text": "Run %s" % (std or "the QC standard"), "label": "See the checks",
@@ -310,7 +314,7 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
     b = bench(m)
     bench_glyph = {"in": "ok", "closed": "unknown"}.get(b["state"], "unknown")
     ov = (override or "").strip().upper()
-    off = state == OFF_LINE
+    off = bool(ready.get("off_line"))
     tiles = [
         {"key": "qc", "title": "QC", "word": qc[0], "glyph": qc[1], "detail": qc[2],
          "current": state in (NOT_OK, OK_BUT) and bool(by["out"] or by["due"]),
@@ -321,7 +325,7 @@ def _tiles(m: dict, ready: dict, override: str, href: Href) -> List[dict]:
          "action": {"label": "Bench", "href": href(uid, "bench")}},
         {"key": "online", "title": "On line", "word": "Off line" if off else "On line",
          "glyph": "bad" if off else "ok",
-         "detail": (str(ready.get("reason") or "") if off else "Not taken off line"),
+         "detail": (str(ready.get("off_line") or "") if off else "Not taken off line"),
          "current": off,
          "action": {"label": "Put back on line…" if off else "Take off line…",
                     "href": href(uid, "")}},
@@ -413,8 +417,11 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
         "readiness": {"state": state, "word": WORDS[state], "glyph": GLYPH[state],
                       "reason": ready.get("reason") or "", "detail": _detail(m, ready, keys),
                       "next": _next(m, ready, href),
-                      "tiles": _tiles(m, ready, override or "", href)},
-        "needs_you": state in NEEDS_YOU,
+                      "tiles": _tiles(m, ready, override or "", href),
+                      # beside the state, never instead of it (Ryan, 2026-10-07)
+                      "off_line": ({"word": WORDS[OFF_LINE], "glyph": GLYPH[OFF_LINE],
+                                    "reason": ready["off_line"]} if ready.get("off_line") else None)},
+        "needs_you": state in NEEDS_YOU and not ready.get("off_line"),
         "cause": {"key": key, "words": cause, "href": href(uid, section)} if key else None,
         # every problem it has, worst first; a tile and its filter are about
         # everyone with the problem, not only those it is the worst for
@@ -435,11 +442,13 @@ def fleet(rows: List[dict]) -> dict:
     """ONE pill: the fleet's verdict (§3.2), never a tally per problem."""
     total = len(rows)
     not_ok = sum(1 for r in rows if r["readiness"]["state"] == NOT_OK)
-    can = sum(1 for r in rows if r["readiness"]["state"] in (OK, OK_BUT, NO_QC))
+    # an instrument off line is not one anybody can run today, whatever its state
+    can = sum(1 for r in rows if r["readiness"]["state"] in (OK, OK_BUT, NO_QC)
+              and not r["readiness"].get("off_line"))
     if not total:
         pill = None                      # a verdict on nothing is no verdict
     elif not_ok:
-        pill = {"glyph": "error", "level": "error", "text": "%d not OK to run" % not_ok}
+        pill = {"glyph": "error", "level": "error", "text": "%d at Stop" % not_ok}
     elif can == total:
         pill = {"glyph": "final", "level": "final",
                 "text": "All %d can run" % total if total != 1 else "It can run"}

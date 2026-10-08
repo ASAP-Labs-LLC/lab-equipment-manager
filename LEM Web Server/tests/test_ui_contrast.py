@@ -168,9 +168,9 @@ LEM_PAIRS = [
     # the phone's top bar
     ("--text", ["--sidebar-bg"], TEXT, "the phone bar's page title"),
     # verdict words on cards and on sunken tiles (pages to come use these)
-    ("--pill-final-fg", ["--bg-card"], TEXT, "OK to run on a card"),
-    ("--warn-text", ["--bg-card"], TEXT, "OK to run, but... / QC due on a card"),
-    ("--st-error", ["--bg-card"], TEXT, "Not OK to run on a card"),
+    ("--pill-final-fg", ["--bg-card"], TEXT, "Ready on a card"),
+    ("--warn-text", ["--bg-card"], TEXT, "Attention / QC due on a card"),
+    ("--st-error", ["--bg-card"], TEXT, "Stop on a card"),
     ("--pill-final-fg", ["--bg-card", "--bg-sunken"], TEXT, "a verdict on a tile"),
     ("--warn-text", ["--bg-card", "--bg-sunken"], TEXT, "a due verdict on a tile"),
     ("--st-error", ["--bg-card", "--bg-sunken"], TEXT, "a failed verdict on a tile"),
@@ -186,9 +186,9 @@ LEM_PAIRS = [
     # band's edges, what a point is judged against) to the 3:1 of a glyph
     ("--text", ["--bg"], TEXT, "the wall's headline and counts"),
     ("--text-muted", ["--bg"], TEXT, "the wall's sub-line, count words and footer"),
-    ("--st-error", ["--bg"], TEXT, "the wall's Not OK to run count"),
-    ("--pill-held-fg", ["--bg-card"], TEXT, "OK to run, but... / QC due on a wall bay or card"),
-    ("--st-error", ["--bg-card"], TEXT, "Not OK to run / Out of spec on a wall bay or card"),
+    ("--st-error", ["--bg"], TEXT, "the wall's Stop count"),
+    ("--pill-held-fg", ["--bg-card"], TEXT, "Attention / QC due on a wall bay or card"),
+    ("--st-error", ["--bg-card"], TEXT, "Stop / Out of spec on a wall bay or card"),
     ("--text-muted", ["--bg-card"], UI, "the QC wall's limit lines"),
     ("--chart-ink", ["--bg-card"], UI, "the QC wall's points"),
     ("--st-error", ["--bg-card"], UI, "the QC wall's out-of-spec triangles"),

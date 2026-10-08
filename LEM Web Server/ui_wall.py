@@ -36,8 +36,10 @@ from ui_instruments import GLYPH, RANK, WORDS, _and
 from ui_live import CANT_TELL, NEEDS_YOU, NO_QC, NOT_OK, OFF_LINE, OK, OK_BUT
 
 # The counts read best first, the way the room scans a row of numbers: how
-# many are fine, then the shades of trouble, then the setup facts.
-COUNT_ORDER = (OK, OK_BUT, NOT_OK, OFF_LINE, CANT_TELL, NO_QC)
+# many are fine, then the shades of trouble, then the setup facts. Can't tell
+# and No QC assigned are one count, "No data" (Ryan's words, 2026-10-07);
+# Off line is counted BESIDE them, never instead of an instrument's state.
+COUNT_ORDER = (OK, OK_BUT, NOT_OK, CANT_TELL, NO_QC)
 CAN_RUN = (OK, OK_BUT, NO_QC)        # Ryan, 1 Oct: only QC or an override says No
 ATTENTION_MAX = 5
 HISTORY_POINTS = 30                  # a wall card is a glance, not the record's chart
@@ -131,13 +133,22 @@ def _unread(payload: dict) -> dict:
 
 
 def counts(rows: List[dict]) -> List[dict]:
-    """One count per readiness state, best first. Every row is in exactly one;
-    a zero is left out (except OK, whose zero is the finding)."""
+    """One count per state the room reads, best first: Ready, Attention,
+    Stop, No data. Every row is in exactly one of those; a zero is left out
+    (except Ready, whose zero is the finding). Then Off line, if any: an
+    extra count (``extra``), since an instrument off line is still in its
+    own state as well (Ryan, 2026-10-07)."""
     n = {s: 0 for s in COUNT_ORDER}
     for r in rows:
         n[r["readiness"]["state"]] += 1
-    return [{"state": s, "n": n[s], "word": WORDS[s], "glyph": GLYPH[s]}
-            for s in COUNT_ORDER if n[s] or s == OK]
+    n[CANT_TELL] += n.pop(NO_QC)          # both are "No data"
+    out = [{"state": s, "n": n[s], "word": WORDS[s], "glyph": GLYPH[s]}
+           for s in COUNT_ORDER if s in n and (n[s] or s == OK)]
+    off = sum(1 for r in rows if r["readiness"].get("off_line"))
+    if off:
+        out.append({"state": OFF_LINE, "n": off, "word": WORDS[OFF_LINE], "glyph": GLYPH[OFF_LINE],
+                    "extra": True})
+    return out
 
 
 def attention(rows: List[dict], failed: Optional[Dict[str, List[str]]] = None) -> tuple:
@@ -146,7 +157,8 @@ def attention(rows: List[dict], failed: Optional[Dict[str, List[str]]] = None) -
     `more` being how many instruments are on lines that did not fit."""
     groups: Dict[tuple, List[dict]] = {}
     for r in rows:
-        if r["readiness"]["state"] not in NEEDS_YOU or not r.get("cause"):
+        if r["readiness"]["state"] not in NEEDS_YOU or not r.get("cause") \
+                or r["readiness"].get("off_line"):
             continue
         # a stop is never merged: each is named with its own failed checks
         # nor are "QC due" and "No verdict yet": one cause key (one filter),
@@ -224,13 +236,14 @@ def bay_details(payload: dict, now: Optional[datetime] = None, short: bool = Fal
     for r in payload.get("instruments") or []:
         state = r["readiness"]["state"]
         bench = r.get("bench") or {}
-        if state == NOT_OK:
+        if r["readiness"].get("off_line"):
+            # the word says its state; the one line says it is off line
+            line = "Off line"
+        elif state == NOT_OK:
             line = "QC out of spec"
         elif state == OK_BUT:
             cause = r.get("cause") or {}
             line = cause.get("words") or ui_live.PROBLEM_WORDS.get(cause.get("key", ""), r["readiness"].get("reason") or "")
-        elif state == OFF_LINE:
-            line = r["readiness"].get("reason") or "Off line"
         elif state == CANT_TELL:
             if bench.get("state") == "closed":
                 line = "Lab closed"
@@ -267,21 +280,25 @@ def floor(payload: dict, machines: Optional[List[dict]] = None) -> dict:
     if not total:
         return dict(base, counts=[], tone="unknown", headline="No instruments in LEM yet",
                     sub="They are added in LabStation › LEM module › New machine…")
+    # by state, as the counts are; off line rides beside (Ryan, 2026-10-07)
     by = {s: [r for r in rows if r["readiness"]["state"] == s] for s in COUNT_ORDER}
-    attn = len(by[OK_BUT]) + len(by[CANT_TELL])
+    off = [r for r in rows if r["readiness"].get("off_line")]
+    attn = len([r for r in by[OK_BUT] + by[CANT_TELL] if not r["readiness"].get("off_line")])
     if by[NOT_OK]:
         bad = by[NOT_OK]
         n = len(bad)
-        head = "%d %s not OK to run" % (n, _plural(n, "instrument is", "instruments are"))
+        # "2 instruments at Stop": the word on every bay and count, said once
+        # as a sentence a room can read in one glance
+        head = "%d %s at Stop" % (n, _plural(n, "instrument", "instruments"))
         what = (_stop_words(bad[0]["uid"], failed, _first(bad[0]["readiness"]["detail"]))
                 if n == 1 else "QC out of spec")
         sub = "%s · %s." % (_names([r["title"] for r in bad]), what)
         if attn:
             sub += " %d more %s attention." % (attn, _plural(attn, "needs", "need"))
-        if by[OFF_LINE]:
-            sub += " %d off line." % len(by[OFF_LINE])
+        if off:
+            sub += " %d off line." % len(off)
         return dict(base, tone="stop", headline=head, sub=sub)
-    can = sum(len(by[s]) for s in CAN_RUN)
+    can = sum(1 for s in CAN_RUN for r in by[s] if not r["readiness"].get("off_line"))
     if can == total:
         head = ("The 1 instrument can run" if total == 1
                 else "All %d instruments can run" % total)
@@ -300,15 +317,15 @@ def floor(payload: dict, machines: Optional[List[dict]] = None) -> dict:
         return dict(base, tone="ok", headline=head, sub=sub)
     head = "%d of %d instruments can run" % (can, total)
     parts = []
-    for r in by[CANT_TELL] + by[OFF_LINE]:
-        if r["readiness"]["state"] == OFF_LINE:
+    for r in by[CANT_TELL] + [r for r in off if r["readiness"]["state"] != CANT_TELL]:
+        if r["readiness"].get("off_line"):
             parts.append("%s · off line." % r["title"])
         else:
-            parts.append("%s · can't tell: %s." % (
+            parts.append("%s · no data: %s." % (
                 r["title"], _lower_first(_first(r["readiness"]["detail"]))))
     sub = " ".join(parts[:2])
     if len(parts) > 2:
-        sub += " %d more can't tell or are off line." % (len(parts) - 2)
+        sub += " %d more with no data or off line." % (len(parts) - 2)
     if by[OK_BUT]:
         k = len(by[OK_BUT])
         sub += " %d more %s attention." % (k, _plural(k, "needs", "need"))

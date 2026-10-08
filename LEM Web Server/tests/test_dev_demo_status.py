@@ -12,7 +12,7 @@ lines that were false about the demo itself:
   never behind a bridge: the seeder writes their records straight into the
   store, which is exactly the "no bridge: the store is the road" case. Under
   --dev the bridge is not kept, and the foot tells the truth.
-* **Every seeded bench aged into "Can't tell · Bench stopped" ~10 min after
+* **Every seeded bench aged into "No data · Bench stopped" ~10 min after
   boot.** The seeder writes one heartbeat per bench at boot and nothing keeps
   it, so the demo decayed into a lab whose benches had all stopped. Under
   --dev --seed a keeper rides the snapshot poller and keeps the seeded,

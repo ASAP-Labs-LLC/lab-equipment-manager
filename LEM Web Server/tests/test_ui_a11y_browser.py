@@ -435,7 +435,7 @@ def test_t1_at_390_the_verdict_at_0_clicks_and_the_full_answer_at_1(drv, server)
     assert _wait(lambda: _visible_text(d, row))
     text = _visible_text(d, row)
     # the verdict word and its reason are on the row, on screen, at 0 clicks
-    assert "GC-2" in text and ("OK to run" in text or "Not OK" in text), text
+    assert "GC-2" in text and ("Ready" in text or "Not OK" in text), text
     clicks = 0
     link = d.find_element(By.CSS_SELECTOR, row + ' a[href="/instruments/gc-2"]')
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", link)   # a scroll, not a click
@@ -620,7 +620,7 @@ const W = document.documentElement.clientWidth;
 const ALLOWED = arguments[0] || [];
 const words = (s) => (s || '').toLowerCase().replace(/[·–—,():…]/g, ' ').split(/\\s+/).filter(w => w && w !== '-');
 // the words of an element's text nodes, each node its own words (textContent
-// would run "Not OK to run" and "Cloud Point" together as "runCloud")
+// would run "Stop" and "Cloud Point" together as "runCloud")
 const textOf = (e) => { const out = []; const w = document.createTreeWalker(e, NodeFilter.SHOW_TEXT);
   while (w.nextNode()) out.push(w.currentNode.textContent); return out.join(' '); };
 const shown = (e) => { const cs = getComputedStyle(e);

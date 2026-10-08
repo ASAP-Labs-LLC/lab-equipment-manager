@@ -12,7 +12,7 @@ do is look fine. These tests hold the words to that:
   numbers are decoration. Here a missing count is a test failure, for every
   combination of states.
 * **One verdict vocabulary.** The words are the app's (§4.1), so "Not OK to
-  run" on the wall is the same claim as "Not OK to run" on the record.
+  run" on the wall is the same claim as "Stop" on the record.
 * **The headline is a sentence about the lab**, and "All 17 instruments can
   run" is said only when every one of them can (OK, OK-but, or No QC
   assigned: Ryan's rule, only QC or an override makes the answer No). An
@@ -109,12 +109,19 @@ class TestTheCountsAddUpToTheFleet:
         and a hidden zero cannot hide anybody (zeros are hidden, except OK)."""
         ms = [of_state(s, "m%d" % i) for i, s in enumerate(mix)]
         w = ui_wall.floor(payload(ms))
-        assert sum(c["n"] for c in w["counts"]) == len(ms) == w["total"]
-        for s in set(mix):
-            assert next(c["n"] for c in w["counts"] if c["state"] == s) == mix.count(s)
+        # Ready, Attention, Stop and No data add up to the fleet; Off line is
+        # counted beside them (an off-line instrument is in its state too)
+        main = [c for c in w["counts"] if not c.get("extra")]
+        assert sum(c["n"] for c in main) == len(ms) == w["total"]
+        under = {"off_line": "ok", "no_qc": "cant_tell"}
+        for s in {under.get(x, x) for x in mix}:
+            assert next(c["n"] for c in main if c["state"] == s) == sum(
+                1 for x in mix if under.get(x, x) == s)
+        extra = [c for c in w["counts"] if c.get("extra")]
+        assert [c["n"] for c in extra] == ([mix.count("off_line")] if "off_line" in mix else [])
 
     def test_zero_counts_are_hidden_but_ok_is_always_shown(self):
-        """'0 Off line' is noise on a wall; '0 OK to run' is the finding."""
+        """'0 Off line' is noise on a wall; '0 Ready' is the finding."""
         w = ui_wall.floor(payload([of_state("not_ok", "a")]))
         states = [c["state"] for c in w["counts"]]
         assert states == ["ok", "not_ok"]
@@ -124,14 +131,15 @@ class TestTheCountsAddUpToTheFleet:
         """§4.1: the same words the record page says, a glyph shape each."""
         w = ui_wall.floor(payload([of_state(s, s) for s in STATES]))
         got = {c["state"]: (c["word"], c["glyph"]) for c in w["counts"]}
-        for s in STATES:
+        for s in ("ok", "ok_but", "not_ok", "cant_tell", "off_line"):
             assert got[s] == (ui_instruments.WORDS[s], ui_instruments.GLYPH[s])
+        assert got["cant_tell"][0] == "No data"
 
     def test_counts_run_best_first_like_the_mock_reads(self):
         """OK first, then the shades of trouble, the way C's wall reads."""
         w = ui_wall.floor(payload([of_state(s, s) for s in STATES]))
         assert [c["state"] for c in w["counts"]] == [
-            "ok", "ok_but", "not_ok", "off_line", "cant_tell", "no_qc"]
+            "ok", "ok_but", "not_ok", "cant_tell", "off_line"]
 
 
 # ── the headline ────────────────────────────────────────────────────────────
@@ -141,7 +149,7 @@ class TestTheHeadline:
         ms = [machine("gc1", "Agilent GC 1", specs=[spec("Distillation 10%", False)]),
               of_state("ok_but", "b"), of_state("ok_but", "c"), of_state("ok", "d")]
         w = ui_wall.floor(payload(ms))
-        assert w["headline"] == "1 instrument is not OK to run"
+        assert w["headline"] == "1 instrument at Stop"
         assert w["sub"].startswith("Agilent GC 1 · Distillation 10% out of spec.")
         assert "2 more need attention." in w["sub"]
         assert w["tone"] == "stop"
@@ -167,7 +175,7 @@ class TestTheHeadline:
         ms = [machine("a", "A", specs=[spec("X", False)]), machine("b", "B", specs=[spec("Y", False)]),
               machine("c", "C", specs=[spec("Z", False)])]
         w = ui_wall.floor(payload(ms))
-        assert w["headline"] == "3 instruments are not OK to run"
+        assert w["headline"] == "3 instruments at Stop"
         assert w["sub"].startswith("A, B and 1 more · QC out of spec.")
 
     def test_all_can_run_only_when_all_can(self):
@@ -189,7 +197,7 @@ class TestTheHeadline:
                                            specs=[spec("RVP", True)])]
         w = ui_wall.floor(payload(ms))
         assert w["headline"] == "1 of 2 instruments can run"
-        assert "Eravap · can't tell: its bench stopped checking in." in w["sub"]
+        assert "Eravap · no data: its bench stopped checking in." in w["sub"]
         assert w["tone"] == "warn"
 
     def test_off_line_is_said(self):
@@ -231,7 +239,7 @@ class TestNeedsAttention:
               of_state("ok", "fine")]
         a = ui_wall.floor(payload(ms))["attention"]
         assert [i["names"] for i in a] == [["OptiMPP 1"], ["GC-2", "PAC Flash 1"], ["Eravap"]]
-        assert a[0]["word"] == "Not OK to run" and a[0]["glyph"] == "error"
+        assert a[0]["word"] == "Stop" and a[0]["glyph"] == "error"
         assert a[0]["detail"] == "Cloud out of spec"
         assert a[0]["href"] == "/instruments/o1#qc"
         assert a[1]["detail"] == "Calibration overdue"
@@ -267,7 +275,7 @@ class TestNeedsAttention:
 
 class TestBayDetails:
     """A bay on the wall is about 130px wide at 1440 and its detail line is
-    14px: room for about 16 characters. "1 check in spec" under "OK to run"
+    14px: room for about 16 characters. "1 check in spec" under "Ready"
     says the same thing twice and is cut anyway. The wall's line is the one
     fact the word leaves out: when QC last ran, since when a bench has been
     silent, what is overdue (C's mock: "QC 13:10", "Silent since 08:48")."""
@@ -294,7 +302,7 @@ class TestBayDetails:
                           machine("k", status="SERVICE"),
                           machine("z")])
         assert d == {"n": "QC out of spec", "c": "Calibration overdue", "q": "QC due",
-                     "k": "Out for service", "z": "Checking in"}
+                     "k": "Off line", "z": "Checking in"}
 
     def test_the_short_lines_a_narrow_bay_falls_back_to(self):
         """At 1440 a 7-wide floor leaves ~110px for the line. The short
@@ -491,7 +499,7 @@ class TestQcAssignmentsAndStoppedBenches:
     def test_a_stopped_benchs_old_pass_is_no_verdict_yet(self):
         """§4.1: "No verdict yet" is also a check whose bench is stopped. A
         pass from before the bench stopped says nothing about today, and the
-        floor already calls that instrument "Can't tell"; /qc saying
+        floor already calls that instrument "No data"; /qc saying
         "In spec" beside it would be two answers to one question. The last
         result is still shown, with its date, so nothing is hidden."""
         vi = machine("vi", "Viscocity", running=False, module_state="stopped",
@@ -502,7 +510,7 @@ class TestQcAssignmentsAndStoppedBenches:
         assert c["last"]["value"] == "2.3400" and c["last"]["at"]
 
     def test_a_stopped_benchs_failure_still_says_out_of_spec(self):
-        """Out of spec is what makes the floor say Not OK to run; stopping
+        """Out of spec is what makes the floor say Stop; stopping
         the bench does not make a failed check go away (ui_live.readiness
         puts QC before the bench). Same for QC due."""
         ms = [machine("a", "A", running=False, module_state="stopped", specs=[spec("X", False)]),
@@ -571,7 +579,7 @@ class TestQcCardWords:
 
 class TestAttentionRuns:
     """Needs attention says each state word once, as the heading of its
-    group (round 4: "OK to run, but…" said on every card made the warning
+    group (round 4: "Attention" said on every card made the warning
     tier compete with the failures, both blind judges). The groups are runs
     of one state in the list's own worst-first order, never a re-sort: the
     server already ranked the lines, and the wall must not undo that."""
@@ -647,11 +655,11 @@ class TestOneWordPerCheckOnBothWalls:
 
     def test_the_instrument_word_is_unchanged(self):
         """The instrument's own word stays the §4.1 instrument word: an
-        assigned check with no verdict is still "OK to run, but…" (it can
+        assigned check with no verdict is still "Attention" (it can
         run, somebody should run the standard). Only the reason changes."""
         p = payload([machine("kv", "Koehler K23000", specs=[never_run()])])
         r = p["instruments"][0]
-        assert r["readiness"]["word"] == "OK to run, but…"
+        assert r["readiness"]["word"] == "Attention"
         assert r["readiness"]["detail"] == "No verdict yet on Viscosity 40C"
         assert r["cause"]["words"] == "No verdict yet"
         assert r["readiness"]["next"]["text"] == "Run AF26"

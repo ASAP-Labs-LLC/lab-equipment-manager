@@ -237,7 +237,7 @@ check('pages', W.pages(13, 9), 2);
   check('1440: Needs attention fills the hole the levels leave', a && a.mode, 'hole');
   check('1440: the hole is top right, where the eye goes after the headline', a && a.rows, [[0], [1, 2]]);
   check('1440: the hole is in row 0', a && a.hole.row, 0);
-  check('1440: bays are wide enough for "OK to run, but…" on one line (>= 190px)', a && a.cellW >= 190, true);
+  check('1440: bays are wide enough for "Attention" on one line (>= 190px)', a && a.cellW >= 190, true);
   check('1440: bays are tall enough for name, word and detail', a && a.cellH >= 112, true);
   check('1440: the hole holds Needs attention', a && a.hole.w >= 560 && a.hole.h >= 280, true);
   const col = W.floorPack(demo, 1376 - 331 - 26, 690, o);

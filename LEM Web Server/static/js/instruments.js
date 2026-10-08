@@ -187,7 +187,10 @@
             sub([b.word, benchWhen ? (b.state === 'in' ? 'last poll ' : 'since ') + benchWhen : '',
                 r.where.level, r.where.placed ? '' : 'not on the map'].filter(Boolean).join(' · '), 'fold-bench'));
         const run = h('td', { className: 'c-run' },
-            h('span', { className: 'verdict s-' + rd.state }, glyph(rd.glyph), h('span', { text: rd.word })),
+            h('span', { className: 'verdict s-' + rd.state }, glyph(rd.glyph), h('span', { text: rd.word }),
+              // off line rides beside the state, never instead of it (Ryan, 2026-10-07)
+              rd.off_line ? h('span', { className: 'offbadge', title: rd.off_line.reason }, glyph('off'),
+                              h('span', { text: rd.off_line.word })) : null),
             rd.detail ? sub(rd.detail) : null);
         let qc;
         if (view.filter === 'maintenance') {

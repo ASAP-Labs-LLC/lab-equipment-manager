@@ -9,7 +9,7 @@
 {% endblock %}
 {% block content %}
 <main class="content help" id="main" tabindex="-1">
-  <p class="lead">LEM keeps the lab's instruments honest: whether each one is OK to run, its QC, its maintenance, and the rounds that open and close the lab.</p>
+  <p class="lead">LEM keeps the lab's instruments honest: whether each one is Ready, needs Attention or must Stop, its QC, its maintenance, and the rounds that open and close the lab.</p>
 
   <section aria-labelledby="h-pages">
     <h2 id="h-pages">Pages</h2>
@@ -29,9 +29,9 @@
     <h2 id="h-status">Status is a shape and a word</h2>
     <p>Colour is never the only signal. Each state has its own shape, so it reads the same in light, dark and on a black-and-white printout.</p>
     <ul class="glyph-list">
-      <li><span class="glyph final" aria-hidden="true"></span> A filled dot: fine. "OK to run", "In spec", "Checking in".</li>
+      <li><span class="glyph final" aria-hidden="true"></span> A filled dot: fine. "Ready", "In spec", "Checking in".</li>
       <li><span class="glyph held" aria-hidden="true"></span> A ring with a gap: due or quiet. "QC due", "Quiet since 08:48".</li>
-      <li><span class="glyph error" aria-hidden="true"></span> A triangle: not OK. "Not OK to run", "Out of spec".</li>
+      <li><span class="glyph error" aria-hidden="true"></span> A triangle: stop. "Stop", "Out of spec".</li>
       <li><span class="glyph never" aria-hidden="true"></span> A hollow ring: nothing to judge by yet. "No verdict yet", "Not read from LabCore yet".</li>
     </ul>
   </section>
