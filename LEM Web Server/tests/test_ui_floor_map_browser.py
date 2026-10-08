@@ -437,7 +437,7 @@ def test_no_console_errors(drv, server):
 # lines and, if it still does not fit, is shortened by meaning ("Calibration
 # overdue", not "Calibration…") or steps aside for the bay's title.
 
-STATE_RANK = {"ok": 0, "off_line": 1, "cant_tell": 2, "ok_but": 3, "not_ok": 4}
+STATE_RANK = {"ok": 0, "off_line": 1, "no_qc": 2, "cant_tell": 2, "ok_but": 3, "not_ok": 4}
 
 TABS = """
 return [...document.querySelectorAll('#level-seg a')].map(a => ({

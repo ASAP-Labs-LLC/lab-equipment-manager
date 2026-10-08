@@ -178,7 +178,7 @@ return {
   name: min('.bay .b-name'), word: min('.bay .b-wtext'),
   aname: min('.wa-names'), aword: min('.wa-wtext'),
   qname: min('.qc-name'), qword: min('.qc-wtext'),
-  counts: [...document.querySelectorAll('#wf-counts .wc-n')].map(e => +e.textContent),
+  counts: [...document.querySelectorAll('#wf-counts .wc:not(.s-off_line) .wc-n')].map(e => +e.textContent),
   fleet: (JSON.parse(document.getElementById('wall-data') ? document.getElementById('wall-data').textContent : '{}').instruments || []).length,
   bad,
 };
@@ -694,7 +694,7 @@ def test_a_frozen_data_feed_goes_stale_too(server, drv, path):
 # minute. Each tab carries the worst state on its level, so a monitor on the
 # Mezzanine still says the Upper Lab has an instrument that cannot run.
 
-STATE_RANK = {"ok": 0, "off_line": 1, "cant_tell": 2, "ok_but": 3, "not_ok": 4}
+STATE_RANK = {"ok": 0, "off_line": 1, "no_qc": 2, "cant_tell": 2, "ok_but": 3, "not_ok": 4}
 
 PAGE = r"""
 const tabs = [...document.querySelectorAll('#wf-tabs .wp-tab')];

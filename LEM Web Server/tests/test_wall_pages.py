@@ -256,7 +256,8 @@ class TestTheFirstPaintIsTheAnswer:
         w = data["wall"]
         assert w["headline"] and w["headline"] in page
         assert w["sub"] in page.replace("&#39;", "'")
-        shown = [int(n) for n in re.findall(r'<b class="wc-n">(\d+)</b>', page)]
+        # the states add up to the fleet; Off line is an extra count beside them
+        shown = [int(n) for n in re.findall(r'<li class="wc s-(?!off_line)[a-z_]+"><span[^>]*></span><b class="wc-n">(\d+)</b>', page)]
         assert sum(shown) == w["total"] == len(data["instruments"])
 
     def test_counts_add_up_to_the_fleet_the_live_feed_counts(self, seeded):
@@ -266,7 +267,9 @@ class TestTheFirstPaintIsTheAnswer:
         c = app.test_client()
         w = c.get("/api/ui/wall/floor").get_json()["wall"]
         live = c.get("/api/ui/live").get_json()
-        assert sum(x["n"] for x in w["counts"]) == w["total"] == live["fleet"]["total"]
+        # the state counts add up to the fleet; Off line is counted beside
+        # them (``extra``), never instead of an instrument's state (2026-10-07)
+        assert sum(x["n"] for x in w["counts"] if not x.get("extra")) == w["total"] == live["fleet"]["total"]
         assert w["benches"] == {"checking_in": live["fleet"]["checking_in"],
                                 "total": live["fleet"]["total"]}
 
