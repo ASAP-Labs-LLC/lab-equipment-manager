@@ -1528,15 +1528,13 @@ a.bay:hover { border-color: var(--border-strong); }
     .level-seg { flex: 1 1 auto; min-width: 0; max-width: none; flex-wrap: wrap; border-radius: var(--radius-lg); }
     .level-seg a { padding: 0 12px; }
     /* like a phone's page dots: the level shown says its name, the others
-       are their status and count (a swipe or a tap goes to them); their
-       names stay the links' accessible names */
+       are their status and count (a swipe or a tap goes to them); each
+       link's aria-label still says its level's name */
     .level-seg a:not([aria-current="page"]) { padding: 0 8px; gap: 5px; }
     .plan-bar { column-gap: var(--s2); }
     .plan-bar .spacer { display: none; }
     .plan-bar .arrange-btn { margin-left: auto; width: 44px; padding: 0; flex: none; }
-    .level-seg a:not([aria-current="page"]) .lv-name {
-        position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap;
-    }
+    .level-seg a:not([aria-current="page"]) .lv-name { display: none; }
     .arrange-btn { min-width: 44px; padding: 0 10px; justify-content: center; }
     .arrange-btn .arrange-ico { display: inline-block; }
     .arrange-btn .arrange-word { display: none; }

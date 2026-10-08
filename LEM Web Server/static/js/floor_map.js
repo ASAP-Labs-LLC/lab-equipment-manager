@@ -104,6 +104,8 @@
                 className: [withCause.has(lv.uid) ? 'has-cause' : '', m.state ? 's-' + m.state : ''].join(' ').trim() || null,
                 title: withCause.has(lv.uid) ? 'Has an instrument with this problem' : null,
                 'data-state': m.state || null,
+                // the name is said even where a phone shows only the glyph
+                'aria-label': lv.name + (m.need ? ', ' + m.need + ' need you' : ''),
                 'aria-current': lv.uid === level ? 'page' : null, 'data-level': lv.uid },
                 m.state ? h('span', { className: 'glyph ' + m.glyph, 'aria-hidden': 'true' }) : null,
                 h('span', { className: 'lv-name' }, lv.name),
