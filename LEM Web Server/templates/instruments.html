@@ -126,6 +126,10 @@
         in Settings › Imports (the old fleet-wide PM page is gone) -#}
     <p class="view-note" id="view-unknown" data-testid="view-unknown" role="status" hidden><span class="ico ico-info" aria-hidden="true"></span><span id="view-unknown-text"></span></p>
     <p class="view-note" id="maint-note" data-testid="maint-note" hidden><span class="ico ico-info" aria-hidden="true"></span><span>To mark a task done, open its instrument: the record's Maintenance and calibration section has it. To import PM history, use <a class="link" href="/settings#imports">Settings › Imports</a>.</span></p>
+    {#- one card per instrument, grouped by state worst first, its checks as
+        chips (2026-10-07); the Maintenance view keeps the table, where due
+        dates are compared down a column -#}
+    <div class="icards" id="inst-cards" data-testid="inst-cards"></div>
     <table class="tbl inst" id="inst-tbl">
       <thead><tr>
         <th scope="col" class="c-name">Instrument</th>
@@ -145,6 +149,7 @@
 {% endblock %}
 {% block scripts %}
 <script src="/static/js/instruments_logic.js?v={{ v('js/instruments_logic.js') }}"></script>
+<script src="/static/js/checkcard.js?v={{ v('js/checkcard.js') }}"></script>
 {%- if view == 'map' %}
 <script src="/static/js/plan.js?v={{ v('js/plan.js') }}"></script>
 <script src="/static/js/floor_map.js?v={{ v('js/floor_map.js') }}"></script>

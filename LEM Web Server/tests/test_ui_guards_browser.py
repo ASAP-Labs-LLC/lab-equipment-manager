@@ -196,7 +196,7 @@ def test_an_idle_page_sends_nothing_but_gets(drv, server, who):
 
 def test_every_drawn_row_opens_a_record(drv, server):
     _sign(drv, server.base, "")
-    for path, rows in (("/", "#inst-rows tr.irow"), ("/quality", "#q-rows tr")):
+    for path, rows in (("/", "#inst-cards .irow"), ("/quality", "#q-rows tr")):
         drv.get(server.base + path)
         got = None
         for _ in range(60):

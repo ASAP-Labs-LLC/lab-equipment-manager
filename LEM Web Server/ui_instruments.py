@@ -403,6 +403,52 @@ def _tile_cause(key: str, members: List[dict]) -> str:
     return said[0] + "".join(" or " + ui_live._lower_first(w) for w in said[1:])
 
 
+# The order a distillation reads in, so GC's five checks sit as a chart does.
+_DISTILLATION = ("IBP", "10%", "50%", "90%", "FBP")
+
+
+def short_check_names(tests: List[str]) -> List[str]:
+    """Each check by the method's own words, without what its siblings share.
+
+    "ASTM D2887/D86 - Distillation in Petroleum Products, 10% Recovery" and
+    its four siblings are "10%", "50%", "90%", "FBP", "IBP"; Pour and Cloud
+    Point lose their shared ", mini method". One check keeps its method's
+    words after the standard's number ("ASTM D5453 - Sulfur" is "Sulfur").
+    Production's list said the full name of all five GC checks in one
+    sentence (2026-10-07), which is what got cut off."""
+    words = [t.split(" - ", 1)[1] if " - " in t else t for t in tests]
+    if len(words) < 2:
+        return words
+    parts = [w.split(", ") for w in words]
+    pre = 0
+    while all(len(p) > pre + 1 and p[pre] == parts[0][pre] for p in parts):
+        pre += 1
+    suf = 0
+    while all(len(p) > pre + suf + 1 and p[len(p) - 1 - suf] == parts[0][len(parts[0]) - 1 - suf] for p in parts):
+        suf += 1
+    out = [", ".join(p[pre:len(p) - suf]) for p in parts]
+    return [w[:-len(" Recovery")] if w.endswith("% Recovery") else w for w in out]
+
+
+def checks(m: dict) -> List[dict]:
+    """Every check in force, each with its short name, its result against its
+    band, and its verdict by ui_live.check_verdict (the rule the card's own
+    state is judged by, so a chip cannot disagree with its card)."""
+    rows = ui_live.qc_checks(m)
+    names = short_check_names([r["test_name"] for r in rows])
+    out = []
+    for r, name in zip(rows, names):
+        s = r.get("spec") or {}
+        out.append({"name": name, "test": r["test_name"], "sample": r.get("sample_id") or "",
+                    "key": r["verdict"]["key"], "word": r["verdict"]["word"],
+                    "value": None if r.get("last_qc_at") is None else s.get("last_qc_value"),
+                    "units": s.get("units") or "", "low": s.get("low"), "expected": s.get("expected"),
+                    "high": s.get("high"), "at": r.get("last_qc_at")})
+    if out and all(c["name"] in _DISTILLATION for c in out):
+        out.sort(key=lambda c: _DISTILLATION.index(c["name"]))
+    return out
+
+
 def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: Href) -> dict:
     uid = m["machine_uid"]
     ready = ui_live.readiness(m, override)
@@ -427,6 +473,7 @@ def instrument(m: dict, override: Optional[str], levels: Dict[str, str], href: H
         # everyone with the problem, not only those it is the worst for
         "problems": [{"key": k, "words": _problem_words(m, k)} for k in keys],
         "last_qc": last_qc(m),
+        "checks": checks(m),
         "bench": bench(m),
         "level_uid": m.get("level_uid") or "",
         "where": {"level": levels.get(m.get("level_uid") or "") or "No level",

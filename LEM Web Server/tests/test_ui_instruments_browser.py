@@ -86,7 +86,7 @@ def _open(d, base, path="/", size=(1440, 900), theme="light"):
     d.execute_script("localStorage.setItem('lem.theme', arguments[0])", theme)
     d.get(base + path)
     for _ in range(50):
-        if d.execute_script("return document.querySelectorAll('tr.irow').length"):
+        if d.execute_script("return document.querySelectorAll('.irow').length"):
             return
         time.sleep(0.1)
     raise AssertionError("the table never drew")
@@ -98,7 +98,7 @@ def test_t1_at_desk_the_verdict_and_its_reason_are_whole_on_the_first_screen(drv
     below it. The first screen must hold GC-2's whole row."""
     _open(drv, server.base)
     got = drv.execute_script("""
-        const tr = document.querySelector('tr[data-uid="gc-2"]');
+        const tr = document.querySelector('.irow[data-uid="gc-2"]');
         return {bottom: tr.getBoundingClientRect().bottom, vh: innerHeight,
                 text: tr.querySelector('.c-run').innerText};""")
     assert got["bottom"] <= got["vh"], got
@@ -109,7 +109,7 @@ def test_t1_at_desk_the_verdict_and_its_reason_are_whole_on_the_first_screen(drv
 def test_t1_the_verdict_is_on_screen_with_no_click(drv, server, size):
     _open(drv, server.base, size=size)
     got = drv.execute_script("""
-        const tr = document.querySelector('tr[data-uid="gc-2"]');
+        const tr = document.querySelector('.irow[data-uid="gc-2"]');
         const v = tr.querySelector('.verdict');
         const b = v.getBoundingClientRect();
         return {word: v.textContent.trim(), w: b.width, h: b.height, top: b.top,
@@ -122,7 +122,7 @@ def test_t1_the_verdict_is_on_screen_with_no_click(drv, server, size):
         # list. What must hold is that the table itself starts on the first
         # screen, so nobody has to discover that there is a list below.
         first = drv.execute_script(
-            "return document.querySelector('tr.irow').getBoundingClientRect().bottom")
+            "return document.querySelector('.irow').getBoundingClientRect().bottom")
         assert first <= size[1], "the table's first row is above the fold"
 
 
@@ -163,7 +163,7 @@ def test_say_it_once(drv, server):
     assert chips and not any(re.search(r"\d", c) for c in chips), chips
     pills = drv.find_elements("css selector", ".page-head .pill")
     assert len(pills) == 1, "one fleet pill"
-    for a in drv.find_elements("css selector", "tr.irow a.iname"):
+    for a in drv.find_elements("css selector", ".irow a.iname"):
         assert a.get_attribute("href"), "every row is a link"
     # the first screen, as a person sees it: every visible text node inside
     # the viewport, counted per instrument title
@@ -222,7 +222,7 @@ def test_the_bell_does_not_tell_the_rows_again(drv, server):
 def test_a_pm_behind_a_calibration_is_on_its_row(drv, server):
     _open(drv, server.base)
     text = drv.execute_script(
-        "return document.querySelector('tr[data-uid=\"optimpp-2\"] .c-run').innerText")
+        "return document.querySelector('.irow[data-uid=\"optimpp-2\"] .c-run').innerText")
     # and the PM says since when, as the calibration does (round 2's critic)
     assert "Calibration overdue since" in text and re.search(r"PM overdue since \d+ \w{3} too", text), text
 
@@ -238,7 +238,7 @@ def test_a_tiles_view_shows_everyone_with_the_problem(drv, server, path, want):
     """The seed's schedule has 7 overdue calibrations and 3 overdue PMs; the
     view that showed 2 of 3 PMs keyed on each instrument's worst cause."""
     _open(drv, server.base, path)
-    assert len(drv.find_elements("css selector", "tr.irow")) == want
+    assert len(drv.find_elements("css selector", ".irow")) == want
 
 
 @pytest.mark.parametrize("size", [(1440, 900), (390, 844)], ids=lambda s: "%dx%d" % s)
@@ -255,7 +255,7 @@ def test_the_maintenance_view_is_not_the_whole_list_again(drv, server, size):
     rows with nothing else due, and the header says which way."""
     _open(drv, server.base, "/maintenance", size=size)
     got = drv.execute_script("""
-        const rows = [...document.querySelectorAll('tr.irow')];
+        const rows = [...document.querySelectorAll('.irow')];
         const th = document.getElementById('col-third');
         return {head: th.firstChild.textContent, sort: th.getAttribute('aria-sort'),
                 order: rows.map(r => r.dataset.uid),
@@ -281,13 +281,13 @@ def test_the_no_qc_view_is_every_row_whose_last_qc_says_so(drv, server):
     in Last QC on the All view. The chip and the column are one fact."""
     _open(drv, server.base, "/")
     said = drv.execute_script("""
-        return [...document.querySelectorAll('tr.irow')]
+        return [...document.querySelectorAll('.irow')]
           .filter(r => r.querySelector('.c-qc').innerText.trim() === 'No QC assigned')
           .map(r => r.dataset.uid).sort();""")
     assert said, "the seed should have instruments with no QC assigned"
     _open(drv, server.base, "/?filter=noqc")
     shown = sorted(drv.execute_script(
-        "return [...document.querySelectorAll('tr.irow')].map(r => r.dataset.uid)"))
+        "return [...document.querySelectorAll('.irow')].map(r => r.dataset.uid)"))
     assert shown == said
     pressed = drv.execute_script(
         "return [...document.querySelectorAll('#inst-chips .chip[aria-pressed=true]')].map(c => c.textContent)")
@@ -306,7 +306,7 @@ def test_a_view_the_page_does_not_have_is_said(drv, server):
 
 def test_off_line_is_a_view(drv, server):
     _open(drv, server.base, "/?filter=offline")
-    states = drv.execute_script("return [...document.querySelectorAll('tr.irow')].map(r => r.dataset.state)")
+    states = drv.execute_script("return [...document.querySelectorAll('.irow')].map(r => r.dataset.state)")
     none = drv.find_element("id", "inst-none")
     assert all(s == "off_line" for s in states), states
     assert states or none.is_displayed(), "an empty view says so"
@@ -357,23 +357,80 @@ def test_find(drv, server):
 
 def test_a_merged_tile_filters_in_place_and_back_restores(drv, server):
     _open(drv, server.base)
-    before = len(drv.find_elements("css selector", "tr.irow"))
+    before = len(drv.find_elements("css selector", ".irow"))
     merged = [t for t in drv.find_elements("css selector", "a.ntile")
               if "cause=" in (t.get_attribute("href") or "")]
     assert merged, "the seed has instruments sharing a cause"
     merged[0].click()
     time.sleep(0.3)
     assert "cause=" in drv.current_url
-    after = len(drv.find_elements("css selector", "tr.irow"))
+    after = len(drv.find_elements("css selector", ".irow"))
     assert 0 < after < before
     pressed = drv.find_elements("css selector", "#inst-chips [aria-pressed=true]")
     assert len(pressed) == 1 and "clears" in pressed[0].get_attribute("class")
     drv.back()
     time.sleep(0.3)
-    assert len(drv.find_elements("css selector", "tr.irow")) == before
+    assert len(drv.find_elements("css selector", ".irow")) == before
 
 
 def test_no_console_errors(drv, server):
     _open(drv, server.base)
     errors = [e for e in drv.get_log("browser") if e["level"] == "SEVERE"]
     assert errors == []
+
+
+# ── one card per instrument, each check a chip that opens its range ───────
+#
+# Ryan, 2026-10-07: GC was "scattered all over the place", words were cut off
+# by "…", and "I want to look at the machine on the grid and see the status,
+# what the result was and the target range, (maybe on a hover, because I
+# understand GC is hard because it has 5 of them)". The list is one card per
+# instrument grouped by state worst first; each check is a chip; a chip or a
+# map bay opens the check card: each result against min – target – max.
+
+def _wait(fn, timeout=6.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            v = fn()
+        except Exception:  # noqa: BLE001
+            v = None
+        if v:
+            return v
+        time.sleep(0.1)
+    return None
+
+
+CARD = r"""
+const c = document.getElementById('checkcard');
+return c && !c.hidden ? {rows: [...c.querySelectorAll('.cc-row')].map(r => ({
+  name: r.querySelector('.cc-name').textContent, val: r.querySelector('.cc-val').textContent,
+  out: r.classList.contains('cc-out'), band: (r.querySelector('.cc-l2 span') || {}).textContent || '',
+  dot: !!r.querySelector('.cc-dot')}))} : null;
+"""
+
+
+def test_cards_group_by_state_and_a_chip_opens_its_range(drv, server):
+    _open(drv, server.base)
+    groups = drv.execute_script("return [...document.querySelectorAll('#inst-cards .igroup')].map(g => g.querySelectorAll('.irow').length)")
+    assert sum(groups) == len(drv.find_elements("css selector", ".irow")) and len(groups) >= 2, groups
+    first = drv.execute_script("return document.querySelector('#inst-cards .igroup').className")
+    assert "s-not_ok" in first, "the worst state is the first group"
+    chip = drv.find_element("css selector", '.irow[data-uid="optimpp-1"] .ichip.k-out')
+    drv.execute_script("arguments[0].focus()", chip)
+    card = _wait(lambda: drv.execute_script(CARD))
+    assert card and len(card["rows"]) == 1, card
+    row = card["rows"][0]
+    assert row["out"] and row["dot"] and " – " in row["band"], row
+
+
+def test_a_bay_opens_every_check_on_the_instrument(drv, server):
+    _open(drv, server.base)
+    drv.get(server.base + "/?view=map&focus=optimpp-1")
+    bay = _wait(lambda: drv.find_element("css selector", '#plan .bay[data-uid="optimpp-1"]'))
+    drv.execute_script("arguments[0].focus()", bay)
+    card = _wait(lambda: drv.execute_script(CARD))
+    assert card and len(card["rows"]) == 2, card
+    assert all(r["band"] for r in card["rows"]), card
+    assert drv.execute_script("return getComputedStyle(arguments[0]).backgroundColor", bay) not in ("rgba(0, 0, 0, 0)",), \
+        "a Stop bay is tinted"
