@@ -181,7 +181,10 @@
         if (!Number.isFinite(avail) || !(rows > 0)) return CELL_DEFAULT;
         const floor = Number.isFinite(min) && min > 0 ? min : CELL_MIN;
         const h = Math.floor((avail - (gap || 0) * (rows - 1)) / rows);
-        const cap = Number.isFinite(width) && width > 0 ? Math.min(CELL_MAX, Math.floor(width)) : CELL_MAX;
+        // a wide bay (a 4K desk) may pass 240, to three quarters of its
+        // width: the floor fills a big screen rather than a corner of it
+        const cap = Number.isFinite(width) && width > 0
+            ? Math.min(Math.floor(width), Math.max(CELL_MAX, Math.floor(width * 0.75))) : CELL_MAX;
         return Math.max(floor, Math.min(cap, h));
     }
     /** How tightly to pack: a floor whose bays would be under 128px wide
@@ -401,6 +404,8 @@
             host.classList.toggle('wrapwords', !!opts.fullWords && opts.words === 'wrap');
             host.classList.toggle('roomy', (opts.cellH || 0) >= 140 && (opts.cellH || 0) < 200);
             host.classList.toggle('grand', (opts.cellH || 0) >= 200);
+            // a 4K desk's bays (2026-10-08): the words grow with the bay
+            host.classList.toggle('huge', (opts.cellH || 0) >= 280);
             fit(host);
         };
 

@@ -250,6 +250,30 @@ def test_production_fills_the_desk_screen_without_scrolling(drv, server):
     assert m["cardBottom"] <= m["vh"], m
 
 
+# what share of the window the plan card covers
+SHARE = """
+const c = document.getElementById('plan-card').getBoundingClientRect();
+return {w: c.width / innerWidth, h: c.height / innerHeight};
+"""
+
+
+@pytest.mark.parametrize("size", [(2560, 1440), (3840, 2160)])
+@pytest.mark.parametrize("kind", ["demo", "prod"])
+def test_the_map_fills_a_big_screen(drv, server, kind, size):
+    """2026-10-08, Ryan: "on my 4k screen it takes up 25% of my screen".
+    The page's 1240px reading width does not apply to the map: the plan
+    takes the width beside Needs you, and the bays grow to fill the height,
+    with nothing cut."""
+    shape(server, kind)
+    _open(drv, server.base, size=size)
+    share = _js(drv, SHARE)
+    assert share["w"] >= 0.7, share
+    assert share["h"] >= 0.55, share
+    m = _js(drv, MEASURE)
+    assert not _overflows(m), _overflows(m)
+    assert m["cardBottom"] <= m["vh"], m
+
+
 def test_the_level_seg_shows_only_with_more_than_one_level(drv, server):
     shape(server, "prod")
     _open(drv, server.base)

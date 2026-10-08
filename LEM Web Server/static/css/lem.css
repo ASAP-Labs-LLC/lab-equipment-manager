@@ -1465,6 +1465,8 @@ dialog.sheet p.item-sheet-label { font-weight: 600; color: var(--text); overflow
    is the glyph and the word only: the Not-OK bay has the 1.5px ink border
    and a bold word, never a red fill; a bench that stopped checking in has a
    dashed outline. Tokens only (tests/test_ui_contrast.py). */
+/* the map takes the window, not the 1240px reading width (a 4K desk, 2026-10-08) */
+.content.inst-map { max-width: none; }
 .map-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: var(--s5); align-items: start; }
 .map-layout[hidden] { display: none; }
 .plan-card { padding: var(--s4) var(--s5) var(--s5); min-width: 0; }
@@ -1517,6 +1519,14 @@ a.bay:hover { border-color: var(--border-strong); }
 .plan.grand .bay .b-word { font-size: var(--fs-lg); line-height: 22px; gap: 8px; }
 .plan.grand .bay .b-word .glyph { width: 12px; height: 12px; }
 .plan.grand .bay .b-detail { font-size: var(--fs-md); line-height: 20px; }
+.plan.huge:not(.wallplan) .bay { padding: 24px 28px; }
+.plan.huge:not(.wallplan) .bay .b-name { font-size: 28px; line-height: 36px; }
+.plan.huge:not(.wallplan) .bay .b-word { font-size: 22px; line-height: 30px; gap: 10px; }
+.plan.huge:not(.wallplan) .bay .b-word .glyph { width: 16px; height: 16px; }
+.plan.huge:not(.wallplan) .bay .b-detail { font-size: 18px; line-height: 26px; }
+.plan.huge:not(.wallplan) .bay .b-dots { gap: 6px; margin-top: 8px; }
+.plan.huge:not(.wallplan) .bay .b-dots i { width: 12px; height: 12px; }
+.plan.huge:not(.wallplan) .bay .b-dots i.k-out { width: 13px; }
 /* the name leads at the top; the verdict and its detail sit together at the foot */
 .bay .b-word { margin-top: auto; }
 .bay .b-detail { margin-top: 2px; }

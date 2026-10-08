@@ -156,6 +156,10 @@ check('cell height: five rows in 640px', P.cellHeight(640, 5, 12), 118);
 check('cell height: never below a readable bay (two-line name, word, detail)', P.cellHeight(200, 6, 12), 96);
 check('cell height: never a poster', P.cellHeight(2000, 1, 12), 240);
 check('cell height: no room reported', P.cellHeight(NaN, 3, 12), 112);
+// a 4K desk (2026-10-08, "on my 4k screen it takes up 25%"): a wide bay may
+// grow past 240, to three quarters of its width, so the floor fills the screen
+check('cell height: a wide bay on a big screen grows past 240', P.cellHeight(2000, 5, 12, 450), 337);
+check('cell height: a wide bay still stops at the room it has', P.cellHeight(800, 5, 12, 450), 150);
 
 // ── a short word, for a bay too narrow for the whole one ───────────────────
 // the glyph's SHAPE still tells the states apart; the title has the words
