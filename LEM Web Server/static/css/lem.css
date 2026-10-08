@@ -525,6 +525,88 @@ body.bench .rail-status, :root[data-sidebar] body.bench .rail-status { display: 
     .round-card .rrow.sub { margin-left: 12px; }
 }
 
+/* ── instruments as cards, checks as chips (2026-10-07) ─────────────────
+   One card per instrument, grouped by state worst first; the state word is
+   the card's largest line, its top edge the state's colour, and its checks
+   short chips that open each result against its band (checkcard.js). */
+.icards { display: grid; gap: var(--s5); padding: var(--s1) 0 var(--s3); }
+.icards[hidden] { display: none; }
+.igroup-h { display: flex; align-items: center; gap: var(--s2); margin: 0 0 var(--s2); font-size: var(--fs-md); font-weight: 650; }
+.igroup-h .igroup-n { color: var(--text-muted); font-weight: 500; }
+.igrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--s2); }
+.icard {
+    display: grid; gap: 6px; align-content: start; min-width: 0; cursor: pointer;
+    padding: 10px var(--s3) 8px; border-radius: var(--radius-lg); background: var(--bg-card);
+    border: 1px solid var(--border-light); border-top: 4px solid var(--border); box-shadow: var(--e1);
+}
+.icard.s-not_ok { border-top-color: var(--st-error); }
+.icard.s-ok_but { border-top-color: var(--st-held); }
+.icard.s-ok { border-top-color: var(--st-final); }
+.icard:hover { border-color: var(--border); }
+.icard-top { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s2); min-width: 0; }
+.icard-top .iname { font-size: var(--fs-md); font-weight: 650; color: var(--text); text-decoration: none; overflow-wrap: anywhere; }
+.icard-top .iname:hover { text-decoration: underline; }
+.icard-where { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; }
+.icard-run { display: grid; gap: 2px; }
+.icard-run .verdict { display: inline-flex; align-items: center; gap: var(--s2); }
+.icard-word { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
+.icard-run .verdict.s-not_ok { color: var(--st-error); }
+.icard-run .verdict.s-ok_but { color: var(--pill-held-fg); }
+.icard-run .verdict.s-ok { color: var(--pill-final-fg); }
+.icard-why { font-size: var(--fs-sm); color: var(--text); overflow-wrap: anywhere; }
+.ichips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ichip {
+    display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 10px 0 8px;
+    border-radius: var(--radius-md); border: 1px solid var(--border-light); background: var(--bg-sunken);
+    color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer;
+}
+.ichip:hover { border-color: var(--border); }
+.ichip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ichip-v { font-weight: 650; font-variant-numeric: tabular-nums; }
+.ichip-d { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--st-final); }
+.ichip.k-out { border-color: var(--st-error); background: var(--bad-soft); }
+.ichip.k-out .ichip-d { background: var(--st-error); border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 10px; height: 9px; }
+.ichip.k-due .ichip-d { background: transparent; border: 1.5px solid var(--st-held); }
+.ichip.k-none .ichip-d { background: transparent; border: 1.5px dashed var(--text-muted); }
+.icard-foot {
+    display: flex; justify-content: space-between; align-items: center; gap: var(--s2); flex-wrap: wrap;
+    padding-top: 6px; border-top: 1px solid var(--border-light); font-size: var(--fs-xs); color: var(--text-muted);
+}
+.icard-foot .bstate { display: inline-flex; align-items: center; gap: 6px; }
+
+/* the check card: one check (a chip) or all of them (a bay) */
+.checkcard {
+    position: fixed; z-index: 60; width: min(340px, calc(100vw - 24px)); display: grid; gap: var(--s2);
+    padding: var(--s3) var(--s4); border-radius: var(--radius-lg); border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text); box-shadow: var(--e2); pointer-events: none;
+}
+.checkcard[hidden] { display: none; }
+.checkcard .cc-head { display: flex; align-items: center; gap: var(--s2); font-size: var(--fs-sm); }
+.checkcard .cc-word { color: var(--text-muted); }
+.checkcard .cc-row { display: grid; gap: 3px; }
+.checkcard .cc-row + .cc-row { border-top: 1px solid var(--border-light); padding-top: var(--s2); }
+.checkcard .cc-l1 { display: flex; justify-content: space-between; gap: var(--s2); font-size: var(--fs-sm); }
+.checkcard .cc-name { font-weight: 600; }
+.checkcard .cc-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+.checkcard .cc-out .cc-val { color: var(--st-error); }
+.checkcard .cc-scale { position: relative; height: 16px; }
+.checkcard .cc-band { position: absolute; top: 6px; height: 4px; border-radius: 2px; background: var(--border); }
+.checkcard .cc-tgt { position: absolute; top: 2px; width: 2px; height: 12px; margin-left: -1px; background: var(--text-muted); }
+.checkcard .cc-dot { position: absolute; top: 3px; width: 10px; height: 10px; margin-left: -5px; border-radius: 50%; background: var(--ink); }
+.checkcard .cc-out .cc-dot { background: var(--st-error); }
+.checkcard .cc-l2 { display: flex; justify-content: space-between; gap: var(--s2); font-size: var(--fs-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* the map and the wall: a bay is tinted by its state, so the floor reads
+   from across the room, each with its state's full-strength edge */
+.plan .bay.s-not_ok { background: var(--bad-soft); border-color: var(--st-error); }
+.plan .bay.s-ok_but { background: var(--warn-soft); border-color: var(--st-held); }
+.plan .bay.s-ok { background: var(--good-soft); border-color: var(--st-final); }
+.bay .b-dots { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.bay .b-dots i { display: block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-final); }
+.bay .b-dots i.k-out { background: var(--st-error); border-radius: 0; clip-path: polygon(50% 0, 100% 100%, 0 100%); width: 9px; }
+.bay .b-dots i.k-due { background: transparent; border: 1.5px solid var(--st-held); }
+.bay .b-dots i.k-none { background: transparent; border: 1.5px dashed var(--text-muted); }
+
 /* the round's count in the bench bar: where the eye is at the bottom of a
    long round, not only in the pill that scrolled away */
 .bench-bar .bb-count { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -2287,7 +2369,8 @@ html { scroll-padding-top: calc(var(--topbar-h) + var(--s2)); scroll-padding-bot
 .set-nav a:hover, .set-nav a.active, .linkbtn:hover, .log-sheet-say, .empty-note, .hol-list li.empty,
 .day-chips .chip[aria-pressed="true"],
 .wp-tabs, .wp-tab:hover,
-.round-toc a:hover, .round-toc li.on a {
+.round-toc a:hover, .round-toc li.on a,
+.ichip, .plan .bay.s-not_ok, .plan .bay.s-ok_but, .plan .bay.s-ok {
     --text-muted: var(--text-muted-sunken);
     /* and the amber words, 4.36:1 on a selected row in light: the pill's
        darker amber, made for text on a tint */

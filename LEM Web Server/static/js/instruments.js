@@ -217,11 +217,82 @@
         return tr;
     }
 
+    // ── the cards (2026-10-07) ────────────────────────────────────────────
+    // Ryan, on production's list: GC "scattered all over the place", words
+    // "cut off or shortened by …". One card per instrument, grouped by its
+    // state worst first, its checks as short chips that open each result
+    // against its band (checkcard.js). The state word is the card's largest
+    // line; the reason under it is the server's detail.
+    const GROUP_ORDER = ['not_ok', 'ok_but', 'cant_tell', 'no_qc', 'off_line', 'ok'];
+    function chipEl(r, c, now) {
+        const v = c.value === null || c.value === undefined ? '—' : String(c.value);
+        const b = h('button', { type: 'button', className: 'ichip k-' + (c.key || 'none'),
+                                'aria-label': c.name + ', ' + (c.value === null || c.value === undefined ? (c.word || 'no result') : v + ' ' + (c.units || '')) + (c.key === 'out' ? ', out of range' : '') },
+            h('i', { className: 'ichip-d', 'aria-hidden': 'true' }),
+            h('span', { className: 'ichip-n' }, c.name),
+            h('b', { className: 'ichip-v' }, v));
+        if (window.LEMCheckCard) {
+            window.LEMCheckCard.attach(b, () => ({ title: r.title, word: c.word, glyph: r.readiness.glyph, checks: [c] }),
+                (iso) => L.when(iso, Date.now()));
+        }
+        return b;
+    }
+    function cardEl(r, now) {
+        const rd = r.readiness;
+        const lq = r.last_qc || {};
+        const b = r.bench || {};
+        const benchWhen = b.at ? L.when(b.at, now) : '';
+        const top = h('div', { className: 'c-name icard-top' },
+            h('a', { className: 'iname', href: r.href }, r.title),
+            h('span', { className: 'c-where icard-where' }, r.where.level + (r.where.placed ? '' : ' · not on the map')));
+        const run = h('div', { className: 'c-run icard-run' },
+            h('span', { className: 'verdict s-' + rd.state }, glyph(rd.glyph), h('span', { className: 'icard-word', text: rd.word })),
+            rd.detail ? h('span', { className: 'sub icard-why' }, rd.detail) : null);
+        const checks = r.checks || [];
+        const chips = checks.length ? h('div', { className: 'ichips', role: 'group', 'aria-label': 'Checks' },
+            ...checks.map(c => chipEl(r, c, now))) : null;
+        const foot = h('div', { className: 'icard-foot' },
+            h('span', { className: 'c-qc' }, lq.at ? 'Last QC ' + L.when(lq.at, now) : (lq.word || '')),
+            h('span', { className: 'c-bench bstate' }, glyph(b.glyph || 'never'),
+                h('span', { text: (b.word || '') + (benchWhen ? ' · ' + benchWhen : '') })));
+        const card = h('article', { className: 'icard irow s-' + rd.state, 'data-state': rd.state, 'data-uid': r.uid,
+                                    'data-testid': 'inst-row', 'aria-label': r.title + ', ' + rd.word },
+            top, run, chips, foot);
+        card.addEventListener('click', (ev) => {
+            if (ev.target.closest('a, button')) return;
+            if (window.getSelection && String(window.getSelection())) return;
+            location.href = r.href;
+        });
+        return card;
+    }
+    function renderCards(rows, now) {
+        const groups = new Map();
+        for (const r of rows) {
+            const word = r.readiness.word;
+            if (!groups.has(word)) groups.set(word, { state: r.readiness.state, glyph: r.readiness.glyph, rows: [] });
+            groups.get(word).rows.push(r);
+        }
+        const rank = (g) => { const i = GROUP_ORDER.indexOf(g.state); return i < 0 ? 99 : i; };
+        const ordered = [...groups.entries()].sort((a, b) => rank(a[1]) - rank(b[1]));
+        $('inst-cards').replaceChildren(...ordered.map(([word, g]) => h('section', { className: 'igroup s-' + g.state, 'aria-label': word },
+            h('h3', { className: 'igroup-h' }, glyph(g.glyph), h('span', {}, word), h('span', { className: 'igroup-n' }, String(g.rows.length))),
+            h('div', { className: 'igrid' }, ...g.rows.map(r => cardEl(r, now))))));
+    }
+
     function renderTable() {
         const rows = L.filterRows((data && data.instruments) || [], view);
         const all = ((data && data.instruments) || []).length;
         const now = Date.now();
-        $('inst-rows').replaceChildren(...rows.map(r => rowEl(r, now)));
+        const asTable = view.filter === 'maintenance';
+        $('inst-tbl').hidden = !asTable;
+        $('inst-cards').hidden = asTable;
+        if (asTable) {
+            $('inst-rows').replaceChildren(...rows.map(r => rowEl(r, now)));
+            $('inst-cards').replaceChildren();
+        } else {
+            $('inst-rows').replaceChildren();
+            renderCards(rows, now);
+        }
         const none = $('inst-none');
         none.hidden = rows.length > 0 || all === 0;
         if (!rows.length) {

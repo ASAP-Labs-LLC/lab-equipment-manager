@@ -370,6 +370,13 @@
                     el('span', { className: 'b-detail', 'data-short': (opts.detailsShort && opts.detailsShort[b.uid]) || null,
                         text: opts.saving && opts.saving.has(b.uid) ? 'Saving…'
                         : ((opts.details && opts.details[b.uid]) || w.detail || (b.row.bench && b.row.bench.word) || '') }));
+                // one dot per check, its verdict's shape (2026-10-07): GC's five
+                // read at a glance, and a hover opens each result (checkcard.js)
+                const cks = (b.row && b.row.checks) || [];
+                if (cks.length) {
+                    lines.push(el('span', { className: 'b-dots', 'aria-hidden': 'true' },
+                        ...cks.map(c => el('i', { className: 'k-' + (c.key || 'none') }))));
+                }
                 let node;
                 if (opts.arranging) {
                     node = el('button', Object.assign(attrs, { type: 'button', 'aria-pressed': opts.picked === b.uid ? 'true' : 'false',
@@ -465,7 +472,12 @@
                 const name = bay.querySelector('.b-name');
                 const word = bay.querySelector('.b-wtext');
                 const det = bay.querySelector('.b-detail');
+                const dots = bay.querySelector('.b-dots');
                 const state = (bay.className.match(/\bs-([a-z_]+)/) || [])[1] || '';
+                // the check dots are the first thing a crowded bay gives up:
+                // the words are fitted without them, and the dots come back
+                // only if there is still room (the hover has every check)
+                if (dots) dots.hidden = true;
                 if (name) fitText(name, name.textContent, '', true);
                 if (word && (lines(word) > 2 || over(word, false))) {
                     const s = shortWord(state);
@@ -478,6 +490,17 @@
                 const tooBig = () => lines(det) > 2 || over(det, false) || bay.scrollHeight > bay.clientHeight + 1;
                 if (tooBig()) det.textContent = shortDetail(full);
                 if (tooBig()) { det.textContent = full; det.hidden = true; }
+            }
+            for (const dots of host.querySelectorAll('.bay .b-dots')) {
+                // a crowded bay does not overflow, it squeezes: the name (its
+                // own overflow hidden) gives up height first. So the dots stay
+                // only if no line got shorter and nothing spilled.
+                const bay = dots.closest('.bay');
+                const kids = [...bay.querySelectorAll('.b-name, .b-word, .b-detail')].filter(e => !e.hidden);
+                const before = kids.map(e => e.clientHeight);
+                dots.hidden = false;
+                const squeezed = kids.some((e, i) => e.clientHeight < before[i] || e.scrollHeight > e.clientHeight + 1);
+                if (squeezed || bay.scrollHeight > bay.clientHeight + 1) dots.hidden = true;
             }
         }
         api.fit = fit;

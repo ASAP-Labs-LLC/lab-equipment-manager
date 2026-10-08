@@ -903,3 +903,70 @@ class TestThePages:
         bar = body[body.index('data-testid="topbar"'):body.index("</header>", body.index('data-testid="topbar"'))]
         assert re.search(r"<h1[^>]*>Instruments</h1>", bar), bar[:400]
         assert bar.index("<h1") < bar.index('data-testid="view-seg"')
+
+
+# ── an instrument's checks, each by a short name (2026-10-07) ──────────────
+#
+# Ryan, looking at production's list: GC is "scattered all over the place" and
+# "things are too wordy and get cut off". Agilent GC 2's row said "No verdict
+# yet on ASTM D2887/D86 - Distillation in Petroleum Products, 10% Recovery,
+# ASTM D2887/D86 - Distillation in Petroleum Products, 50% Recovery, …" five
+# times over. Every instrument now carries its checks as data, each with a
+# short name (the method's own words, without what its siblings share), its
+# result, its band and its verdict, so a card can show five chips and a hover
+# can show each result against its range. The verdict is ui_live's own
+# check_verdict, so a chip can never disagree with the card it sits on.
+
+GC_TESTS = ["ASTM D2887/D86 - Distillation in Petroleum Products, " + p
+            for p in ("10% Recovery", "50% Recovery", "90% Recovery", "FBP", "IBP")]
+
+
+def test_short_names_drop_what_the_checks_share():
+    assert ui_instruments.short_check_names(GC_TESTS) == ["10%", "50%", "90%", "FBP", "IBP"]
+    assert ui_instruments.short_check_names(
+        ["ASTM D7346 - Pour Point, mini method", "ASTM D7689 - Cloud Point, mini method"]) == ["Pour Point", "Cloud Point"]
+
+
+def test_one_check_is_named_by_its_method_words():
+    assert ui_instruments.short_check_names(["ASTM D5453 - Sulfur"]) == ["Sulfur"]
+    assert ui_instruments.short_check_names(["ASTM D6304 - Water, by Karl Fischer"]) == ["Water, by Karl Fischer"]
+    assert ui_instruments.short_check_names(["Flash Point"]) == ["Flash Point"]
+    assert ui_instruments.short_check_names([]) == []
+
+
+def _gc(values, in_spec, running=True):
+    bands = {"IBP": (148.15, 155.01, 161.87), "10% Recovery": (185.05, 187.63, 190.21),
+             "50% Recovery": (249.29, 251.37, 253.45), "90% Recovery": (331.48, 334.9, 338.32),
+             "FBP": (358.96, 363.58, 368.2)}
+    specs = []
+    for t in GC_TESTS:
+        part = t.split(", ", 1)[1]
+        lo, exp, hi = bands[part]
+        specs.append({"test_name": t, "sample_id": "AF26", "low": lo, "expected": exp, "high": hi, "units": "C",
+                      "last_qc_value": values.get(part), "last_qc_in_spec": in_spec.get(part),
+                      "last_qc_at": NOW.isoformat() if part in values else None, "last_qc_superseded_by": ""})
+    return {"machine_uid": "gc1", "title": "Agilent GC 1", "status": "RED", "live": running,
+            "module_running": running, "module_state": "running" if running else "stopped",
+            "last_poll": NOW.isoformat(), "effective_specs": specs,
+            "qc_targets": [{"sample": "AF26", "test": t} for t in GC_TESTS],
+            "qc_judged": {"at": NOW.isoformat(), "hours": 24.0, "from": ""}}
+
+
+def test_an_instruments_checks_ride_on_it_in_distillation_order():
+    m = _gc({"IBP": 150.05, "10% Recovery": 187.82, "50% Recovery": 250.98, "90% Recovery": 331.27, "FBP": 362.13},
+            {"IBP": True, "10% Recovery": True, "50% Recovery": True, "90% Recovery": False, "FBP": True})
+    row = ui_instruments.instrument(m, None, {}, lambda uid, sec: "/instruments/" + uid)
+    checks = row["checks"]
+    assert [c["name"] for c in checks] == ["IBP", "10%", "50%", "90%", "FBP"]
+    ninety = checks[3]
+    assert ninety["key"] == "out" and ninety["value"] == 331.27
+    assert (ninety["low"], ninety["expected"], ninety["high"], ninety["units"]) == (331.48, 334.9, 338.32, "C")
+    assert ninety["test"].endswith("90% Recovery") and ninety["at"] == NOW.isoformat()
+    assert {c["key"] for c in checks[:3]} == {"in"}
+
+
+def test_a_check_with_no_result_says_so_rather_than_zero():
+    m = _gc({}, {})
+    checks = ui_instruments.instrument(m, None, {}, lambda uid, sec: "/")["checks"]
+    assert len(checks) == 5 and all(c["value"] is None for c in checks)
+    assert all(c["key"] == "due" for c in checks), [c["key"] for c in checks]

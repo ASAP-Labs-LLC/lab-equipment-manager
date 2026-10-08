@@ -170,6 +170,18 @@
         if (lay.w) {
             P.draw(plan, lay, Object.assign({ arranging, focus: view.focus, cause: view.cause, picked, saving,
                                               wrapLines: true }, sizes(lay.w, lay.h)));
+            // hover or focus a bay: its checks, each result against its band
+            // (2026-10-07). Not while arranging: a bay is then a thing to move.
+            if (!arranging && window.LEMCheckCard) {
+                const rows = new Map((data.instruments || []).map(r => [r.uid, r]));
+                plan.querySelectorAll('.bay[data-uid]').forEach(bay => {
+                    const r = rows.get(bay.dataset.uid);
+                    if (!r) return;
+                    window.LEMCheckCard.attach(bay, () => ({ title: r.title, word: r.readiness.word,
+                        glyph: r.readiness.glyph, checks: r.checks || [], note: r.readiness.detail }),
+                        (iso) => window.LEMInstruments ? window.LEMInstruments.when(iso, Date.now()) : iso);
+                });
+            }
         } else plan.replaceChildren();
         $('plan-caption').textContent = caption();
         drawArrange();

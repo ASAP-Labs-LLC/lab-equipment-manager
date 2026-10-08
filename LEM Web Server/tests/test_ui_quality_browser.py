@@ -147,7 +147,7 @@ def test_t5_add_a_standard_and_check_it_on_gc2(server, drv):
     _session(drv, server.base, signed_in=True)
     w = Walk(drv)
     drv.get(server.base + "/")
-    assert _wait(lambda: drv.find_element(By.CSS_SELECTOR, "#inst-rows tr"))
+    assert _wait(lambda: drv.find_element(By.CSS_SELECTOR, "#inst-cards .irow"))
     w.screen("Instruments")
     w.click(drv.find_element(By.CSS_SELECTOR, "a.nav-item[data-nav='qc']"))
     assert _wait(lambda: drv.find_element(By.CSS_SELECTOR, "#q-rows tr"))

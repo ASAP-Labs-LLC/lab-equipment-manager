@@ -431,7 +431,7 @@ def test_t1_at_390_the_verdict_at_0_clicks_and_the_full_answer_at_1(drv, server)
     _sign(d, server["base"], "Cody")
     _size(d, 390, 844)
     _open(d, server["base"] + "/")
-    row = 'tr.irow:has(a[href="/instruments/gc-2"])'
+    row = '.irow:has(a[href="/instruments/gc-2"])'
     assert _wait(lambda: _visible_text(d, row))
     text = _visible_text(d, row)
     # the verdict word and its reason are on the row, on screen, at 0 clicks
@@ -451,7 +451,7 @@ def test_t2_at_390_latest_qc_verdict_and_chart_in_one_click(drv, server):
     _sign(d, server["base"], "Cody")
     _size(d, 390, 844)
     _open(d, server["base"] + "/")
-    row = 'tr.irow:has(a[href="/instruments/pac-flash-2"])'
+    row = '.irow:has(a[href="/instruments/pac-flash-2"])'
     assert _wait(lambda: _visible_text(d, row))
     link = d.find_element(By.CSS_SELECTOR, row + ' a[href="/instruments/pac-flash-2"]')
     d.execute_script("arguments[0].scrollIntoView({block: 'center'})", link)   # a scroll, not a click
