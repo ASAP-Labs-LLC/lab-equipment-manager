@@ -138,7 +138,106 @@
         return parts.join(' · ');
     }
 
-    const api = { chipOrder, matchTests, bandPreview, newProblem, newSentence, assignChange, certLine, andList, norm, day, UNITS };
+    // ── Trends (2026-10-08): every check's chart, by instrument ───────────
+    const RANK = { out: 0, due: 1, never: 2, in: 3 };
+    /** Where a check sits among its instrument's others: a distillation
+        reads IBP, the recoveries by their percent, then FBP; anything else
+        follows, A to Z. */
+    function checkKey(c) {
+        const t = String((c && (c.check || c.test)) || '');
+        if (/^IBP\b/i.test(t)) return [0, 0, t.toLowerCase()];
+        const pct = t.match(/^(\d+(?:\.\d+)?)\s*%/);
+        if (pct) return [1, Number(pct[1]), t.toLowerCase()];
+        if (/^FBP\b/i.test(t)) return [2, 0, t.toLowerCase()];
+        return [3, 0, t.toLowerCase()];
+    }
+    function byKey(a, b) {
+        const x = checkKey(a), y = checkKey(b);
+        for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+        return 0;
+    }
+    /** The QC wall's cards as one group per instrument: worst instrument
+        first (its worst check decides), then A to Z; each group's checks in
+        reading order, with its verdict counts and its record's link. */
+    function trendGroups(cards) {
+        const by = new Map();
+        for (const c of cards || []) {
+            if (!c || !c.uid) continue;
+            let g = by.get(c.uid);
+            if (!g) {
+                g = { uid: c.uid, title: c.title || c.uid, href: String(c.href || '').split('#')[0] || '/instruments/' + encodeURIComponent(c.uid),
+                      cards: [], counts: {}, worst: 'in', rank: Infinity };
+                by.set(c.uid, g);
+            }
+            const k = (c.verdict && c.verdict.key) || 'never';
+            g.cards.push(c);
+            g.counts[k] = (g.counts[k] || 0) + 1;
+            const r = typeof c.rank === 'number' ? c.rank : (RANK[k] !== undefined ? RANK[k] : 9);
+            if (r < g.rank || (r === g.rank && (RANK[k] || 0) < (RANK[g.worst] || 0))) { g.rank = r; g.worst = k; }
+        }
+        const out = [...by.values()];
+        for (const g of out) {
+            g.cards.sort(byKey);
+            // counts in the order the page says them: worst first
+            const ordered = {};
+            for (const k of Object.keys(RANK)) if (g.counts[k]) ordered[k] = g.counts[k];
+            g.counts = ordered;
+        }
+        out.sort((a, b) => a.rank - b.rank || (a.title.toLowerCase() < b.title.toLowerCase() ? -1 : a.title.toLowerCase() > b.title.toLowerCase() ? 1 : 0));
+        return out.map(g => { delete g.rank; return g; });
+    }
+    /** A card's points on a shared time axis: t is 0 at `fromMs` and 1 at
+        `toMs`. A point with no band (z null) or no time cannot be placed and
+        is left out, as is one outside the window. */
+    function trendX(points, fromMs, toMs) {
+        const span = toMs - fromMs;
+        const out = [];
+        for (const p of points || []) {
+            if (!p || typeof p.z !== 'number' || !Number.isFinite(p.z) || !p.at) continue;
+            const ms = Date.parse(p.at);
+            if (!Number.isFinite(ms) || ms < fromMs || ms > toMs) continue;
+            out.push({ t: span > 0 ? (ms - fromMs) / span : 1, z: p.z, in_spec: p.in_spec, at: p.at });
+        }
+        return out;
+    }
+    /** ?range= as days: 30, 90 or 180 (the record copy holds 180). */
+    function trendRange(v) {
+        const n = Number(v);
+        return n === 30 || n === 90 || n === 180 ? n : 90;
+    }
+
+    /** A tile's chart height for its width: 88px at the minimum, growing
+        with the tile, never a poster. */
+    function trendChartH(tileW) { return Math.round(Math.max(88, Math.min(300, tileW * 0.34))); }
+    const TILE_REST = 112, GROUP_HEAD = 34;   // a tile without its chart; a group's name line
+    /** How many columns: the FEWEST (so the biggest tiles) whose packing of
+        every group fits `height`; when none does, the most that keep tiles
+        at least `min` wide, and the page scrolls. `sizes` is each group's
+        number of checks, in page order; groups pack left to right as the
+        page's flex rows do, each as wide as its checks up to a row. */
+    function trendFit(o) {
+        const W = o.width, gap = o.gap || 16, rowGap = o.rowGap || 24, min = o.min || 280;
+        const sizes = (o.sizes || []).filter(n => n > 0);
+        const maxCols = Math.max(1, Math.floor((W + gap) / (min + gap)));
+        let best = null;
+        for (let cols = 1; cols <= maxCols; cols++) {
+            const tileW = Math.floor((W - gap * (cols - 1)) / cols);
+            const tileH = TILE_REST + trendChartH(tileW);
+            let x = 0, rowH = 0, total = 0;
+            for (const n of sizes) {
+                const span = Math.min(cols, n);
+                const h = GROUP_HEAD + Math.ceil(n / span) * tileH + (Math.ceil(n / span) - 1) * gap;
+                if (x && x + span > cols) { total += rowH + rowGap; x = 0; rowH = 0; }
+                x += span; rowH = Math.max(rowH, h);
+            }
+            total += rowH;
+            best = { cols, tileW, chartH: trendChartH(tileW), total };
+            if (total <= o.height) return best;
+        }
+        return best;
+    }
+
+    const api = { trendFit, trendChartH, trendGroups, trendX, trendRange, chipOrder, matchTests, bandPreview, newProblem, newSentence, assignChange, certLine, andList, norm, day, UNITS };
     root.LEMQuality = api;
     if (typeof module !== 'undefined' && module && module.exports) module.exports = api;
 })(typeof window !== 'undefined' ? window : this);

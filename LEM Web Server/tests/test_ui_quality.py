@@ -664,3 +664,33 @@ def test_a_library_the_record_could_not_read_is_not_no_certified_values():
     got = rvp(lib)
     assert (got["low"], got["expected"], got["high"], got["units"], got["band_from"]) == \
         (15.2, 15.6, 16.0, "psi", "library")
+
+
+# ── Trends: every check's chart, by instrument, on one page ─────────────────
+# 2026-10-08, Ryan: "I want a page with like all of them … arrange them
+# together by machine and have them show dynamically in one page". /qc had
+# them, as a TV wall that pages and is in no menu; this is the desk's.
+
+class TestTrends:
+    def test_the_seg_offers_trends_between_latest_and_standards(self, tmp_path):
+        app, _ = _seeded(tmp_path)
+        html = app.test_client().get("/quality/trends").get_data(as_text=True)
+        seg = html[html.index('data-testid="qc-seg"'):]
+        seg = seg[:seg.index("</nav>")]
+        assert seg.index("Latest checks") < seg.index("Trends") < seg.index("Standards")
+        assert 'href="/quality/trends" aria-current="page"' in seg
+
+    def test_the_page_carries_every_check_with_its_history(self, tmp_path):
+        app, _ = _seeded(tmp_path)
+        c = app.test_client()
+        html = c.get("/quality/trends").get_data(as_text=True)
+        wall = c.get("/api/ui/wall/qc").get_json()
+        island = json.loads(html.split('id="quality-data">', 1)[1].split("</script>", 1)[0])
+        cards = island["trends"]["cards"]
+        assert len(cards) == len(wall["cards"]) > 10
+        assert any(len(k["points"]) > 3 for k in cards)
+
+    def test_it_offers_the_tv_wall(self, tmp_path):
+        app, _ = _seeded(tmp_path)
+        html = app.test_client().get("/quality/trends").get_data(as_text=True)
+        assert 'href="/qc"' in html

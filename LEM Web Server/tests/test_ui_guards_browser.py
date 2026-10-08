@@ -47,7 +47,7 @@ IDLE_S = 8.0        # real seconds each page is left alone (= 4 page-minutes)
 
 #: Every page a person or a TV opens (ia-final §1).
 PAGES = ["/", "/?view=map", "/instruments/gc-1", "/checklists/opening",
-         "/checklists/edit", "/checklists/trends", "/quality", "/quality/standards",
+         "/checklists/edit", "/checklists/trends", "/quality", "/quality/trends", "/quality/standards",
          "/quality/standards/" + demo_floor.STANDARD, "/logs", "/settings", "/help",
          "/results/conflicts", "/floor", "/qc", "/wall?show=floor,qc&every=60"]
 

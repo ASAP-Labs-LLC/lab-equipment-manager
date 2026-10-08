@@ -404,5 +404,6 @@
         if (window.LEMSignIn) window.LEMSignIn.need('add a QC standard', openNew); else openNew();
     }
 
-    if (view === 'latest') renderLatest(); else renderStandards();
+    // Trends draws itself (quality_trends.js); this file keeps its New standard sheet
+    if (view === 'latest') renderLatest(); else if (view === 'standards') renderStandards();
 })();

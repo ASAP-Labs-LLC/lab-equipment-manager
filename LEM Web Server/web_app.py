@@ -8698,6 +8698,10 @@ def create_app(gateway, labcore_gateway=None,
         data = {"view": view, "instruments": _instrument_list()}
         if view == "latest":
             data["latest"] = _quality_latest()
+        elif view == "trends":
+            # the QC wall's cards (snapshot + the local log, 0 LabCore ops),
+            # drawn for a desk: by instrument, every one on one page
+            data["trends"] = _wall_qc_payload()
         else:
             data["standards"] = _standards_payload()
         # the bottom of the QC window chain, as resolve_qc_window has it: the
@@ -8709,6 +8713,12 @@ def create_app(gateway, labcore_gateway=None,
     def quality_page():
         """Latest checks: the latest verdict of every check, worst first."""
         return _quality_page("latest")
+
+    @app.route("/quality/trends")
+    def quality_trends_page():
+        """Trends: every check's chart, grouped by instrument, worst first,
+        on one page (Ryan, 2026-10-08). /qc is the same for a TV."""
+        return _quality_page("trends")
 
     @app.route("/quality/standards")
     def quality_standards_page():

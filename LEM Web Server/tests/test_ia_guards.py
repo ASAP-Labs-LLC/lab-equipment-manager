@@ -120,6 +120,7 @@ PAGE_TABLE = [
     ("/checklists/edit/new?slot=opening", 200, None),
     ("/checklists/trends", 200, None),
     ("/quality", 200, None),
+    ("/quality/trends", 200, None),
     ("/quality/standards", 200, None),
     ("/quality/standards/" + demo_floor.STANDARD, 200, None),
     ("/logs", 200, None),

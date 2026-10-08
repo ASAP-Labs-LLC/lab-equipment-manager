@@ -84,7 +84,7 @@ ROUND = "a1b2c3d4e5f6"
 PAGES = ["/", "/?view=map", "/instruments/gc-1", "/instruments/pac-flash-2", "/instruments/no-such-bench",
          "/checklists/opening", "/checklists/closing", "/checklists/edit", "/checklists/edit/" + ROUND,
          "/checklists/edit/new?slot=closing", "/checklists/trends",
-         "/quality", "/quality/standards", "/quality/standards/" + demo_floor.STANDARD,
+         "/quality", "/quality/trends", "/quality/standards", "/quality/standards/" + demo_floor.STANDARD,
          "/logs", "/settings", "/help", "/results/conflicts",
          "/floor", "/qc", "/wall?show=floor,qc&every=60"]
 WALLS = ["/floor", "/qc", "/wall?show=floor,qc&every=60"]

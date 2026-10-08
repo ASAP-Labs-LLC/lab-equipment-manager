@@ -105,5 +105,46 @@ check('a certificate row says its dates and who filed it',
   'Issued 15 Jan 2026 · valid to 30 Jun 2027 · filed by ryan');
 check('an undated certificate says so', Q.certLine({ uploaded_by: 'ryan' }), 'No expiry stated · filed by ryan');
 
+// ── Trends (2026-10-08, Ryan: "a page with all of them … arrange them
+// together by machine and have them show dynamically in one page") ────────
+const card = (uid, title, rank, check, key, pts) => ({ uid, title, rank, check, test: check, href: '/instruments/' + uid + '#qc',
+    verdict: { key, word: key, glyph: 'g' }, points: pts || [] });
+const groups = Q.trendGroups([
+    card('gc1', 'Agilent GC 1', 0, '90% Recovery', 'out'),
+    card('gc2', 'Agilent GC 2', 2, '10% Recovery', 'never'),
+    card('gc1', 'Agilent GC 1', 3, 'FBP', 'in'),
+    card('gc1', 'Agilent GC 1', 3, 'IBP', 'in'),
+    card('gc1', 'Agilent GC 1', 3, '10% Recovery', 'in'),
+    card('vis', 'Viscosity', 2, 'Viscosity 40C', 'never'),
+]);
+check('trends: one group per instrument', groups.map(g => g.title), ['Agilent GC 1', 'Agilent GC 2', 'Viscosity']);
+check('trends: an instrument is as bad as its worst check', groups[0].worst, 'out');
+check('trends: a GC reads in distillation order', groups[0].cards.map(c => c.check), ['IBP', '10% Recovery', '90% Recovery', 'FBP']);
+check('trends: the group links to its record', groups[0].href, '/instruments/gc1');
+check('trends: the group counts its verdicts', groups[0].counts, { out: 1, in: 3 });
+check('trends: nothing in, nothing out', Q.trendGroups(null), []);
+
+const DAY = 86400000, to = Date.UTC(2026, 9, 8), from = to - 90 * DAY;
+const pts = [
+    { z: 0, in_spec: true, at: new Date(to - 100 * DAY).toISOString() },   // before the window
+    { z: 0.5, in_spec: true, at: new Date(from).toISOString() },
+    { z: 2, in_spec: false, at: new Date(to - 45 * DAY).toISOString() },
+    { z: null, in_spec: true, at: new Date(to - 10 * DAY).toISOString() }, // no band: not drawable
+    { z: -1, in_spec: true, at: null },                                    // no time: not placeable
+    { z: 0.1, in_spec: true, at: new Date(to).toISOString() },
+];
+check('trends: points sit on the time axis, the window only', Q.trendX(pts, from, to).map(p => [p.t, p.z, p.in_spec]),
+    [[0, 0.5, true], [0.5, 2, false], [1, 0.1, true]]);
+check('trends: the range is 30, 90 or 180 days', [Q.trendRange('30'), Q.trendRange('180'), Q.trendRange('7'), Q.trendRange(null)], [30, 180, 90, 90]);
+
+// fit: the biggest tiles that still put every chart on one screen
+const fit4k = Q.trendFit({ width: 3600, height: 2000, gap: 16, sizes: [2, 1, 1, 1, 1, 1, 1, 2, 1, 1] });
+check('fit: a 4K desk gets tiles bigger than the minimum', fit4k.tileW > 400, true);
+check('fit: and everything fits the height', fit4k.total <= 2000, true);
+const fitSmall = Q.trendFit({ width: 1100, height: 700, gap: 16, sizes: [5, 5, 5, 5, 5, 5] });
+check('fit: too many for one screen packs at the minimum and scrolls', fitSmall.cols, 3);
+check('fit: a phone is one column', Q.trendFit({ width: 360, height: 700, gap: 12, sizes: [2, 1] }).cols, 1);
+check('fit: the chart grows with the tile', Q.trendChartH(300) < Q.trendChartH(700), true);
+
 if (fails) { console.log(`\n${fails} failed`); process.exit(1); }
 console.log('\nall passed');

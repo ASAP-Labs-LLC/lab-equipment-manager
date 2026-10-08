@@ -13,20 +13,21 @@
     as the page arrives; static/js/quality.js draws it with textContent and
     keeps it live. The server draws the frame and every "couldn't" sentence,
     so a page whose script failed still says what it knows. -#}
-{% block title %}{{ 'QC' if view == 'latest' else 'QC standards' }}{% endblock %}
+{% block title %}{{ {'latest': 'QC', 'trends': 'QC trends'}.get(view, 'QC standards') }}{% endblock %}
 {% block topbar %}
   <h1 class="bar-title">QC</h1>
   <nav class="seg seg-lg view-seg" aria-label="QC view" data-testid="qc-seg">
     <a href="/quality"{% if view == 'latest' %} aria-current="page"{% endif %} data-testid="seg-latest">Latest checks</a>
+    <a href="/quality/trends"{% if view == 'trends' %} aria-current="page"{% endif %} data-testid="seg-trends">Trends</a>
     <a href="/quality/standards"{% if view == 'standards' %} aria-current="page"{% endif %} data-testid="seg-standards">Standards</a>
   </nav>
   <span class="spacer"></span>
   <button type="button" class="btn btn-sm gate-lock" id="new-open" data-act="new" data-gated="add a QC standard" data-testid="new-standard">New standard</button>
 {% endblock %}
 {% block content %}
-{%- set L = data.latest if view == 'latest' else data.standards %}
-<main class="content quality" id="main" tabindex="-1" data-testid="quality-page" data-view="{{ view }}">
-  <header class="page-head" aria-label="{{ 'Latest checks' if view == 'latest' else 'Standards' }}">
+{%- set L = data.latest if view == 'latest' else (data.trends if view == 'trends' else data.standards) %}
+<main class="content quality{% if view == 'trends' %} q-trends-page{% endif %}" id="main" tabindex="-1" data-testid="quality-page" data-view="{{ view }}">
+  <header class="page-head" aria-label="{{ {'latest': 'Latest checks', 'trends': 'Trends'}.get(view, 'Standards') }}">
     <div class="meta" id="q-meta" data-testid="q-meta">
       {%- if L.state == 'ready' and L.pill %}
       {#- one pill, neutral: the colour is the glyph's and the word's (§0.1) -#}
@@ -40,8 +41,8 @@
   <div class="unread card" id="q-unread" data-testid="q-unread" role="status"{% if L.state == 'ready' %} hidden{% endif %}>
     {%- if L.state == 'unreadable' %}
     <span class="glyph error" aria-hidden="true"></span>
-    <div><b id="q-unread-head">{{ 'No checks to show yet.' if view == 'latest' else "Couldn't read the QC library." }}</b>
-      <p class="caption" id="q-unread-text">{{ 'This is not a lab with no QC: LEM has not been able to read it. The table appears by itself as soon as it can.' if view == 'latest' else 'This is not an empty library: ' ~ (L.error or 'the store did not answer') ~ '. Reload to try again.' }}</p></div>
+    <div><b id="q-unread-head">{{ 'No checks to show yet.' if view in ('latest', 'trends') else "Couldn't read the QC library." }}</b>
+      <p class="caption" id="q-unread-text">{{ 'This is not a lab with no QC: LEM has not been able to read it. The charts appear by themselves as soon as it can.' if view == 'trends' else 'This is not a lab with no QC: LEM has not been able to read it. The table appears by itself as soon as it can.' if view == 'latest' else 'This is not an empty library: ' ~ (L.error or 'the store did not answer') ~ '. Reload to try again.' }}</p></div>
     {%- else %}
     <span class="glyph dashed" aria-hidden="true"></span>
     <div><b id="q-unread-head">Not read yet.</b>
@@ -75,6 +76,26 @@
     </table>
     <p class="table-empty" id="q-empty" hidden><span class="glyph never" aria-hidden="true"></span><span>No instrument has a QC check assigned, so nothing here is a pass. Assign one from a standard's page, or from an instrument's record.</span></p>
   </section>
+  {%- elif view == 'trends' %}
+  {#- Trends (2026-10-08): every check's chart, grouped by instrument, worst
+      first, on one page; the grid takes as many columns as the screen has.
+      Each chart is the pass band normalised (the limits are the dashed
+      lines whatever the units), time left to right over the range. -#}
+  <section class="t-wrap" id="q-trends" aria-labelledby="t-h" data-testid="q-trends"{% if L.state != 'ready' %} hidden{% endif %}>
+    <div class="t-bar">
+      <h2 id="t-h" class="visually-hidden">Trends by instrument</h2>
+      <p class="caption t-sub" id="t-sub">Every check, by instrument, worst first · the band is the certified limits · updates by itself</p>
+      <span class="spacer"></span>
+      <div class="seg" id="t-range" role="group" aria-label="How much history" data-testid="t-range">
+        <button type="button" data-range="30" aria-pressed="false">30 days</button>
+        <button type="button" data-range="90" aria-pressed="true">90 days</button>
+        <button type="button" data-range="180" aria-pressed="false">180 days</button>
+      </div>
+      <a class="btn btn-ghost btn-sm" href="/qc" data-testid="t-wall" title="The same charts, sized for a TV across the room">Open on a TV</a>
+    </div>
+    <div class="t-groups" id="t-groups" data-testid="t-groups"></div>
+    <p class="table-empty" id="t-empty" hidden><span class="glyph never" aria-hidden="true"></span><span>No instrument has a QC check assigned, so there is nothing to chart. Assign one from a standard's page, or from an instrument's record.</span></p>
+  </section>
   {%- else %}
   <section class="card table-card q-card" id="q-standards" aria-labelledby="s-h" data-testid="q-standards"{% if L.state != 'ready' %} hidden{% endif %}>
     <div class="q-head">
@@ -102,4 +123,7 @@
 <script src="/static/js/record_logic.js?v={{ v('js/record_logic.js') }}"></script>
 <script src="/static/js/quality_logic.js?v={{ v('js/quality_logic.js') }}"></script>
 <script src="/static/js/quality.js?v={{ v('js/quality.js') }}"></script>
+{%- if view == 'trends' %}
+<script src="/static/js/quality_trends.js?v={{ v('js/quality_trends.js') }}"></script>
+{%- endif %}
 {% endblock %}

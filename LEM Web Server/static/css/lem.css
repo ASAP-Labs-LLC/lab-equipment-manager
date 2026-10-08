@@ -2181,6 +2181,48 @@ dialog.sheet.log-sheet .actions .spacer { flex: 1; }
    carry no fill, the card no border colour. */
 .content.quality { padding-top: var(--s4); max-width: 1320px; }
 .quality .page-head { margin-bottom: var(--s3); }
+/* Trends (2026-10-08): every check's chart, by instrument, on one page.
+   It takes the window (a 4K desk shows many columns), not the reading width. */
+.content.quality.q-trends-page { max-width: none; }
+.t-wrap[hidden] { display: none; }
+.t-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s3); margin-bottom: var(--s4); }
+.t-bar .spacer { flex: 1; }
+#t-range button { min-height: 28px; }
+#t-range button[aria-pressed="true"] { background: var(--bg-card); color: var(--text); box-shadow: var(--e1); font-weight: 600; }
+.t-sub { margin: 0; min-width: 0; }
+.t-groups { display: flex; flex-wrap: wrap; align-items: flex-start; column-gap: var(--t-gap, 16px); row-gap: var(--s5); }
+.t-group { flex: 0 0 auto; min-width: 0; max-width: 100%; width: var(--g-w, 100%); }
+.t-ghead { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px var(--s3); margin: 0 0 var(--s2); min-width: 0; }
+.t-gname { display: flex; align-items: center; gap: 8px; margin: 0; min-width: 0; font-size: var(--fs-lg); font-weight: 600; }
+.t-gname .t-name { color: var(--text); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-gname .t-name:hover { text-decoration: underline; }
+/* one column grid for the whole page: every tile is --tile-w wide and a
+   group is as many tiles wide as it has (up to a row), so instruments sit
+   side by side and the columns still line up (quality_trends.js sets both) */
+.t-tiles { display: flex; flex-wrap: wrap; gap: var(--t-gap, 16px); }
+.t-tiles .t-tile { width: var(--tile-w, 300px); }
+.t-tile {
+    display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: var(--s3) var(--s4);
+    background: var(--bg-card); border: 1px solid var(--border-light); border-radius: var(--radius-md);
+    box-shadow: var(--e1); color: var(--text); text-decoration: none;
+    transition: border-color var(--t-fast) var(--ease-std);
+}
+.t-tile:hover { border-color: var(--border-strong); }
+.t-top { display: flex; align-items: baseline; gap: var(--s2); min-width: 0; }
+.t-check { flex: 1 1 auto; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-word { flex: 0 1 auto; display: inline-flex; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-method { font-size: var(--fs-xs); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-chart { display: flex; align-items: center; justify-content: center; height: var(--chart-h, 88px); margin: var(--s2) 0; }
+.t-chart svg { display: block; overflow: visible; }
+.t-nochart { font-size: var(--fs-xs); color: var(--text-muted); text-align: center; }
+.t-last { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-limits { font-size: var(--fs-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.t-control { align-self: flex-start; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: var(--bg-sunken); font-size: var(--fs-xs); color: var(--text-muted); }
+/* big tiles (a 4K desk with room to spare) read bigger */
+.t-big .t-check { font-size: var(--fs-lg); }
+.t-big .t-word, .t-big .t-last { font-size: var(--fs-md); }
+.t-big .t-limits, .t-big .t-method { font-size: var(--fs-sm); }
+@media (max-width: 699px) { .t-bar #t-range { order: 3; } }
 .quality .page-head .meta { min-height: 26px; }
 .pill.q-pill { background: var(--bg-sunken); color: var(--text); font-weight: 600; }
 .q-card { overflow: hidden; }

@@ -267,3 +267,81 @@ def test_who_reports_a_test_that_could_not_be_read_is_said(server, drv):
     finally:
         server.app.config["LOG_MIRROR"] = real
         server.app.config["QC_REPORTING"]["pairs"] = None
+
+
+# ── Trends ──────────────────────────────────────────────────────────────────
+TRENDS = """
+const groups = [...document.querySelectorAll('#t-groups .t-group')];
+const tiles = [...document.querySelectorAll('#t-groups .t-tile')];
+const cols = new Set(tiles.map(t => Math.round(t.getBoundingClientRect().left))).size;
+const bad = [];
+for (const t of tiles) {
+  const r = t.getBoundingClientRect();
+  for (const el of t.querySelectorAll('.t-check, .t-word, .t-last, .t-limits')) {
+    if (el.scrollWidth > el.clientWidth + 1) bad.push(el.textContent);
+  }
+}
+return { titles: groups.map(g => g.querySelector('.t-name').textContent),
+         perGroup: groups.map(g => g.querySelectorAll('.t-tile').length),
+         tiles: tiles.length, charts: document.querySelectorAll('#t-groups .t-tile svg').length, cols, bad,
+         sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth };
+"""
+
+
+def _open_trends(d, base, q=""):
+    d.get(base + "/quality/trends" + q)
+    assert _wait(lambda: d.execute_script("return document.querySelectorAll('#t-groups .t-tile').length")), "no tiles"
+    time.sleep(0.2)
+
+
+@pytest.mark.parametrize("size", [(1440, 900), (3840, 2160), (390, 844)])
+def test_trends_are_every_check_by_instrument_on_one_page(server, drv, size):
+    _size(drv, *size)
+    _session(drv, server.base, signed_in=False)
+    _open_trends(drv, server.base)
+    got = drv.execute_script(TRENDS)
+    wall = drv.execute_script("return fetch('/api/ui/wall/qc').then(r => r.json())")
+    names = []
+    for c in wall["cards"]:
+        if c["title"] not in names:
+            names.append(c["title"])
+    # one group per instrument, every check, no pages
+    assert sorted(got["titles"]) == sorted(names), got
+    assert got["tiles"] == len(wall["cards"]), got
+    assert got["charts"] >= 5, got
+    assert got["bad"] == [], got
+    assert got["sw"] <= got["cw"], got
+    # worst first: the first group holds an out-of-spec check
+    outs = {c["title"] for c in wall["cards"] if c["verdict"]["key"] == "out"}
+    assert got["titles"][0] in outs, got
+    # the grid follows the screen, and instruments share rows (no row of one tile and a gap)
+    lefts = drv.execute_script("return [...document.querySelectorAll('#t-groups .t-group')].map(g => Math.round(g.getBoundingClientRect().left))")
+    if size[0] >= 1440:
+        assert len(set(lefts)) > 1, lefts
+    if size[0] == 390:
+        assert got["cols"] == 1, got
+    if size[0] == 3840:
+        # a big screen with room: bigger tiles, every chart on one screen
+        w = drv.execute_script("return document.querySelector('#t-groups .t-tile').getBoundingClientRect().width")
+        assert w > 400, w
+        assert drv.execute_script("return document.documentElement.scrollHeight <= innerHeight + 1"), "4K scrolls"
+        assert got["cols"] >= 3, got
+
+
+def test_trends_range_is_in_the_url_and_redraws(server, drv):
+    _size(drv, 1440, 900)
+    _session(drv, server.base, signed_in=False)
+    _open_trends(drv, server.base, "?range=30")
+    assert drv.execute_script("return document.querySelector('#t-range [aria-pressed=true]').dataset.range") == "30"
+    drv.find_element("css selector", "#t-range [data-range='180']").click()
+    assert _wait(lambda: "range=180" in drv.current_url)
+    assert drv.execute_script("return document.querySelector('#t-range [aria-pressed=true]').dataset.range") == "180"
+
+
+def test_trends_no_red_fills_and_no_sideways_scroll(server, drv):
+    for theme in ("light", "dark"):
+        _size(drv, 1440, 900)
+        _session(drv, server.base, signed_in=False, theme=theme)
+        _open_trends(drv, server.base)
+        got = drv.execute_script(RED)
+        assert got["sw"] <= got["cw"] and got["hits"] == [], (theme, got)
